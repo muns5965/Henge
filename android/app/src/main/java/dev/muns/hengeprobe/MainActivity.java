@@ -100,7 +100,7 @@ public class MainActivity extends Activity {
         root.addView(reclaimButton);
 
         engineButton = new Button(this);
-        engineButton.setText("엔진 시험 실행 (test_mmu/jit/mem/exc)");
+        engineButton.setText("엔진 시험 실행 (mmu/jit/mem/exc/devices)");
         engineButton.setOnClickListener(v -> runEngineNow());
         root.addView(engineButton);
 
@@ -149,7 +149,12 @@ public class MainActivity extends Activity {
             page = Os.sysconf(OsConstants._SC_PAGESIZE);
         } catch (Exception ignored) {
         }
-        return "기기: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+        long build = 0;
+        try {
+            build = getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
+        } catch (Exception ignored) {
+        }
+        return "빌드 번호: " + build + " (CI 실행 번호; 클수록 최신)\n기기: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
                 + "Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
                 + "ABI: " + Build.SUPPORTED_ABIS[0] + ", 페이지 크기: " + page + "\n";
     }

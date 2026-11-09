@@ -25,6 +25,7 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     hv_test_report_crashes();
     static HvMachine m;
+    hv_test_step("machine init", "test_jit");
     if (hv_machine_init(&m, 4 << 20) != 0) {
         printf("machine init failed\n");
         return 1;

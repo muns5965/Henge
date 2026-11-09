@@ -178,6 +178,17 @@ static void hv_test_crash(int sig, siginfo_t *si, void *ctx) {
 /* Runs before main: if this line never shows, the process died while being loaded. */
 __attribute__((constructor, unused)) static void hv_test_before_main(void) { hv_test_early_write("test: before main\n"); }
 
+/* A short trail of what ran last, written at once (only the first few steps, to keep the output short). */
+static inline void hv_test_step(const char *what, const char *name) {
+    static int n;
+    if (n++ >= 8) return;
+    hv_test_early_write("step: ");
+    hv_test_early_write(what);
+    hv_test_early_write(" ");
+    hv_test_early_write(name);
+    hv_test_early_write("\n");
+}
+
 static inline void hv_test_report_crashes(void) {
     hv_test_early_write("test: main entered\n");
     static char alt[65536];
@@ -191,6 +202,7 @@ static inline void hv_test_report_crashes(void) {
 }
 #else
 static inline void hv_test_report_crashes(void) {}
+static inline void hv_test_step(const char *what, const char *name) { (void)what; (void)name; }
 #endif
 
 void hv_native_run(HvCpu *cpu, const void *entry);
@@ -262,7 +274,9 @@ static inline void run_native(const TestProgram *p, const HvCpu *init, HvCpu *ou
     for (int tries = 0; tries < 10; tries++) {
         if (reset) reset();
         a = *init;
+        hv_test_step("native run begin", p->name);
         hv_native_run(&a, p->native);
+        hv_test_step("native run end", p->name);
         if (reset) reset();
         b = *init;
         hv_native_run(&b, p->native);
@@ -288,7 +302,9 @@ static inline int run_jit(HvMachine *m, const TestProgram *p, const HvCpu *init,
     if (setup) setup(cpu);
     cpu->pc = (uint64_t)(uintptr_t)p->start;
     m->stop_pc = (uint64_t)(uintptr_t)p->end;
+    hv_test_step("jit run begin", p->name);
     int r = hv_run(cpu);
+    hv_test_step("jit run end", p->name);
     if (r != HV_EXIT_HALT) {
         printf("  %s: dispatcher returned %d at pc %llx (insn %08x) esr %llx far %llx elr %llx\n", p->name, r,
                (unsigned long long)cpu->pc, cpu->exit_insn, (unsigned long long)cpu->esr_el1,

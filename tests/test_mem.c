@@ -164,6 +164,7 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     hv_test_report_crashes();
     static HvMachine m;
+    hv_test_step("machine init", "test_mem");
     if (hv_machine_init(&m, 8 << 20) != 0) return 1;
     data = aligned_alloc(16384, DATA_SIZE);
     stack = aligned_alloc(16384, STACK_SIZE);

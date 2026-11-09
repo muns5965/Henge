@@ -49,7 +49,7 @@ if command -v cmake >/dev/null && [ -n "${NDK_ROOT:-}" ]; then
   fi
 fi
 
-# The same groups and flags as tools/build_ios_restore.sh. (Android differences: usbmuxd defines its own ppoll, which the NDK declares too;
+# The same groups and flags as tools/build_ios_restore.sh. (Android differences: bionic has ppoll, so config.h defines HAVE_PPOLL and usbmuxd skips its own;
 # idevicerestore needs the zipconf.h that libzip generates; libimobiledevice-glue gets a config without net/if_dl.h.)
 group mbedtls "-I$TP/mbedtls/library" $TP/mbedtls/library/*.c
 group plist "-I$TP/libplist/libcnary/include -DPACKAGE_VERSION=\"2.8.0-henge\"" $TP/libplist/src/*.c $TP/libplist/libcnary/*.c
@@ -58,7 +58,7 @@ group usbmuxdc "-DPACKAGE_VERSION=\"2.1.1-henge\" -DPACKAGE_STRING=\"libusbmuxd\
 group imd "-DHAVE_MBEDTLS -DPACKAGE_VERSION=\"1.4.0-henge\" -DPACKAGE_STRING=\"libimobiledevice\" -I$TP/libimobiledevice/src -I$TP/libimobiledevice/common" $TP/libimobiledevice/src/*.c $TP/libimobiledevice/common/*.c
 group tatsu "-DPACKAGE_VERSION=\"1.0.5-henge\"" $TP/libtatsu/src/*.c
 group irecv "-DPACKAGE_VERSION=\"1.3.1-henge\"" $TP/libirecovery/src/libirecovery.c
-group muxd "-Dppoll=hv_usbmuxd_ppoll -DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
+group muxd "-DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
 group idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" $TP/idevicerestore/src/*.c
 group henge "-std=gnu11 -D_GNU_SOURCE -Icore -Ihost -Idevices" host/libusb_shim.c host/install.c
 
@@ -77,7 +77,9 @@ EOC
 ENG=""
 for f in "$OUT"/dev_*.o "$OUT"/vm_*.o; do ENG="$ENG $f"; done
 for o in classify operands translate dispatch mmu memop exception sysreg machine jit_region disk enter; do ENG="$ENG $OUT/$o.o"; done
-$CC -O1 -w "$R/linkmain.c" $OBJS ${ZIPLIB:-} $ENG -lz -llog -Wl,--error-limit=0 -o "$R/linktest" > "$R/link.log" 2>&1
+AR="$(dirname "$CC")/llvm-ar"
+rm -f "$R/librestore.a"; "$AR" rcs "$R/librestore.a" $OBJS   # an archive, as on iOS: libcnary's own main is only linked if something asks for it
+$CC -O1 -w "$R/linkmain.c" "$R/librestore.a" ${ZIPLIB:-} $ENG -lz -llog -Wl,--error-limit=0 -o "$R/linktest" > "$R/link.log" 2>&1
 rc=$?
 if [ $rc = 0 ]; then echo "linked"; else
   grep -o "undefined symbol: [A-Za-z0-9_.]*" "$R/link.log" | sort -u | sed 's/undefined symbol: //' > "$R/undef.txt"

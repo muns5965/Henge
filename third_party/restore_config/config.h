@@ -31,3 +31,8 @@
 #define HAVE_NET_IF_DL_H 1
 #endif
 #define HAVE_STPNCPY 1
+
+#ifdef __ANDROID__ /* what the configure scripts find on Android (bionic) */
+#define HAVE_NETPACKET_PACKET_H 1
+#define HAVE_PPOLL 1
+#endif

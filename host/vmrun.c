@@ -3,20 +3,38 @@
    where CPU 0 is: pc, exception level, the last exception's ESR/FAR/ELR, why the machine stopped. The point is to
    learn the FIRST place a real boot ROM goes wrong. A clean exit of this program says nothing about the guest
    having booted; read the status lines. */
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "vm.h"
 
-static volatile int exited;
-static volatile int exit_reason = -1;
+static int exited;
+static int exit_reason = -1;
 static void on_exit_cb(int reason) {
-    exit_reason = reason;
-    exited = 1;
+    __atomic_store_n(&exit_reason, reason, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&exited, 1, __ATOMIC_SEQ_CST);
+}
+#define EXITED() __atomic_load_n(&exited, __ATOMIC_SEQ_CST)
+
+/* Samples of CPU 0 taken from this thread while it runs on another. The fields are read one by one without a lock,
+   so a sample can mix two moments (a torn read); treat each line as approximate. A "change" is logged whenever the
+   exception level, ESR_EL1 or VBAR_EL1 differs from the sample before, so the first exceptions are kept even when the
+   guest moves on: the first 40 changes are printed as they happen with the time of the sample. */
+typedef struct { unsigned long long pc, esr, far, elr, vbar; unsigned el; } Sample;
+static void sample(Sample *o) {
+    HvCpu *c = hv_vm_cpu(0);
+    o->pc = __atomic_load_n(&c->pc, __ATOMIC_RELAXED);
+    o->esr = __atomic_load_n(&c->esr_el1, __ATOMIC_RELAXED);
+    o->far = __atomic_load_n(&c->far_el1, __ATOMIC_RELAXED);
+    o->elr = __atomic_load_n(&c->elr_el1, __ATOMIC_RELAXED);
+    o->vbar = __atomic_load_n(&c->vbar_el1, __ATOMIC_RELAXED);
+    o->el = __atomic_load_n(&c->el, __ATOMIC_RELAXED);
 }
 
 static double now(void) {
@@ -61,11 +79,32 @@ static int write_bmp(const char *path, const uint8_t *bgra, int w, int h) {
     return 0;
 }
 
+/* A new auxiliary storage file the way Henge's iOS app makes one (ios/Henge/Native/henge-vm.c): a 24-byte header, zeros to 32 MB + 16 KB. */
+static int make_aux(const char *path) {
+    static const unsigned char header[24] = {0xa5, 0xd5, 0xb3, 0xfe, 0x97, 0xad, 0x1d, 0x27, 1, 0, 0, 0, 0, 0, 0, 0,
+                                             1, 0, 0, 0, 0, 0, 0, 0};
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    int ok = write(fd, header, sizeof header) == (ssize_t)sizeof header && ftruncate(fd, 33570816) == 0;
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+static int make_sparse(const char *path, unsigned long long bytes) {
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    int r = ftruncate(fd, (off_t)bytes);
+    close(fd);
+    return r;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
+    int make_blank = 0;
+    unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         int more = i + 1 < argc;
@@ -81,8 +120,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--log") && more) cfg.log = atoi(argv[++i]);
         else if (!strcmp(a, "--seconds") && more) seconds = atof(argv[++i]);
         else if (!strcmp(a, "--snapshot") && more) snap = argv[++i];
+        else if (!strcmp(a, "--make-blank")) make_blank = 1; /* create --disk and --aux when they do not exist */
+        else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--disk-gb N]] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -90,9 +132,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "vmrun: --rom, --disk and --aux are required\n");
         return 2;
     }
-    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB, ecid %llx, seed %llx, aux_offset %llu, seconds %.0f\n",
+    struct stat sb;
+    if (make_blank) {
+        if (stat(cfg.disk, &sb) != 0) printf("vmrun: new blank disk %s (%llu GB, sparse): %s\n", cfg.disk, disk_gb, make_sparse(cfg.disk, disk_gb << 30) == 0 ? "ok" : "FAILED");
+        if (stat(cfg.aux, &sb) != 0) printf("vmrun: new auxiliary storage %s: %s\n", cfg.aux, make_aux(cfg.aux) == 0 ? "ok" : "FAILED");
+    }
+    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB, ecid %llx, seed %llx, aux_offset %llu, installer %d, seconds %.0f\n",
            (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (unsigned long long)cfg.ecid,
-           (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, seconds);
+           (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, seconds);
     char err[512] = "";
     double t0 = now();
     if (hv_vm_create(&cfg, err, sizeof err) != 0) {
@@ -103,19 +150,32 @@ int main(int argc, char **argv) {
     status("start", 0);
     hv_vm_start(1, on_exit_cb);
     double t1 = now(), next = 2;
-    while (!exited && now() - t1 < seconds) {
-        usleep(100000);
+    Sample prev, cur;
+    sample(&prev);
+    int changes = 0;
+    while (!EXITED() && now() - t1 < seconds) {
+        usleep(10000);
+        sample(&cur);
+        if (changes < 40 && (cur.el != prev.el || cur.esr != prev.esr || cur.vbar != prev.vbar)) {
+            changes++;
+            printf("vmrun change#%d t=%.3fs pc=%llx el=%u esr_el1=%llx far_el1=%llx elr_el1=%llx vbar_el1=%llx (was el=%u esr_el1=%llx vbar_el1=%llx)\n",
+                   changes, now() - t1, cur.pc, cur.el, cur.esr, cur.far, cur.elr, cur.vbar, prev.el, prev.esr, prev.vbar);
+        }
+        prev = cur;
         if (now() - t1 >= next) {
             status("run", now() - t1);
             next += next < 10 ? 2 : 10;
         }
     }
     int by_us = 0;
-    if (!exited) {
+    if (!EXITED()) {
         by_us = 1;
+        Sample last;
+        sample(&last); /* the state just before we stop it */
+        printf("vmrun before stop: pc=%llx el=%u esr_el1=%llx far_el1=%llx elr_el1=%llx\n", last.pc, last.el, last.esr, last.far, last.elr);
         hv_vm_stop();
         double ts = now();
-        while (!exited && now() - ts < 5.0) usleep(10000);
+        while (!EXITED() && now() - ts < 5.0) usleep(10000);
     }
     status("final", now() - t1);
     if (snap) {
@@ -125,10 +185,11 @@ int main(int argc, char **argv) {
         else printf("vmrun snapshot: nothing to show\n");
     }
     hv_vm_flush_disks();
-    if (exited)
+    if (EXITED()) {
         printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s)\n", by_us ? "by vmrun's time limit" : "by the guest/engine",
                now() - t1, exit_reason, hv_vm_reason_name(exit_reason));
-    else
-        printf("vmrun RESULT: time limit reached and the machine did not confirm stopping within 5 s\n");
-    return 0;
+        return 0;
+    }
+    printf("vmrun RESULT: FAILED: the machine did not confirm stopping within 5 s of hv_vm_stop\n");
+    return 3;
 }

@@ -434,14 +434,19 @@ public class MainActivity extends Activity {
             StringBuilder acc = new StringBuilder();
             try {
                 File base = new File(getExternalFilesDir(null), "vm");
-                File rom = new File(base, "rom.bin"), disk = new File(base, "disk.img"), aux = new File(base, "aux.img");
+                File rom = new File(base, "rom.bin");
+                // disk and aux: the ones in that folder if present, else blank ones in the app's private folder (made by vmrun)
+                File priv = new File(getFilesDir(), "vm");
+                priv.mkdirs();
+                File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
+                File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
                 File exe = new File(libDir, "libvmrun.so");
                 if (!exe.exists()) acc.append("vmrun 실행 파일이 이 APK에 없습니다.\n");
-                else if (!rom.exists() || !disk.exists() || !aux.exists()) {
-                    acc.append("필요한 파일이 없습니다 (rom.bin ").append(rom.exists()).append(", disk.img ").append(disk.exists())
-                            .append(", aux.img ").append(aux.exists()).append(").\n위 폴더에 이 이름으로 넣고 다시 누르세요. ")
-                            .append("선택: config.txt (한 줄에 하나: ecid=0x.., seed=0x.., ram_mb=, cpus=, jit_mb=, seconds=, log=).\n");
+                else if (!rom.exists()) {
+                    acc.append("rom.bin이 없습니다. 위 폴더에 AVPBooter ROM을 rom.bin 이름으로 넣고 다시 누르세요 ")
+                            .append("(disk.img/aux.img는 없으면 빈 파일을 자동으로 만듭니다). ")
+                            .append("선택: config.txt (한 줄에 하나: ecid=0x.., seed=0x.., installer=1, ram_mb=, cpus=, jit_mb=, seconds=, log=).\n");
                     base.mkdirs();
                 } else {
                     java.util.Map<String, String> cfg = new java.util.HashMap<>();
@@ -460,6 +465,8 @@ public class MainActivity extends Activity {
                     cmd.add("--rom"); cmd.add(rom.getAbsolutePath());
                     cmd.add("--disk"); cmd.add(disk.getAbsolutePath());
                     cmd.add("--aux"); cmd.add(aux.getAbsolutePath());
+                    cmd.add("--make-blank");
+                    if ("1".equals(cfg.get("installer"))) cmd.add("--installer");
                     String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},
                             {"jit_mb", "--jit-mb"}, {"seconds", "--seconds"}, {"log", "--log"}, {"aux_offset", "--aux-offset"}};
                     for (String[] m : map) if (cfg.containsKey(m[0])) { cmd.add(m[1]); cmd.add(cfg.get(m[0])); }

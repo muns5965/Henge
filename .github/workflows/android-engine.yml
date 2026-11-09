@@ -64,7 +64,16 @@ jobs:
           else
             echo "=== test_vm was not built"; rc2=1
           fi
-          [ $rc = 0 ] && [ $rc2 = 0 ]
+          rc3=0
+          if [ -f build-linux/vmrun ]; then
+            # vmrun on a `b .` ROM with blank files it makes itself: it must run, report changes, stop, and exit 0
+            python3 -c "import struct,sys; sys.stdout.buffer.write(struct.pack('<I',0x14000000)*16384)" > spin_rom.bin
+            timeout 60 build-linux/vmrun --rom spin_rom.bin --disk blank_disk.img --aux blank_aux.img --make-blank --disk-gb 2 --ram-mb 256 --jit-mb 64 --seconds 3 --installer || rc3=$?
+            echo "=== vmrun exit code $rc3"
+          else
+            echo "=== vmrun was not built"; rc3=1
+          fi
+          [ $rc = 0 ] && [ $rc2 = 0 ] && [ $rc3 = 0 ]
 
   android-ndk:
     runs-on: ubuntu-24.04

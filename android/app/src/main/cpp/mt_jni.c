@@ -186,7 +186,7 @@ typedef struct {
     pthread_t th;
     uint64_t calls, na, nb, invalid;
     long first_invalid;
-    uint64_t old_before, old_after; /* stage 4: old destination before / after the ISB */
+    uint64_t old_before, old_after, moved; /* stage 4: old destination before / after the ISB; calls skipped because the generation moved */
     uint32_t nlat;
     uint32_t lat_us[MAX_EPOCHS]; /* stage 3 */
     atomic_int last_seen;
@@ -265,6 +265,9 @@ static void *exec_main(void *p) {
             long r0 = fn(); /* no synchronisation */
             sync_instructions();
             long r1 = fn(); /* after the ISB */
+            /* The patch is written before the generation is published, so an unchanged
+               generation does not prove no patch happened; this only reduces the noise. */
+            int moved = atomic_load_explicit(&s->epoch, memory_order_acquire) != e;
             x->calls += 2;
             if (r0 != 1 && r0 != 2) {
                 if (!x->invalid) x->first_invalid = r0;
@@ -273,7 +276,10 @@ static void *exec_main(void *p) {
             if (r1 != 1 && r1 != 2) {
                 if (!x->invalid) x->first_invalid = r1;
                 x->invalid++;
-            } else if (r1 != want(e)) x->old_after++;
+            } else if (r1 != want(e)) {
+                if (moved) x->moved++;
+                else x->old_after++;
+            }
             last = e;
             atomic_store_explicit(&x->last_seen, e, memory_order_release);
         }
@@ -342,10 +348,11 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
         x->id = i;
         x->cpu = pin ? cpus[i % (ncpu - 1)] : -1;
         atomic_init(&x->last_seen, 0);
-        if (pthread_create(&x->th, NULL, exec_main, x) == 0) {
+        int rc = pthread_create(&x->th, NULL, exec_main, x); /* returns the error number, errno is not set */
+        if (rc == 0) {
             x->started = 1;
         } else {
-            addf(out, cap, "  FAIL: could not start executor %d (errno %d)\n", i, errno);
+            addf(out, cap, "  FAIL: could not start executor %d: %s\n", i, strerror(rc));
             create_fail = 1;
             break;
         }
@@ -421,12 +428,17 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
          ncpu ? cpus[0] : -1, ncpu ? cpus[ncpu - 1] : -1, n_exec, pin ? " (pinned)" : " (not pinned)",
          pin ? (pin_patcher ? "pinned" : "NOT pinned") : "not pinned", secs, (unsigned long long)patches);
 
-    uint64_t calls = 0, na = 0, nb = 0, invalid = 0, old_before = 0, old_after = 0;
+    if (pin) {
+        addf(out, cap, "  patcher CPU %d (%s); executor CPUs:", patcher_cpu, pin_patcher ? "pinned" : "NOT pinned");
+        for (int i = 0; i < n_exec; i++) addf(out, cap, " %d(%s)", sh.ex[i].cpu, sh.ex[i].pin_ok ? "ok" : "NOT pinned");
+        addf(out, cap, "\n  (CPU numbers only; this does not show core type or cache sharing)\n");
+    }
+    uint64_t calls = 0, na = 0, nb = 0, invalid = 0, old_before = 0, old_after = 0, moved = 0;
     int pin_fail = 0;
     for (int i = 0; i < n_exec; i++) {
         Exec *x = &sh.ex[i];
         calls += x->calls, na += x->na, nb += x->nb, invalid += x->invalid;
-        old_before += x->old_before, old_after += x->old_after;
+        old_before += x->old_before, old_after += x->old_after, moved += x->moved;
         if (pin && !x->pin_ok) pin_fail++;
         if (x->invalid)
             addf(out, cap, "  executor %d: first invalid value %ld\n", i, x->first_invalid);
@@ -475,6 +487,8 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
              (unsigned long long)(patches * (unsigned)n_exec));
         addf(out, cap, "  old destination after ISB:  %llu of %llu\n", (unsigned long long)old_after,
              (unsigned long long)(patches * (unsigned)n_exec));
+        if (moved)
+            addf(out, cap, "  excluded because the generation moved during the pair: %llu\n", (unsigned long long)moved);
         if (old_after)
             addf(out, cap, "  (observation, not a verdict: review before relying on this protocol in the engine)\n");
     }

@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build the engine core and link test_mmu
-        run: CC=clang tools/engine-build.sh build-linux
+        run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/engine-build.sh build-linux
       - name: Run test_mmu natively
         run: build-linux/test_mmu
 

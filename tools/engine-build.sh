@@ -27,5 +27,5 @@ else
   echo "FAILED  host/enter.S"; cat "$OUT/enter.log"; fail=1
 fi
 [ $fail = 0 ] || { echo "compile step failed; not linking"; exit 1; }
-$CC $CFLAGS tests/test_mmu.c $objs ${EXTRA_LIBS:-} -lpthread -o "$OUT/test_mmu" || { echo "link failed"; exit 1; }
+$CC $CFLAGS tests/test_mmu.c $objs ${EXTRA_LIBS:-} -o "$OUT/test_mmu" || { echo "link failed"; exit 1; }
 echo "linked $OUT/test_mmu"

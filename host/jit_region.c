@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* memfd_create on Linux and Android */
+#endif
 
 #include "jit_region.h"
 

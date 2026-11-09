@@ -9,6 +9,7 @@
 /* VMSAv8-64 stage 1 translation for the EL1&0 regime, 4 KB, 16 KB and 64 KB
    granules, 48-bit VA and PA. There is no stage 2: HengeVM is the hypervisor. */
 
+#undef PAGE_MASK /* bionic defines its own */
 #define PAGE_MASK ((1ull << HV_TLB_PAGE_BITS) - 1)
 #define OA_MASK 0x0000ffffffffffffull
 

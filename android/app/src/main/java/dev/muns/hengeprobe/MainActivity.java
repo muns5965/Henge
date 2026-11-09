@@ -600,6 +600,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
+                    if (installer) cmd.add("--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},

@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "vm.h"
+#include "vmapple.h"
 
 static int exited;
 static int exit_reason = -1;
@@ -52,6 +53,15 @@ static void status(const char *tag, double t) {
                tag, t, i, (unsigned long long)c->pc, c->el, (unsigned long long)c->elr_el1,
                (unsigned long long)c->esr_el1, (unsigned long long)c->far_el1, (unsigned long long)c->vbar_el1,
                (unsigned long long)c->sctlr_el1, c->halted);
+    }
+    HvVmapple *bd = hv_vm_board();
+    if (bd && bd->vusb) { /* the USB device port (installer boots only); online/session are read under the port's own lock */
+        uint32_t sess = 0;
+        int on = hv_vusb_online(bd->vusb, &sess);
+        printf("vmrun %s usb port: guest on the bus=%d session=%u (rom front-end owns port=%d, PCI front-end DRIVER_OK=%d; unlocked reads)\n", tag, on, sess,
+               __atomic_load_n(&bd->vusb->rom_on, __ATOMIC_RELAXED), __atomic_load_n(&bd->vusb->pci_on, __ATOMIC_RELAXED));
+    } else {
+        printf("vmrun %s usb port: not present in this boot mode\n", tag);
     }
     HvBootDisplay d;
     if (hv_vm_boot_display(&d) == 0) printf("vmrun %s boot display present %ux%u\n", tag, d.width, d.height);
@@ -103,7 +113,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0, recreate_blank = 0, psci_log = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -123,10 +133,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--make-blank")) make_blank = 1; /* create --disk and --aux when they do not exist */
         else if (!strcmp(a, "--recreate-blank")) recreate_blank = 1; /* with --make-blank: start the files named blank_* from scratch */
         else if (!strcmp(a, "--psci-log")) psci_log = 1;             /* print every PSCI call the guest makes (function, x1..x3, pc) */
+        else if (!strcmp(a, "--usb-probe")) usb_probe = 1; /* log USB port events and probe the device from the host side (descriptor + strings) */
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -136,6 +147,10 @@ int main(int argc, char **argv) {
     }
     struct stat sb;
     if (psci_log) setenv("HV_PSCI_LOG", "1", 1); /* read by the engine at its first PSCI call, so before the machine exists */
+    if (usb_probe) { /* read by the VM when it creates the USB port, so before hv_vm_create */
+        setenv("HV_VUSB_LOG", "1", 1);
+        setenv("HV_VUSB_PROBE", "1", 1);
+    }
     if (make_blank && recreate_blank) {
         /* only files whose name starts with "blank_" are ever removed: a real installed disk is never touched */
         const char *names[2] = {cfg.disk, cfg.aux};

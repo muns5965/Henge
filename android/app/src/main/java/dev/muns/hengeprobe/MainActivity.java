@@ -31,10 +31,15 @@ public class MainActivity extends Activity {
     /** One region size: map, run code at start/middle/end, sample pages, close. */
     private native String runSize(int mib, String crashPath, String progressPath);
 
+    /** Multi-thread patch test; stage 1..5 (see mt_jni.c), seconds only matters for stages 1, 2 and 5. */
+    private native String runMt(int stage, int seconds, String crashPath, String progressPath);
+
     private static final int[] SIZES_MIB = {1, 16, 64, 256, 768};
 
     private TextView output;
     private Button runButton;
+    private Button mtButton;
+    private Button longButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -54,6 +59,16 @@ public class MainActivity extends Activity {
         runButton.setText("JIT 크기 시험 실행 (1~768 MiB)");
         runButton.setOnClickListener(v -> runNow());
         root.addView(runButton);
+
+        mtButton = new Button(this);
+        mtButton.setText("다중 스레드 패치 시험 (1~4단계, 약 15초)");
+        mtButton.setOnClickListener(v -> runMtNow(false));
+        root.addView(mtButton);
+
+        longButton = new Button(this);
+        longButton.setText("장시간 반복 (60초)");
+        longButton.setOnClickListener(v -> runMtNow(true));
+        root.addView(longButton);
 
         Button copy = new Button(this);
         copy.setText("결과 복사");
@@ -136,6 +151,42 @@ public class MainActivity extends Activity {
             show(acc.toString());
             running = false;
             runOnUiThread(() -> runButton.setEnabled(true));
+        }).start();
+    }
+
+    private void setButtons(boolean enabled) {
+        runOnUiThread(() -> {
+            runButton.setEnabled(enabled);
+            mtButton.setEnabled(enabled);
+            longButton.setEnabled(enabled);
+        });
+    }
+
+    /** Several threads run the patched branch while another rewrites it. Stages 1-4, or the long run (stage 5). */
+    private void runMtNow(boolean longRun) {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            int[] stages = longRun ? new int[] {5} : new int[] {1, 2, 3, 4};
+            int[] secs = longRun ? new int[] {60} : new int[] {3, 4, 0, 0};
+            int failed = 0;
+            for (int i = 0; i < stages.length; i++) {
+                show(acc + "실행 중: 단계 " + stages[i] + " ...\n");
+                String r = runMt(stages[i], secs[i], crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
+                acc.append(r).append('\n');
+                show(acc.toString());
+                if (!r.contains("RESULT: PASS")) failed++;
+            }
+            //noinspection ResultOfMethodCallIgnored
+            progressFile.delete();
+            acc.append(failed == 0
+                    ? "모든 단계 통과 (이 기기·이 패치 형태에서 문제가 관찰되지 않음; 증명은 아님)\n"
+                    : "통과하지 못한 단계: " + failed + "개 (위 결과 참고)\n");
+            show(acc.toString());
+            running = false;
+            setButtons(true);
         }).start();
     }
 

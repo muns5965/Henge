@@ -310,7 +310,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
             int ok = 0, failed = 0;
-            for (String t : new String[] {"mmu", "jit", "mem", "exc"}) {
+            for (String t : new String[] {"mmu", "jit", "mem", "exc", "devices"}) {
                 show(acc + "실행 중: test_" + t + " ...\n");
                 File exe = new File(libDir, "libtest_" + t + ".so");
                 acc.append("== test_").append(t).append(" ==\n");
@@ -320,7 +320,10 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 try {
-                    Process p = new ProcessBuilder(exe.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true).start();
+                    ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true);
+                    pb.environment().put("HV_TEST_WORK", getFilesDir().getAbsolutePath()); // test_devices writes two small disk images
+                    pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                    Process p = pb.start();
                     StringBuilder text = new StringBuilder();
                     Thread reader = new Thread(() -> {
                         try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {

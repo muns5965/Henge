@@ -52,6 +52,7 @@ public class MainActivity extends Activity {
     private Button cancelButton;
     private Button memButton;
     private Button denseButton;
+    private Button reclaimButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -84,13 +85,18 @@ public class MainActivity extends Activity {
 
         memButton = new Button(this);
         memButton.setText("게스트 메모리 시험 (2~8 GiB 예약, 일부 페이지)");
-        memButton.setOnClickListener(v -> runMemNow(false));
+        memButton.setOnClickListener(v -> runMemNow(0));
         root.addView(memButton);
 
         denseButton = new Button(this);
         denseButton.setText("단계적 사용 시험 (종류별 1 GiB까지 실제 사용)");
-        denseButton.setOnClickListener(v -> runMemNow(true));
+        denseButton.setOnClickListener(v -> runMemNow(1));
         root.addView(denseButton);
+
+        reclaimButton = new Button(this);
+        reclaimButton.setText("메모리 반납 시험 (balloon 대체 호출)");
+        reclaimButton.setOnClickListener(v -> runMemNow(2));
+        root.addView(reclaimButton);
 
         cancelButton = new Button(this);
         cancelButton.setText("시험 취소 (다중 스레드·메모리)");
@@ -191,6 +197,7 @@ public class MainActivity extends Activity {
             longButton.setEnabled(enabled);
             memButton.setEnabled(enabled);
             denseButton.setEnabled(enabled);
+            reclaimButton.setEnabled(enabled);
         });
     }
 
@@ -228,8 +235,8 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Guest RAM shapes: anonymous, memfd, file. Sparse maps 2-8 GiB; dense really uses memory, up to 1 GiB per shape. */
-    private void runMemNow(boolean dense) {
+    /** Guest RAM shapes: anonymous, memfd, file. kind 0 sparse (2-8 GiB), 1 dense (1 GiB really used), 2 reclaim (balloon stand-ins). */
+    private void runMemNow(int kind) {
         if (running) return;
         running = true;
         setButtons(false);
@@ -237,18 +244,19 @@ public class MainActivity extends Activity {
         final String dir = getFilesDir().getAbsolutePath();
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
-            int pass = 0, mapFailed = 0, skipped = 0, fail = 0;
+            int pass = 0, mapFailed = 0, setupFailed = 0, unsupported = 0, skipped = 0, fail = 0;
             boolean cancelled = false;
             String[] names = {"anonymous", "memfd", "file"};
-            if (!dense) {
+            if (kind == 0) {
                 acc.append(runMem(2, 0, 0, dir, crashFile.getAbsolutePath(), progressFile.getAbsolutePath())).append('\n');
                 show(acc.toString());
             }
             for (int type = 0; type < 3 && !cancelled; type++) {
-                int[] sizes = dense ? new int[] {1024} : new int[] {2, 4, 6, 8};
+                int[] sizes = kind == 0 ? new int[] {2, 4, 6, 8} : kind == 1 ? new int[] {1024} : new int[] {0};
+                int mode = kind == 0 ? 0 : kind == 1 ? 1 : 3;
                 for (int size : sizes) {
-                    show(acc + "실행 중: " + names[type] + " " + size + (dense ? " MiB" : " GiB") + " ...\n");
-                    String r = runMem(dense ? 1 : 0, type, size, dir, crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
+                    show(acc + "실행 중: " + names[type] + " ...\n");
+                    String r = runMem(mode, type, size, dir, crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
                     acc.append(r).append('\n');
                     show(acc.toString());
                     if (r.contains("RESULT: PASS")) pass++;
@@ -258,16 +266,23 @@ public class MainActivity extends Activity {
                     } else if (r.contains("RESULT: MAP_FAILED")) {
                         mapFailed++;
                         break; // larger sizes of this shape will not map either
-                    } else if (r.contains("RESULT: SKIPPED")) skipped++;
+                    } else if (r.contains("RESULT: SETUP_FAILED")) {
+                        setupFailed++;
+                        break;
+                    } else if (r.contains("RESULT: UNSUPPORTED")) unsupported++;
+                    else if (r.contains("RESULT: SKIPPED")) skipped++;
                     else fail++;
                 }
             }
             //noinspection ResultOfMethodCallIgnored
             progressFile.delete();
-            acc.append("요약: PASS ").append(pass).append(", MAP_FAILED ").append(mapFailed).append(", SKIPPED ").append(skipped)
-                    .append(", FAIL ").append(fail).append(cancelled ? ", 취소됨" : "").append('\n');
-            acc.append(dense
+            acc.append("요약: PASS ").append(pass).append(", MAP_FAILED ").append(mapFailed).append(", SETUP_FAILED ").append(setupFailed)
+                    .append(", UNSUPPORTED ").append(unsupported).append(", SKIPPED ").append(skipped).append(", FAIL ").append(fail)
+                    .append(cancelled ? ", 취소됨" : "").append('\n');
+            acc.append(kind == 1
                     ? "실제 메모리를 사용한 시험입니다. 앱이 강제 종료되면 다음 실행 때 마지막 단계가 표시됩니다.\n"
+                    : kind == 2
+                    ? "반납 호출의 성공, 데이터, 메모리 사용량 변화는 따로 봅니다. 사용량이 줄지 않아도 실패가 아닙니다.\n"
                     : "PASS는 매핑과 표본 페이지가 동작했다는 뜻이며, 그만큼의 RAM을 쓸 수 있다는 뜻은 아닙니다.\n");
             show(acc.toString());
             running = false;

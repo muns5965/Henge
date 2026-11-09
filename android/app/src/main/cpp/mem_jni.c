@@ -21,10 +21,19 @@
         attributable to a step, not explained.
      2  system information and a reserve-only probe of large anonymous sizes
         (mapped and unmapped at once, nothing touched).
+     3  reclaim: the calls the engine's balloon uses on Apple, with their
+        Android stand-ins. Anonymous: MADV_DONTNEED and MADV_FREE, each on its
+        own 64 MiB range. memfd / file: fallocate(PUNCH_HOLE) + msync on 64 MiB.
+        Each feature reports separately: the call (SUPPORTED / UNSUPPORTED),
+        the data after it, and the memory counters. Memory counters are read
+        BEFORE the range is touched again, because touching it allocates again.
+        A drop in the counters is reported, never required: MADV_FREE keeps
+        pages until the kernel wants them.
 
-   Result states: PASS, MAP_FAILED (the kernel said no: a finding, not a test
-   bug), SKIPPED (not enough free disk for a file-backed run), FAIL (data or
-   call error), CANCELLED. */
+   Result states: PASS; MAP_FAILED (mmap said no); SETUP_FAILED (memfd_create,
+   open or ftruncate said no; the call and errno are printed); UNSUPPORTED
+   (mapping and samples fine, but a reclaim call is not available); SKIPPED
+   (not enough free disk for a file-backed run); FAIL (wrong data); CANCELLED. */
 #include <jni.h>
 
 #include <android/log.h>
@@ -45,7 +54,8 @@
 #include <unistd.h>
 
 #define TAG "henge-jit-mem"
-#define PAGE 4096ul
+static size_t g_page = 4096; /* the device page size, read at the start of each call */
+#define PAGE g_page
 #define MiB (1ul << 20)
 #define GiB (1ul << 30)
 #define SAMPLES 256ul
@@ -60,7 +70,7 @@
 extern atomic_int g_cancel; /* mt_jni.c: set by the cancel button, cleared before each run */
 
 enum { T_ANON = 0, T_MEMFD = 1, T_FILE = 2 };
-enum { R_PASS = 0, R_MAPFAIL, R_SKIPPED, R_FAIL, R_CANCELLED };
+enum { R_PASS = 0, R_MAPFAIL, R_SKIPPED, R_FAIL, R_CANCELLED, R_SETUPFAIL, R_UNSUPPORTED };
 
 static const char *const TYPE_NAME[] = {"anonymous (MAP_PRIVATE|MAP_ANON)", "memfd (shared memory)",
                                         "file in app storage (MAP_SHARED, unlinked)"};
@@ -183,6 +193,7 @@ typedef struct {
     int type;
 } Map;
 
+/* 0: mapped; 1: mmap failed; 2: memfd_create / open / ftruncate failed (the call is named in the output). */
 static int map_open(Map *m, int type, size_t size, const char *dir, char *out, size_t cap) {
     m->p = NULL;
     m->size = size;
@@ -227,7 +238,7 @@ static int map_open(Map *m, int type, size_t size, const char *dir, char *out, s
         addf(out, cap, "  %s failed: %s (errno %d)\n", step, strerror(err), err);
         if (m->fd >= 0) close(m->fd);
         m->fd = -1;
-        return -1;
+        return strcmp(step, "mmap") == 0 ? 1 : 2;
     }
     m->p = p;
     return 0;
@@ -258,8 +269,13 @@ static int run_sparse(int type, size_t gib, const char *dir, char *out, size_t c
                  (unsigned long long)((uint64_t)vfs.f_bavail * vfs.f_frsize / MiB));
     }
     read_mem(&before);
-    if (map_open(&m, type, size, dir, out, cap) != 0) return R_MAPFAIL;
+    int mo = map_open(&m, type, size, dir, out, cap);
+    if (mo) return mo == 1 ? R_MAPFAIL : R_SETUPFAIL;
     addf(out, cap, "  mapped %zu GiB at %p\n", gib, (void *)m.p);
+    if (cancelled()) {
+        map_close(&m);
+        return R_CANCELLED;
+    }
 
     size_t pages = size / PAGE;
     size_t n = pages < SAMPLES ? pages : SAMPLES;
@@ -281,19 +297,28 @@ static int run_sparse(int type, size_t gib, const char *dir, char *out, size_t c
             if (pread(m.fd, &v, sizeof v, (off_t)(pg * PAGE + 8)) != (ssize_t)sizeof v || v != pattern(pg)) bad_fd++;
         }
     }
+    if (cancelled()) {
+        map_close(&m);
+        return R_CANCELLED;
+    }
     addf(out, cap, "  sampled %zu pages (of %zu): %zu wrong through the mapping", n, pages, bad);
     if (m.fd >= 0) addf(out, cap, "; %zu of %zu wrong through the file descriptor", bad_fd, fd_checked);
     addf(out, cap, "\n");
 
-    int hole_fail = 0;
-    if (m.fd >= 0) { /* the balloon frees guest pages this way */
+    int hole_fail = 0, hole_unsupported = 0;
+    if (cancelled()) {
+        map_close(&m);
+        return R_CANCELLED;
+    }
+    if (m.fd >= 0) { /* the balloon frees guest pages this way; the full test is mode 3 */
         size_t pg = n > 8 ? 8 * stride : 0;
         mark("punch a hole at page %zu", pg);
         if (fallocate(m.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, (off_t)(pg * PAGE), (off_t)PAGE) != 0) {
-            addf(out, cap, "  punch hole: not possible (%s, errno %d)\n", strerror(errno), errno);
+            addf(out, cap, "  punch hole: UNSUPPORTED (%s, errno %d)\n", strerror(errno), errno);
+            hole_unsupported = 1;
         } else {
             uint64_t v = *(volatile uint64_t *)(m.p + pg * PAGE + 8);
-            addf(out, cap, "  punch hole: ok, page now reads %s\n", v == 0 ? "zero" : "NOT zero");
+            addf(out, cap, "  punch hole: SUPPORTED, page now reads %s\n", v == 0 ? "zero" : "NOT zero (DATA_ERROR)");
             hole_fail = v != 0;
         }
     }
@@ -303,7 +328,8 @@ static int run_sparse(int type, size_t gib, const char *dir, char *out, size_t c
     addf(out, cap, "  (VmSize grew by %ld MiB; RSS only by what was touched)\n", MB(after.vmsize - before.vmsize));
     mark("unmap");
     map_close(&m);
-    return bad || bad_fd || hole_fail ? R_FAIL : R_PASS;
+    if (bad || bad_fd || hole_fail) return R_FAIL;
+    return hole_unsupported ? R_UNSUPPORTED : R_PASS;
 }
 
 /* ---- mode 1 ---- */
@@ -323,7 +349,8 @@ static int run_dense(int type, size_t cap_mib, const char *dir, char *out, size_
             return R_SKIPPED;
         }
     }
-    if (map_open(&m, type, size, dir, out, cap) != 0) return R_MAPFAIL;
+    int mo = map_open(&m, type, size, dir, out, cap);
+    if (mo) return mo == 1 ? R_MAPFAIL : R_SETUPFAIL;
     read_mem(&mm);
     print_mem(out, cap, "start ", &mm);
 
@@ -362,6 +389,135 @@ static int run_dense(int type, size_t cap_mib, const char *dir, char *out, size_
     read_mem(&mm);
     print_mem(out, cap, "after unmap", &mm);
     return bad ? R_FAIL : R_PASS;
+}
+
+/* ---- mode 3 ---- */
+
+#define RANGE_MIB 64ul
+
+static long lazyfree_kb(void) { /* -1: smaps_rollup not readable */
+    char buf[2048];
+    FILE *f = fopen("/proc/self/smaps_rollup", "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    return field_kb(buf, "LazyFree:");
+}
+
+static void touch_range(uint8_t *base, size_t first_page, size_t pages) {
+    for (size_t i = 0; i < pages; i++) *(volatile uint64_t *)(base + (first_page + i) * PAGE + 8) = pattern(first_page + i);
+}
+
+/* Reads the range back and sorts every page into: still the pattern, zero, other. */
+static void classify_range(const uint8_t *base, size_t first_page, size_t pages, size_t *kept, size_t *zero, size_t *other) {
+    *kept = *zero = *other = 0;
+    for (size_t i = 0; i < pages; i++) {
+        uint64_t v = *(volatile const uint64_t *)(base + (first_page + i) * PAGE + 8);
+        if (v == pattern(first_page + i)) (*kept)++;
+        else if (v == 0) (*zero)++;
+        else (*other)++;
+    }
+}
+
+static void print_range_mem(char *out, size_t cap, const char *label, const Mem *m, long lazy) {
+    addf(out, cap, "    %-8s RSS %ld MiB (anon %ld, file %ld, shmem %ld), LazyFree %s", label, MB(m->rss), MB(m->anon),
+         MB(m->file), MB(m->shmem), "");
+    if (lazy == -2) addf(out, cap, "n/a\n");
+    else if (lazy < 0) addf(out, cap, "unavailable\n");
+    else addf(out, cap, "%ld MiB\n", lazy / 1024);
+}
+
+/* madvise one 64 MiB range; dont_need selects MADV_DONTNEED (zero on re-read expected), else MADV_FREE (anything goes). */
+static int reclaim_anon(Map *m, size_t first_page, int advice, const char *name, char *out, size_t cap, int *unsupported) {
+    size_t pages = RANGE_MIB * MiB / PAGE, kept, zero, other;
+    Mem a, b;
+    mark("reclaim %s: touch %lu MiB", name, RANGE_MIB);
+    touch_range(m->p, first_page, pages);
+    read_mem(&a);
+    long la = lazyfree_kb();
+    mark("reclaim %s: madvise", name);
+    int rc = madvise(m->p + first_page * PAGE, pages * PAGE, advice);
+    int err = errno;
+    read_mem(&b); /* before the range is touched again */
+    long lb = lazyfree_kb();
+    addf(out, cap, "  %s on %lu MiB: ", name, RANGE_MIB);
+    if (rc != 0) {
+        addf(out, cap, "UNSUPPORTED (%s, errno %d)\n", strerror(err), err);
+        *unsupported = 1;
+        return 0;
+    }
+    addf(out, cap, "call SUPPORTED\n");
+    print_range_mem(out, cap, "before:", &a, la);
+    print_range_mem(out, cap, "after:", &b, lb);
+    mark("reclaim %s: read back", name);
+    classify_range(m->p, first_page, pages, &kept, &zero, &other);
+    addf(out, cap, "    re-read: %zu still the old data, %zu zero, %zu other\n", kept, zero, other);
+    if (advice == MADV_DONTNEED && (kept || other)) {
+        addf(out, cap, "    DATA_ERROR: MADV_DONTNEED on private anonymous memory should read back zero\n");
+        return 1;
+    }
+    if (advice != MADV_DONTNEED && other) {
+        addf(out, cap, "    DATA_ERROR: neither the old data nor zero\n");
+        return 1;
+    }
+    if (advice != MADV_DONTNEED) addf(out, cap, "    (observation: MADV_FREE may keep the data until the kernel needs the pages)\n");
+    return 0;
+}
+
+static int run_reclaim(int type, const char *dir, char *out, size_t cap) {
+    Map m;
+    int bad = 0, unsupported = 0;
+    size_t range_pages = RANGE_MIB * MiB / PAGE;
+    int mo = map_open(&m, type, 2 * RANGE_MIB * MiB, dir, out, cap);
+    if (mo) return mo == 1 ? R_MAPFAIL : R_SETUPFAIL;
+
+    if (type == T_ANON) {
+        bad |= reclaim_anon(&m, 0, MADV_DONTNEED, "MADV_DONTNEED", out, cap, &unsupported);
+        if (cancelled()) goto cancel;
+#ifdef MADV_FREE
+        bad |= reclaim_anon(&m, range_pages, MADV_FREE, "MADV_FREE", out, cap, &unsupported);
+#else
+        addf(out, cap, "  MADV_FREE: UNSUPPORTED (not defined)\n"), unsupported = 1;
+#endif
+    } else {
+        size_t kept, zero, other;
+        Mem a, b;
+        mark("reclaim hole: touch %lu MiB", RANGE_MIB);
+        touch_range(m.p, 0, range_pages);
+        read_mem(&a);
+        if (cancelled()) goto cancel;
+        mark("reclaim hole: fallocate PUNCH_HOLE");
+        int rc = fallocate(m.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, (off_t)(range_pages * PAGE));
+        int err = errno;
+        if (rc != 0) {
+            addf(out, cap, "  fallocate(PUNCH_HOLE) on %lu MiB: UNSUPPORTED (%s, errno %d)\n", RANGE_MIB, strerror(err), err);
+            unsupported = 1;
+        } else {
+            addf(out, cap, "  fallocate(PUNCH_HOLE) on %lu MiB: call SUPPORTED\n", RANGE_MIB);
+            mark("reclaim hole: msync MS_INVALIDATE");
+            int mrc = msync(m.p, range_pages * PAGE, MS_INVALIDATE); /* the engine does this after a successful punch */
+            int merr = errno;
+            addf(out, cap, "  msync(MS_INVALIDATE): %s", mrc == 0 ? "ok\n" : "");
+            if (mrc != 0) addf(out, cap, "failed (%s, errno %d)\n", strerror(merr), merr);
+            read_mem(&b); /* before the range is read again */
+            print_range_mem(out, cap, "before:", &a, -2);
+            print_range_mem(out, cap, "after:", &b, -2);
+            mark("reclaim hole: read back");
+            classify_range(m.p, 0, range_pages, &kept, &zero, &other);
+            addf(out, cap, "    re-read: %zu still the old data, %zu zero, %zu other\n", kept, zero, other);
+            if (kept || other) {
+                addf(out, cap, "    DATA_ERROR: a punched range must read back zero\n");
+                bad = 1;
+            }
+        }
+    }
+    map_close(&m);
+    if (bad) return R_FAIL;
+    return unsupported ? R_UNSUPPORTED : R_PASS;
+cancel:
+    map_close(&m);
+    return R_CANCELLED;
 }
 
 /* ---- mode 2 ---- */
@@ -421,6 +577,8 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMem(JNIEnv *e
     sigaction(SIGILL, &sa, &old_ill);
 
     int st = R_PASS;
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps > 0) g_page = (size_t)ps;
     if (type < 0 || type > 2) type = 0;
     if (cancelled()) {
         st = R_CANCELLED;
@@ -428,6 +586,9 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMem(JNIEnv *e
     } else if (mode == 2) {
         addf(out, sizeof out, "== system ==\n");
         run_info(dir, out, sizeof out);
+    } else if (mode == 3) {
+        addf(out, sizeof out, "== reclaim: %s ==\n", TYPE_NAME[type]);
+        st = run_reclaim(type, dir, out, sizeof out);
     } else if (mode == 1) {
         addf(out, sizeof out, "== dense: %s, up to %d MiB ==\n", TYPE_NAME[type], (int)size);
         st = run_dense(type, (size_t)size, dir, out, sizeof out);
@@ -448,8 +609,9 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMem(JNIEnv *e
     (*env)->ReleaseStringUTFChars(env, crash_path, cpath);
     (*env)->ReleaseStringUTFChars(env, progress_path, ppath);
 
-    static const char *const state[] = {"PASS", "MAP_FAILED", "SKIPPED", "FAIL", "CANCELLED"};
-    if (mode != 2) addf(out, sizeof out, "RESULT: %s (%s %d %s)\n", state[st], mode == 1 ? "dense" : "sparse", (int)size,
+    static const char *const state[] = {"PASS", "MAP_FAILED", "SKIPPED", "FAIL", "CANCELLED", "SETUP_FAILED", "UNSUPPORTED"};
+    if (mode == 3) addf(out, sizeof out, "RESULT: %s (reclaim)\n", state[st]);
+    else if (mode != 2) addf(out, sizeof out, "RESULT: %s (%s %d %s)\n", state[st], mode == 1 ? "dense" : "sparse", (int)size,
                         mode == 1 ? "MiB" : "GiB");
     __android_log_print(st == R_PASS ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, TAG, "%s", out);
     return (*env)->NewStringUTF(env, out);

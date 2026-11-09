@@ -130,6 +130,55 @@ SYMPFX\name\()_end:
 #include "dispatch.h"
 #include "machine.h"
 
+/* Where a crash happened. Tests set the phase and program name as they go; on Linux and Android a SIGSEGV/SIGBUS/
+   SIGILL handler prints them with the fault address, the registers and the memory map entries around them, so a
+   crash on a phone leaves something to read. Other hosts do nothing. */
+static const char *hv_test_phase = "start", *hv_test_program = "";
+#if defined(__linux__) && defined(__aarch64__)
+#include <signal.h>
+#include <ucontext.h>
+#include <unistd.h>
+static void hv_test_map_line(const char *what, uint64_t addr) {
+    char buf[512];
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return;
+    while (fgets(buf, sizeof buf, f)) {
+        unsigned long lo, hi;
+        if (sscanf(buf, "%lx-%lx", &lo, &hi) == 2 && addr >= lo && addr < hi) {
+            dprintf(2, "  %s in map: %s", what, buf);
+            fclose(f);
+            return;
+        }
+    }
+    dprintf(2, "  %s not in any map\n", what);
+    fclose(f);
+}
+static void hv_test_crash(int sig, siginfo_t *si, void *ctx) {
+    ucontext_t *uc = ctx;
+    dprintf(2, "CRASH signal %d code %d fault addr %llx phase %s program %s\n", sig, si->si_code,
+            (unsigned long long)(uintptr_t)si->si_addr, hv_test_phase, hv_test_program);
+    dprintf(2, "  pc %llx sp %llx lr %llx x18 %llx x28 %llx\n", (unsigned long long)uc->uc_mcontext.pc,
+            (unsigned long long)uc->uc_mcontext.sp, (unsigned long long)uc->uc_mcontext.regs[30],
+            (unsigned long long)uc->uc_mcontext.regs[18], (unsigned long long)uc->uc_mcontext.regs[28]);
+    hv_test_map_line("pc", uc->uc_mcontext.pc);
+    hv_test_map_line("fault addr", (uint64_t)(uintptr_t)si->si_addr);
+    hv_test_map_line("sp", uc->uc_mcontext.sp);
+    _exit(128 + sig);
+}
+static inline void hv_test_report_crashes(void) {
+    static char alt[65536];
+    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
+    sigaltstack(&ss, NULL);
+    struct sigaction sa = {.sa_flags = SA_SIGINFO | SA_ONSTACK};
+    sa.sa_sigaction = hv_test_crash;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+}
+#else
+static inline void hv_test_report_crashes(void) {}
+#endif
+
 void hv_native_run(HvCpu *cpu, const void *entry);
 
 typedef struct TestProgram {
@@ -194,6 +243,8 @@ static inline void seed_cpu(HvCpu *cpu, uint64_t seed, uint64_t sp) {
    runs agree. reset (may be NULL) puts guest memory back before each run. */
 static inline void run_native(const TestProgram *p, const HvCpu *init, HvCpu *out, void (*reset)(void)) {
     HvCpu a, b;
+    hv_test_phase = "native";
+    hv_test_program = p->name;
     for (int tries = 0; tries < 10; tries++) {
         if (reset) reset();
         a = *init;
@@ -210,6 +261,8 @@ static inline void run_native(const TestProgram *p, const HvCpu *init, HvCpu *ou
 static inline int run_jit(HvMachine *m, const TestProgram *p, const HvCpu *init, HvCpu *out,
                           void (*setup)(HvCpu *)) {
     HvCpu *cpu = out;
+    hv_test_phase = "jit";
+    hv_test_program = p->name;
     hv_cpu_reset(cpu, m);
     memcpy(cpu->x, init->x, sizeof cpu->x);
     memcpy(cpu->v, init->v, sizeof cpu->v);

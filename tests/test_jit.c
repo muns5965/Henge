@@ -23,6 +23,7 @@ static const TestProgram programs[] = {
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
+    hv_test_report_crashes();
     static HvMachine m;
     if (hv_machine_init(&m, 4 << 20) != 0) {
         printf("machine init failed\n");

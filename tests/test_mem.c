@@ -162,6 +162,7 @@ static int test_mmio(HvMachine *m) {
 int main(void) {
     setenv("HV_GROUPS", "1", 0); /* grouped accesses are off by default: test them here */
     setvbuf(stdout, NULL, _IONBF, 0);
+    hv_test_report_crashes();
     static HvMachine m;
     if (hv_machine_init(&m, 8 << 20) != 0) return 1;
     data = aligned_alloc(16384, DATA_SIZE);

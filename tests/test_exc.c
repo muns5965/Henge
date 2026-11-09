@@ -49,6 +49,7 @@ static int run(const TestProgram *p, HvCpu *cpu, uint64_t x9) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
+    hv_test_report_crashes();
     hv_machine_init(&m, 4 << 20);
     stack = aligned_alloc(16384, 65536);
     hv_machine_add_ram(&m, ADDR(exc_programs_begin), exc_programs_finish - exc_programs_begin,

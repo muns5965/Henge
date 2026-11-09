@@ -9,8 +9,23 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #else
+#include <pthread.h>
 #include <stdint.h>
 #include <time.h>
+
+/* Wait on a condition variable for a time from now (Apple's relative form).
+   The wait is made absolute against the clock a plain condition variable uses. */
+static inline int pthread_cond_timedwait_relative_np(pthread_cond_t *cv, pthread_mutex_t *mu, const struct timespec *rel) {
+    struct timespec abs;
+    clock_gettime(CLOCK_REALTIME, &abs);
+    abs.tv_sec += rel->tv_sec;
+    abs.tv_nsec += rel->tv_nsec;
+    if (abs.tv_nsec >= 1000000000L) {
+        abs.tv_sec++;
+        abs.tv_nsec -= 1000000000L;
+    }
+    return pthread_cond_timedwait(cv, mu, &abs);
+}
 
 /* The guest's counter ticks at 24 MHz, the rate mach_absolute_time has on
    Apple silicon. Elsewhere it is made from the monotonic clock at the same rate. */

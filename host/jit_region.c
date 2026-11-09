@@ -1,13 +1,22 @@
+#define _GNU_SOURCE /* memfd_create on Linux and Android */
+
 #include "jit_region.h"
 
-#include <TargetConditionals.h>
-#include <libkern/OSCacheControl.h>
-#include <mach/mach.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <libkern/OSCacheControl.h>
+#include <mach/mach.h>
+#else
+#define TARGET_OS_OSX 0
+#endif
+
+#if defined(__APPLE__)
 /* The split shape on a host that can make it itself: plain RW memory, an
    alias, and the original turned R-X. Works for macOS binaries without the
    hardened runtime; on iOS the executable half has to come from a debugger. */
@@ -26,6 +35,35 @@ static int open_split(HvJitRegion *region, size_t bytes) {
     region->owned = 1;
     return 0;
 }
+#else
+/* Linux and Android: one memfd, mapped twice. The RW view writes code and the
+   RX view runs it; both name the same pages, so a write through the alias is
+   what the executable address executes. Whether the kernel and SELinux allow
+   an executable view of a memfd is exactly what the device test checks. */
+static int open_split(HvJitRegion *region, size_t bytes) {
+    int fd = memfd_create("henge-jit", 0);
+    if (fd < 0) return -1;
+    if (ftruncate(fd, (off_t)bytes) != 0) {
+        close(fd);
+        return -1;
+    }
+    void *rw = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *rx = rw == MAP_FAILED ? MAP_FAILED : mmap(NULL, bytes, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+    close(fd);
+    if (rw == MAP_FAILED || rx == MAP_FAILED) {
+        if (rw != MAP_FAILED) munmap(rw, bytes);
+        if (rx != MAP_FAILED) munmap(rx, bytes);
+        return -1;
+    }
+    if (hv_jit_region_attach(region, rx, rw, bytes) != 0) {
+        munmap(rw, bytes);
+        munmap(rx, bytes);
+        return -1;
+    }
+    region->owned = 1;
+    return 0;
+}
+#endif
 
 int hv_jit_region_open(HvJitRegion *region, size_t bytes) {
     memset(region, 0, sizeof *region);
@@ -88,7 +126,12 @@ void hv_jit_finish(HvJitRegion *region, uint32_t *start, size_t words) {
 #if TARGET_OS_OSX
     if (!region->rw_diff) pthread_jit_write_protect_np(1);
 #endif
-    if (start && words) sys_icache_invalidate(start, words * sizeof(uint32_t));
+    if (!start || !words) return;
+#if defined(__APPLE__)
+    sys_icache_invalidate(start, words * sizeof(uint32_t));
+#else
+    __builtin___clear_cache((char *)start, (char *)(start + words));
+#endif
 }
 
 /* Any thread: an even number of words (blocks stay 8-byte aligned), taken atomically. */

@@ -1,0 +1,56 @@
+# .github/workflows/android-jit-probe.yml
+#
+# Manual only (workflow_dispatch). Two checks of the Linux/Android split JIT
+# mapping in host/jit_region.c:
+#   1. native arm64 Linux: build and run tests/test_jit_linux.c. This runs arm64
+#      code, so it tests the memfd RW/RX mapping and icache sync for real.
+#   2. Android NDK: compile the same sources for aarch64-linux-android30 and
+#      upload the binaries. Nothing runs here; the binary goes to a phone via adb.
+# The existing build-henge.yml is untouched and still runs on every push.
+
+name: Android JIT probe
+
+on:
+  workflow_dispatch: {}
+
+env:
+  NDK_VERSION: r27c
+
+jobs:
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build the split-mapping test
+        run: gcc -O1 -Wall -Wextra -Ihost host/jit_region.c tests/test_jit_linux.c -o jit_linux_test
+
+      - name: Run it natively on arm64 Linux
+        run: ./jit_linux_test
+
+  android-ndk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install the Android NDK
+        run: |
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Compile for Android arm64 (API 30)
+        run: |
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          "$CC" -O1 -Wall -Wextra -Ihost host/jit_region.c tests/test_jit_linux.c -o jit_linux_test_android
+          file jit_linux_test_android
+
+      - name: Upload the Android test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: jit-linux-test-android-arm64
+          path: jit_linux_test_android

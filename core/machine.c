@@ -183,8 +183,28 @@ uint64_t hv_cpu_post(HvCpu *target, uint32_t flags) {
 /* HV_SYNC_WAIT: a CPU waiting for another's acknowledgement sleeps (after a short spin) instead of
    spinning and yielding, so a host core is free for the CPU it waits on: the phone has two fast cores
    for three guest CPUs, the display and the app. The kernel's compare-and-wait on a 32-bit word. */
+#if defined(__APPLE__)
 extern int __ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout_us);
 extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+#else
+/* Linux and Android: the same wait and wake on a word in memory is a futex. The
+   word is the low 32 bits of the counter (little endian: at the same address). */
+#include <limits.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static int hv_ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout_us) {
+    (void)operation;
+    struct timespec ts = {(time_t)(timeout_us / 1000000u), (long)(timeout_us % 1000000u) * 1000};
+    return (int)syscall(SYS_futex, addr, FUTEX_WAIT_PRIVATE, (uint32_t)value, timeout_us ? &ts : NULL, NULL, 0);
+}
+static int hv_ulock_wake(uint32_t operation, void *addr, uint64_t wake_value) {
+    (void)wake_value;
+    return (int)syscall(SYS_futex, addr, FUTEX_WAKE_PRIVATE, (operation & 0x100u) ? INT_MAX : 1, NULL, NULL, 0);
+}
+#define __ulock_wait hv_ulock_wait
+#define __ulock_wake hv_ulock_wake
+#endif
 #define HV_UL_COMPARE_AND_WAIT 1u
 #define HV_ULF_WAKE_ALL 0x100u
 #define HV_ULF_NO_ERRNO 0x1000000u

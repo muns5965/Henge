@@ -82,7 +82,7 @@ typedef long (*jit_fn)(void);
 static const uint32_t RET = 0xd65f03c0;
 
 /* Set from the UI thread (cancelMt), cleared once per run of stages (beginMt). */
-static atomic_int g_cancel;
+atomic_int g_cancel; /* also read by mem_jni.c */
 static int cancelled(void) { return atomic_load_explicit(&g_cancel, memory_order_relaxed); }
 
 enum { R_PASS = 0, R_FAIL, R_CANCELLED, R_INCOMPLETE, R_UNPINNED };

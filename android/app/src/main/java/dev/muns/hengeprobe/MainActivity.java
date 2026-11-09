@@ -34,6 +34,9 @@ public class MainActivity extends Activity {
     /** Multi-thread patch test; stage 1..5 (see mt_jni.c), seconds only matters for stages 1, 2 and 5. */
     private native String runMt(int stage, int seconds, String crashPath, String progressPath);
 
+    /** Guest-RAM test (mem_jni.c): mode 0 sparse (size in GiB), 1 dense (size in MiB), 2 system info. type 0 anon, 1 memfd, 2 file. */
+    private native String runMem(int mode, int type, int size, String filesDir, String crashPath, String progressPath);
+
     /** Clears the cancel request; called once before a run of stages. */
     private native void beginMt();
 
@@ -47,6 +50,8 @@ public class MainActivity extends Activity {
     private Button mtButton;
     private Button longButton;
     private Button cancelButton;
+    private Button memButton;
+    private Button denseButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -77,8 +82,18 @@ public class MainActivity extends Activity {
         longButton.setOnClickListener(v -> runMtNow(true));
         root.addView(longButton);
 
+        memButton = new Button(this);
+        memButton.setText("게스트 메모리 시험 (2~8 GiB 예약, 일부 페이지)");
+        memButton.setOnClickListener(v -> runMemNow(false));
+        root.addView(memButton);
+
+        denseButton = new Button(this);
+        denseButton.setText("단계적 사용 시험 (종류별 1 GiB까지 실제 사용)");
+        denseButton.setOnClickListener(v -> runMemNow(true));
+        root.addView(denseButton);
+
         cancelButton = new Button(this);
-        cancelButton.setText("다중 스레드 시험 취소");
+        cancelButton.setText("시험 취소 (다중 스레드·메모리)");
         cancelButton.setOnClickListener(v -> {
             cancelMt();
             Toast.makeText(this, "취소 요청함 (멈추면 앱 강제 종료)", Toast.LENGTH_SHORT).show();
@@ -174,6 +189,8 @@ public class MainActivity extends Activity {
             runButton.setEnabled(enabled);
             mtButton.setEnabled(enabled);
             longButton.setEnabled(enabled);
+            memButton.setEnabled(enabled);
+            denseButton.setEnabled(enabled);
         });
     }
 
@@ -205,6 +222,53 @@ public class MainActivity extends Activity {
             acc.append("요약: PASS ").append(pass).append(", FAIL ").append(fail).append(", INCOMPLETE ").append(incomplete)
                     .append(", UNPINNED ").append(unpinned).append(cancelled ? ", 취소됨" : "").append('\n');
             acc.append("PASS는 이 기기·이 패치 형태에서 문제가 관찰되지 않았다는 뜻이며 증명이 아닙니다.\n");
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    /** Guest RAM shapes: anonymous, memfd, file. Sparse maps 2-8 GiB; dense really uses memory, up to 1 GiB per shape. */
+    private void runMemNow(boolean dense) {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        beginMt(); // clears the shared cancel request once per run
+        final String dir = getFilesDir().getAbsolutePath();
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            int pass = 0, mapFailed = 0, skipped = 0, fail = 0;
+            boolean cancelled = false;
+            String[] names = {"anonymous", "memfd", "file"};
+            if (!dense) {
+                acc.append(runMem(2, 0, 0, dir, crashFile.getAbsolutePath(), progressFile.getAbsolutePath())).append('\n');
+                show(acc.toString());
+            }
+            for (int type = 0; type < 3 && !cancelled; type++) {
+                int[] sizes = dense ? new int[] {1024} : new int[] {2, 4, 6, 8};
+                for (int size : sizes) {
+                    show(acc + "실행 중: " + names[type] + " " + size + (dense ? " MiB" : " GiB") + " ...\n");
+                    String r = runMem(dense ? 1 : 0, type, size, dir, crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
+                    acc.append(r).append('\n');
+                    show(acc.toString());
+                    if (r.contains("RESULT: PASS")) pass++;
+                    else if (r.contains("RESULT: CANCELLED")) {
+                        cancelled = true;
+                        break;
+                    } else if (r.contains("RESULT: MAP_FAILED")) {
+                        mapFailed++;
+                        break; // larger sizes of this shape will not map either
+                    } else if (r.contains("RESULT: SKIPPED")) skipped++;
+                    else fail++;
+                }
+            }
+            //noinspection ResultOfMethodCallIgnored
+            progressFile.delete();
+            acc.append("요약: PASS ").append(pass).append(", MAP_FAILED ").append(mapFailed).append(", SKIPPED ").append(skipped)
+                    .append(", FAIL ").append(fail).append(cancelled ? ", 취소됨" : "").append('\n');
+            acc.append(dense
+                    ? "실제 메모리를 사용한 시험입니다. 앱이 강제 종료되면 다음 실행 때 마지막 단계가 표시됩니다.\n"
+                    : "PASS는 매핑과 표본 페이지가 동작했다는 뜻이며, 그만큼의 RAM을 쓸 수 있다는 뜻은 아닙니다.\n");
             show(acc.toString());
             running = false;
             setButtons(true);

@@ -8,6 +8,7 @@ set(HENGE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
 add_library(henge_probe SHARED
     probe_jni.c
     mt_jni.c
+    mem_jni.c
     ${HENGE_ROOT}/host/jit_region.c)
 
 target_include_directories(henge_probe PRIVATE ${HENGE_ROOT}/host)

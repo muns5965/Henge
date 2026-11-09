@@ -73,12 +73,6 @@ jobs:
         run: |
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-android
           file build-android/test_mmu build-android/test_jit
-      - name: Where the test programs land (load segment alignment), without and with a 16 KB segment alignment
-        run: |
-          show() { echo "--- $1"; "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -lW "$1/test_mem" | grep -E "LOAD" ; "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" "$1/test_mem" | grep -E " mem_programs_(begin|finish)$"; }
-          show build-android
-          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384" tools/engine-build.sh build-android-16k > /dev/null
-          show build-android-16k
       - name: Build the device models and link test_devices for Android (graphics on a stub)
         continue-on-error: true
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android

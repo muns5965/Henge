@@ -92,6 +92,46 @@ static void build_page_tables(void) {
     ttbr0 = root;
 }
 
+/* Look an address up in the tables the test built (the same walk the CPU does), to tell a wrong table from a wrong walk. */
+static int table_lookup(uint64_t root, uint64_t va, uint64_t *pa_out) {
+    uint64_t table = root;
+    for (int level = 0; level < 3; level++) {
+        int shift = 14 + 11 * (3 - level);
+        if (table < PT_PA || table + 16384 > PT_PA + PT_SIZE) return -2; /* a table outside the memory given for tables */
+        uint64_t e = pt_host(table)[(va >> shift) & 0x7ff];
+        if (!(e & 1)) return -1;
+        table = e & 0x0000ffffffffc000ull;
+    }
+    if (table < PT_PA || table + 16384 > PT_PA + PT_SIZE) return -2;
+    uint64_t e = pt_host(table)[(va >> 14) & 0x7ff];
+    if (!(e & 1)) return -1;
+    *pa_out = e & 0x0000ffffffffc000ull;
+    return 0;
+}
+
+static void check_tables(void) {
+    struct { const char *what; uint64_t root, va, pa; } want[] = {
+        {"EL1 code", ttbr0, (uint64_t)(uintptr_t)mem_programs_begin, (uint64_t)(uintptr_t)mem_programs_begin},
+        {"EL1 stack", ttbr0, (uint64_t)(uintptr_t)stack, (uint64_t)(uintptr_t)stack},
+        {"EL1 data", ttbr0, (uint64_t)(uintptr_t)data, DATA_PA},
+        {"EL0 code", ttbr0_el0, (uint64_t)(uintptr_t)mem_programs_begin, (uint64_t)(uintptr_t)mem_programs_begin},
+        {"EL0 stack", ttbr0_el0, (uint64_t)(uintptr_t)stack, (uint64_t)(uintptr_t)stack},
+        {"EL0 data", ttbr0_el0, (uint64_t)(uintptr_t)data, DATA_PA},
+    };
+    dprintf(2, "test: code %llx stack %llx data %llx pt %llx; %llu of %llu table pages used\n",
+            (unsigned long long)(uintptr_t)mem_programs_begin, (unsigned long long)(uintptr_t)stack,
+            (unsigned long long)(uintptr_t)data, (unsigned long long)(uintptr_t)pt, (unsigned long long)(pt_next / 16384),
+            (unsigned long long)(PT_SIZE / 16384));
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        uint64_t pa = 0;
+        int r = table_lookup(want[i].root, want[i].va, &pa);
+        if (r != 0 || pa != want[i].pa)
+            dprintf(2, "test: table check %s: va %llx -> %s (pa %llx, wanted %llx)\n", want[i].what, (unsigned long long)want[i].va,
+                    r == -1 ? "not mapped" : r == -2 ? "table outside the table memory" : "wrong pa", (unsigned long long)pa,
+                    (unsigned long long)want[i].pa);
+    }
+}
+
 static void mmu_on(HvCpu *cpu) {
     cpu->mair_el1 = 0xff;                                       /* attr 0: normal write-back */
     cpu->tcr_el1 = 16 | 2u << 14 | 1u << 23 | 5ull << 32;      /* T0SZ 16, TG0 16K, EPD1, IPS 48 bits */
@@ -178,6 +218,7 @@ int main(void) {
     hv_machine_add_ram(&m, DATA_PA, DATA_SIZE, data, 0); /* the same memory, at another PA */
     hv_machine_add_ram(&m, PT_PA, PT_SIZE, pt, 0);
     build_page_tables();
+    check_tables();
     m.trace = getenv("HV_TRACE") != NULL;
 
     static const char *mode_names[] = {"C slow path", "fast path", "fast path, MMU on", "fast path, EL0"};

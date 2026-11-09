@@ -77,9 +77,9 @@ jobs:
           if [ -f build-linux/romextract ]; then
             # no network here: only the refusals can be checked (wrong input size = 3; garbage of the right size = 4)
             head -c 100 /dev/zero > rx_short.bin
-            build-linux/romextract rx_short.bin rx_out.bin; r=$?; echo "romextract short input exit $r (want 3)"; [ $r = 3 ] || rc4=1
+            r=0; build-linux/romextract rx_short.bin rx_out.bin || r=$?; echo "romextract short input exit $r (want 3)"; [ $r = 3 ] || rc4=1
             head -c 859848 /dev/urandom > rx_junk.bin
-            build-linux/romextract rx_junk.bin rx_out.bin; r=$?; echo "romextract junk input exit $r (want 4)"; [ $r = 4 ] || rc4=1
+            r=0; build-linux/romextract rx_junk.bin rx_out.bin || r=$?; echo "romextract junk input exit $r (want 4)"; [ $r = 4 ] || rc4=1
             [ ! -e rx_out.bin ] || { echo "romextract wrote an output on failure"; rc4=1; }
           else
             echo "=== romextract was not built"; rc4=1

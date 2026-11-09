@@ -22,31 +22,38 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-/** One screen: run the JIT mapping probe and show the result as text. */
+/** One screen: run the JIT mapping probe over growing region sizes and show the result as text. */
 public class MainActivity extends Activity {
     static {
         System.loadLibrary("henge_probe");
     }
 
-    private native String runProbe(String crashPath);
+    /** One region size: map, run code at start/middle/end, sample pages, close. */
+    private native String runSize(int mib, String crashPath, String progressPath);
+
+    private static final int[] SIZES_MIB = {1, 16, 64, 256, 768};
 
     private TextView output;
+    private Button runButton;
     private File crashFile;
+    private File progressFile;
+    private volatile boolean running;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         crashFile = new File(getFilesDir(), "last_crash.txt");
+        progressFile = new File(getFilesDir(), "progress.txt");
 
         int pad = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16, getResources().getDisplayMetrics());
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad * 2, pad, pad);
 
-        Button run = new Button(this);
-        run.setText("JIT 테스트 실행");
-        run.setOnClickListener(v -> runNow());
-        root.addView(run);
+        runButton = new Button(this);
+        runButton.setText("JIT 크기 시험 실행 (1~768 MiB)");
+        runButton.setOnClickListener(v -> runNow());
+        root.addView(runButton);
 
         Button copy = new Button(this);
         copy.setText("결과 복사");
@@ -64,13 +71,18 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         StringBuilder sb = new StringBuilder(deviceInfo());
-        String crash = readCrash();
+        String crash = readFile(crashFile);
+        String progress = readFile(progressFile);
         if (crash != null) {
-            sb.append("\n이전 실행이 비정상 종료됨:\n").append(crash);
-            //noinspection ResultOfMethodCallIgnored
-            crashFile.delete();
+            sb.append("\n이전 실행이 비정상 종료됨 (신호 기록):\n").append(crash);
+        } else if (progress != null) {
+            sb.append("\n이전 실행이 도중에 끝남. 마지막으로 시작한 단계 (원인은 알 수 없음):\n").append(progress);
         }
-        sb.append("\n'JIT 테스트 실행'을 누르세요.\n");
+        //noinspection ResultOfMethodCallIgnored
+        crashFile.delete();
+        //noinspection ResultOfMethodCallIgnored
+        progressFile.delete();
+        sb.append("\n버튼을 누르면 1, 16, 64, 256, 768 MiB 순서로 시험합니다.\n");
         output.setText(sb.toString());
     }
 
@@ -85,10 +97,10 @@ public class MainActivity extends Activity {
                 + "ABI: " + Build.SUPPORTED_ABIS[0] + ", 페이지 크기: " + page + "\n";
     }
 
-    private String readCrash() {
-        if (!crashFile.exists() || crashFile.length() == 0) return null;
-        try (FileInputStream in = new FileInputStream(crashFile)) {
-            byte[] data = new byte[(int) Math.min(crashFile.length(), 4096)];
+    private String readFile(File f) {
+        if (!f.exists() || f.length() == 0) return null;
+        try (FileInputStream in = new FileInputStream(f)) {
+            byte[] data = new byte[(int) Math.min(f.length(), 4096)];
             int n = in.read(data);
             return new String(data, 0, Math.max(n, 0), StandardCharsets.UTF_8);
         } catch (IOException e) {
@@ -96,9 +108,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void show(String text) {
+        runOnUiThread(() -> output.setText(deviceInfo() + "\n" + text));
+    }
+
+    /** The native test runs off the main thread, so a slow or stuck size cannot freeze the screen. */
     private void runNow() {
-        String result = runProbe(crashFile.getAbsolutePath());
-        output.setText(deviceInfo() + "\n" + result);
+        if (running) return;
+        running = true;
+        runButton.setEnabled(false);
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            boolean failed = false;
+            for (int mib : SIZES_MIB) {
+                show(acc + "실행 중: " + mib + " MiB ...\n");
+                String r = runSize(mib, crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
+                acc.append(r).append('\n');
+                show(acc.toString());
+                if (!r.contains("RESULT: PASS")) {
+                    failed = true;
+                    break;
+                }
+            }
+            //noinspection ResultOfMethodCallIgnored
+            progressFile.delete();
+            acc.append(failed ? "중단: 위 크기에서 실패했습니다.\n" : "모든 크기 통과 (매핑·3곳 실행·표본 페이지)\n");
+            show(acc.toString());
+            running = false;
+            runOnUiThread(() -> runButton.setEnabled(true));
+        }).start();
     }
 
     private void copyResult() {

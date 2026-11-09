@@ -53,13 +53,32 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      # The signing key lives in repository secrets, never in the repository.
+      # Without ANDROID_KEYSTORE_BASE64 the APK is signed with a temporary key.
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/probe.keystore"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/probe.keystore" >> "$GITHUB_ENV"
+            echo "Signing with the fixed key from secrets."
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a temporary key (uninstall needed before each update)."
+          fi
+
       - name: Build the debug APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle -p android assembleDebug --no-daemon --stacktrace
 
-      - name: Show the APK and its native library
+      - name: Show the APK, its native library and signing certificate
         run: |
           ls -l android/app/build/outputs/apk/debug/
           unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -E "lib/|AndroidManifest"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -i "SHA-256"
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4

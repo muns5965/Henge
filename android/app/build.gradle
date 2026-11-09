@@ -17,7 +17,9 @@ android {
         applicationId 'dev.muns.hengeprobe'
         minSdk 30          // memfd_create is in bionic from API 30
         targetSdk 34
-        versionCode 1
+        // CI's run number, so each build is newer than the one installed and an
+        // update over the old APK is accepted.
+        versionCode Integer.parseInt(System.getenv('GITHUB_RUN_NUMBER') ?: '1')
         versionName '0.1'
         ndk {
             abiFilters 'arm64-v8a'
@@ -31,9 +33,26 @@ android {
         }
     }
 
+    // A fixed key lets a new APK install over the old one. CI supplies it from
+    // repository secrets (KEYSTORE_FILE and the three values below). Without
+    // them the build falls back to the temporary debug key, which changes on
+    // every run and forces an uninstall first.
+    signingConfigs {
+        probe {
+            if (System.getenv('KEYSTORE_FILE')) {
+                storeFile file(System.getenv('KEYSTORE_FILE'))
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
     buildTypes {
         debug {
-            // The probe is a test tool; debug signing is enough to install it.
+            if (System.getenv('KEYSTORE_FILE')) {
+                signingConfig signingConfigs.probe
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 #include "harness.h"
 #include <unistd.h>
+#include <sys/mman.h>
 
 #include <stdlib.h>
 
@@ -35,6 +36,43 @@ static const TestProgram programs[] = {
 static uint8_t *data, *stack, *pt;
 static uint64_t data_seed;
 static uint64_t ttbr0, ttbr0_el0, pt_next, map_ap;
+
+static void *alloc_guest_test_buffer(size_t size) {
+    const size_t align = 16384;
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    if (!page || page > align || align % page || size % page) {
+        dprintf(2, "test: unsupported host page size %zu for 16K guest test mapping\n", page);
+        return NULL;
+    }
+    void *base = mmap(NULL, size + align, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (base == MAP_FAILED) {
+        perror("test: mmap");
+        return NULL;
+    }
+    uintptr_t start = (uintptr_t)base;
+    uintptr_t aligned = (start + align - 1) & ~(uintptr_t)(align - 1);
+    size_t prefix = (size_t)(aligned - start);
+    size_t suffix = align - prefix;
+    if (prefix && munmap(base, prefix) != 0) {
+        perror("test: munmap prefix");
+        munmap(base, size + align);
+        return NULL;
+    }
+    if (suffix && munmap((void *)(aligned + size), suffix) != 0) {
+        perror("test: munmap suffix");
+        munmap((void *)aligned, size + suffix);
+        return NULL;
+    }
+    if ((aligned >> 56) != 0 || (aligned & (align - 1)) != 0) {
+        dprintf(2, "test: invalid guest test mapping %llx (tag or 16K alignment)\n",
+                (unsigned long long)aligned);
+        munmap((void *)aligned, size);
+        return NULL;
+    }
+    return (void *)aligned;
+}
+
 
 static void reset_data(void) {
     uint64_t s = data_seed * 0x2545f4914f6cdd1dull + 7;
@@ -208,9 +246,16 @@ int main(void) {
     hv_test_step("machine init", "test_mem");
     dprintf(2, "test: code at %llx (mod 16K: %llx), page size %ld\n", (unsigned long long)(uintptr_t)mem_programs_begin, (unsigned long long)((uintptr_t)mem_programs_begin & 16383), sysconf(_SC_PAGESIZE));
     if (hv_machine_init(&m, 8 << 20) != 0) return 1;
-    data = aligned_alloc(16384, DATA_SIZE);
-    stack = aligned_alloc(16384, STACK_SIZE);
-    pt = aligned_alloc(16384, PT_SIZE);
+    data = alloc_guest_test_buffer(DATA_SIZE);
+    stack = alloc_guest_test_buffer(STACK_SIZE);
+    pt = alloc_guest_test_buffer(PT_SIZE);
+    if (!data || !stack || !pt) {
+        dprintf(2, "test: failed to allocate untagged 16K-aligned guest test buffers\n");
+        return 1;
+    }
+    dprintf(2, "test: mmap buffers 16K aligned and untagged: data %llx stack %llx pt %llx\n",
+            (unsigned long long)(uintptr_t)data, (unsigned long long)(uintptr_t)stack,
+            (unsigned long long)(uintptr_t)pt);
     uint64_t code = (uint64_t)(uintptr_t)mem_programs_begin;
     hv_machine_add_ram(&m, code, mem_programs_finish - mem_programs_begin, (void *)mem_programs_begin, 1);
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)stack, STACK_SIZE, stack, 0);

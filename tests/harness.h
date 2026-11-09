@@ -153,7 +153,17 @@ static void hv_test_map_line(const char *what, uint64_t addr) {
     dprintf(2, "  %s not in any map\n", what);
     fclose(f);
 }
+static char hv_test_scs[4096] __attribute__((aligned(16)));
+static void hv_test_early_write(const char *msg) {
+    size_t n = 0;
+    while (msg[n]) n++;
+    if (write(2, msg, n) < 0) {}
+}
 static void hv_test_crash(int sig, siginfo_t *si, void *ctx) {
+    /* The program under test may have left anything in x18, which Android uses as the shadow call stack pointer
+       in libc: give this handler its own before it calls anything. */
+    __asm__ volatile("mov x18, %0" ::"r"(hv_test_scs));
+    hv_test_early_write("CRASH (handler entered)\n");
     ucontext_t *uc = ctx;
     dprintf(2, "CRASH signal %d code %d fault addr %llx phase %s program %s\n", sig, si->si_code,
             (unsigned long long)(uintptr_t)si->si_addr, hv_test_phase, hv_test_program);
@@ -165,7 +175,11 @@ static void hv_test_crash(int sig, siginfo_t *si, void *ctx) {
     hv_test_map_line("sp", uc->uc_mcontext.sp);
     _exit(128 + sig);
 }
+/* Runs before main: if this line never shows, the process died while being loaded. */
+__attribute__((constructor, unused)) static void hv_test_before_main(void) { hv_test_early_write("test: before main\n"); }
+
 static inline void hv_test_report_crashes(void) {
+    hv_test_early_write("test: main entered\n");
     static char alt[65536];
     stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
     sigaltstack(&ss, NULL);

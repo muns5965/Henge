@@ -23,7 +23,11 @@
 #define HAVE_STRCASECMP 1
 #define HAVE_GETIFADDRS 1
 #define HAVE_FVISIBILITY 1
+#ifdef __APPLE__
 #define HAVE_SO_NOSIGPIPE 1
+#endif
 #define HAVE_PTHREAD 1
+#ifdef __APPLE__ /* BSD link-layer header: not on Android */
 #define HAVE_NET_IF_DL_H 1
+#endif
 #define HAVE_STPNCPY 1

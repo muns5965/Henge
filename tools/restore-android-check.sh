@@ -33,20 +33,9 @@ group() { # name "extra flags" files...
 $(printf '%-12s compiled %3d  failed %3d  %s' "$name" "$ok" "$bad" "$first")"
 }
 
-# The same groups and flags as tools/build_ios_restore.sh.
-group mbedtls "-I$TP/mbedtls/library" $TP/mbedtls/library/*.c
-group plist "-I$TP/libplist/libcnary/include -DPACKAGE_VERSION=\"2.8.0-henge\"" $TP/libplist/src/*.c $TP/libplist/libcnary/*.c
-group glue "-DPACKAGE_VERSION=\"1.3.3-henge\"" $TP/libimobiledevice-glue/src/*.c
-group usbmuxdc "-DPACKAGE_VERSION=\"2.1.1-henge\" -DPACKAGE_STRING=\"libusbmuxd\"" $TP/libusbmuxd/src/*.c
-group imd "-DHAVE_MBEDTLS -DPACKAGE_VERSION=\"1.4.0-henge\" -DPACKAGE_STRING=\"libimobiledevice\" -I$TP/libimobiledevice/src -I$TP/libimobiledevice/common" $TP/libimobiledevice/src/*.c $TP/libimobiledevice/common/*.c
-group tatsu "-DPACKAGE_VERSION=\"1.0.5-henge\"" $TP/libtatsu/src/*.c
-group irecv "-DPACKAGE_VERSION=\"1.3.1-henge\"" $TP/libirecovery/src/libirecovery.c
-group muxd "-DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
-group idr "-I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" $TP/idevicerestore/src/*.c
-group henge "-std=gnu11 -D_GNU_SOURCE -Icore -Ihost -Idevices" host/libusb_shim.c host/install.c
-
 # libzip through cmake with the NDK toolchain (the iOS script does the same with its own toolchain).
 ZIPNOTE="not tried"
+ZB="$R/libzip-build"
 if command -v cmake >/dev/null && [ -n "${NDK_ROOT:-}" ]; then
   ZB="$R/libzip-build"
   if cmake -S $TP/libzip -B "$ZB" -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 \
@@ -59,6 +48,20 @@ if command -v cmake >/dev/null && [ -n "${NDK_ROOT:-}" ]; then
     ZIPNOTE="libzip FAILED (see logs)"; tail -5 "$ZB.cfg.log" "$ZB.build.log" 2>/dev/null
   fi
 fi
+
+# The same groups and flags as tools/build_ios_restore.sh. (Android differences: usbmuxd defines its own ppoll, which the NDK declares too;
+# idevicerestore needs the zipconf.h that libzip generates; libimobiledevice-glue gets a config without net/if_dl.h.)
+group mbedtls "-I$TP/mbedtls/library" $TP/mbedtls/library/*.c
+group plist "-I$TP/libplist/libcnary/include -DPACKAGE_VERSION=\"2.8.0-henge\"" $TP/libplist/src/*.c $TP/libplist/libcnary/*.c
+group glue "-DPACKAGE_VERSION=\"1.3.3-henge\"" $TP/libimobiledevice-glue/src/*.c
+group usbmuxdc "-DPACKAGE_VERSION=\"2.1.1-henge\" -DPACKAGE_STRING=\"libusbmuxd\"" $TP/libusbmuxd/src/*.c
+group imd "-DHAVE_MBEDTLS -DPACKAGE_VERSION=\"1.4.0-henge\" -DPACKAGE_STRING=\"libimobiledevice\" -I$TP/libimobiledevice/src -I$TP/libimobiledevice/common" $TP/libimobiledevice/src/*.c $TP/libimobiledevice/common/*.c
+group tatsu "-DPACKAGE_VERSION=\"1.0.5-henge\"" $TP/libtatsu/src/*.c
+group irecv "-DPACKAGE_VERSION=\"1.3.1-henge\"" $TP/libirecovery/src/libirecovery.c
+group muxd "-Dppoll=hv_usbmuxd_ppoll -DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
+group idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" $TP/idevicerestore/src/*.c
+group henge "-std=gnu11 -D_GNU_SOURCE -Icore -Ihost -Idevices" host/libusb_shim.c host/install.c
+
 SUMMARY="$SUMMARY
 $(printf '%-12s %s' libzip "$ZIPNOTE")"
 
@@ -77,7 +80,8 @@ for o in classify operands translate dispatch mmu memop exception sysreg machine
 $CC -O1 -w "$R/linkmain.c" $OBJS ${ZIPLIB:-} $ENG -lz -llog -Wl,--error-limit=0 -o "$R/linktest" > "$R/link.log" 2>&1
 rc=$?
 if [ $rc = 0 ]; then echo "linked"; else
-  grep -o "undefined symbol: [A-Za-z0-9_]*" "$R/link.log" | sort -u | sed 's/undefined symbol: //' > "$R/undef.txt"
+  grep -o "undefined symbol: [A-Za-z0-9_.]*" "$R/link.log" | sort -u | sed 's/undefined symbol: //' > "$R/undef.txt"
+  echo "link failed; first lines of the linker output:"; head -20 "$R/link.log" | cut -c1-200
   echo "undefined symbols: $(wc -l < "$R/undef.txt")"
   echo "-- curl family (expected: no Android counterpart for host/curl_shim.m yet):"; grep -E "^curl_" "$R/undef.txt" | tr '\n' ' '; echo
   echo "-- everything else:"; grep -vE "^curl_" "$R/undef.txt" | tr '\n' ' '; echo

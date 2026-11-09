@@ -1,6 +1,6 @@
 #include "machine.h"
 
-#include <mach/mach_time.h>
+#include "../host/platform.h"
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>

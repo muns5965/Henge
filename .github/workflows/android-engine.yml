@@ -1,0 +1,57 @@
+# .github/workflows/android-engine.yml
+#
+# Builds the engine core (core/*.c, host/jit_region.c, host/disk.c, host/enter.S)
+# for non-Apple targets and links the C-only engine test tests/test_mmu.c.
+#   1. native arm64 Linux: build, link, and RUN test_mmu (arm64 code runs here).
+#   2. Android NDK (API 30): build and link the same; nothing runs on the runner.
+# The goal is to find out, file by file, what stops the engine from building
+# outside Apple platforms. Compiler output is kept in the job log. The existing
+# build-henge.yml is untouched and still runs on every push.
+
+name: Android engine build
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - core/**
+      - host/**
+      - tests/test_mmu.c
+      - tests/test_engine_smoke.c
+      - tools/engine-build.sh
+      - .github/workflows/android-engine.yml
+
+env:
+  NDK_VERSION: r27c
+
+jobs:
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the engine core and link test_mmu
+        run: CC=clang tools/engine-build.sh build-linux
+      - name: Run test_mmu natively
+        run: build-linux/test_mmu
+
+  android-ndk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Android NDK
+        run: |
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Build the engine core and link test_mmu for Android
+        run: |
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-android
+          file build-android/test_mmu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-test-mmu-android-arm64
+          path: build-android/test_mmu

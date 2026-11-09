@@ -16,6 +16,13 @@
 // and either every guest register is reloaded and the block resumes (it then
 // reloads x0 itself), or the helper asked to leave and we go out through hv_exit.
 
+/* Mach-O prefixes C symbols with an underscore, ELF does not. */
+#if defined(__APPLE__)
+#define SYM(x) _##x
+#else
+#define SYM(x) x
+#endif
+
 #define CPU_NZCV 0x108
 #define CPU_V 0x140
 #define CPU_FPCR 0x340
@@ -36,15 +43,15 @@
 
     .text
     .p2align 2
-    .globl _hv_enter
-    .globl _hv_exit
-    .globl _hv_helper_entry
-    .globl _hv_helper_thunk
-    .globl _hv_chain_thunk
-    .globl _hv_ijc_thunk
-    .globl _hv_xjump_thunk
-    .globl _hv_fp_enter
-    .globl _hv_fp_leave
+    .globl SYM(hv_enter)
+    .globl SYM(hv_exit)
+    .globl SYM(hv_helper_entry)
+    .globl SYM(hv_helper_thunk)
+    .globl SYM(hv_chain_thunk)
+    .globl SYM(hv_ijc_thunk)
+    .globl SYM(hv_xjump_thunk)
+    .globl SYM(hv_fp_enter)
+    .globl SYM(hv_fp_leave)
 
 // Not x6, x7, x15: guest x6, x7 and x15 live in the HvCpu, the host registers are scratch.
 .macro SAVE_X2_X29
@@ -126,7 +133,7 @@
     ldp x29, x30, [x28, #232]
 .endm
 
-_hv_enter:
+SYM(hv_enter):
     stp x29, x30, [sp, #-176]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -155,7 +162,7 @@ _hv_enter:
     isb
     br x15
 
-_hv_exit:
+SYM(hv_exit):
     // x0, x1 and pc are already in the HvCpu. Back to the host's stack first.
     mov x0, sp
     str x0, [x28, #CPU_SP]
@@ -177,7 +184,7 @@ Lrestore_host:
     ldp x29, x30, [sp], #176
     ret
 
-_hv_helper_entry:
+SYM(hv_helper_entry):
     // Guest x0, x1 and x30 are saved; x0 = HvHelperInfo *, x30 = resume address.
     str x30, [x28, #CPU_HELPER_RET]
     str x30, [x28, #CPU_HELPER_FROM]
@@ -190,7 +197,7 @@ _hv_helper_entry:
     mov sp, x2
     SAVE_FLAGS_FP
     mov x0, x28
-    bl _hv_helper
+    bl SYM(hv_helper)
     cbnz w0, Lrestore_host
     ldr x15, [x28, #CPU_HELPER_RET]
     ldr x0, [x28, #CPU_HELPER_FROM]
@@ -218,7 +225,7 @@ _hv_helper_entry:
 // and `blr`; x6 is its HvHelperInfo, x30 where the block resumes (`ldr x0, [x28]` there
 // reloads guest x0). Everything that goes back to the block goes by RET, popping what
 // the BLR pushed on the CPU's own stack of return addresses.
-_hv_helper_thunk:
+SYM(hv_helper_thunk):
     // A memory access whose op word names refill flags (bits 18..8): try the
     // light TLB refill (hv_tlb_refill) with x7 = the address before the helper.
     ldr w15, [x6, #12]
@@ -243,7 +250,7 @@ _hv_helper_thunk:
     mov sp, x15
     mov x0, x28
     mov x1, x7
-    bl _hv_tlb_refill
+    bl SYM(hv_tlb_refill)
     mov x7, x0
     ldr x0, [x28, #CPU_SP]
     mov sp, x0
@@ -268,13 +275,13 @@ _hv_helper_thunk:
     ret x6
 3:  stp x0, x1, [x28]
     mov x0, x6
-    b _hv_helper_entry
+    b SYM(hv_helper_entry)
 
 // hv_chain_thunk: a chainable exit's slow side. The site did `str x30, [x28, #x30]`
 // and `blr`; x30 points at {slot address, target VA}. Follows the slot when
 // chained beyond the stub's B (out of range), else leaves for the dispatcher,
 // naming the slot (last_stub) unless an exit was asked for.
-_hv_chain_thunk:
+SYM(hv_chain_thunk):
     mov x7, x30
     ldr x30, [x28, #240]
     ldr w15, [x28, #CPU_EXIT_REQ]
@@ -294,7 +301,7 @@ _hv_chain_thunk:
 // target VA, x30 = the site's flags word (guest x30 already saved). Jumps to
 // the target block if hv_ijc_resolve found it; else returns after the word,
 // with x7 still the VA. Saves only what C may clobber, as the refill does.
-_hv_ijc_thunk:
+SYM(hv_ijc_thunk):
     str x30, [x28, #CPU_REFILL_RET]
     stp x0, x1, [x28, #0]
     stp x2, x3, [x28, #16]
@@ -314,7 +321,7 @@ _hv_ijc_thunk:
     mov x0, x28
     mov x1, x7
     ldr w2, [x30]
-    bl _hv_ijc_resolve
+    bl SYM(hv_ijc_resolve)
     mov x6, x0
     ldr x0, [x28, #CPU_SP]
     mov sp, x0
@@ -342,7 +349,7 @@ _hv_ijc_thunk:
 // lookup for all of them). x7 = the site's data: .word flags (bit 31: check
 // exit_req first), .word 0, .quad the target VA. x30 is still the guest's. A
 // cache miss tries hv_ijc_resolve, then leaves for the dispatcher.
-_hv_xjump_thunk:
+SYM(hv_xjump_thunk):
     ldr w15, [x7]
     tbz w15, #31, 2f
     ldr w6, [x28, #CPU_EXIT_REQ]
@@ -391,7 +398,7 @@ _hv_xjump_thunk:
     ldr x1, [x7, #8]
     ldr w2, [x7]
     and w2, w2, #0x7fffffff
-    bl _hv_ijc_resolve
+    bl SYM(hv_ijc_resolve)
     mov x6, x0
     ldr x0, [x28, #CPU_SP]
     mov sp, x0
@@ -418,7 +425,7 @@ _hv_xjump_thunk:
     br x1
 
 // hv_fp_enter(cpu): the guest's FPCR and FPSR into the host registers.
-_hv_fp_enter:
+SYM(hv_fp_enter):
     ldr x1, [x0, #CPU_FPCR]
     msr fpcr, x1
     ldr x1, [x0, #CPU_FPSR]
@@ -426,7 +433,7 @@ _hv_fp_enter:
     ret
 
 // hv_fp_leave(cpu): and back into the HvCpu.
-_hv_fp_leave:
+SYM(hv_fp_leave):
     mrs x1, fpcr
     str x1, [x0, #CPU_FPCR]
     mrs x1, fpsr

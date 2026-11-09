@@ -1,7 +1,6 @@
 #include "dispatch.h"
 
-#include <mach/mach.h>
-#include <mach/mach_time.h>
+#include "../host/platform.h"
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -601,12 +600,17 @@ static void print_stats(HvCpu *cpu, int force) {
         for (int k = 0; k < 6; k++) tot += RATE(why[k]);
         /* How much of the interval the CPU thread actually ran: below 100% means the host took it away. */
         static double last_busy;
+#if defined(__APPLE__)
         thread_basic_info_data_t ti;
         mach_msg_type_number_t cnt = THREAD_BASIC_INFO_COUNT;
         mach_port_t self = mach_thread_self();
         if (thread_info(self, THREAD_BASIC_INFO, (thread_info_t)&ti, &cnt) == KERN_SUCCESS) {
             double busy = ti.user_time.seconds + ti.user_time.microseconds / 1e6 + ti.system_time.seconds +
                           ti.system_time.microseconds / 1e6;
+#else
+        {
+            double busy = hv_thread_cpu_seconds();
+#endif
             fprintf(stderr, "  cpu thread ran %.0f%% of the interval\n", 100 * (busy - last_busy) / dt);
             if (m->ncpus > 1) {
                 fprintf(stderr, "  cpus:");
@@ -618,7 +622,9 @@ static void print_stats(HvCpu *cpu, int force) {
             }
             last_busy = busy;
         }
+#if defined(__APPLE__)
         mach_port_deallocate(mach_task_self(), self);
+#endif
         fprintf(stderr, "  whole-TLB flushes/s: TLBI all here %.0f, TLBI all shared %.0f, SCTLR %.0f, TTBR1 %.0f, TCR %.0f, MAIR %.0f, range of all %.0f, requests overflowed %.0f\n",
                 RATE(flush_why[0]), RATE(flush_why[1]), RATE(flush_why[2]), RATE(flush_why[3]), RATE(flush_why[4]), RATE(flush_why[5]),
                 RATE(flush_why[6]), RATE(flush_why[7]));

@@ -1,6 +1,6 @@
 #include "sysreg.h"
 
-#include <mach/mach_time.h>
+#include "../host/platform.h"
 #include <stdio.h>
 #include <string.h>
 

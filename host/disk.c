@@ -3,6 +3,20 @@
 #include "../core/machine.h"
 #include "disk.h"
 
+/* F_NOCACHE and F_BARRIERFSYNC are Apple's. Elsewhere: no uncached writes (the
+   caller treats that as "not available" and keeps writing through the cache),
+   and the barrier flush is a plain fsync. */
+#ifdef F_NOCACHE
+#define HV_FD_NOCACHE(fd) fcntl((fd), F_NOCACHE, 1)
+#else
+#define HV_FD_NOCACHE(fd) (errno = ENOTSUP, -1)
+#endif
+#ifdef F_BARRIERFSYNC
+#define HV_FD_BARRIER_FSYNC(fd) fcntl((fd), F_BARRIERFSYNC)
+#else
+#define HV_FD_BARRIER_FSYNC(fd) fsync(fd)
+#endif
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -29,7 +43,7 @@ int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly) {
     const char *wc = getenv("HV_WRITE_CACHE");
     if (!readonly && wc && !atoi(wc)) {
         d->wfd = open(path, O_RDWR);
-        if (d->wfd >= 0 && fcntl(d->wfd, F_NOCACHE, 1) == -1) {
+        if (d->wfd >= 0 && HV_FD_NOCACHE(d->wfd) == -1) {
             close(d->wfd);
             d->wfd = -1;
         }
@@ -79,7 +93,7 @@ int hv_disk_flush(HvDisk *d) {
     if (d->readonly) return 0;
     switch (hv_knob[HV_K_FLUSH]) {
     case 1: return 0;
-    case 2: return fcntl(d->fd, F_BARRIERFSYNC) == -1 ? -1 : 0;
+    case 2: return HV_FD_BARRIER_FSYNC(d->fd) == -1 ? -1 : 0;
     default: return fsync(d->fd);
     }
 }

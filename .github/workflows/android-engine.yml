@@ -39,8 +39,8 @@ jobs:
           status=0
           for t in test_mmu test_jit test_mem test_exc; do
             echo "=== $t"
-            timeout 300 build-linux/$t
-            rc=$?
+            rc=0
+            timeout 300 build-linux/$t || rc=$?
             echo "=== $t exit code $rc"
             [ $rc = 0 ] || status=1
           done

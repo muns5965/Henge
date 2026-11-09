@@ -63,8 +63,13 @@ static int open_split(HvJitRegion *region, size_t bytes) {
    RX view runs it; both name the same pages, so a write through the alias is
    what the executable address executes. Whether the kernel and SELinux allow
    an executable view of a memfd is exactly what the device test checks. */
-static int open_split(HvJitRegion *region, size_t bytes) {
+static int open_split(HvJitRegion *region, size_t want_bytes) {
     int err;
+    /* Map whole pages. The region keeps the size asked for as its capacity (the tests use a
+       1 KB region on purpose); munmap rounds that up to the pages mapped here. */
+    long page = sysconf(_SC_PAGESIZE);
+    size_t unit = page > 0 ? (size_t)page : 4096;
+    size_t bytes = (want_bytes + unit - 1) & ~(unit - 1);
     int fd = memfd_create("henge-jit", 0);
     if (fd < 0) {
         err = errno;
@@ -104,6 +109,7 @@ static int open_split(HvJitRegion *region, size_t bytes) {
         errno = EINVAL;
         return -1;
     }
+    region->capacity = want_bytes / sizeof(uint32_t);
     region->owned = 1;
     return 0;
 }

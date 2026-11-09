@@ -28,11 +28,27 @@
         does not use today; it shows what would be needed if stage 3 looked bad.
      5  long run: stage 2 for `seconds` seconds
 
+   Result states, in priority order: FAIL (a value other than 1 or 2, a setup
+   error, a thread that could not start), CANCELLED (the user pressed cancel),
+   INCOMPLETE (an executor did not answer within the 500 ms observation limit,
+   or the stage hit its overall time cap; that is a missed deadline, not proof
+   that a thread is stuck), UNPINNED (stages 3 and 4 could not pin their
+   threads to separate CPUs, so the cross-CPU condition was not met), PASS.
+   Counters are kept separately from the state.
+
    What a pass means: on this device, in this process, with this patch shape,
-   no wrong value, crash or stall was seen. It does not prove ARM64 gives
-   such a guarantee. The time limits only end the test while control flow is
-   normal; a thread that jumps somewhere wrong and never returns is not
-   stopped by them, and the signal record only covers SEGV, BUS and ILL. */
+   no invalid value, crash or stall was seen. It does not prove ARM64 gives
+   such a guarantee. For stage 4, PASS only means the observation run
+   finished; "old destination after ISB" is reported as an observation, not a
+   verdict. The time limits and cancel only work while control flow is normal;
+   a thread that jumps somewhere wrong and never returns is not stopped by
+   them (force-stop the app), and the signal record only covers SEGV, BUS and
+   ILL.
+
+   Stage 3 limitation: the patch is written before the generation number is
+   published, so a call can run new code while the executor still reads the old
+   generation. The destinations alternate, so such a call does not match the
+   old generation's expected value and is not counted; the next call is. */
 #include <jni.h>
 
 #include <android/log.h>
@@ -58,11 +74,18 @@
 #define BLOCK_A 16u
 #define BLOCK_B 32u
 #define OBSERVE_LIMIT_NS (500LL * 1000 * 1000)
+#define STAGE_CAP_NS (20LL * 1000 * 1000 * 1000)
 #define HOLD_NS (1000LL * 1000)
 
 typedef long (*jit_fn)(void);
 
 static const uint32_t RET = 0xd65f03c0;
+
+/* Set from the UI thread (cancelMt), cleared once per run of stages (beginMt). */
+static atomic_int g_cancel;
+static int cancelled(void) { return atomic_load_explicit(&g_cancel, memory_order_relaxed); }
+
+enum { R_PASS = 0, R_FAIL, R_CANCELLED, R_INCOMPLETE, R_UNPINNED };
 
 static uint32_t mov_x0(unsigned imm) { return 0xd2800000u | (imm << 5); }
 static uint32_t branch_to(unsigned word) { return 0x14000000u | (word & 0x3ffffffu); } /* site is word 0 */
@@ -161,9 +184,9 @@ typedef struct {
     int pin_ok;
     int started;
     pthread_t th;
-    uint64_t calls, na, nb, nother;
-    long first_other;
-    uint64_t stale, viol; /* stage 4 */
+    uint64_t calls, na, nb, invalid;
+    long first_invalid;
+    uint64_t old_before, old_after; /* stage 4: old destination before / after the ISB */
     uint32_t nlat;
     uint32_t lat_us[MAX_EPOCHS]; /* stage 3 */
     atomic_int last_seen;
@@ -207,22 +230,28 @@ static void *exec_main(void *p) {
             if (r == 1) x->na++;
             else if (r == 2) x->nb++;
             else {
-                if (!x->nother) x->first_other = r;
-                x->nother++;
+                if (!x->invalid) x->first_invalid = r;
+                x->invalid++;
             }
         }
     } else if (s->mode == M_VIS_A) {
         int last = 0;
         while (!atomic_load_explicit(&s->stop, memory_order_relaxed)) {
+            /* The generation is read before and after the call; only a call that
+               started after the patch was published and ended in the same generation counts. */
+            int e1 = atomic_load_explicit(&s->epoch, memory_order_acquire);
             long r = fn();
+            int e2 = atomic_load_explicit(&s->epoch, memory_order_acquire);
             x->calls++;
-            int e = atomic_load_explicit(&s->epoch, memory_order_acquire);
-            if (e > last && r == want(e)) {
+            if (r != 1 && r != 2) {
+                if (!x->invalid) x->first_invalid = r;
+                x->invalid++;
+            } else if (e1 == e2 && e1 > last && r == want(e1)) {
                 long long dt = now_ns() - atomic_load_explicit(&s->t0, memory_order_relaxed);
                 if (dt < 0) dt = 0;
                 if (x->nlat < MAX_EPOCHS) x->lat_us[x->nlat++] = (uint32_t)(dt / 1000);
-                last = e;
-                atomic_store_explicit(&x->last_seen, e, memory_order_release);
+                last = e1;
+                atomic_store_explicit(&x->last_seen, e1, memory_order_release);
             }
         }
     } else {
@@ -233,12 +262,18 @@ static void *exec_main(void *p) {
                 cpu_relax();
                 continue;
             }
-            long r0 = fn(); /* no synchronisation: informational */
-            if (r0 != want(e)) x->stale++;
+            long r0 = fn(); /* no synchronisation */
             sync_instructions();
-            long r1 = fn(); /* after the sync: must be the new destination */
-            if (r1 != want(e)) x->viol++;
+            long r1 = fn(); /* after the ISB */
             x->calls += 2;
+            if (r0 != 1 && r0 != 2) {
+                if (!x->invalid) x->first_invalid = r0;
+                x->invalid++;
+            } else if (r0 != want(e)) x->old_before++;
+            if (r1 != 1 && r1 != 2) {
+                if (!x->invalid) x->first_invalid = r1;
+                x->invalid++;
+            } else if (r1 != want(e)) x->old_after++;
             last = e;
             atomic_store_explicit(&x->last_seen, e, memory_order_release);
         }
@@ -254,12 +289,17 @@ static int cmp_u32(const void *a, const void *b) {
 static int run_stage(int stage, int seconds, char *out, size_t cap) {
     static Shared sh; /* large; one stage runs at a time */
     HvJitRegion region;
-    int bad = 0;
+    int fail = 0, incomplete = 0, unpinned = 0;
+
+    if (cancelled()) {
+        addf(out, cap, "  cancelled before start\n");
+        return R_CANCELLED;
+    }
 
     mark(stage, "open region");
     if (hv_jit_region_open(&region, (size_t)1 << 20) != 0 || !region.rw_diff) {
         addf(out, cap, "  FAIL: no split JIT region (errno %d: %s)\n", errno, strerror(errno));
-        return 1;
+        return R_FAIL;
     }
 
     memset(&sh, 0, sizeof sh);
@@ -273,9 +313,10 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
     if (sched_getaffinity(0, sizeof avail, &avail) == 0)
         for (int c = 0; c < CPU_SETSIZE; c++)
             if (CPU_ISSET(c, &avail)) cpus[ncpu++] = c;
-    int n_exec = stage == 1 ? 1 : (ncpu - 1 < 2 ? 2 : ncpu - 1);
+    int want_exec = stage == 1 ? 1 : (stage == 3 || stage == 4) ? 2 : 4;
+    int n_exec = want_exec;
     if (n_exec > MAX_EXEC) n_exec = MAX_EXEC;
-    int pin = stage == 3 || stage == 4;
+    int pin = (stage == 3 || stage == 4) && ncpu >= 2;
     int patcher_cpu = ncpu ? cpus[ncpu - 1] : -1;
     sh.n = n_exec;
 
@@ -290,23 +331,36 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
     if (first != 2) {
         addf(out, cap, "  FAIL: initial run returned %ld (expect 2)\n", first);
         hv_jit_region_close(&region);
-        return 1;
+        return R_FAIL;
     }
 
     mark(stage, "start executor threads");
+    int create_fail = 0;
     for (int i = 0; i < n_exec; i++) {
         Exec *x = &sh.ex[i];
         x->s = &sh;
         x->id = i;
-        x->cpu = pin && ncpu > 1 ? cpus[i % (ncpu - 1)] : -1;
+        x->cpu = pin ? cpus[i % (ncpu - 1)] : -1;
         atomic_init(&x->last_seen, 0);
-        if (pthread_create(&x->th, NULL, exec_main, x) == 0) x->started = 1;
-        else addf(out, cap, "  FAIL: could not start executor %d\n", i), bad = 1;
+        if (pthread_create(&x->th, NULL, exec_main, x) == 0) {
+            x->started = 1;
+        } else {
+            addf(out, cap, "  FAIL: could not start executor %d (errno %d)\n", i, errno);
+            create_fail = 1;
+            break;
+        }
+    }
+    if (create_fail) { /* stop and join those that did start, then give up on this stage */
+        atomic_store_explicit(&sh.stop, 1, memory_order_release);
+        for (int i = 0; i < n_exec; i++)
+            if (sh.ex[i].started) pthread_join(sh.ex[i].th, NULL);
+        hv_jit_region_close(&region);
+        return R_FAIL;
     }
     sleep_ns(30LL * 1000 * 1000);
 
     int pin_patcher = 0;
-    if (pin && patcher_cpu >= 0) {
+    if (pin) {
         cpu_set_t set;
         CPU_ZERO(&set);
         CPU_SET(patcher_cpu, &set);
@@ -314,14 +368,15 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
     }
 
     uint64_t patches = 0, misses = 0;
+    int timecap = 0;
     long long began = now_ns();
 
     if (sh.mode == M_CONCURRENT) {
         mark(stage, "patching while executors run");
         long long end = began + (long long)seconds * 1000000000LL;
         int e = 0;
-        while (now_ns() < end) {
-            for (int k = 0; k < 256; k++) { /* check the clock only now and then */
+        while (now_ns() < end && !cancelled()) {
+            for (int k = 0; k < 256; k++) { /* check the clock and cancel only now and then */
                 e++;
                 patch(&region, e);
                 patches++;
@@ -330,7 +385,11 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
         }
     } else {
         mark(stage, sh.mode == M_VIS_A ? "visibility without executor sync" : "visibility with ISB on the executor");
-        for (int e = 1; e <= MAX_EPOCHS; e++) {
+        for (int e = 1; e <= MAX_EPOCHS && !cancelled(); e++) {
+            if (now_ns() - began > STAGE_CAP_NS) {
+                timecap = 1;
+                break;
+            }
             patch(&region, e);
             patches++;
             long long t0 = now_ns();
@@ -340,7 +399,7 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
                 int unseen = 0;
                 for (int i = 0; i < n_exec; i++)
                     if (sh.ex[i].started && atomic_load_explicit(&sh.ex[i].last_seen, memory_order_acquire) < e) unseen++;
-                if (!unseen) break;
+                if (!unseen || cancelled()) break;
                 if (now_ns() - t0 > OBSERVE_LIMIT_NS) {
                     misses += (uint64_t)unseen;
                     break;
@@ -356,63 +415,97 @@ static int run_stage(int stage, int seconds, char *out, size_t cap) {
     atomic_store_explicit(&sh.stop, 1, memory_order_release);
     for (int i = 0; i < n_exec; i++)
         if (sh.ex[i].started) pthread_join(sh.ex[i].th, NULL);
+    if (pin_patcher) sched_setaffinity(0, sizeof avail, &avail); /* give this thread its CPUs back */
 
-    addf(out, cap, "  CPUs: %d usable, %d executors%s, patcher %s; %.1f s, %llu patches\n", ncpu, n_exec,
-         pin ? " (pinned)" : " (not pinned)", pin_patcher ? "pinned" : "not pinned", secs, (unsigned long long)patches);
+    addf(out, cap, "  CPUs usable %d (%d..%d); %d executors%s, patcher %s; %.1f s, %llu patches\n", ncpu,
+         ncpu ? cpus[0] : -1, ncpu ? cpus[ncpu - 1] : -1, n_exec, pin ? " (pinned)" : " (not pinned)",
+         pin ? (pin_patcher ? "pinned" : "NOT pinned") : "not pinned", secs, (unsigned long long)patches);
 
-    uint64_t calls = 0, na = 0, nb = 0, nother = 0, stale = 0, viol = 0;
+    uint64_t calls = 0, na = 0, nb = 0, invalid = 0, old_before = 0, old_after = 0;
     int pin_fail = 0;
     for (int i = 0; i < n_exec; i++) {
         Exec *x = &sh.ex[i];
-        calls += x->calls, na += x->na, nb += x->nb, nother += x->nother, stale += x->stale, viol += x->viol;
-        if (pin && x->cpu >= 0 && !x->pin_ok) pin_fail++;
-        if (x->started && x->calls == 0) {
-            addf(out, cap, "  executor %d never completed a call  <-- FAIL\n", i);
-            bad = 1;
+        calls += x->calls, na += x->na, nb += x->nb, invalid += x->invalid;
+        old_before += x->old_before, old_after += x->old_after;
+        if (pin && !x->pin_ok) pin_fail++;
+        if (x->invalid)
+            addf(out, cap, "  executor %d: first invalid value %ld\n", i, x->first_invalid);
+        if (x->started && x->calls == 0 && !cancelled()) {
+            addf(out, cap, "  executor %d never completed a call\n", i);
+            fail = 1;
         }
     }
-    if (pin_fail) addf(out, cap, "  note: %d executor(s) could not be pinned\n", pin_fail);
+    if (invalid) fail = 1;
+    if (pin && (pin_fail || !pin_patcher)) {
+        unpinned = 1;
+        addf(out, cap, "  pinning failed (%d executor(s)%s): not a valid cross-CPU run\n", pin_fail,
+             pin_patcher ? "" : ", patcher");
+    }
 
     if (sh.mode == M_CONCURRENT) {
-        addf(out, cap, "  calls %llu: A %llu, B %llu, other %llu\n", (unsigned long long)calls, (unsigned long long)na,
-             (unsigned long long)nb, (unsigned long long)nother);
-        for (int i = 0; i < n_exec && nother; i++)
-            if (sh.ex[i].nother)
-                addf(out, cap, "  executor %d: first unexpected value %ld\n", i, sh.ex[i].first_other);
-        if (nother) bad = 1;
-        if (!na || !nb) {
-            addf(out, cap, "  only one destination was ever seen  <-- FAIL\n");
-            bad = 1;
+        addf(out, cap, "  calls %llu: A %llu, B %llu, invalid %llu\n", (unsigned long long)calls,
+             (unsigned long long)na, (unsigned long long)nb, (unsigned long long)invalid);
+        if (!cancelled() && (!na || !nb)) {
+            addf(out, cap, "  only one destination was ever seen\n");
+            fail = 1;
         }
     } else if (sh.mode == M_VIS_A) {
         uint32_t *all = malloc(sizeof(uint32_t) * MAX_EPOCHS * MAX_EXEC);
         size_t n = 0;
         for (int i = 0; i < n_exec; i++)
             for (uint32_t k = 0; k < sh.ex[i].nlat; k++) all[n++] = sh.ex[i].lat_us[k];
+        addf(out, cap, "  invalid %llu; not seen within 500 ms: %llu\n", (unsigned long long)invalid,
+             (unsigned long long)misses);
         if (all && n) {
             qsort(all, n, sizeof *all, cmp_u32);
-            addf(out, cap, "  observed %zu of %llu (patch x executor); not seen within 500 ms: %llu\n", n,
-                 (unsigned long long)patches * (unsigned)n_exec, (unsigned long long)misses);
+            addf(out, cap, "  observed %zu of %llu (patch x executor)\n", n, (unsigned long long)patches * (unsigned)n_exec);
             addf(out, cap, "  delay after hv_jit_finish returned (us): min %u, median %u, p99 %u, max %u\n", all[0],
                  all[n / 2], all[(n * 99) / 100], all[n - 1]);
-        } else {
+        } else if (!cancelled()) {
             addf(out, cap, "  nothing observed\n");
+            fail = 1;
         }
         free(all);
-        if (misses || !n) bad = 1;
-        addf(out, cap, "  (device-specific measurement; includes scheduling and the executor loop)\n");
+        addf(out, cap, "  (device measurement; includes scheduling and the loop; a call can run new code before the\n"
+                       "   generation is published, so very short values mean 'visible at once')\n");
     } else {
-        addf(out, cap, "  new patches: %llu; not acknowledged within 500 ms: %llu\n", (unsigned long long)patches,
-             (unsigned long long)misses);
-        addf(out, cap, "  after ISB: wrong destination %llu (must be 0)\n", (unsigned long long)viol);
-        addf(out, cap, "  before ISB (info only): still old destination %llu of %llu\n", (unsigned long long)stale,
+        addf(out, cap, "  patches %llu; invalid %llu; no answer within 500 ms: %llu\n", (unsigned long long)patches,
+             (unsigned long long)invalid, (unsigned long long)misses);
+        addf(out, cap, "  old destination before ISB: %llu of %llu\n", (unsigned long long)old_before,
              (unsigned long long)(patches * (unsigned)n_exec));
-        if (viol || misses) bad = 1;
+        addf(out, cap, "  old destination after ISB:  %llu of %llu\n", (unsigned long long)old_after,
+             (unsigned long long)(patches * (unsigned)n_exec));
+        if (old_after)
+            addf(out, cap, "  (observation, not a verdict: review before relying on this protocol in the engine)\n");
+    }
+
+    if (misses || timecap) {
+        incomplete = 1;
+        addf(out, cap, "  INCOMPLETE reasons: %s%s (a missed deadline, not proof that a thread is stuck)\n",
+             misses ? "observation limit exceeded " : "", timecap ? "stage time cap (20 s) reached" : "");
     }
 
     mark(stage, "close region");
     hv_jit_region_close(&region);
-    return bad;
+    if (fail) return R_FAIL;
+    if (cancelled()) return R_CANCELLED;
+    if (incomplete) return R_INCOMPLETE;
+    if (unpinned) return R_UNPINNED;
+    return R_PASS;
+}
+
+/* Called from the UI thread before a run of stages (once, not per stage) and
+   by the cancel button; neither blocks. */
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_MainActivity_beginMt(JNIEnv *env, jobject self) {
+    (void)env;
+    (void)self;
+    atomic_store(&g_cancel, 0);
+}
+
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_MainActivity_cancelMt(JNIEnv *env, jobject self) {
+    (void)env;
+    (void)self;
+    atomic_store(&g_cancel, 1);
 }
 
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMt(JNIEnv *env, jobject self, jint stage, jint seconds,
@@ -445,7 +538,7 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMt(JNIEnv *en
     static const char *const names[] = {"", "1 executor", "several executors", "visibility, no executor sync (A)",
                                         "visibility, ISB on executor (B)", "long run"};
     addf(out, sizeof out, "== stage %d: %s ==\n", (int)stage, stage >= 1 && stage <= 5 ? names[stage] : "?");
-    int bad = stage >= 1 && stage <= 5 ? run_stage((int)stage, seconds > 0 ? (int)seconds : 3, out, sizeof out) : 1;
+    int st = stage >= 1 && stage <= 5 ? run_stage((int)stage, seconds > 0 ? (int)seconds : 3, out, sizeof out) : R_FAIL;
 
     fflush(stderr);
     err[0] = 0;
@@ -471,7 +564,9 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_MainActivity_runMt(JNIEnv *en
     (*env)->ReleaseStringUTFChars(env, progress_path, ppath);
 
     if (err[0]) addf(out, sizeof out, "  diagnostics:\n%s", err);
-    addf(out, sizeof out, "RESULT: %s (stage %d)\n", bad ? "FAIL" : "PASS", (int)stage);
-    __android_log_print(bad ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO, TAG, "%s", out);
+    static const char *const state[] = {"PASS", "FAIL", "CANCELLED", "INCOMPLETE", "UNPINNED"};
+    addf(out, sizeof out, "RESULT: %s (stage %d%s)\n", state[st], (int)stage,
+         st == R_PASS && stage == 4 ? ", 관찰 시험 완료 - 동기화 정확성의 증명 아님" : "");
+    __android_log_print(st == R_PASS ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, TAG, "%s", out);
     return (*env)->NewStringUTF(env, out);
 }

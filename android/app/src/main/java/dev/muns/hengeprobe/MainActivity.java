@@ -34,12 +34,19 @@ public class MainActivity extends Activity {
     /** Multi-thread patch test; stage 1..5 (see mt_jni.c), seconds only matters for stages 1, 2 and 5. */
     private native String runMt(int stage, int seconds, String crashPath, String progressPath);
 
+    /** Clears the cancel request; called once before a run of stages. */
+    private native void beginMt();
+
+    /** Asks the running multi-thread test to stop at its next check; does not block. */
+    private native void cancelMt();
+
     private static final int[] SIZES_MIB = {1, 16, 64, 256, 768};
 
     private TextView output;
     private Button runButton;
     private Button mtButton;
     private Button longButton;
+    private Button cancelButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -61,7 +68,7 @@ public class MainActivity extends Activity {
         root.addView(runButton);
 
         mtButton = new Button(this);
-        mtButton.setText("다중 스레드 패치 시험 (1~4단계, 약 15초)");
+        mtButton.setText("다중 스레드 패치 시험 (1~4단계, 약 20초)");
         mtButton.setOnClickListener(v -> runMtNow(false));
         root.addView(mtButton);
 
@@ -69,6 +76,14 @@ public class MainActivity extends Activity {
         longButton.setText("장시간 반복 (60초)");
         longButton.setOnClickListener(v -> runMtNow(true));
         root.addView(longButton);
+
+        cancelButton = new Button(this);
+        cancelButton.setText("다중 스레드 시험 취소");
+        cancelButton.setOnClickListener(v -> {
+            cancelMt();
+            Toast.makeText(this, "취소 요청함 (멈추면 앱 강제 종료)", Toast.LENGTH_SHORT).show();
+        });
+        root.addView(cancelButton);
 
         Button copy = new Button(this);
         copy.setText("결과 복사");
@@ -167,23 +182,29 @@ public class MainActivity extends Activity {
         if (running) return;
         running = true;
         setButtons(false);
+        beginMt(); // once per run of stages, so a cancel press is never lost between stages
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
             int[] stages = longRun ? new int[] {5} : new int[] {1, 2, 3, 4};
             int[] secs = longRun ? new int[] {60} : new int[] {3, 4, 0, 0};
-            int failed = 0;
-            for (int i = 0; i < stages.length; i++) {
+            int fail = 0, incomplete = 0, unpinned = 0, pass = 0;
+            boolean cancelled = false;
+            for (int i = 0; i < stages.length && !cancelled; i++) {
                 show(acc + "실행 중: 단계 " + stages[i] + " ...\n");
                 String r = runMt(stages[i], secs[i], crashFile.getAbsolutePath(), progressFile.getAbsolutePath());
                 acc.append(r).append('\n');
                 show(acc.toString());
-                if (!r.contains("RESULT: PASS")) failed++;
+                if (r.contains("RESULT: PASS")) pass++;
+                else if (r.contains("RESULT: CANCELLED")) cancelled = true;
+                else if (r.contains("RESULT: INCOMPLETE")) incomplete++;
+                else if (r.contains("RESULT: UNPINNED")) unpinned++;
+                else fail++;
             }
             //noinspection ResultOfMethodCallIgnored
             progressFile.delete();
-            acc.append(failed == 0
-                    ? "모든 단계 통과 (이 기기·이 패치 형태에서 문제가 관찰되지 않음; 증명은 아님)\n"
-                    : "통과하지 못한 단계: " + failed + "개 (위 결과 참고)\n");
+            acc.append("요약: PASS ").append(pass).append(", FAIL ").append(fail).append(", INCOMPLETE ").append(incomplete)
+                    .append(", UNPINNED ").append(unpinned).append(cancelled ? ", 취소됨" : "").append('\n');
+            acc.append("PASS는 이 기기·이 패치 형태에서 문제가 관찰되지 않았다는 뜻이며 증명이 아닙니다.\n");
             show(acc.toString());
             running = false;
             setButtons(true);

@@ -21,6 +21,10 @@ on:
       - tests/**
       - tests/test_engine_smoke.c
       - tools/engine-build.sh
+      - tools/devices-build.sh
+      - tools/restore-android-check.sh
+      - devices/**
+      - third_party/**
       - .github/workflows/android-engine.yml
 
 env:

@@ -6,7 +6,9 @@ android {
     namespace 'dev.muns.hengeprobe'
     compileSdk 34
 
-    // CI installs a known NDK and points NDK_ROOT at it.
+    // CI installs NDK r27c (27.2.12479018) and points NDK_ROOT at it. The
+    // version has to match the one at that path.
+    ndkVersion '27.2.12479018'
     if (System.getenv('NDK_ROOT')) {
         ndkPath System.getenv('NDK_ROOT')
     }

@@ -103,6 +103,11 @@ jobs:
       - name: Build the device models and link test_devices for Android (graphics on a stub)
         continue-on-error: true
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android
+      - name: Survey the macOS-restore libraries for Android (compile, then integrated link; informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq cmake > /dev/null
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" tools/restore-android-check.sh build-android 2>&1 | tee build-android/restore-survey.txt
       - uses: actions/upload-artifact@v4
         with:
           name: engine-tests-android-arm64
@@ -115,3 +120,4 @@ jobs:
             build-android/test_vm
             build-android/vmrun
             build-android/romextract
+            build-android/restore-survey.txt

@@ -1,0 +1,68 @@
+# .github/workflows/android-apk.yml
+#
+# Builds the Henge JIT probe app (android/) into a debug-signed APK, so the
+# split-mapping test can be installed and run on a phone without adb. The app
+# compiles host/jit_region.c unchanged and shows the result on screen.
+# Runs on pushes to research/android-port that touch the app or the JIT source,
+# or by hand. build-henge.yml and android-jit-probe.yml are untouched.
+
+name: Android probe APK
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - android/**
+      - host/jit_region.c
+      - host/jit_region.h
+      - .github/workflows/android-apk.yml
+
+env:
+  NDK_VERSION: r27c
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the Android NDK
+        run: |
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install SDK platform, build tools and CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build the debug APK
+        run: gradle -p android assembleDebug --no-daemon --stacktrace
+
+      - name: Show the APK and its native library
+        run: |
+          ls -l android/app/build/outputs/apk/debug/
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -E "lib/|AndroidManifest"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: henge-jit-probe-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

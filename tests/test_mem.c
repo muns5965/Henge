@@ -1,4 +1,5 @@
 #include "harness.h"
+#include <unistd.h>
 
 #include <stdlib.h>
 
@@ -165,6 +166,7 @@ int main(void) {
     hv_test_report_crashes();
     static HvMachine m;
     hv_test_step("machine init", "test_mem");
+    dprintf(2, "test: code at %llx (mod 16K: %llx), page size %ld\n", (unsigned long long)(uintptr_t)mem_programs_begin, (unsigned long long)((uintptr_t)mem_programs_begin & 16383), sysconf(_SC_PAGESIZE));
     if (hv_machine_init(&m, 8 << 20) != 0) return 1;
     data = aligned_alloc(16384, DATA_SIZE);
     stack = aligned_alloc(16384, STACK_SIZE);

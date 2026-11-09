@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the engine core for a non-Apple target and link tests/test_mmu.c.
-# Usage: CC=<compiler> [EXTRA_LIBS=...] tools/engine-build.sh <output dir>
+# Usage: CC=<compiler> [EXTRA_LIBS=...] [EXTRA_LDFLAGS=...] tools/engine-build.sh <output dir>
 # Every file is compiled on its own and failures are collected, so one run
 # shows all the files that do not build, not only the first.
 set -u
@@ -38,7 +38,7 @@ for t in mmu jit mem exc; do
     $CC $CFLAGS -march=armv8.5-a -Itests -c "tests/${t}_programs.S" -o "$OUT/${t}_programs.o" 2> "$OUT/${t}_programs.log" || { echo "FAILED  tests/${t}_programs.S"; cat "$OUT/${t}_programs.log"; tfail=1; continue; }
     srcs="tests/test_$t.c $OUT/${t}_programs.o $OUT/harness.o"
   fi
-  if $CC $CFLAGS -Itests $srcs $objs ${EXTRA_LIBS:-} -o "$OUT/test_$t" 2> "$OUT/test_$t.log"; then
+  if $CC $CFLAGS -Itests $srcs $objs ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS:-} -o "$OUT/test_$t" 2> "$OUT/test_$t.log"; then
     echo "linked  $OUT/test_$t"
   else
     echo "FAILED  link test_$t"; cat "$OUT/test_$t.log"; tfail=1

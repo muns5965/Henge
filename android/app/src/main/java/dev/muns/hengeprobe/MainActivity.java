@@ -490,6 +490,9 @@ public class MainActivity extends Activity {
                     if (total != ROM_BLOCK_LENGTH) failure = "받은 바이트 " + total + " (기대 " + ROM_BLOCK_LENGTH + ")";
                     else got = true;
                 }
+            } catch (SecurityException e) {
+                acc.append("ROM 다운로드 중단: 앱에 네트워크 권한(INTERNET)이 없습니다 (재시도하지 않음): ").append(e).append('\n');
+                return null;
             } catch (Exception e) {
                 failure = "네트워크 오류: " + e;
             } finally {

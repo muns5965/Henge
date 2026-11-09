@@ -5,9 +5,9 @@
     .arch armv8.4-a
     .text
     .p2align 14
-    .globl _mem_programs_begin
-    .globl _mem_programs_finish
-_mem_programs_begin:
+    .globl SYM(mem_programs_begin)
+    .globl SYM(mem_programs_finish)
+SYM(mem_programs_begin):
 
 PROGRAM single
     str x1, [x0]
@@ -369,4 +369,4 @@ PROGRAM mmio
 END mmio
 
     .p2align 14
-_mem_programs_finish:
+SYM(mem_programs_finish):

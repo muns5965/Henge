@@ -18,7 +18,7 @@ on:
     paths:
       - core/**
       - host/**
-      - tests/test_mmu.c
+      - tests/**
       - tests/test_engine_smoke.c
       - tools/engine-build.sh
       - .github/workflows/android-engine.yml
@@ -34,8 +34,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the engine core and link test_mmu
         run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/engine-build.sh build-linux
-      - name: Run test_mmu natively
-        run: build-linux/test_mmu
+      - name: Run the engine tests natively (each test reported on its own)
+        run: |
+          status=0
+          for t in test_mmu test_jit test_mem test_exc; do
+            echo "=== $t"
+            timeout 300 build-linux/$t
+            rc=$?
+            echo "=== $t exit code $rc"
+            [ $rc = 0 ] || status=1
+          done
+          exit $status
 
   android-ndk:
     runs-on: ubuntu-24.04
@@ -50,8 +59,12 @@ jobs:
       - name: Build the engine core and link test_mmu for Android
         run: |
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-android
-          file build-android/test_mmu
+          file build-android/test_mmu build-android/test_jit
       - uses: actions/upload-artifact@v4
         with:
-          name: engine-test-mmu-android-arm64
-          path: build-android/test_mmu
+          name: engine-tests-android-arm64
+          path: |
+            build-android/test_mmu
+            build-android/test_jit
+            build-android/test_mem
+            build-android/test_exc

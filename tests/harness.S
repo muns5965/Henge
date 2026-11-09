@@ -6,13 +6,15 @@
 // one to spare, so it pushes x0/x1 onto the guest stack, loads the HvCpu
 // pointer from a global, saves everything, and comes back to hv_native_return.
 
+#include "harness.h"
+
     .text
     .p2align 2
-    .globl _hv_native_run
-    .globl _hv_native_return
-    .globl _hv_native_cpu
+    .globl SYM(hv_native_run)
+    .globl SYM(hv_native_return)
+    .globl SYM(hv_native_cpu)
 
-_hv_native_run:
+SYM(hv_native_run):
     stp x29, x30, [sp, #-160]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -23,17 +25,17 @@ _hv_native_run:
     stp d10, d11, [sp, #112]
     stp d12, d13, [sp, #128]
     stp d14, d15, [sp, #144]
-    adrp x9, _hv_native_cpu@PAGE
-    add x9, x9, _hv_native_cpu@PAGEOFF
+    adrp x9, PAGE(SYM(hv_native_cpu))
+    add x9, x9, PAGEOFF(SYM(hv_native_cpu))
     str x0, [x9]
     mov x10, sp
     str x10, [x9, #8]
     mov x28, x0
     br x1
 
-_hv_native_return:
-    adrp x9, _hv_native_cpu@PAGE
-    add x9, x9, _hv_native_cpu@PAGEOFF
+SYM(hv_native_return):
+    adrp x9, PAGE(SYM(hv_native_cpu))
+    add x9, x9, PAGEOFF(SYM(hv_native_cpu))
     ldr x10, [x9, #8]
     mov sp, x10
     ldp d14, d15, [sp, #144]
@@ -50,6 +52,6 @@ _hv_native_return:
 
     .data
     .p2align 3
-_hv_native_cpu:
+SYM(hv_native_cpu):
     .quad 0     // HvCpu *
     .quad 0     // host SP

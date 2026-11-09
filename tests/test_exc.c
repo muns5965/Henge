@@ -1,6 +1,6 @@
 #include "harness.h"
 
-#include <mach/mach_time.h>
+#include "../host/platform.h"
 #include <stdlib.h>
 
 DECLARE_PROGRAM(p_svc);

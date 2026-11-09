@@ -27,5 +27,21 @@ else
   echo "FAILED  host/enter.S"; cat "$OUT/enter.log"; fail=1
 fi
 [ $fail = 0 ] || { echo "compile step failed; not linking"; exit 1; }
-$CC $CFLAGS tests/test_mmu.c $objs ${EXTRA_LIBS:-} -o "$OUT/test_mmu" || { echo "link failed"; exit 1; }
-echo "linked $OUT/test_mmu"
+# Test programs are assembly run both natively and through the engine; their
+# instructions need an Armv8.5 assembler target (dit, pauth, ...).
+$CC $CFLAGS -march=armv8.5-a -Itests -c tests/harness.S -o "$OUT/harness.o" || { echo "FAILED  tests/harness.S"; exit 1; }
+tfail=0
+for t in mmu jit mem exc; do
+  if [ $t = mmu ]; then
+    srcs="tests/test_mmu.c"
+  else
+    $CC $CFLAGS -march=armv8.5-a -Itests -c "tests/${t}_programs.S" -o "$OUT/${t}_programs.o" 2> "$OUT/${t}_programs.log" || { echo "FAILED  tests/${t}_programs.S"; cat "$OUT/${t}_programs.log"; tfail=1; continue; }
+    srcs="tests/test_$t.c $OUT/${t}_programs.o $OUT/harness.o"
+  fi
+  if $CC $CFLAGS -Itests $srcs $objs ${EXTRA_LIBS:-} -o "$OUT/test_$t" 2> "$OUT/test_$t.log"; then
+    echo "linked  $OUT/test_$t"
+  else
+    echo "FAILED  link test_$t"; cat "$OUT/test_$t.log"; tfail=1
+  fi
+done
+[ $tfail = 0 ] || exit 1

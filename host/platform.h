@@ -32,8 +32,17 @@ static inline int pthread_cond_timedwait_relative_np(pthread_cond_t *cv, pthread
 static inline uint64_t mach_absolute_time(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-    return ns * 3 / 125; /* 24,000,000 ticks per second */
+    return (uint64_t)ts.tv_sec * 24000000ull + (uint64_t)ts.tv_nsec * 3 / 125; /* 24,000,000 ticks per second */
+}
+
+/* Apple's timebase query: the ratio that turns ticks into nanoseconds. Ours are 24 MHz ticks, so 125/3. */
+typedef struct {
+    uint32_t numer, denom;
+} mach_timebase_info_data_t;
+static inline int mach_timebase_info(mach_timebase_info_data_t *t) {
+    t->numer = 125;
+    t->denom = 3;
+    return 0;
 }
 
 /* CPU time of the calling thread in seconds (what the stats line wants from thread_info). */

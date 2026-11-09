@@ -8,9 +8,9 @@
     .arch armv8.4-a
     .text
     .p2align 14
-    .globl _exc_programs_begin
-    .globl _exc_programs_finish
-_exc_programs_begin:
+    .globl SYM(exc_programs_begin)
+    .globl SYM(exc_programs_finish)
+SYM(exc_programs_begin):
 
 .macro VECTOR off
     .p2align 7
@@ -244,4 +244,4 @@ PROGRAM p_smc_nomaint
 END p_smc_nomaint
 
     .p2align 14
-_exc_programs_finish:
+SYM(exc_programs_finish):

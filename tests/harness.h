@@ -5,14 +5,28 @@
 
 #ifdef __ASSEMBLER__
 
+// Mach-O prefixes C symbols with an underscore and uses @PAGE/@PAGEOFF; ELF
+// (Linux, Android) does neither and uses :lo12:.
+#if defined(__APPLE__)
+#define SYMPFX _
+#define SYM(x) _##x
+#define PAGE(x) x@PAGE
+#define PAGEOFF(x) x@PAGEOFF
+#else
+#define SYMPFX
+#define SYM(x) x
+#define PAGE(x) x
+#define PAGEOFF(x) :lo12:x
+#endif
+
 // PROGRAM name ... END name. The JIT runs from _name to _name_end; natively
 // _name_native loads the registers first and the epilogue saves them after.
 .macro PROGRAM name
     .p2align 2
-    .globl _\name\()_native
-    .globl _\name
-    .globl _\name\()_end
-_\name\()_native:
+    .globl SYMPFX\name\()_native
+    .globl SYMPFX\name
+    .globl SYMPFX\name\()_end
+SYMPFX\name\()_native:
     ldp q0, q1, [x28, #320]
     ldp q2, q3, [x28, #352]
     ldp q4, q5, [x28, #384]
@@ -53,15 +67,15 @@ _\name\()_native:
     ldp x26, x27, [x28, #208]
     ldp x29, x30, [x28, #232]
     ldr x28, [x28, #224]
-_\name\():
+SYMPFX\name\():
 .endm
 
 .macro END name
-    b _\name\()_end
-_\name\()_end:
+    b SYMPFX\name\()_end
+SYMPFX\name\()_end:
     stp x0, x1, [sp, #-16]!
-    adrp x0, _hv_native_cpu@PAGE
-    ldr x0, [x0, _hv_native_cpu@PAGEOFF]
+    adrp x0, PAGE(SYM(hv_native_cpu))
+    ldr x0, [x0, PAGEOFF(SYM(hv_native_cpu))]
     stp x2, x3, [x0, #16]
     stp x4, x5, [x0, #32]
     stp x6, x7, [x0, #48]
@@ -103,7 +117,7 @@ _\name\()_end:
     stp q26, q27, [x0, #736]
     stp q28, q29, [x0, #768]
     stp q30, q31, [x0, #800]
-    b _hv_native_return
+    b SYM(hv_native_return)
 .endm
 
 #else

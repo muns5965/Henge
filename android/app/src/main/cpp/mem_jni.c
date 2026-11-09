@@ -255,6 +255,12 @@ static uint64_t pattern(size_t page) { return 0xC0FFEE0000000000ull ^ (uint64_t)
 
 static int cancelled(void) { return atomic_load_explicit(&g_cancel, memory_order_relaxed); }
 
+/* Only ENOSYS and EOPNOTSUPP say "this system does not do that". EINVAL can also mean a bad
+   combination of arguments, file type or flags, so it is recorded as an error of undetermined
+   cause (FAIL), not as missing support. Everything else is a plain error. */
+static int is_unsupported(int err) { return err == ENOSYS || err == EOPNOTSUPP; }
+static const char *describe_err(int err) { return err == EINVAL ? " - EINVAL: cause not determined" : ""; }
+
 /* ---- mode 0 ---- */
 
 static int run_sparse(int type, size_t gib, const char *dir, char *out, size_t cap) {
@@ -314,8 +320,11 @@ static int run_sparse(int type, size_t gib, const char *dir, char *out, size_t c
         size_t pg = n > 8 ? 8 * stride : 0;
         mark("punch a hole at page %zu", pg);
         if (fallocate(m.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, (off_t)(pg * PAGE), (off_t)PAGE) != 0) {
-            addf(out, cap, "  punch hole: UNSUPPORTED (%s, errno %d)\n", strerror(errno), errno);
-            hole_unsupported = 1;
+            int e = errno;
+            addf(out, cap, "  punch hole: %s (%s, errno %d%s)\n", is_unsupported(e) ? "UNSUPPORTED" : "ERROR", strerror(e), e,
+                 describe_err(e));
+            if (is_unsupported(e)) hole_unsupported = 1;
+            else hole_fail = 1;
         } else {
             uint64_t v = *(volatile uint64_t *)(m.p + pg * PAGE + 8);
             addf(out, cap, "  punch hole: SUPPORTED, page now reads %s\n", v == 0 ? "zero" : "NOT zero (DATA_ERROR)");
@@ -443,9 +452,13 @@ static int reclaim_anon(Map *m, size_t first_page, int advice, const char *name,
     long lb = lazyfree_kb();
     addf(out, cap, "  %s on %lu MiB: ", name, RANGE_MIB);
     if (rc != 0) {
-        addf(out, cap, "UNSUPPORTED (%s, errno %d)\n", strerror(err), err);
-        *unsupported = 1;
-        return 0;
+        addf(out, cap, "%s (%s, errno %d%s)\n", is_unsupported(err) ? "UNSUPPORTED" : "ERROR", strerror(err), err,
+             describe_err(err));
+        if (is_unsupported(err)) {
+            *unsupported = 1;
+            return 0;
+        }
+        return 1;
     }
     addf(out, cap, "call SUPPORTED\n");
     print_range_mem(out, cap, "before:", &a, la);
@@ -491,15 +504,20 @@ static int run_reclaim(int type, const char *dir, char *out, size_t cap) {
         int rc = fallocate(m.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, (off_t)(range_pages * PAGE));
         int err = errno;
         if (rc != 0) {
-            addf(out, cap, "  fallocate(PUNCH_HOLE) on %lu MiB: UNSUPPORTED (%s, errno %d)\n", RANGE_MIB, strerror(err), err);
-            unsupported = 1;
+            addf(out, cap, "  fallocate(PUNCH_HOLE) on %lu MiB: %s (%s, errno %d%s)\n", RANGE_MIB,
+                 is_unsupported(err) ? "UNSUPPORTED" : "ERROR", strerror(err), err, describe_err(err));
+            if (is_unsupported(err)) unsupported = 1;
+            else bad = 1;
         } else {
             addf(out, cap, "  fallocate(PUNCH_HOLE) on %lu MiB: call SUPPORTED\n", RANGE_MIB);
             mark("reclaim hole: msync MS_INVALIDATE");
             int mrc = msync(m.p, range_pages * PAGE, MS_INVALIDATE); /* the engine does this after a successful punch */
             int merr = errno;
             addf(out, cap, "  msync(MS_INVALIDATE): %s", mrc == 0 ? "ok\n" : "");
-            if (mrc != 0) addf(out, cap, "failed (%s, errno %d)\n", strerror(merr), merr);
+            if (mrc != 0) {
+                addf(out, cap, "ERROR (%s, errno %d%s)\n", strerror(merr), merr, describe_err(merr));
+                bad = 1; /* a failed msync is an error, whatever the data shows */
+            }
             read_mem(&b); /* before the range is read again */
             print_range_mem(out, cap, "before:", &a, -2);
             print_range_mem(out, cap, "after:", &b, -2);

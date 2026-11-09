@@ -53,6 +53,7 @@ public class MainActivity extends Activity {
     private Button memButton;
     private Button denseButton;
     private Button reclaimButton;
+    private Button engineButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -97,6 +98,11 @@ public class MainActivity extends Activity {
         reclaimButton.setText("메모리 반납 시험 (balloon 대체 호출)");
         reclaimButton.setOnClickListener(v -> runMemNow(2));
         root.addView(reclaimButton);
+
+        engineButton = new Button(this);
+        engineButton.setText("엔진 시험 실행 (test_mmu/jit/mem/exc)");
+        engineButton.setOnClickListener(v -> runEngineNow());
+        root.addView(engineButton);
 
         cancelButton = new Button(this);
         cancelButton.setText("시험 취소 (다중 스레드·메모리)");
@@ -198,6 +204,7 @@ public class MainActivity extends Activity {
             memButton.setEnabled(enabled);
             denseButton.setEnabled(enabled);
             reclaimButton.setEnabled(enabled);
+            engineButton.setEnabled(enabled);
         });
     }
 
@@ -284,6 +291,80 @@ public class MainActivity extends Activity {
                     : kind == 2
                     ? "반납 호출의 성공, 데이터, 메모리 사용량 변화는 따로 봅니다. 사용량이 줄지 않아도 실패가 아닙니다.\n"
                     : "PASS는 매핑과 표본 페이지가 동작했다는 뜻이며, 그만큼의 RAM을 쓸 수 있다는 뜻은 아닙니다.\n");
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    /**
+     * Runs the engine's own tests (built from core/ and host/ with the NDK) as separate processes. They sit in the
+     * app's native library directory under lib*.so names. A separate process keeps the engine's signal handling
+     * away from the app, and a crash there cannot take the app down.
+     */
+    private void runEngineNow() {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        final String libDir = getApplicationInfo().nativeLibraryDir;
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            int ok = 0, failed = 0;
+            for (String t : new String[] {"mmu", "jit", "mem", "exc"}) {
+                show(acc + "실행 중: test_" + t + " ...\n");
+                File exe = new File(libDir, "libtest_" + t + ".so");
+                acc.append("== test_").append(t).append(" ==\n");
+                if (!exe.exists()) {
+                    acc.append("  실행 파일 없음: ").append(exe).append("\n");
+                    failed++;
+                    continue;
+                }
+                try {
+                    Process p = new ProcessBuilder(exe.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true).start();
+                    StringBuilder text = new StringBuilder();
+                    Thread reader = new Thread(() -> {
+                        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                            String line;
+                            while ((line = br.readLine()) != null) {
+                                synchronized (text) {
+                                    text.append(line).append('\n');
+                                }
+                            }
+                        } catch (IOException ignored) {
+                        }
+                    });
+                    reader.start();
+                    boolean done = p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+                    if (!done) p.destroyForcibly();
+                    reader.join(2000);
+                    String out;
+                    synchronized (text) {
+                        out = text.toString();
+                    }
+                    // Only the lines that matter: failures, summaries, and anything that is not an "ok" line.
+                    for (String line : out.split("\n")) {
+                        if (!line.trim().endsWith(": ok")) acc.append("  ").append(line).append('\n');
+                    }
+                    int okLines = out.split(": ok", -1).length - 1;
+                    if (okLines > 0) acc.append("  (\"ok\" 줄 ").append(okLines).append("개 생략)\n");
+                    if (!done) {
+                        acc.append("  RESULT: TIMEOUT (120 s)\n");
+                        failed++;
+                    } else if (p.exitValue() != 0) {
+                        acc.append("  RESULT: FAIL (exit code ").append(p.exitValue()).append(")\n");
+                        failed++;
+                    } else {
+                        acc.append("  RESULT: PASS\n");
+                        ok++;
+                    }
+                } catch (Exception e) {
+                    acc.append("  RESULT: FAIL (실행할 수 없음: ").append(e).append(")\n");
+                    failed++;
+                }
+                show(acc.toString());
+            }
+            acc.append("요약: PASS ").append(ok).append(", FAIL ").append(failed).append('\n');
+            acc.append("엔진의 번역 코드가 이 기기에서 실행된 결과입니다. 게스트 부팅과는 별개입니다.\n");
             show(acc.toString());
             running = false;
             setButtons(true);

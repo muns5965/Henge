@@ -15,8 +15,10 @@ on:
       - research/android-port
     paths:
       - android/**
-      - host/jit_region.c
-      - host/jit_region.h
+      - host/**
+      - core/**
+      - tests/**
+      - tools/engine-build.sh
       - .github/workflows/android-apk.yml
 
 env:
@@ -41,6 +43,15 @@ jobs:
           curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           unzip -q ndk.zip -d "$HOME"
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # The engine tests are built as executables and shipped inside the APK under
+      # lib*.so names, so the app can run them as separate processes (no adb).
+      - name: Build the engine tests for Android and add them to the APK
+        run: |
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-engine
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          for t in mmu jit mem exc; do cp build-engine/test_$t android/app/src/main/jniLibs/arm64-v8a/libtest_$t.so; done
+          ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake
         run: |

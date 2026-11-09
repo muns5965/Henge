@@ -13,7 +13,11 @@
    (air64_v27-apple-macosx15.0.0 against air64_v26-apple-ios17.0.0) and so its hash. */
 #include "metallib.h"
 
+#if defined(__APPLE__)
 #include <CommonCrypto/CommonDigest.h>
+#else
+#include "../host/crypto_portable.h"
+#endif
 #include <string.h>
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
@@ -83,7 +87,11 @@ int hv_metallib_relabel(uint8_t *buf, size_t len, int stage) {
             uint8_t *code = buf + bc + bc_off;
             int c = relabel_triple(code, (size_t)mdsz);
             if (c) {
+#if defined(__APPLE__)
                 CC_SHA256(code, (CC_LONG)mdsz, hash);
+#else
+                hv_sha256(code, (size_t)mdsz, hash);
+#endif
                 changed += c;
             }
         }

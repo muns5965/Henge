@@ -347,14 +347,30 @@ public class MainActivity extends Activity {
                     }
                     int okLines = out.split(": ok", -1).length - 1;
                     if (okLines > 0) acc.append("  (\"ok\" 줄 ").append(okLines).append("개 생략)\n");
+                    // The summary line ("N checks, M failures" and the like) must be there with N > 0 and M == 0.
+                    java.util.regex.Matcher sm = java.util.regex.Pattern
+                            .compile("^(\\d+) (?:checks|programs)\\b.*?(\\d+) failures", java.util.regex.Pattern.MULTILINE).matcher(out);
+                    long total = -1, bad = -1;
+                    while (sm.find()) {
+                        total = Long.parseLong(sm.group(1));
+                        bad = Long.parseLong(sm.group(2));
+                    }
                     if (!done) {
                         acc.append("  RESULT: TIMEOUT (120 s)\n");
                         failed++;
                     } else if (p.exitValue() != 0) {
-                        acc.append("  RESULT: FAIL (exit code ").append(p.exitValue()).append(")\n");
+                        int code = p.exitValue();
+                        acc.append("  RESULT: FAIL (exit code ").append(code).append(")");
+                        if (code > 128) acc.append(" - 128 초과: 시그널 종료일 수 있음(").append(code - 128).append("번, 확정 아님)");
+                        if (total < 0) acc.append(" - 요약 줄 없음(출력 버퍼가 비워지기 전에 종료됐을 수 있음)");
+                        acc.append('\n');
+                        failed++;
+                    } else if (total <= 0 || bad != 0) {
+                        acc.append("  RESULT: FAIL (종료 코드 0이지만 요약 줄이 없거나 검사 0건/실패 있음: 검사 ").append(total)
+                                .append(", 실패 ").append(bad).append(")\n");
                         failed++;
                     } else {
-                        acc.append("  RESULT: PASS\n");
+                        acc.append("  RESULT: PASS (검사 ").append(total).append("건, 실패 0)\n");
                         ok++;
                     }
                 } catch (Exception e) {

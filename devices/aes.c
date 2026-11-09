@@ -1,6 +1,10 @@
 #include "aes.h"
 
+#if defined(__APPLE__)
 #include <CommonCrypto/CommonCryptor.h>
+#else
+#include "../host/crypto_portable.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,12 +96,18 @@ static int cmd_data(HvAes *a) {
         return 1;
     }
     uint8_t *tmp = malloc(len ? len : 1);
+#if defined(__APPLE__)
     size_t moved = 0;
     CCCryptorStatus st = CCCrypt(a->encrypt ? kCCEncrypt : kCCDecrypt, kCCAlgorithmAES, a->cbc ? 0 : kCCOptionECBMode,
                                  k->key, k->len, a->cbc ? (const void *)a->iv[iv_ctx] : NULL, in, len, tmp, len,
                                  &moved);
     if (st == kCCSuccess) memcpy(out, tmp, len), hv_dma_written(a->m, dst, len);
     else if (a->m->log) fprintf(stderr, "hengevm: aes: cipher failed (%d), length %u\n", (int)st, len);
+#else
+    int st = hv_aes_crypt(a->encrypt, a->cbc, k->key, k->len, a->cbc ? (const uint8_t *)a->iv[iv_ctx] : NULL, in, tmp, len);
+    if (st == 0) memcpy(out, tmp, len), hv_dma_written(a->m, dst, len);
+    else if (a->m->log) fprintf(stderr, "hengevm: aes: cipher failed (%d), length %u\n", st, len);
+#endif
     free(tmp);
     return 1;
 }

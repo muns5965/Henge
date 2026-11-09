@@ -51,6 +51,18 @@ static inline double hv_thread_cpu_seconds(void) {
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
+
+/* Stand-ins for the few Apple locking and reference types the device files use.
+   os_unfair_lock is a plain mutex here; a zeroed pthread mutex is a valid unlocked one on Linux and Android,
+   as a zeroed os_unfair_lock is on Apple. The display layer is an opaque pointer the host owns; nothing is
+   retained or released off Apple. */
+typedef pthread_mutex_t os_unfair_lock;
+#define OS_UNFAIR_LOCK_INIT ((os_unfair_lock)PTHREAD_MUTEX_INITIALIZER)
+static inline void os_unfair_lock_lock(os_unfair_lock *l) { pthread_mutex_lock(l); }
+static inline void os_unfair_lock_unlock(os_unfair_lock *l) { pthread_mutex_unlock(l); }
+typedef const void *CFTypeRef;
+static inline CFTypeRef CFRetain(CFTypeRef x) { return x; }
+static inline void CFRelease(CFTypeRef x) { (void)x; }
 #endif
 
 #endif

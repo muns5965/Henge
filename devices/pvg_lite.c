@@ -31,8 +31,12 @@
    Ring entries are {op (1 map, 2 unmap, 3 test), mapping id, result, 0}. */
 
 #include <unistd.h>
+#if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <os/lock.h>
+#else
+#include "../host/platform.h"
+#endif
 #include <stdatomic.h>
 #include "pvg_lite.h"
 

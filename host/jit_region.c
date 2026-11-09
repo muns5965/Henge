@@ -67,7 +67,7 @@ static int open_split(HvJitRegion *region, size_t want_bytes) {
     int err;
     /* Map whole pages. The region keeps the size asked for as its capacity (the tests use a
        1 KB region on purpose); munmap rounds that up to the pages mapped here. */
-    long page = sysconf(_SC_PAGESIZE);
+    long page = sysconf(_SC_PAGESIZE);   /* a power of two on Linux and Android (4 KB or 16 KB); the rounding below relies on it */
     size_t unit = page > 0 ? (size_t)page : 4096;
     size_t bytes = (want_bytes + unit - 1) & ~(unit - 1);
     int fd = memfd_create("henge-jit", 0);

@@ -46,6 +46,19 @@ jobs:
           done
           exit $status
 
+      - name: Build the device models and link test_devices (graphics runs on a stub that draws nothing)
+        id: devices
+        continue-on-error: true
+        run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/devices-build.sh build-linux
+      - name: Run test_devices natively
+        if: steps.devices.outcome == 'success'
+        continue-on-error: true
+        run: |
+          rc=0
+          timeout 300 build-linux/test_devices || rc=$?
+          echo "=== test_devices exit code $rc"
+          exit $rc
+
   android-ndk:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -60,6 +73,9 @@ jobs:
         run: |
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-android
           file build-android/test_mmu build-android/test_jit
+      - name: Build the device models and link test_devices for Android (graphics on a stub)
+        continue-on-error: true
+        run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android
       - uses: actions/upload-artifact@v4
         with:
           name: engine-tests-android-arm64
@@ -68,3 +84,4 @@ jobs:
             build-android/test_jit
             build-android/test_mem
             build-android/test_exc
+            build-android/test_devices

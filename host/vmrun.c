@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -121,10 +121,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--seconds") && more) seconds = atof(argv[++i]);
         else if (!strcmp(a, "--snapshot") && more) snap = argv[++i];
         else if (!strcmp(a, "--make-blank")) make_blank = 1; /* create --disk and --aux when they do not exist */
+        else if (!strcmp(a, "--recreate-blank")) recreate_blank = 1; /* with --make-blank: start the files named blank_* from scratch */
+        else if (!strcmp(a, "--psci-log")) psci_log = 1;             /* print every PSCI call the guest makes (function, x1..x3, pc) */
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--disk-gb N]] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -133,13 +135,24 @@ int main(int argc, char **argv) {
         return 2;
     }
     struct stat sb;
+    if (psci_log) setenv("HV_PSCI_LOG", "1", 1); /* read by the engine at its first PSCI call, so before the machine exists */
+    if (make_blank && recreate_blank) {
+        /* only files whose name starts with "blank_" are ever removed: a real installed disk is never touched */
+        const char *names[2] = {cfg.disk, cfg.aux};
+        for (int k = 0; k < 2; k++) {
+            const char *slash = strrchr(names[k], '/');
+            const char *base = slash ? slash + 1 : names[k];
+            if (!strncmp(base, "blank_", 6)) { if (unlink(names[k]) == 0) printf("vmrun: removed the old %s to start fresh\n", base); }
+            else printf("vmrun: --recreate-blank leaves %s alone (its name does not start with blank_)\n", base);
+        }
+    }
     if (make_blank) {
         if (stat(cfg.disk, &sb) != 0) printf("vmrun: new blank disk %s (%llu GB, sparse): %s\n", cfg.disk, disk_gb, make_sparse(cfg.disk, disk_gb << 30) == 0 ? "ok" : "FAILED");
         if (stat(cfg.aux, &sb) != 0) printf("vmrun: new auxiliary storage %s: %s\n", cfg.aux, make_aux(cfg.aux) == 0 ? "ok" : "FAILED");
     }
-    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB, ecid %llx, seed %llx, aux_offset %llu, installer %d, seconds %.0f\n",
+    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB (0 = the VM's default), ecid %llx, seed %llx, aux_offset %llu, installer %d, psci_log %d, seconds %.0f\n",
            (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (unsigned long long)cfg.ecid,
-           (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, seconds);
+           (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, psci_log, seconds);
     char err[512] = "";
     double t0 = now();
     if (hv_vm_create(&cfg, err, sizeof err) != 0) {

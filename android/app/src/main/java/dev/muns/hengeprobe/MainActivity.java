@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     private Button engineButton;
     private Button bigVmButton;
     private Button vmrunButton;
+    private Button installerButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -112,9 +113,14 @@ public class MainActivity extends Activity {
         root.addView(bigVmButton);
 
         vmrunButton = new Button(this);
-        vmrunButton.setText("실제 ROM 실행 (vmrun, 30초)");
-        vmrunButton.setOnClickListener(v -> runVmrunNow());
+        vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
+        vmrunButton.setOnClickListener(v -> runVmrun(false));
         root.addView(vmrunButton);
+
+        installerButton = new Button(this);
+        installerButton.setText("ROM 설치기(DFU) 부팅 시험 (vmrun, 30초)");
+        installerButton.setOnClickListener(v -> runVmrun(true));
+        root.addView(installerButton);
 
         cancelButton = new Button(this);
         cancelButton.setText("시험 취소 (다중 스레드·메모리)");
@@ -224,6 +230,7 @@ public class MainActivity extends Activity {
             engineButton.setEnabled(enabled);
             bigVmButton.setEnabled(enabled);
             vmrunButton.setEnabled(enabled);
+            installerButton.setEnabled(enabled);
         });
     }
 
@@ -548,6 +555,11 @@ public class MainActivity extends Activity {
     }
 
     private void runVmrunNow() {
+        runVmrun(false);
+    }
+
+    /** installer=true boots the ROM in DFU (installer) mode. Both modes use new blank disk/aux files each time and log PSCI calls. */
+    private void runVmrun(final boolean installer) {
         if (running) return;
         running = true;
         setButtons(false);
@@ -586,7 +598,10 @@ public class MainActivity extends Activity {
                     cmd.add("--disk"); cmd.add(disk.getAbsolutePath());
                     cmd.add("--aux"); cmd.add(aux.getAbsolutePath());
                     cmd.add("--make-blank");
-                    if ("1".equals(cfg.get("installer"))) cmd.add("--installer");
+                    cmd.add("--recreate-blank");
+                    cmd.add("--psci-log");
+                    if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
+                    acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},
                             {"jit_mb", "--jit-mb"}, {"seconds", "--seconds"}, {"log", "--log"}, {"aux_offset", "--aux-offset"}};
                     for (String[] m : map) if (cfg.containsKey(m[0])) { cmd.add(m[1]); cmd.add(cfg.get(m[0])); }

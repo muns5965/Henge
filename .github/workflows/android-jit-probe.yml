@@ -1,6 +1,7 @@
 # .github/workflows/android-jit-probe.yml
 #
-# Manual only (workflow_dispatch). Two checks of the Linux/Android split JIT
+# Runs on pushes to research/android-port that touch the JIT sources, or by
+# hand. Two checks of the Linux/Android split JIT
 # mapping in host/jit_region.c:
 #   1. native arm64 Linux: build and run tests/test_jit_linux.c. This runs arm64
 #      code, so it tests the memfd RW/RX mapping and icache sync for real.
@@ -12,6 +13,14 @@ name: Android JIT probe
 
 on:
   workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - host/jit_region.c
+      - host/jit_region.h
+      - tests/test_jit_linux.c
+      - .github/workflows/android-jit-probe.yml
 
 env:
   NDK_VERSION: r27c

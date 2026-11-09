@@ -1,15 +1,19 @@
 #include "vm.h"
 #include "pvg_lite.h"
 
+#if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <os/lock.h>
+#include <pthread/qos.h>
+#include <sys/ucontext.h>
+#else
+#include "platform.h" /* Linux, Android: stand-ins for the Apple lock and reference types */
+#endif
 #include <stdatomic.h>
 #include <pthread.h>
-#include <pthread/qos.h>
 #include <signal.h>
-#include <sys/ucontext.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -120,6 +124,7 @@ static int fail(char *err, size_t n, const char *msg) {
 /* A branch landing where no translation is (an illegal instruction, or a fault
    fetching one): say where, and which direct branches in translated code lead
    there, for a crash report cannot. */
+#if defined(__APPLE__) /* the report reads Darwin's ucontext; a host crash report for Linux and Android is separate work */
 static struct sigaction prior_ill, prior_bus, prior_segv;
 static void on_ill(int sig, siginfo_t *info, void *ctx) {
     ucontext_t *uc = ctx;
@@ -203,6 +208,7 @@ static void on_ill(int sig, siginfo_t *info, void *ctx) {
     struct sigaction *prior = sig == SIGILL ? &prior_ill : sig == SIGBUS ? &prior_bus : &prior_segv;
     sigaction(sig, prior, NULL);
 }
+#endif
 
 void (*hv_prof_register)(void);
 
@@ -225,11 +231,13 @@ uint64_t hv_vm_gpu_frames(void) {
 
 int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     if (!c->rom || !c->disk || !c->aux) return fail(err, errlen, "The ROM, disk and auxiliary storage are all needed.");
+#if defined(__APPLE__)
     struct sigaction ill = {.sa_flags = SA_SIGINFO | SA_ONSTACK};
     ill.sa_sigaction = on_ill;
     sigaction(SIGILL, &ill, &prior_ill);
     sigaction(SIGBUS, &ill, &prior_bus);
     sigaction(SIGSEGV, &ill, &prior_segv);
+#endif
     signal(SIGPIPE, SIG_IGN); /* a guest connection closing at the far end must not end the machine */
     if (hv_disk_open(&disk, c->disk, 0, 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
     if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0)
@@ -299,6 +307,7 @@ void hv_vm_prepare_cpu_thread(void) {
 /* iOS parks default-QoS threads on efficiency cores readily; the guest's CPUs are what the user waits on. */
 void hv_vm_cpu_qos(void) {
     hv_vm_prepare_cpu_thread();
+#if defined(__APPLE__)
     /* HV_QOS=ui|init|default (testing): the class the guest's CPUs run at. */
     const char *q = getenv("HV_QOS");
 #if TARGET_OS_IPHONE
@@ -310,6 +319,7 @@ void hv_vm_cpu_qos(void) {
     else if (q && !strcmp(q, "init")) c = QOS_CLASS_USER_INITIATED;
     else if (q && !strcmp(q, "default")) c = QOS_CLASS_DEFAULT;
     if (c != QOS_CLASS_DEFAULT) pthread_set_qos_class_self_np(c, 0);
+#endif /* no scheduling class off Apple yet: which cores the guest's CPUs should use is a device question */
 }
 
 /* CPUs 1 and up: run whenever PSCI CPU_ON starts them; the machine stops with CPU 0. */
@@ -369,12 +379,50 @@ static os_unfair_lock rctrl_lock = OS_UNFAIR_LOCK_INIT;
 static int rctrl_user, rctrl_click;
 static int left_user, left_click, left_sent; /* only the pointer queue touches these */
 
+#if defined(__APPLE__)
 static dispatch_queue_t pointer_queue(void) {
     static dispatch_queue_t q;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("henge.pointer", DISPATCH_QUEUE_SERIAL); });
     return q;
 }
+static void pointer_post(void (*fn)(void *), void *ctx) { dispatch_async_f(pointer_queue(), ctx, fn); }
+#else
+/* The same serial queue: one worker thread that runs the posted jobs in order. */
+typedef struct PointerJob {
+    void (*fn)(void *);
+    void *ctx;
+} PointerJob;
+#define POINTER_JOBS 256
+static PointerJob pointer_jobs[POINTER_JOBS];
+static unsigned pointer_head, pointer_tail;
+static pthread_mutex_t pointer_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pointer_cv = PTHREAD_COND_INITIALIZER;
+
+static void *pointer_worker(void *unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&pointer_mu);
+        while (pointer_head == pointer_tail) pthread_cond_wait(&pointer_cv, &pointer_mu);
+        PointerJob job = pointer_jobs[pointer_head++ % POINTER_JOBS];
+        pthread_mutex_unlock(&pointer_mu);
+        job.fn(job.ctx);
+    }
+    return NULL;
+}
+
+static void pointer_post(void (*fn)(void *), void *ctx) {
+    static int started;
+    pthread_mutex_lock(&pointer_mu);
+    if (!started) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, pointer_worker, NULL) == 0) pthread_detach(t), started = 1;
+    }
+    if (pointer_tail - pointer_head < POINTER_JOBS) pointer_jobs[pointer_tail++ % POINTER_JOBS] = (PointerJob){fn, ctx};
+    pthread_cond_signal(&pointer_cv);
+    pthread_mutex_unlock(&pointer_mu);
+}
+#endif
 
 static void rctrl_hold(int *owner, int down) {
     os_unfair_lock_lock(&rctrl_lock);
@@ -403,7 +451,7 @@ static void move_now(void *ctx) {
 
 void hv_vm_mouse_move(int dx, int dy) {
     int64_t packed = (int64_t)((uint64_t)(uint32_t)dx << 32 | (uint32_t)dy);
-    dispatch_async_f(pointer_queue(), (void *)(intptr_t)packed, move_now);
+    pointer_post(move_now, (void *)(intptr_t)packed);
 }
 
 static void left_update(void) {
@@ -439,7 +487,7 @@ static void button_now(void *ctx) {
 
 void hv_vm_mouse_button(int button, int down) {
     if (button < 0 || button > 2) return;
-    dispatch_async_f(pointer_queue(), (void *)(intptr_t)(button << 1 | !!down), button_now);
+    pointer_post(button_now, (void *)(intptr_t)(button << 1 | !!down));
 }
 
 /* The guest takes a wheel event as 8 bits: -200 arrives as +56, the wrong way. So big moves go in pieces. */

@@ -100,7 +100,7 @@ public class MainActivity extends Activity {
         root.addView(reclaimButton);
 
         engineButton = new Button(this);
-        engineButton.setText("엔진 시험 실행 (mmu/jit/mem/exc/devices)");
+        engineButton.setText("엔진 시험 실행 (mmu/jit/mem/exc/devices/vm)");
         engineButton.setOnClickListener(v -> runEngineNow());
         root.addView(engineButton);
 
@@ -315,7 +315,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
             int ok = 0, failed = 0;
-            for (String t : new String[] {"mmu", "jit", "mem", "exc", "devices"}) {
+            for (String t : new String[] {"mmu", "jit", "mem", "exc", "devices", "vm"}) {
                 show(acc + "실행 중: test_" + t + " ...\n");
                 File exe = new File(libDir, "libtest_" + t + ".so");
                 acc.append("== test_").append(t).append(" ==\n");

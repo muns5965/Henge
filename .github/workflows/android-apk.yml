@@ -54,11 +54,10 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           for t in mmu jit mem exc; do cp build-engine/test_$t android/app/src/main/jniLibs/arm64-v8a/libtest_$t.so; done
           # Device models (graphics on a stub that draws nothing). A failure here must not stop the APK.
-          if CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-engine; then
-            cp build-engine/test_devices android/app/src/main/jniLibs/arm64-v8a/libtest_devices.so
-          else
-            echo "::warning::device tests did not build; the APK goes without them"
-          fi
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-engine || echo "::warning::the device or VM tests did not all build; the APK goes with those that did"
+          for t in devices vm; do
+            if [ -f build-engine/test_$t ]; then cp build-engine/test_$t android/app/src/main/jniLibs/arm64-v8a/libtest_$t.so; fi
+          done
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake

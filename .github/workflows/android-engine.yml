@@ -57,7 +57,14 @@ jobs:
           rc=0
           timeout 300 build-linux/test_devices || rc=$?
           echo "=== test_devices exit code $rc"
-          exit $rc
+          rc2=0
+          if [ -f build-linux/test_vm ]; then
+            timeout 120 build-linux/test_vm || rc2=$?
+            echo "=== test_vm exit code $rc2"
+          else
+            echo "=== test_vm was not built"; rc2=1
+          fi
+          [ $rc = 0 ] && [ $rc2 = 0 ]
 
   android-ndk:
     runs-on: ubuntu-24.04
@@ -85,3 +92,4 @@ jobs:
             build-android/test_mem
             build-android/test_exc
             build-android/test_devices
+            build-android/test_vm

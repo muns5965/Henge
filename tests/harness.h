@@ -136,6 +136,7 @@ SYMPFX\name\()_end:
 static const char *hv_test_phase = "start", *hv_test_program = "";
 #if defined(__linux__) && defined(__aarch64__)
 #include <signal.h>
+#include <sys/resource.h>
 #include <ucontext.h>
 #include <unistd.h>
 static void hv_test_map_line(const char *what, uint64_t addr) {
@@ -191,6 +192,10 @@ static inline void hv_test_step(const char *what, const char *name) {
 
 static inline void hv_test_report_crashes(void) {
     hv_test_early_write("test: main entered\n");
+    {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0) dprintf(2, "test: stack limit %llu KB, HvCpu %llu KB\n", (unsigned long long)(rl.rlim_cur / 1024), (unsigned long long)(sizeof(HvCpu) / 1024));
+    }
     static char alt[65536];
     stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
     sigaltstack(&ss, NULL);
@@ -268,7 +273,9 @@ static inline void seed_cpu(HvCpu *cpu, uint64_t seed, uint64_t sp) {
 /* Native reference. Darwin may clear x18 on a context switch, so run until two
    runs agree. reset (may be NULL) puts guest memory back before each run. */
 static inline void run_native(const TestProgram *p, const HvCpu *init, HvCpu *out, void (*reset)(void)) {
-    HvCpu a, b;
+    /* An HvCpu is about 5 MB (it holds the translation caches): two of them on the stack are more than the 8 MB
+       an Android process gets, so they are static. The tests are single-threaded. */
+    static HvCpu a, b;
     hv_test_phase = "native";
     hv_test_program = p->name;
     for (int tries = 0; tries < 10; tries++) {

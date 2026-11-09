@@ -54,3 +54,16 @@ if $CC $CFLAGS host/vmrun.c $vobjs $eobjs $dobjs ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS
 else
   echo "FAILED  link vmrun"; cat "$OUT/vmrun.log"; exit 1
 fi
+
+# ROM extractor (host/romextract.c): unpacks the AVPBooter ROM from the downloaded piece of Apple's restore image.
+LZ=third_party/lzfse/src
+lobjs=""
+for f in lzfse_decode lzfse_decode_base lzfse_fse lzvn_decode_base; do
+  $CC $CFLAGS -Wno-sign-compare -I$LZ -c $LZ/$f.c -o "$OUT/lz_$f.o" 2> "$OUT/lz_$f.log" || { echo "FAILED  $LZ/$f.c"; cat "$OUT/lz_$f.log"; exit 1; }
+  lobjs="$lobjs $OUT/lz_$f.o"
+done
+if $CC $CFLAGS -I$LZ host/romextract.c host/crypto_portable.c $lobjs ${EXTRA_LDFLAGS:-} -o "$OUT/romextract" 2> "$OUT/romextract.log"; then
+  echo "linked  $OUT/romextract"
+else
+  echo "FAILED  link romextract"; cat "$OUT/romextract.log"; exit 1
+fi

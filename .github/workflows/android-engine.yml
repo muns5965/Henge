@@ -73,7 +73,18 @@ jobs:
           else
             echo "=== vmrun was not built"; rc3=1
           fi
-          [ $rc = 0 ] && [ $rc2 = 0 ] && [ $rc3 = 0 ]
+          rc4=0
+          if [ -f build-linux/romextract ]; then
+            # no network here: only the refusals can be checked (wrong input size = 3; garbage of the right size = 4)
+            head -c 100 /dev/zero > rx_short.bin
+            build-linux/romextract rx_short.bin rx_out.bin; r=$?; echo "romextract short input exit $r (want 3)"; [ $r = 3 ] || rc4=1
+            head -c 859848 /dev/urandom > rx_junk.bin
+            build-linux/romextract rx_junk.bin rx_out.bin; r=$?; echo "romextract junk input exit $r (want 4)"; [ $r = 4 ] || rc4=1
+            [ ! -e rx_out.bin ] || { echo "romextract wrote an output on failure"; rc4=1; }
+          else
+            echo "=== romextract was not built"; rc4=1
+          fi
+          [ $rc = 0 ] && [ $rc2 = 0 ] && [ $rc3 = 0 ] && [ $rc4 = 0 ]
 
   android-ndk:
     runs-on: ubuntu-24.04
@@ -103,3 +114,4 @@ jobs:
             build-android/test_devices
             build-android/test_vm
             build-android/vmrun
+            build-android/romextract

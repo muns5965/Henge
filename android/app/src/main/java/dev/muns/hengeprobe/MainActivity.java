@@ -425,6 +425,125 @@ public class MainActivity extends Activity {
      * optional config.txt ("ecid=0x..", "seed=0x..", "ram_mb=..", "cpus=..", "jit_mb=..", "seconds=..", "log=..").
      * Shows what vmrun prints: where CPU 0 is (pc, exception level, ESR/FAR) and why the machine stopped.
      */
+
+    private static final String ROM_URL = "https://updates.cdn-apple.com/2024SummerFCS/fullrestores/062-52859/932E0A8F-6644-4759-82DA-F8FA8DEA806A/UniversalMac_14.6.1_23G93_Restore.ipsw";
+    private static final long ROM_BLOCK_OFFSET = 5349700747L;
+    private static final int ROM_BLOCK_LENGTH = 859848, ROM_LENGTH = 214904;
+    private static final String ROM_SHA256 = "fd4973e42e609751830df6f3dd2d2b2ad2309fe38f0ca0f5aba02dcbefe45f91";
+
+    /** True if the file is exactly the known AVPBooter ROM (size and SHA-256). */
+    private static boolean isGenuineRom(File f) {
+        if (!f.isFile() || f.length() != ROM_LENGTH) return false;
+        try (FileInputStream in = new FileInputStream(f)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            StringBuilder hex = new StringBuilder();
+            for (byte b : md.digest()) hex.append(String.format("%02x", b));
+            return hex.toString().equals(ROM_SHA256);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * The AVPBooter ROM in the app's private folder: the cached one if its size and SHA-256 are right, else downloaded from
+     * Apple (one HTTP Range request for the 859,848 bytes that hold it, as Henge's iOS app does) and unpacked by
+     * libromextract.so. Each failure has its own message in acc. Returns null on failure.
+     */
+    private File ensureRom(StringBuilder acc) {
+        File dir = new File(getFilesDir(), "vm");
+        dir.mkdirs();
+        File rom = new File(dir, "AVPBooter.vmapple2.bin");
+        if (isGenuineRom(rom)) {
+            acc.append("ROM: 저장된 파일의 크기와 SHA-256이 맞습니다 (다시 받지 않음).\n");
+            return rom;
+        }
+        if (rom.exists()) {
+            acc.append("ROM: 저장된 파일이 맞지 않아 지우고 다시 받습니다.\n");
+            rom.delete();
+        }
+        File block = new File(getCacheDir(), "rom_block.bin");
+        String failure = "응답 없음";
+        boolean got = false;
+        for (int attempt = 1; attempt <= 3 && !got; attempt++) {
+            java.net.HttpURLConnection c = null;
+            try {
+                c = (java.net.HttpURLConnection) new java.net.URL(ROM_URL).openConnection();
+                c.setConnectTimeout(20000);
+                c.setReadTimeout(30000);
+                c.setRequestProperty("Range", "bytes=" + ROM_BLOCK_OFFSET + "-" + (ROM_BLOCK_OFFSET + ROM_BLOCK_LENGTH - 1));
+                int status = c.getResponseCode();
+                if (status != 206) {
+                    failure = "HTTP 상태 " + status + " (206 아님: Range 요청이 받아들여지지 않음)";
+                } else {
+                    long total = 0;
+                    try (java.io.InputStream in = c.getInputStream(); java.io.FileOutputStream out = new java.io.FileOutputStream(block)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            total += n;
+                        }
+                    }
+                    if (total != ROM_BLOCK_LENGTH) failure = "받은 바이트 " + total + " (기대 " + ROM_BLOCK_LENGTH + ")";
+                    else got = true;
+                }
+            } catch (Exception e) {
+                failure = "네트워크 오류: " + e;
+            } finally {
+                if (c != null) c.disconnect();
+            }
+            if (!got) {
+                acc.append("ROM 다운로드 ").append(attempt).append("/3 실패: ").append(failure).append('\n');
+                try { Thread.sleep(attempt * 1000L); } catch (InterruptedException ignored) { }
+            }
+        }
+        if (!got) return null;
+        acc.append("ROM: 859,848바이트 받음 (HTTP 206).\n");
+        try {
+            File exe = new File(getApplicationInfo().nativeLibraryDir, "libromextract.so");
+            if (!exe.exists()) {
+                acc.append("ROM 추출기(libromextract.so)가 이 APK에 없습니다.\n");
+                return null;
+            }
+            Process p = new ProcessBuilder(exe.getAbsolutePath(), block.getAbsolutePath(), rom.getAbsolutePath()).redirectErrorStream(true).start();
+            String out = new String(readAll(p.getInputStream()), StandardCharsets.UTF_8);
+            int rc = p.waitFor();
+            acc.append(out);
+            if (rc != 0 || !isGenuineRom(rom)) {
+                String why;
+                switch (rc) {
+                    case 3: why = "받은 조각의 크기가 다릅니다"; break;
+                    case 4: why = "LZFSE 해제 실패"; break;
+                    case 5: why = "내부 리소스 포크 형식 오류"; break;
+                    case 6: why = "LZVN 해제 실패"; break;
+                    case 7: why = "크기 또는 SHA-256 불일치 (받은 데이터가 예상한 ROM이 아님)"; break;
+                    default: why = "추출기 종료 코드 " + rc;
+                }
+                acc.append("ROM 추출 실패: ").append(why).append('\n');
+                rom.delete();
+                return null;
+            }
+            acc.append("ROM: 추출 성공, 크기와 SHA-256 확인됨.\n");
+            return rom;
+        } catch (Exception e) {
+            acc.append("ROM 추출 중 오류: ").append(e).append('\n');
+            return null;
+        } finally {
+            block.delete();
+        }
+    }
+
+    private static byte[] readAll(java.io.InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+        return bo.toByteArray();
+    }
+
     private void runVmrunNow() {
         if (running) return;
         running = true;
@@ -434,7 +553,7 @@ public class MainActivity extends Activity {
             StringBuilder acc = new StringBuilder();
             try {
                 File base = new File(getExternalFilesDir(null), "vm");
-                File rom = new File(base, "rom.bin");
+                File rom = new File(base, "rom.bin"); // a ROM placed here is used as it is; otherwise the app fetches and checks its own
                 // disk and aux: the ones in that folder if present, else blank ones in the app's private folder (made by vmrun)
                 File priv = new File(getFilesDir(), "vm");
                 priv.mkdirs();
@@ -443,10 +562,8 @@ public class MainActivity extends Activity {
                 acc.append("폴더: ").append(base).append('\n');
                 File exe = new File(libDir, "libvmrun.so");
                 if (!exe.exists()) acc.append("vmrun 실행 파일이 이 APK에 없습니다.\n");
-                else if (!rom.exists()) {
-                    acc.append("rom.bin이 없습니다. 위 폴더에 AVPBooter ROM을 rom.bin 이름으로 넣고 다시 누르세요 ")
-                            .append("(disk.img/aux.img는 없으면 빈 파일을 자동으로 만듭니다). ")
-                            .append("선택: config.txt (한 줄에 하나: ecid=0x.., seed=0x.., installer=1, ram_mb=, cpus=, jit_mb=, seconds=, log=).\n");
+                else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
+                    acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
                     base.mkdirs();
                 } else {
                     java.util.Map<String, String> cfg = new java.util.HashMap<>();

@@ -4,9 +4,9 @@
     .arch armv8.4-a
     .text
     .p2align 14
-    .globl _devices_programs_begin
-    .globl _devices_programs_finish
-_devices_programs_begin:
+    .globl SYM(devices_programs_begin)
+    .globl SYM(devices_programs_finish)
+SYM(devices_programs_begin):
 
 // IRQ at 0x280 acknowledges, masks the timer, and EOIs. Anything else records
 // ESR in x23 and skips the instruction.
@@ -94,4 +94,4 @@ uart_msg:
     .asciz "hello from the guest\n"
 
     .p2align 14
-_devices_programs_finish:
+SYM(devices_programs_finish):

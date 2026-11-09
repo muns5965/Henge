@@ -15,7 +15,10 @@
     .globl SYM(hv_native_cpu)
 
 SYM(hv_native_run):
-    stp x29, x30, [sp, #-160]!
+    stp x29, x30, [sp, #-176]!
+    // x18 is the platform register (Android keeps its shadow call stack pointer there). The program under
+    // test gets a seeded value in it, so the host's own is kept here and put back on return.
+    str x18, [sp, #160]
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
     stp x23, x24, [sp, #48]
@@ -47,7 +50,8 @@ SYM(hv_native_return):
     ldp x23, x24, [sp, #48]
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #160
+    ldr x18, [sp, #160]
+    ldp x29, x30, [sp], #176
     ret
 
     .data

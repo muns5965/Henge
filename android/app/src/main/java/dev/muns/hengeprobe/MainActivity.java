@@ -173,7 +173,7 @@ public class MainActivity extends Activity {
         crashFile.delete();
         //noinspection ResultOfMethodCallIgnored
         progressFile.delete();
-        sb.append("\n위쪽의 ROM 부팅 시험 버튼을 쓰세요. 이전에 끝난 시험은 "완료된 시험 펼치기" 안에 있습니다.\n");
+        sb.append("\n위쪽의 ROM 부팅 시험 버튼을 쓰세요. 이전에 끝난 시험은 \"완료된 시험 펼치기\" 안에 있습니다.\n");
         output.setText(sb.toString());
     }
 

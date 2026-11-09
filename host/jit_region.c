@@ -13,7 +13,28 @@
 #include <libkern/OSCacheControl.h>
 #include <mach/mach.h>
 #else
+#include <errno.h>
+#include <stdio.h>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #define TARGET_OS_OSX 0
+#endif
+
+#if !defined(__APPLE__)
+/* Said only when a mapping step fails, so a normal run prints nothing. stderr
+   shows it in an adb shell and in CI; on Android it also goes to logcat, which
+   is where an app process's output ends up. err is 0 for a failure that did not
+   come from a system call, so no stale errno is printed. */
+static void jit_diag(const char *step, int err) {
+    char line[160];
+    if (err) snprintf(line, sizeof line, "jit_region: %s failed: %s (errno %d)", step, strerror(err), err);
+    else snprintf(line, sizeof line, "jit_region: %s failed", step);
+    fprintf(stderr, "%s\n", line);
+#if defined(__ANDROID__)
+    __android_log_print(ANDROID_LOG_ERROR, "henge-jit", "%s", line);
+#endif
+}
 #endif
 
 #if defined(__APPLE__)
@@ -41,23 +62,44 @@ static int open_split(HvJitRegion *region, size_t bytes) {
    what the executable address executes. Whether the kernel and SELinux allow
    an executable view of a memfd is exactly what the device test checks. */
 static int open_split(HvJitRegion *region, size_t bytes) {
+    int err;
     int fd = memfd_create("henge-jit", 0);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        err = errno;
+        jit_diag("memfd_create", err);
+        errno = err;
+        return -1;
+    }
     if (ftruncate(fd, (off_t)bytes) != 0) {
+        err = errno;
+        jit_diag("ftruncate", err);
         close(fd);
+        errno = err;
         return -1;
     }
     void *rw = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    void *rx = rw == MAP_FAILED ? MAP_FAILED : mmap(NULL, bytes, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
-    close(fd);
-    if (rw == MAP_FAILED || rx == MAP_FAILED) {
-        if (rw != MAP_FAILED) munmap(rw, bytes);
-        if (rx != MAP_FAILED) munmap(rx, bytes);
+    if (rw == MAP_FAILED) {
+        err = errno;
+        jit_diag("RW mmap", err);
+        close(fd);
+        errno = err;
         return -1;
     }
+    void *rx = mmap(NULL, bytes, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+    if (rx == MAP_FAILED) {
+        err = errno;
+        jit_diag("RX mmap", err);
+        munmap(rw, bytes);
+        close(fd);
+        errno = err;
+        return -1;
+    }
+    close(fd);
     if (hv_jit_region_attach(region, rx, rw, bytes) != 0) {
+        jit_diag("region attach (bad address or size)", 0);
         munmap(rw, bytes);
         munmap(rx, bytes);
+        errno = EINVAL;
         return -1;
     }
     region->owned = 1;
@@ -76,7 +118,9 @@ int hv_jit_region_open(HvJitRegion *region, size_t bytes) {
     region->owned = 1;
     return 0;
 #else
-    return open_split(region, bytes); /* works only where nothing enforces code signing (tests on a jailbroken device) */
+    /* Not macOS. iOS: works only where nothing enforces code signing (tests on a
+       jailbroken device). Linux and Android: the memfd split shape is the only one. */
+    return open_split(region, bytes);
 #endif
 }
 

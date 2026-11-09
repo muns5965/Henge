@@ -55,7 +55,7 @@ jobs:
       - name: Compile for Android arm64 (API 30)
         run: |
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
-          "$CC" -O1 -Wall -Wextra -Ihost host/jit_region.c tests/test_jit_linux.c -o jit_linux_test_android
+          "$CC" -O1 -Wall -Wextra -Ihost host/jit_region.c tests/test_jit_linux.c -llog -o jit_linux_test_android
           file jit_linux_test_android
 
       - name: Upload the Android test binary

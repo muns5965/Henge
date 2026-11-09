@@ -14,7 +14,7 @@ static const uint32_t RET = 0xd65f03c0;       /* ret */
 int main(void) {
     HvJitRegion region;
     if (hv_jit_region_open(&region, 1 << 20) != 0) {
-        printf("linux-split: could not map the JIT region\n");
+        printf("linux-split: FAIL, no JIT region (the step and errno are on stderr)\n");
         return 1;
     }
     if (!region.rw_diff) {

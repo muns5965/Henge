@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.system.Os;
 import android.system.OsConstants;
 import android.util.TypedValue;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -72,45 +73,50 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad * 2, pad, pad);
 
+        // Finished tests live in a section that starts folded; the ROM boot buttons stay on top.
+        final LinearLayout done = new LinearLayout(this);
+        done.setOrientation(LinearLayout.VERTICAL);
+        done.setVisibility(View.GONE);
+
         runButton = new Button(this);
         runButton.setText("JIT 크기 시험 실행 (1~768 MiB)");
         runButton.setOnClickListener(v -> runNow());
-        root.addView(runButton);
+        done.addView(runButton);
 
         mtButton = new Button(this);
         mtButton.setText("다중 스레드 패치 시험 (1~4단계, 약 20초)");
         mtButton.setOnClickListener(v -> runMtNow(false));
-        root.addView(mtButton);
+        done.addView(mtButton);
 
         longButton = new Button(this);
         longButton.setText("장시간 반복 (60초)");
         longButton.setOnClickListener(v -> runMtNow(true));
-        root.addView(longButton);
+        done.addView(longButton);
 
         memButton = new Button(this);
         memButton.setText("게스트 메모리 시험 (2~8 GiB 예약, 일부 페이지)");
         memButton.setOnClickListener(v -> runMemNow(0));
-        root.addView(memButton);
+        done.addView(memButton);
 
         denseButton = new Button(this);
         denseButton.setText("단계적 사용 시험 (종류별 1 GiB까지 실제 사용)");
         denseButton.setOnClickListener(v -> runMemNow(1));
-        root.addView(denseButton);
+        done.addView(denseButton);
 
         reclaimButton = new Button(this);
         reclaimButton.setText("메모리 반납 시험 (balloon 대체 호출)");
         reclaimButton.setOnClickListener(v -> runMemNow(2));
-        root.addView(reclaimButton);
+        done.addView(reclaimButton);
 
         engineButton = new Button(this);
         engineButton.setText("엔진 시험 실행 (mmu/jit/mem/exc/devices/vm)");
         engineButton.setOnClickListener(v -> runEngineNow());
-        root.addView(engineButton);
+        done.addView(engineButton);
 
         bigVmButton = new Button(this);
         bigVmButton.setText("VM 대용량 시험 (RAM 2048MB, JIT 768MB)");
         bigVmButton.setOnClickListener(v -> runBigVmNow());
-        root.addView(bigVmButton);
+        done.addView(bigVmButton);
 
         vmrunButton = new Button(this);
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
@@ -121,6 +127,16 @@ public class MainActivity extends Activity {
         installerButton.setText("ROM 설치기(DFU) 부팅 시험 (vmrun, 30초)");
         installerButton.setOnClickListener(v -> runVmrun(true));
         root.addView(installerButton);
+
+        final Button toggle = new Button(this);
+        toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
+        toggle.setOnClickListener(v -> {
+            boolean open = done.getVisibility() != View.VISIBLE;
+            done.setVisibility(open ? View.VISIBLE : View.GONE);
+            toggle.setText(open ? "▼ 완료된 시험 접기" : "▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
+        });
+        root.addView(toggle);
+        root.addView(done);
 
         cancelButton = new Button(this);
         cancelButton.setText("시험 취소 (다중 스레드·메모리)");
@@ -157,7 +173,7 @@ public class MainActivity extends Activity {
         crashFile.delete();
         //noinspection ResultOfMethodCallIgnored
         progressFile.delete();
-        sb.append("\n버튼을 누르면 1, 16, 64, 256, 768 MiB 순서로 시험합니다.\n");
+        sb.append("\n위쪽의 ROM 부팅 시험 버튼을 쓰세요. 이전에 끝난 시험은 "완료된 시험 펼치기" 안에 있습니다.\n");
         output.setText(sb.toString());
     }
 

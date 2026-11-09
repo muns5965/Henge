@@ -93,3 +93,4 @@ jobs:
             build-android/test_exc
             build-android/test_devices
             build-android/test_vm
+            build-android/vmrun

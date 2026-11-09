@@ -54,6 +54,8 @@ public class MainActivity extends Activity {
     private Button denseButton;
     private Button reclaimButton;
     private Button engineButton;
+    private Button bigVmButton;
+    private Button vmrunButton;
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
@@ -103,6 +105,16 @@ public class MainActivity extends Activity {
         engineButton.setText("엔진 시험 실행 (mmu/jit/mem/exc/devices/vm)");
         engineButton.setOnClickListener(v -> runEngineNow());
         root.addView(engineButton);
+
+        bigVmButton = new Button(this);
+        bigVmButton.setText("VM 대용량 시험 (RAM 2048MB, JIT 768MB)");
+        bigVmButton.setOnClickListener(v -> runBigVmNow());
+        root.addView(bigVmButton);
+
+        vmrunButton = new Button(this);
+        vmrunButton.setText("실제 ROM 실행 (vmrun, 30초)");
+        vmrunButton.setOnClickListener(v -> runVmrunNow());
+        root.addView(vmrunButton);
 
         cancelButton = new Button(this);
         cancelButton.setText("시험 취소 (다중 스레드·메모리)");
@@ -210,6 +222,8 @@ public class MainActivity extends Activity {
             denseButton.setEnabled(enabled);
             reclaimButton.setEnabled(enabled);
             engineButton.setEnabled(enabled);
+            bigVmButton.setEnabled(enabled);
+            vmrunButton.setEnabled(enabled);
         });
     }
 
@@ -308,6 +322,15 @@ public class MainActivity extends Activity {
      * away from the app, and a crash there cannot take the app down.
      */
     private void runEngineNow() {
+        runTests(new String[] {"mmu", "jit", "mem", "exc", "devices", "vm"}, null);
+    }
+
+    /** The VM test at the VM's default sizes (2048 MB RAM, 768 MB JIT): reports process memory too. */
+    private void runBigVmNow() {
+        runTests(new String[] {"vm"}, new String[] {"HV_TEST_BIG", "1"});
+    }
+
+    private void runTests(final String[] tests, final String[] extraEnv) {
         if (running) return;
         running = true;
         setButtons(false);
@@ -315,7 +338,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
             int ok = 0, failed = 0;
-            for (String t : new String[] {"mmu", "jit", "mem", "exc", "devices", "vm"}) {
+            for (String t : tests) {
                 show(acc + "실행 중: test_" + t + " ...\n");
                 File exe = new File(libDir, "libtest_" + t + ".so");
                 acc.append("== test_").append(t).append(" ==\n");
@@ -328,6 +351,7 @@ public class MainActivity extends Activity {
                     ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true);
                     pb.environment().put("HV_TEST_WORK", getFilesDir().getAbsolutePath()); // test_devices writes two small disk images
                     pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                    if (extraEnv != null) for (int e = 0; e + 1 < extraEnv.length; e += 2) pb.environment().put(extraEnv[e], extraEnv[e + 1]);
                     Process p = pb.start();
                     StringBuilder text = new StringBuilder();
                     Thread reader = new Thread(() -> {
@@ -389,6 +413,92 @@ public class MainActivity extends Activity {
             }
             acc.append("요약: PASS ").append(ok).append(", FAIL ").append(failed).append('\n');
             acc.append("엔진의 번역 코드가 이 기기에서 실행된 결과입니다. 게스트 부팅과는 별개입니다.\n");
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+
+    /**
+     * Runs host/vmrun.c on real files the user put in the app's external files dir, vm/rom.bin, disk.img, aux.img and an
+     * optional config.txt ("ecid=0x..", "seed=0x..", "ram_mb=..", "cpus=..", "jit_mb=..", "seconds=..", "log=..").
+     * Shows what vmrun prints: where CPU 0 is (pc, exception level, ESR/FAR) and why the machine stopped.
+     */
+    private void runVmrunNow() {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        final String libDir = getApplicationInfo().nativeLibraryDir;
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            try {
+                File base = new File(getExternalFilesDir(null), "vm");
+                File rom = new File(base, "rom.bin"), disk = new File(base, "disk.img"), aux = new File(base, "aux.img");
+                acc.append("폴더: ").append(base).append('\n');
+                File exe = new File(libDir, "libvmrun.so");
+                if (!exe.exists()) acc.append("vmrun 실행 파일이 이 APK에 없습니다.\n");
+                else if (!rom.exists() || !disk.exists() || !aux.exists()) {
+                    acc.append("필요한 파일이 없습니다 (rom.bin ").append(rom.exists()).append(", disk.img ").append(disk.exists())
+                            .append(", aux.img ").append(aux.exists()).append(").\n위 폴더에 이 이름으로 넣고 다시 누르세요. ")
+                            .append("선택: config.txt (한 줄에 하나: ecid=0x.., seed=0x.., ram_mb=, cpus=, jit_mb=, seconds=, log=).\n");
+                    base.mkdirs();
+                } else {
+                    java.util.Map<String, String> cfg = new java.util.HashMap<>();
+                    File cf = new File(base, "config.txt");
+                    if (cf.exists()) {
+                        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(cf))) {
+                            String line;
+                            while ((line = br.readLine()) != null) {
+                                int eq = line.indexOf('=');
+                                if (eq > 0 && !line.trim().startsWith("#")) cfg.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+                            }
+                        }
+                    }
+                    java.util.List<String> cmd = new java.util.ArrayList<>();
+                    cmd.add(exe.getAbsolutePath());
+                    cmd.add("--rom"); cmd.add(rom.getAbsolutePath());
+                    cmd.add("--disk"); cmd.add(disk.getAbsolutePath());
+                    cmd.add("--aux"); cmd.add(aux.getAbsolutePath());
+                    String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},
+                            {"jit_mb", "--jit-mb"}, {"seconds", "--seconds"}, {"log", "--log"}, {"aux_offset", "--aux-offset"}};
+                    for (String[] m : map) if (cfg.containsKey(m[0])) { cmd.add(m[1]); cmd.add(cfg.get(m[0])); }
+                    File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
+                    cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
+                    acc.append("명령: ").append(android.text.TextUtils.join(" ", cmd)).append('\n');
+                    show(acc.toString());
+                    ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
+                    pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                    Process p = pb.start();
+                    StringBuilder text = new StringBuilder();
+                    Thread reader = new Thread(() -> {
+                        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                            String line;
+                            while ((line = br.readLine()) != null) {
+                                synchronized (text) {
+                                    text.append(line).append('\n');
+                                    show(acc + text.toString());
+                                }
+                            }
+                        } catch (IOException ignored) {
+                        }
+                    });
+                    reader.start();
+                    double secs = 30;
+                    try { if (cfg.containsKey("seconds")) secs = Double.parseDouble(cfg.get("seconds")); } catch (NumberFormatException ignored) { }
+                    boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
+                    if (!done) p.destroyForcibly();
+                    reader.join(2000);
+                    synchronized (text) {
+                        acc.append(text);
+                    }
+                    if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
+                    else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
+                    acc.append("이 출력은 게스트가 부팅했다는 증거가 아닙니다. pc/el/esr 줄과 종료 사유를 확인하세요.\n");
+                }
+            } catch (Exception e) {
+                acc.append("실행 오류: ").append(e).append('\n');
+            }
             show(acc.toString());
             running = false;
             setButtons(true);

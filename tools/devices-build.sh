@@ -47,3 +47,10 @@ if $CC $CFLAGS -Itests tests/test_vm.c $vobjs $eobjs $dobjs ${EXTRA_LDFLAGS:-} $
 else
   echo "FAILED  link test_vm"; cat "$OUT/test_vm.log"; exit 1
 fi
+
+# Headless runner for a real ROM/disk (host/vmrun.c); not run in CI, packed into the APK as libvmrun.so.
+if $CC $CFLAGS host/vmrun.c $vobjs $eobjs $dobjs ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS:-} -o "$OUT/vmrun" 2> "$OUT/vmrun.log"; then
+  echo "linked  $OUT/vmrun"
+else
+  echo "FAILED  link vmrun"; cat "$OUT/vmrun.log"; exit 1
+fi

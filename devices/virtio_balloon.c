@@ -41,6 +41,12 @@ static void give_back(HvVirtioBalloon *b, uint64_t off, uint64_t len) {
         bad = madvise(b->ram + off, len, MADV_DONTNEED) != 0; /* private anonymous: the pages read as zeros if the guest takes them back */
 #endif
     }
+    {   /* diagnostics only: the first few calls, so a "0 MB back" can be traced to the call that did (or did not) happen */
+        static int told;
+        if (told++ < 3) fprintf(stderr, "hengevm: balloon: give_back #%d +%llx %llu KB via %s -> %s (errno %d)\n", told,
+                                (unsigned long long)off, (unsigned long long)(len >> 10), b->ram_fd >= 0 ? "punch hole" : "madvise",
+                                bad ? "failed" : "ok", bad ? errno : 0);
+    }
     if (bad) {
         if (b->failed++ < 4) fprintf(stderr, "hengevm: balloon: giving back %llu KB at +%llx failed: %s\n",
                                      (unsigned long long)(len >> 10), (unsigned long long)off, strerror(errno));
@@ -123,6 +129,10 @@ static void config_write(HvVirtio *v, uint32_t off, uint64_t val, unsigned size)
         fprintf(stderr, "hengevm: balloon: the guest has given %u MB of the %u MB asked; %llu MB back to the OS so far\n",
                 actual >> (20 - PFN_SHIFT), b->applied >> (20 - PFN_SHIFT),
                 (unsigned long long)((b->given_back - b->taken_back) * HOST_PAGE >> 20));
+        fprintf(stderr, "hengevm: balloon: counters: inflated pfns %llu, host pages given back %llu, failed %llu, partial %llu, outside RAM %llu; RAM at pa %llx..%llx, fd %d\n",
+                (unsigned long long)b->inflated_pfns, (unsigned long long)b->given_back, (unsigned long long)b->failed,
+                (unsigned long long)b->partial, (unsigned long long)b->out_of_ram, (unsigned long long)b->ram_pa,
+                (unsigned long long)(b->ram_pa + b->ram_size), b->ram_fd);
     }
 }
 

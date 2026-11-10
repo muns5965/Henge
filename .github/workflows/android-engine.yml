@@ -199,9 +199,9 @@ jobs:
         run: tools/restore-selftest.sh build-rs/restore_selftest build-rs/work
       - name: Test the restore preflight (real restore tool stopped by FLAG_NOACTION against a stand-in ROM and a fake IPSW; deny-mode, boundary and ECID-redaction checks; negative control)
         run: tools/preflight-test.sh build-rs
-      - name: Test the default-deny connection policy (policy table, real glue sockets, curl stand-in, URLAsset decisions; loopback listeners only)
+      - name: "Test the default-deny connection policy (policy table, real glue sockets, curl stand-in, URLAsset decisions, loopback listeners only)"
         run: tools/netguard-test.sh build-rs
-      - name: Test the install-disk policy (128 GiB sparse macos_disk.img: kept, never resized, reset only on the exact text; temporary directory)
+      - name: "Test the install-disk policy (128 GiB sparse macos_disk.img, kept, never resized, reset only on the exact text, temporary directory)"
         run: tools/disk-policy-test.sh build-diskpolicy
 
   android-ndk:

@@ -58,8 +58,11 @@ final class IpswDownload {
         Process p = proc;
         if (p == null) return;
         try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) android.os.Process.sendSignal((int) p.pid(), android.system.OsConstants.SIGTERM);
-            else p.destroy();
+            // Process.pid() exists from API 33 (looked up by name: the build's language level does not see it)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                long pid = (Long) Process.class.getMethod("pid").invoke(p);
+                android.system.Os.kill((int) pid, android.system.OsConstants.SIGTERM);
+            } else p.destroy();
         } catch (Throwable t) {
             p.destroy();
         }

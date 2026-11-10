@@ -103,7 +103,7 @@ check("pause at 5000001 bytes: exit 7, .part is exactly that long, metadata says
 out, rc, _ = run(args(d, stop=5000001))
 check("  paused again at the same point: no request is sent", rc == 7 and len(REQS) == 1, (rc, len(REQS), out[-200:]))
 out, rc, _ = run(args(d, stop=9000000))
-check("  continue to 9000000: Range from 5000001 with If-Range and the stored strong ETag", rc == 7 and REQS[-1][1] == "bytes=5000001-" and REQS[-1][2] == '"e1"' and fsize(P(d, ".part")) == 9000000, (rc, REQS, out[-300:]))
+check("  continue to 9000000: Range from 5000001 with If-Range and the stored strong ETag", rc == 7 and REQS[-1][1] == "bytes=5000001-" and REQS[-1][2] == '"e1"' and fsize(P(d, ".part")) == 9000000 and "REPLY 206 Content-Range bytes 5000001-" in out and "equals the stored one" in out, (rc, REQS, out[-300:]))
 out, rc, _ = run(args(d))
 check("  continue to the end: exit 0, the file equals the original, resumed at 9000000", rc == 0 and read(P(d)) == DATA and REQS[-1][1] == "bytes=9000000-" and "re-reading 9000000" in out, (rc, REQS[-1], out[-400:]))
 

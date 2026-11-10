@@ -175,6 +175,8 @@ static int finish_headers(Rq *r) {
         snprintf(d->etag, sizeof d->etag, "%s", r->r_etag);
         if (meta_write(d) != 0) { r->io_error = 1; r->io_errno = errno; refuse(r, 1, "cannot write the metadata"); return -1; }
     }
+    lg(d, "REPLY %d Content-Range bytes %llu-%llu/%llu accepted (starts where asked, ends at the end of the file, size as expected, %s)", r->status,
+       LLU(r->cr_start), LLU(r->cr_end), LLU(r->cr_total), r->start ? "strong ETag equals the stored one" : "strong ETag taken and stored");
     return 0;
 }
 static size_t hdr_cb(char *p, size_t s, size_t n, void *ud) {

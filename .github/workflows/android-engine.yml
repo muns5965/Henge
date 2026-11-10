@@ -99,6 +99,15 @@ jobs:
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
 
+      - name: Look at the TSS server's certificate chain with our client (informational; the chain does not depend on the device)
+        continue-on-error: true
+        run: |
+          set +e
+          CURLTOOL_CFLAGS=-DHV_ALLOW_CA_ENV tools/curltool-build.sh build-curltest > /dev/null 2>&1
+          build-curltest/curl_tool "https://gs.apple.com/TSS/controller?action=2" --discard 2>&1 | head -120
+          echo "--- the same host with openssl, for comparison"
+          echo | openssl s_client -connect gs.apple.com:443 -servername gs.apple.com -showcerts 2>&1 | grep -E "^ *[0-9] s:|^ *i:|a:PKEY|v:NotBefore|Verify return|verify error|Verification" | head -30
+
       - name: Test the HTTP/TLS client that replaces libcurl on Android (local servers; public check skipped without network)
         run: tools/curl-test.sh build-curltest
 

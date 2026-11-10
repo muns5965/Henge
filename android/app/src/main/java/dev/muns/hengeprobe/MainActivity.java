@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
+    private ScrollView pageScroll;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -201,11 +202,13 @@ public class MainActivity extends Activity {
         output.setTypeface(Typeface.MONOSPACE);
         output.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         output.setTextIsSelectable(true);
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(output);
-        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        setContentView(root);
+        // The whole page scrolls (buttons and result together). Before, only the result box scrolled, and with this many buttons it was squeezed to nothing and the buttons
+        // below the screen could not be reached.
+        root.addView(output, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pageScroll = new ScrollView(this);
+        pageScroll.setFillViewport(true);
+        pageScroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        setContentView(pageScroll);
 
         StringBuilder sb = new StringBuilder(deviceInfo());
         String crash = readFile(crashFile);
@@ -286,6 +289,8 @@ public class MainActivity extends Activity {
 
     private void setButtons(boolean enabled) {
         runOnUiThread(() -> {
+            // a run starts: bring the result box into view once (the user can scroll away afterwards)
+            if (!enabled && pageScroll != null && output != null) pageScroll.post(() -> pageScroll.smoothScrollTo(0, output.getTop()));
             runButton.setEnabled(enabled);
             mtButton.setEnabled(enabled);
             longButton.setEnabled(enabled);

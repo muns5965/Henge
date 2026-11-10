@@ -15,6 +15,10 @@
 #include "idevicerestore/src/idevicerestore.h"
 #include "idevicerestore/src/common.h"
 #include "idevicerestore/src/log.h"
+#include "idevicerestore/src/hv_stop.h"
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <zip.h>
 
 int usbmuxd_main(int argc, char **argv);
 void hv_curl_deny_network(int on);
@@ -65,6 +69,67 @@ int hv_restore_preflight_progress_verdict(int calls, int max_step, int last_step
     if (last_step != 0 || last_p < 0.59 || last_p > 0.61) { snprintf(note, cap, "the last callback is step %d at %.2f, not DETECT 0.60", last_step, last_p); return 0; }
     snprintf(note, cap, "%d callback(s), the last one is DETECT 0.60 (the line just before the FLAG_NOACTION return) and no later step ever came", calls);
     return 1;
+}
+
+int hv_restore_preflight_progress_verdict_a(int calls, int max_step, int last_step, double last_p, char *note, int cap) {
+    if (calls <= 0) { snprintf(note, cap, "the tool reported no progress at all"); return 0; }
+    if (max_step != 1) { snprintf(note, cap, "highest step %d, expected PREPARE (1): the tool did not get to, or went past, the stop", max_step); return 0; }
+    if (last_step != 1 || last_p > 0.05) { snprintf(note, cap, "the last callback is step %d at %.2f, not PREPARE 0.00 (PREPARE 0.20 would mean the root filesystem step was passed)", last_step, last_p); return 0; }
+    snprintf(note, cap, "%d callback(s), the last one is PREPARE 0.00 and PREPARE 0.20 (after the root filesystem step) never came", calls);
+    return 1;
+}
+
+/* ---- what stop A reports (called on the restore thread; copied, the rows are built later) ---- */
+static struct {
+    volatile int called, has_identity;
+    char hw[64], pt[64], os_path[512], ipsw_path[1024], cache[1024], variant[96], macvariant[96], devclass[48], chip[32], board[32], restorebehavior[48];
+    int zip, os_opened, seekable, needs, shsh, macos, tss;
+} g_sa;
+static void node_text(plist_t n, char *out, size_t cap) {
+    out[0] = 0;
+    if (!n) { snprintf(out, cap, "(absent)"); return; }
+    if (plist_get_node_type(n) == PLIST_STRING) { char *v = NULL; plist_get_string_val(n, &v); if (v) { snprintf(out, cap, "%s", v); free(v); } }
+    else if (plist_get_node_type(n) == PLIST_UINT) { uint64_t v = 0; plist_get_uint_val(n, &v); snprintf(out, cap, "%llu", (unsigned long long)v); }
+    else snprintf(out, cap, "(other type)");
+}
+static void stop_a(const struct hv_stop_a_info *i) {
+    memset((void *)&g_sa, 0, sizeof g_sa);
+    snprintf(g_sa.hw, sizeof g_sa.hw, "%s", i->hardware_model ? i->hardware_model : "");
+    snprintf(g_sa.pt, sizeof g_sa.pt, "%s", i->product_type ? i->product_type : "");
+    snprintf(g_sa.os_path, sizeof g_sa.os_path, "%s", i->os_path ? i->os_path : "");
+    snprintf(g_sa.ipsw_path, sizeof g_sa.ipsw_path, "%s", i->ipsw_path ? i->ipsw_path : "");
+    snprintf(g_sa.cache, sizeof g_sa.cache, "%s", i->cache_dir ? i->cache_dir : "");
+    g_sa.zip = i->zip, g_sa.os_opened = i->os_opened, g_sa.seekable = i->seekable, g_sa.needs = i->needs_os_extraction, g_sa.shsh = i->shsh_only, g_sa.macos = i->macos_variant, g_sa.tss = i->tss_enabled;
+    if (i->build_identity) {
+        g_sa.has_identity = 1;
+        node_text(plist_access_path(i->build_identity, 2, "Info", "Variant"), g_sa.variant, sizeof g_sa.variant);
+        node_text(plist_access_path(i->build_identity, 2, "Info", "MacOSVariant"), g_sa.macvariant, sizeof g_sa.macvariant);
+        node_text(plist_access_path(i->build_identity, 2, "Info", "DeviceClass"), g_sa.devclass, sizeof g_sa.devclass);
+        node_text(plist_access_path(i->build_identity, 2, "Info", "RestoreBehavior"), g_sa.restorebehavior, sizeof g_sa.restorebehavior);
+        node_text(plist_dict_get_item(i->build_identity, "ApChipID"), g_sa.chip, sizeof g_sa.chip);
+        node_text(plist_dict_get_item(i->build_identity, "ApBoardID"), g_sa.board, sizeof g_sa.board);
+    }
+    g_sa.called = 1;
+}
+
+/* ---- files in the work directory (what the run wrote) ---- */
+#define MAXF 512
+typedef struct { int n; char path[MAXF][300]; long long size[MAXF]; long long total; } Tree;
+static void tree_walk(const char *dir, const char *rel, Tree *t) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char full[1400], r[300];
+        snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+        snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        struct stat st;
+        if (lstat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) tree_walk(full, r, t);
+        else if (t->n < MAXF) { snprintf(t->path[t->n], sizeof t->path[0], "%s", r); t->size[t->n] = st.st_size; t->n++; t->total += st.st_size; }
+    }
+    closedir(d);
 }
 
 /* ---- the private usbmuxd, as host/install.c starts it ---- */
@@ -128,8 +193,8 @@ static void th_snap(ThSnap *s) {
 static int th_count(const ThSnap *s, const char *nm) { int c = 0; for (int i = 0; i < s->n; i++) if (!strcmp(s->name[i], nm)) c++; return c; }
 
 /* ---- the table ---- */
-typedef struct { const char *name; const char *status; char detail[400]; } Row;
-static Row g_rows[24];
+typedef struct { const char *name; const char *status; char detail[800]; } Row;
+static Row g_rows[40];
 static int g_nrows, g_failed, g_findings;
 static void row(const char *name, const char *status, const char *fmt, ...) {
     Row *r = &g_rows[g_nrows++];
@@ -163,9 +228,10 @@ static int mux_listening(void) {
     return ok;
 }
 
-int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, FILE *out, int cap_ms) {
+int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, FILE *out, int cap_ms, int stage) {
     g_nrows = g_failed = g_findings = 0;
     g_calls = 0, g_max_step = -1, g_last_step = -1, g_last_p = -1, g_rc = 12345, g_done = 0;
+    memset((void *)&g_sa, 0, sizeof g_sa);
     if (!usb) { fprintf(out, "restore preflight: no USB port\n"); return -1; }
 
     /* 1. the safety boundary first: deny mode on, and proven on before anything can ask for the network */
@@ -190,6 +256,9 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     pthread_detach(tm);
     usleep(300000);
     /* the baseline of the tool's own subscription and handles is taken with usbmuxd already up: it registers its own hotplug callback and keeps it for good */
+    static Tree tree0, tree1;
+    memset(&tree0, 0, sizeof tree0);
+    tree_walk(workdir, "", &tree0);
     int hp0 = hv_libusb_hotplug_live(), hd0 = hv_libusb_open_handles(), ho0 = hv_libusb_handles_opened_total();
 
     snprintf(g_ecid_dec, sizeof g_ecid_dec, "%llu", (unsigned long long)ecid);
@@ -201,11 +270,14 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     g_client = idevicerestore_client_new();
     if (!g_client) { row("init", "FAILED", "idevicerestore_client_new failed"); goto report; }
     /* FLAG_ERASE like the install; FLAG_NOACTION is the stop. Not set: FLAG_LATEST (network), FLAG_SHSHONLY, FLAG_NO_RESTORE, FLAG_PWN, FLAG_CUSTOM. */
+    int stop_flag = stage == HV_PF_STOP_A ? FLAG_STOP_BEFORE_ROOTFS : FLAG_NOACTION;
+    hv_stop_a_hook = stop_a;
 #ifdef HV_PREFLIGHT_NEGATIVE_CONTROL
     /* tests/test_preflight.c only (a second build of this file): without the stop the tool must go on, which proves the stop is what ends the run. Never in a shipped build. */
     idevicerestore_set_flags(g_client, FLAG_ERASE);
+    (void)stop_flag;
 #else
-    idevicerestore_set_flags(g_client, FLAG_ERASE | FLAG_NOACTION);
+    idevicerestore_set_flags(g_client, FLAG_ERASE | stop_flag);
 #endif
     hv_curl_set_cancel_flag((volatile int *)&global_quit_flag);
     idevicerestore_set_ipsw(g_client, ipsw);
@@ -224,12 +296,15 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     while (!g_done && now_ms() - t0 < cap_ms) usleep(20000);
     int timed_out = !g_done;
     if (timed_out) { global_quit_flag = 1; for (int i = 0; i < 150 && !g_done; i++) usleep(20000); }
+    int still_running = !g_done;   /* the quit flag did not end it either */
     if (g_done) pthread_join(tr, NULL);
     double took = now_ms() - t0;
 
-    row("init", (!timed_out && g_rc == 0) ? "ok" : "FAILED", "idevicerestore_start returned %d after %.0f ms%s", g_rc, took, timed_out ? " -- TIMEOUT, quit flag raised" : "");
+    int want_rc = stage == HV_PF_STOP_A ? HV_STOP_BEFORE_ROOTFS_RC : 0;
+    row("init", (!timed_out && g_rc == want_rc) ? "ok" : "FAILED", "idevicerestore_start returned %d (expected %d) after %.0f ms%s", g_rc, want_rc, took, timed_out ? (still_running ? " -- TIMEOUT, quit flag raised, the thread is STILL RUNNING" : " -- TIMEOUT, quit flag raised, it then ended") : "");
     char note[240];
-    int pv = hv_restore_preflight_progress_verdict(g_calls, g_max_step, g_last_step, g_last_p, note, sizeof note);
+    int pv = stage == HV_PF_STOP_A ? hv_restore_preflight_progress_verdict_a(g_calls, g_max_step, g_last_step, g_last_p, note, sizeof note)
+                                  : hv_restore_preflight_progress_verdict(g_calls, g_max_step, g_last_step, g_last_p, note, sizeof note);
     row("progress", pv ? "ok" : "FAILED", "%s", note);
 
     /* 3. what crossed the boundary */
@@ -252,11 +327,46 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     }
 
     /* 4. the stop itself: derived, not observed */
-    int stopped = !timed_out && g_rc == 0 && pv && att == 0;
+    int stopped = !timed_out && g_rc == want_rc && pv && att == 0;
+    if (stage == HV_PF_STOP_A) {
+        int direct = stopped && g_sa.called;
+        row("stopped=before_rootfs", direct ? "direct" : "FAILED", "%s -- OBSERVED: the tool itself called the stop-A report and returned %d; no extraction, signing request or device work comes after that point in the code",
+            direct ? "the tool stopped at stop A (after the component check, before the root filesystem step)" : "stop A was not reached or the other conditions do not hold", g_rc);
+    } else
     row("stopped=noaction", stopped ? "inferred" : "FAILED",
         "%s -- INFERRED from the code: with FLAG_PWN, FLAG_SHSHONLY and FLAG_NO_RESTORE unset, a 0 return before any later step can only come from the FLAG_NOACTION branch (every other early exit returns negative); the branch itself writes no log line and no callback", stopped ? "the tool stopped at its no-action point" : "the conditions for that inference do not hold");
 
+    if (stage == HV_PF_STOP_A) {
+        if (!g_sa.called) row("identity", "FAILED", "stop A was not reached, so there is nothing to report about the build identity");
+        else {
+            row("identity", g_sa.has_identity ? "ok" : "FAILED", "chosen for hardware model %s (product type %s): Variant \"%s\", RestoreBehavior %s, DeviceClass %s, ApChipID %s, ApBoardID %s -- observed from the tool's own report",
+                g_sa.hw, g_sa.pt, g_sa.variant, g_sa.restorebehavior, g_sa.devclass, g_sa.chip, g_sa.board);
+            row("macos_variant", "info", "%s (the tool's own macOS recovery-OS lookup for this model: variant \"macOS Customer\", exact match); MacOSVariant of the chosen identity: %s; tss_enabled by the manifest: %d",
+                g_sa.macos ? "present" : "ABSENT", g_sa.macvariant, g_sa.tss);
+            row("components", "ok", "present in the IPSW: the tool's check of every component path of the chosen identity passed before it reached stop A (existence of the ZIP entries only; contents and hashes are not checked)");
+            /* the root filesystem entry, from the ZIP itself (a second, read-only look with libzip; the tool's own handle is not shared) */
+            int zerr = 0; zip_t *z = zip_open(ipsw, ZIP_RDONLY, &zerr);
+            zip_stat_t zs; zip_stat_init(&zs);
+            int zok = z && zip_stat(z, g_sa.os_path, 0, &zs) == 0 && (zs.valid & ZIP_STAT_COMP_METHOD) && (zs.valid & ZIP_STAT_SIZE) && (zs.valid & ZIP_STAT_COMP_SIZE);
+            const char *mname = !zok ? "?" : zs.comp_method == ZIP_CM_STORE ? "stored" : zs.comp_method == ZIP_CM_DEFLATE ? "deflate" : "other";
+            if (z) zip_close(z);
+            row("rootfs_entry", zok ? "ok" : "FAILED", "path %s; ZIP method %s (%d); size %llu, compressed %llu bytes; the tool's handle is %sseekable (the tool's rule is seekable = stored, so it %s here)",
+                g_sa.os_path, mname, zok ? (int)zs.comp_method : -1, zok ? (unsigned long long)zs.size : 0ULL, zok ? (unsigned long long)zs.comp_size : 0ULL, g_sa.seekable ? "" : "NOT ",
+                zok && ((zs.comp_method == ZIP_CM_STORE) == (g_sa.seekable != 0)) ? "agrees" : "DISAGREES with what libzip says");
+            struct statvfs sv; unsigned long long avail = 0;
+            if (statvfs(workdir, &sv) == 0) avail = (unsigned long long)sv.f_bavail * sv.f_frsize;
+            row("extraction_rule", "info", "the tool's rule: extract %s (os entry opened: %d, seekable: %d, FLAG_SHSHONLY unset: %d). If it did, the target would be under %s (the cache directory) and the file would take %llu bytes; free space on that file system: %llu bytes -> %s. This run extracted nothing.",
+                g_sa.needs && !g_sa.shsh ? "YES" : "no", g_sa.os_opened, g_sa.seekable, !g_sa.shsh, g_sa.cache[0] ? g_sa.cache : "(no cache dir: a temp file)", zok ? (unsigned long long)zs.size : 0ULL, avail,
+                !(g_sa.needs && !g_sa.shsh) ? "not needed" : (zok && avail > zs.size) ? "enough" : "NOT enough");
+        }
+    }
+
     /* 5. clean-up, category by category. Only then: the tool frees its client. */
+    if (still_running) {
+        /* the thread still uses the client: freeing it now would be a use-after-free. Leave it, say so, and do not build the clean-up rows on a half-alive tool. */
+        row("client_free", "FAILED", "NOT done: the restore thread has not returned, so the client is left allocated (reported as a leak, not freed under a running thread)");
+        goto report;
+    }
     idevicerestore_client_free(g_client);
     g_client = NULL;
     usleep(500000); /* the event thread of the tool needs a moment to wind down */
@@ -283,27 +393,42 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     row("fds", "info", "open descriptors %d before, %d after (sockets %d->%d, pipes %d->%d, anon_inode %d->%d, files %d->%d); the difference is the usbmuxd listener and its poll set, not attributed further", fd0.n, fd1.n,
         fd_count_kind(&fd0, "socket"), fd_count_kind(&fd1, "socket"), fd_count_kind(&fd0, "pipe"), fd_count_kind(&fd1, "pipe"), fd_count_kind(&fd0, "anon_inode"), fd_count_kind(&fd1, "anon_inode"), fd_count_kind(&fd0, "file"), fd_count_kind(&fd1, "file"));
     row("process", !timed_out ? "ok" : "FAILED", "the restore thread %s within %d ms", timed_out ? "did NOT finish" : "finished", cap_ms);
+    {
+        memset(&tree1, 0, sizeof tree1);
+        tree_walk(workdir, "", &tree1);
+        int added = 0; long long bytes = 0; char first[400] = "";
+        for (int i = 0; i < tree1.n; i++) {
+            int found = 0;
+            for (int j = 0; j < tree0.n; j++) if (!strcmp(tree0.path[j], tree1.path[i])) { found = 1; if (tree0.size[j] != tree1.size[i]) bytes += tree1.size[i] - tree0.size[j]; }
+            if (!found) { added++; bytes += tree1.size[i]; if (strlen(first) < 250) { char one[300]; snprintf(one, sizeof one, "%s%s (%lld B)", first[0] ? ", " : "", tree1.path[i], tree1.size[i]); strncat(first, one, sizeof first - strlen(first) - 1); } }
+        }
+        int big = bytes > (1 << 20);
+        row("local_writes", big ? "FAILED" : "info", "files in the work directory: %d before, %d after; %d new file(s), %lld bytes added%s%s%s. Only this directory is measured (not the IPSW, not other app files); the BuildManifest is read into memory",
+            tree0.n, tree1.n, added, bytes, first[0] ? ": " : "", first, big ? " -- MORE THAN 1 MiB: something large was written" : "");
+    }
 
 report:
-    fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction, no disk write\n");
+    if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction, no disk write\n");
+    else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction, no disk write\n");
     for (int i = 0; i < g_nrows; i++) fprintf(out, "restore preflight: %-20s %-9s %s\n", g_rows[i].name, g_rows[i].status, g_rows[i].detail);
-    if (g_failed == 0) fprintf(out, "restore preflight RESULT: preflight_completed stopped=noaction (inferred), %d clean-up finding(s) in the library (rows marked leaked / usbmuxd). This is NOT a restore: nothing was personalized, sent or installed.\n", g_findings + 1);
+    if (g_failed == 0 && stage == HV_PF_STOP_A) fprintf(out, "restore preflight RESULT: preflight_completed stopped=before_rootfs (observed), %d clean-up finding(s) in the library (rows marked leaked / usbmuxd). This is NOT a restore: nothing was personalized, sent, extracted or installed.\n", g_findings + 1);
+    else if (g_failed == 0) fprintf(out, "restore preflight RESULT: preflight_completed stopped=noaction (inferred), %d clean-up finding(s) in the library (rows marked leaked / usbmuxd). This is NOT a restore: nothing was personalized, sent or installed.\n", g_findings + 1);
     else fprintf(out, "restore preflight RESULT: FAILED (%d row(s)). Not a restore.\n", g_failed);
     fflush(out);
     return g_failed;
 }
 
 /* ---- detached thread for vmrun ---- */
-static struct { HvVirtioUsb *usb; char ipsw[1024], work[1024]; uint64_t ecid; } g_start;
+static struct { HvVirtioUsb *usb; char ipsw[1024], work[1024]; uint64_t ecid; int stage; } g_start;
 static volatile int g_finished;
 static void *start_thread(void *arg) {
     (void)arg;
-    hv_restore_preflight_run(g_start.usb, g_start.ipsw, g_start.work, g_start.ecid, stdout, 120000);
+    hv_restore_preflight_run(g_start.usb, g_start.ipsw, g_start.work, g_start.ecid, stdout, 120000, g_start.stage);
     g_finished = 1;
     return NULL;
 }
-void hv_restore_preflight_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid) {
-    g_start.usb = usb, g_start.ecid = ecid;
+void hv_restore_preflight_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, int stage) {
+    g_start.usb = usb, g_start.ecid = ecid, g_start.stage = stage;
     snprintf(g_start.ipsw, sizeof g_start.ipsw, "%s", ipsw);
     snprintf(g_start.work, sizeof g_start.work, "%s", workdir);
     pthread_t t;

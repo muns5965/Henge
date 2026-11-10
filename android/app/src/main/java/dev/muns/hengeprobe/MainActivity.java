@@ -257,6 +257,16 @@ public class MainActivity extends Activity {
         pfButton.setText("복원 도구 장치 감지 (실제 복원 도구 시작만, Apple 요청 없음)");
         pfButton.setOnClickListener(v -> { preflightMode = true; runVmrun(true, false, false, 2); });
         root.addView(pfButton);
+        final Button pfaButton = new Button(this);
+        pfaButton.setText("복원 도구 정지점 A (BuildManifest·루트FS 확인, 추출 전 정지, Apple 요청 없음)");
+        pfaButton.setOnClickListener(v -> { preflightMode = true; preflightStageA = true; runVmrun(true, false, false, 2); });
+        root.addView(pfaButton);
+        final TextView pfaNote = new TextView(this);
+        pfaNote.setText("위 버튼과 같지만 복원 도구가 더 나아가, IPSW의 BuildManifest를 메모리로 읽고 이 가상 Mac의 build identity를 고르고 구성요소 존재를 확인한 뒤, "
+                + "루트 파일시스템을 추출하기 '직전'에 스스로 멈춥니다(시험 전용 정지점, 도구가 직접 보고). 루트 파일시스템의 ZIP 경로·압축 방식·크기, 추출이 필요한지, 여유 공간, 작업 폴더에 쓴 파일이 있는지를 표로 보여줍니다. "
+                + "Apple 서명 요청·이미지 전송·추출·디스크 쓰기는 하지 않습니다.");
+        pfaNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(pfaNote);
         final TextView pfNote = new TextView(this);
         pfNote.setText("받아 둔 IPSW를 열고 가상 Mac(DFU)을 실제 복원 도구(idevicerestore)로 감지·식별한 뒤, 복원 도구 자체의 '실행 안 함' 지점에서 멈춥니다. "
                 + "Apple 서명 요청·이미지 전송·루트 파일시스템 추출·디스크 쓰기는 하지 않고, 네트워크 요청은 연결 전에 모두 거부합니다(그 거부는 이 프로그램의 HTTP 클라이언트에만 적용). "
@@ -751,7 +761,9 @@ public class MainActivity extends Activity {
         final boolean tss = tssMode;
         tssMode = false;
         final boolean pf = preflightMode;
+        final boolean pfA = preflightStageA;
         preflightMode = false;
+        preflightStageA = false;
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -795,7 +807,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
+                    if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
                     if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
@@ -1007,6 +1019,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean tssMode;
+    private boolean preflightStageA;
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 
     /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */

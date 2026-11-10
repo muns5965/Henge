@@ -5,7 +5,9 @@
      curl       - the ROM stand-in makes one HTTPS request through the curl stand-in while the tool runs: deny mode must refuse it, network_requests must FAIL, and
                   the server (a listener on the port it asked for) must see no connection
      dnload     - the ROM stand-in's side thread sends a DFU DNLOAD during the run: data_transfers must FAIL
-     progress   - (no tool) injected progress sequences for hv_restore_preflight_progress_verdict
+     hang       - the ROM stand-in does not answer for 9 s: the run must end FAILED on its cap without freeing the client under a running thread
+     progress   - (no tool) injected progress sequences for hv_restore_preflight_progress_verdict, both stages
+   Names with the prefix "a-" (a-ok, a-curl, a-dnload, a-no-ipsw) run stop A (stage 1) instead of FLAG_NOACTION; the shell script gives them the fake IPSW that fits.
    The negative control is a second build of this program with -DHV_PREFLIGHT_NEGATIVE_CONTROL (the stop is not set): scenario ok must then FAIL (init/progress).
    Exit status: 0 when the scenario's expectation is met, else 100+. */
 #define main irecv_main
@@ -60,6 +62,8 @@ static void hook_dnload(void) {
     for (int i = 0; i < 500 && hv_libusb_ctrl_count() == c0; i++) usleep(2000);
 }
 
+static void hook_hang(void) { usleep(9000000); }
+
 static int progress_tests(void) {
     struct { const char *name; int calls, maxs, lasts; double lastp; int want; } t[] = {
         {"DETECT 0.6 last, nothing later", 7, 0, 0, 0.6, 1},
@@ -75,6 +79,19 @@ static int progress_tests(void) {
         printf("%s progress verdict %-36s -> %d (%s)\n", got == t[k].want ? "PASS" : "FAIL", t[k].name, got, note);
         if (got != t[k].want) fails++;
     }
+    struct { const char *name; int calls, maxs, lasts; double lastp; int want; } ta[] = {
+        {"PREPARE 0.0 last, nothing later", 8, 1, 1, 0.0, 1},
+        {"no callback at all", 0, -1, -1, -1, 0},
+        {"stopped in DETECT (never reached PREPARE)", 4, 0, 0, 0.6, 0},
+        {"PREPARE 0.2 (root filesystem step passed)", 9, 1, 1, 0.2, 0},
+        {"a later step (flash firmware)", 12, 4, 4, 0.1, 0},
+    };
+    for (unsigned k = 0; k < sizeof ta / sizeof ta[0]; k++) {
+        char note[240];
+        int got = hv_restore_preflight_progress_verdict_a(ta[k].calls, ta[k].maxs, ta[k].lasts, ta[k].lastp, note, sizeof note);
+        printf("%s progress verdict (stop A) %-36s -> %d (%s)\n", got == ta[k].want ? "PASS" : "FAIL", ta[k].name, got, note);
+        if (got != ta[k].want) fails++;
+    }
     return fails;
 }
 
@@ -82,13 +99,15 @@ int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "ok";
     if (!strcmp(sc, "progress")) return progress_tests();
     g_sc = "ok";
+    int stage = !strncmp(sc, "a-", 2) ? HV_PF_STOP_A : HV_PF_NOACTION;
+    const char *kind = stage == HV_PF_STOP_A ? sc + 2 : sc;
     uint64_t ecid = 0x2d2a8d94f32ba4d2ull;
     g_dev_ecid = ecid;
     g_u = calloc(1, sizeof *g_u);
     pthread_mutex_init(&g_u->mu, NULL);
     pthread_cond_init(&g_u->cv, NULL);
     pthread_t t, ta;
-    if (!strcmp(sc, "curl")) {
+    if (!strcmp(kind, "curl")) {
         g_listen = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in a = {.sin_family = AF_INET};
         inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
@@ -100,20 +119,21 @@ int main(int argc, char **argv) {
         g_hook_serial = hook_curl;
         pthread_create(&ta, NULL, acceptor, NULL);
     }
-    if (!strcmp(sc, "dnload")) g_hook_serial = hook_dnload;
+    if (!strcmp(kind, "dnload")) g_hook_serial = hook_dnload;
+    if (!strcmp(kind, "hang")) g_hook_serial = hook_hang;
     pthread_create(&t, NULL, rom, NULL);
     hv_vusb_set_online(g_u, 1);
-    const char *ipsw = !strcmp(sc, "no-ipsw") ? "/nonexistent/fake.ipsw" : (argc > 2 ? argv[2] : "fake.ipsw");
+    const char *ipsw = !strcmp(kind, "no-ipsw") ? "/nonexistent/fake.ipsw" : (argc > 2 ? argv[2] : "fake.ipsw");
     const char *work = argc > 3 ? argv[3] : ".";
-    int r = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, 20000);
+    int r = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, !strcmp(kind, "hang") ? 1500 : 20000, stage);
     g_stop = 1;
     pthread_join(t, NULL);
-    if (!strcmp(sc, "curl")) { pthread_join(ta, NULL); printf("scenario curl: the local server saw %d connection(s)\n", g_conn_seen); }
+    if (!strcmp(kind, "curl")) { pthread_join(ta, NULL); printf("scenario curl: the local server saw %d connection(s)\n", g_conn_seen); }
     int bad = 0;
-    if (!strcmp(sc, "ok")) bad = r != 0;
-    else if (!strcmp(sc, "no-ipsw")) bad = r < 1;
-    else if (!strcmp(sc, "curl")) bad = !(r >= 1 && g_conn_seen == 0);
-    else if (!strcmp(sc, "dnload")) bad = r < 1;
+    if (!strcmp(kind, "ok")) bad = r != 0;
+    else if (!strcmp(kind, "no-ipsw") || !strcmp(kind, "dnload") || !strcmp(kind, "hang")) bad = r < 1;
+    else if (!strcmp(kind, "curl")) bad = !(r >= 1 && g_conn_seen == 0);
+    else if (!strncmp(kind, "bad-", 4)) bad = r < 1;   /* a-bad-component, a-bad-identity: the fake IPSW is wrong on purpose */
     printf("scenario %s: preflight returned %d -> %s\n", sc, r, bad ? "EXPECTATION NOT MET" : "as expected");
     return bad ? 100 + (r > 0 ? r : 0) : 0;
 }

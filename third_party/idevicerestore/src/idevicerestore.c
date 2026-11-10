@@ -54,6 +54,7 @@
 #include "download.h"
 #include "recovery.h"
 #include "idevicerestore.h"
+#include "hv_stop.h"
 
 #ifdef HAVE_LIMERA1N
 #include "limera1n.h"
@@ -1142,15 +1143,45 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	/* check if IPSW has OS component 'stored' in ZIP archive, otherwise we need to extract it */
 	int needs_os_extraction = 0;
+	int hv_os_opened = 0, hv_seekable = 0;
 	if (client->ipsw->zip) {
 		ipsw_file_handle_t zfile = ipsw_file_open(client->ipsw, os_path);
 		if (zfile) {
+			hv_os_opened = 1;
+			hv_seekable = zfile->seekable;
 			if (!zfile->seekable) {
 				needs_os_extraction = 1;
 			}
 			ipsw_file_close(zfile);
 		}
 	}
+
+#ifdef HV_STOP_BEFORE_ROOTFS
+	/* Henge test mode "stop A" (see hv_stop.h): report and return before the root filesystem is extracted, before any signing request and before the device is touched again. */
+	if (client->flags & FLAG_STOP_BEFORE_ROOTFS) {
+		struct hv_stop_a_info hv_info;
+		memset(&hv_info, 0, sizeof(hv_info));
+		hv_info.build_identity = build_identity;
+		hv_info.hardware_model = client->device->hardware_model;
+		hv_info.product_type = client->device->product_type;
+		hv_info.os_path = os_path;
+		hv_info.ipsw_path = client->ipsw->path;
+		hv_info.cache_dir = client->cache_dir;
+		hv_info.zip = client->ipsw->zip;
+		hv_info.os_opened = hv_os_opened;
+		hv_info.seekable = hv_seekable;
+		hv_info.needs_os_extraction = needs_os_extraction;
+		hv_info.shsh_only = (client->flags & FLAG_SHSHONLY) ? 1 : 0;
+		hv_info.macos_variant = client->macos_variant != NULL;
+		hv_info.tss_enabled = tss_enabled;
+		if (hv_stop_a_hook) hv_stop_a_hook(&hv_info);
+		/* the same two calls the normal flow makes when it leaves DFU mode (line ~1443): is_image4_supported() above opened a DFU handle that nothing else closes */
+		dfu_client_free(client);
+		recovery_client_free(client);
+		free(os_path);
+		return HV_STOP_BEFORE_ROOTFS_RC;
+	}
+#endif
 
 	if (needs_os_extraction && !(client->flags & FLAG_SHSHONLY)) {
 		char* tmpf = NULL;
@@ -1595,6 +1626,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	return result;
 }
+
+#ifdef HV_STOP_BEFORE_ROOTFS
+void (*hv_stop_a_hook)(const struct hv_stop_a_info *info) = NULL;
+#endif
 
 struct idevicerestore_client_t* idevicerestore_client_new(void)
 {

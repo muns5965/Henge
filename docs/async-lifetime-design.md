@@ -1,5 +1,7 @@
 # 공통 비동기 작업 수명 관리 상세 설계 (검토용 초안)
 
+> **갱신 안내**: 결정은 `docs/restore-lifetime-integrated-design.md`(통합 설계 권고안)가 대체한다. 이 문서의 사실 항목(P1~P11, P10 판정표)은 근거로 유효하며, "후보"·"결정이 필요한 항목(D1~D7)" 표기는 통합 설계의 권고안으로 대체된다.
+
 상태: 설계 초안. 구현·벤더링 소스 변경은 별도 승인 대상이다.
 근거 조사: `docs/tss-integration-design.md` 2.6~2.8절. 시험 명세: `docs/fake-device-test-spec.md`.
 

@@ -35,7 +35,7 @@ cc1 host/tss_probe_core.c -DHV_TSS_HTTPS_ONLY
 cc1 host/tss_probe.c
 for f in $TP/libplist/src/*.c $TP/libplist/libcnary/node.c $TP/libplist/libcnary/node_list.c; do cc1 $f -I"$(dirname "$f")" '-DPACKAGE_VERSION="2.8.0-henge"'; done
 for f in $TP/libtatsu/src/*.c; do cc1 $f -I$TP/libtatsu/src '-DPACKAGE_VERSION="1.0.5-henge"' -DHV_TSS_HTTPS_ONLY; done
-$CC $FL -DHV_IRECV_PROBE -DHV_TSS_PROBE -c host/vmrun.c -o "$R/vmrun.o" 2> "$R/vmrun.o.log" || { echo "FAILED  host/vmrun.c"; head -20 "$R/vmrun.o.log"; exit 1; }
+$CC $FL -DHV_TSS_PROBE -c host/vmrun.c -o "$R/vmrun.o" 2> "$R/vmrun.o.log" || { echo "FAILED  host/vmrun.c"; head -20 "$R/vmrun.o.log"; exit 1; }
 eobjs=""; for o in classify operands translate dispatch mmu memop exception sysreg machine jit_region disk enter; do eobjs="$eobjs $OUT/$o.o"; done
 dobjs="$(ls $OUT/dev_*.o)"
 vobjs="$OUT/vm_vm.o $OUT/vm_stubs_portable.o $OUT/vm_usb_host.o"

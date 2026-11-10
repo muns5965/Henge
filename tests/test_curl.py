@@ -6,6 +6,7 @@ import hashlib, http.server, os, socketserver, ssl, subprocess, sys, threading, 
 tool, work = sys.argv[1], sys.argv[2]
 os.makedirs(work, exist_ok=True)
 BIG = os.urandom(3 * 1024 * 1024 + 17)
+BLK = os.urandom(1024 * 1024 + 3)
 fails = []
 
 def check(name, cond, info=""):
@@ -48,6 +49,24 @@ class H(http.server.BaseHTTPRequestHandler):
         elif p == "/short":  # promises more than it sends
             self.send_response(200); self.send_header("Content-Length", "100"); self.send_header("Connection", "close"); self.end_headers()
             self.wfile.write(b"only-ten-by"); self.close_connection = True
+        elif p.startswith("/gen"):  # generated on the fly, never held in memory: /gen?n=N (sized), /genc?n=N (chunked), /gencut?n=N&cut=M (promises N, sends M, closes)
+            q = dict(kv.split("=") for kv in p.split("?", 1)[1].split("&")); n = int(q["n"]); cut = int(q.get("cut", n))
+            chunked = p.startswith("/genc?")
+            self.send_response(200); self.send_header("Connection", "close")
+            if chunked: self.send_header("Transfer-Encoding", "chunked")
+            else: self.send_header("Content-Length", str(n))
+            self.end_headers()
+            sent = 0
+            try:
+                while sent < cut:
+                    piece = BLK[: min(len(BLK), cut - sent)]
+                    self.wfile.write((b"%x\r\n" % len(piece) + piece + b"\r\n") if chunked else piece)
+                    sent += len(piece)
+                if chunked: self.wfile.write(b"0\r\n\r\n")
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client stopped on purpose
+            self.close_connection = True
+        elif p == "/to-stall": self.send(302, b"", [("Location", "http://127.0.0.1:%d/x" % STALL_PORT)])
         elif p == "/garbage":
             self.wfile.write(b"SSH-2.0-not-http\r\n\r\n"); self.close_connection = True
         else: self.send(404, b"")
@@ -97,6 +116,56 @@ def run(args, env=None, timeout=60):
     d["out"] = r.stdout; d["stderr"] = err; d["code"] = r.returncode
     return d
 
+def raw_server(mode):
+    """mode 'stall': read the request, then say nothing; 'headers': send a complete header block promising a big body, then nothing; 'drip': header + 1 byte every 0.2 s forever; 'silent': accept and never read or write"""
+    import socket
+    ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); ls.bind(("127.0.0.1", 0)); ls.listen(50)
+    def serve_one(conn):
+        try:
+            if mode != "silent": conn.recv(65536)
+            if mode in ("headers", "drip"): conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100000000\r\nConnection: close\r\n\r\n")
+            while True:
+                if mode == "drip": conn.sendall(b"x"); time.sleep(0.2)
+                else: time.sleep(0.5)
+        except Exception: pass
+        finally: conn.close()
+    def loop():
+        while True:
+            c, _ = ls.accept(); threading.Thread(target=serve_one, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+    return ls.getsockname()[1]
+
+import time
+STALL_PORT = raw_server("stall"); HEADERS_PORT = raw_server("headers"); DRIP_PORT = raw_server("drip"); SILENT_PORT = raw_server("silent")
+
+def run_big(args, env=None, timeout=300):
+    """runs the tool with stdout to a file; returns the dict of run() fields (out omitted) plus sha256/size of what it wrote and the child's peak RSS in KiB"""
+    e = dict(os.environ); e.update(env or {})
+    outp = f"{work}/big.out"
+    with open(outp, "wb") as fo, open(f"{work}/big.err", "wb") as fe:
+        pr = subprocess.Popen([tool] + args, stdout=fo, stderr=fe, env=e)
+        _, status, ru = os.wait4(pr.pid, 0)
+    err = open(f"{work}/big.err", errors="replace").read()
+    d = {"stderr": err, "maxrss_kib": ru.ru_maxrss}
+    for ln in err.splitlines():
+        if ln.startswith("RC="):
+            for part in ln.split(" ", 3):
+                k, _, v = part.partition("="); d[k] = v
+    h = hashlib.sha256(); n = 0
+    with open(outp, "rb") as f:
+        while True:
+            b = f.read(1 << 20)
+            if not b: break
+            h.update(b); n += len(b)
+    d["sha"], d["size"] = h.hexdigest(), n
+    return d
+
+def expect_sha(n):
+    h = hashlib.sha256(); left = n
+    while left:
+        piece = BLK[: min(len(BLK), left)]; h.update(piece); left -= len(piece)
+    return h.hexdigest()
+
 srv_http, HTTP_PORT = serve(None)
 B = f"http://127.0.0.1:{HTTP_PORT}"
 r = run([B + "/hello", "--headers"])
@@ -121,6 +190,58 @@ r = run(["ftp://127.0.0.1/x"]); check("unsupported scheme", r["RC"] == "1", r)
 r = run(["http://127.0.0.1:1/x"]); check("connection refused", r["RC"] == "7", r)
 r = run(["http://nonexistent.invalid/"]); check("DNS failure", r["RC"] == "6", r)
 
+# --- whole-transfer deadline, external cancel, progress-callback stop (all against servers that go quiet or never finish) ---
+def num(d, k): return float(d.get(k, "nan"))
+def tm(r):
+    d = {}
+    for ln in r["stderr"].splitlines():
+        if ln.startswith("ELAPSED_MS="):
+            for kv in ln.split(): k, _, v = kv.partition("="); d[k] = int(float(v))
+    return d
+ST = f"http://127.0.0.1:{STALL_PORT}"
+r = run([ST + "/x", "--timeout-ms", "1200"]); t = tm(r)
+check("TIMEOUT_MS: a server that reads the request and goes silent -> CURLE_OPERATION_TIMEDOUT near the limit (not after the 60 s idle limit)", r["RC"] == "28" and 1100 <= t["ELAPSED_MS"] <= 2500, (r["RC"], t, r["ERR"]))
+check("  the error text says what happened", "timed out after 1200 milliseconds" in r["ERR"], r["ERR"])
+check("  the socket is closed again (no descriptor left behind)", t["FDS_AFTER"] == t["FDS_BEFORE"], t)
+r = run([f"http://127.0.0.1:{HEADERS_PORT}/x", "--timeout-ms", "1000"]); t = tm(r)
+check("TIMEOUT_MS: headers arrive, the body never does", r["RC"] == "28" and 900 <= t["ELAPSED_MS"] <= 2500 and r["HTTP"] == "200", (r["RC"], t))
+r = run([f"http://127.0.0.1:{DRIP_PORT}/x", "--timeout-ms", "1500"]); t = tm(r)
+check("TIMEOUT_MS: a body that trickles in (idle limit never reached) still ends at the total limit", r["RC"] == "28" and 1400 <= t["ELAPSED_MS"] <= 2800 and int(r["BYTES"]) > 0, (r["RC"], t, r["BYTES"]))
+r = run([f"http://127.0.0.1:{STALL_PORT}/x", "--timeout-ms", "3000", "--cancel-after-ms", "600"]); t = tm(r)
+check("hv_curl_cancel from another thread -> CURLE_ABORTED_BY_CALLBACK long before the deadline", r["RC"] == "42" and t["ELAPSED_MS"] < 1500 and t["FDS_AFTER"] == t["FDS_BEFORE"], (r["RC"], t))
+check("  the error text says it was a cancel", "cancel" in r["ERR"].lower(), r["ERR"])
+r = run([f"http://127.0.0.1:{DRIP_PORT}/x", "--global-cancel-after-ms", "700"]); t = tm(r)
+check("process-wide cancel flag stops a trickling transfer", r["RC"] == "42" and t["ELAPSED_MS"] < 1800, (r["RC"], t))
+r = run([ST + "/x", "--abort-after-ms", "1500"]); t = tm(r)
+check("a progress callback that says stop is honoured while the peer is silent (called about once a second, as libcurl does)", r["RC"] == "42" and 1400 <= t["ELAPSED_MS"] <= 3200, (r["RC"], t))
+r = run([B + "/to-stall", "--follow", "--timeout-ms", "1500"]); t = tm(r)
+check("the deadline covers the whole redirect chain", r["RC"] == "28" and 1400 <= t["ELAPSED_MS"] <= 2800, (r["RC"], t))
+r = run([ST + "/x", "--timeout-ms", "800", "--also", B + "/hello"]); q = reqs(r) if False else r
+check("the same handle works again after a timeout (state reset)", "REQ 2 RC=0 HTTP=200" in r["stderr"], r["stderr"][-300:])
+r = run([ST + "/x", "--cancel-after-ms", "400", "--also", B + "/hello"])
+check("the same handle works again after a cancel + hv_curl_cancel_reset", "REQ 2 RC=0 HTTP=200" in r["stderr"], r["stderr"][-300:])
+r = run([B + "/hello", "--timeout-ms", "5000"]); t = tm(r)
+check("a timeout that is not reached changes nothing", r["RC"] == "0" and r["out"] == b"hello world" and t["ELAPSED_MS"] < 1500, (r["RC"], t))
+r = run([f"http://127.0.0.1:{SILENT_PORT}/x", "--timeout-ms", "1000"]); t = tm(r)
+check("accepts the connection but never reads: the request is small, so it goes out, and waiting for the reply ends at the limit", r["RC"] == "28", (r["RC"], t))
+
+# --- big downloads: streamed, exact, bounded memory; cut off midway ---
+N = 64 * 1024 * 1024
+small = run_big([B + "/gen?n=1048576", "--discard"])   # same fork from the same parent: its peak RSS is the baseline (a child's ru_maxrss includes the pre-exec copy of the test process)
+r = run_big([B + f"/gen?n={N}", "--discard"])
+check("64 MB sized body: every byte counted", r["RC"] == "0" and int(r["BYTES"]) == N, (r.get("RC"), r.get("BYTES")))
+check("  peak memory grows by < 8 MiB over a 1 MiB download (the body is streamed, not buffered)", r["maxrss_kib"] - small["maxrss_kib"] < 8 * 1024, (small["maxrss_kib"], r["maxrss_kib"]))
+r = run_big([B + f"/gen?n={N}"])
+check("64 MB sized body written out: size and SHA-256 identical", r["size"] == N and r["sha"] == expect_sha(N), (r["size"], r["sha"][:12]))
+r = run_big([B + f"/genc?n={N}"])
+check("64 MB chunked body: size and SHA-256 identical", r["RC"] == "0" and r["size"] == N and r["sha"] == expect_sha(N), (r.get("RC"), r["size"]))
+r = run_big([B + f"/gencut?n={N}&cut={10 * 1024 * 1024 + 5}", "--discard"])
+check("connection closed after 10 MB of a promised 64 MB -> receive error, with the 10 MB counted", r["RC"] == "56" and int(r["BYTES"]) == 10 * 1024 * 1024 + 5, (r.get("RC"), r.get("BYTES")))
+r = run_big([B + f"/gen?n={N}", "--discard", "--abort-after", str(20 * 1024 * 1024)])
+check("the write callback refusing data stops a 64 MB download early", r["RC"] == "23" and int(r["BYTES"]) < N, (r.get("RC"), r.get("BYTES")))
+r = run_big([B + f"/gen?n={N}", "--discard", "--abort-after-ms", "1"])
+check("a progress callback that says stop ends a fast download", r["RC"] == "42" and int(r["BYTES"]) < N, (r.get("RC"), r.get("BYTES")))
+
 # --- TLS, offline ---
 good = mkcert("good", "localhost")
 other = mkcert("other", "wrong.example")
@@ -138,6 +259,12 @@ r = run([S + "/echo", "--post", "k=v"], {"HV_CA_PATH": cadir}); check("https pos
 r = run([f"https://127.0.0.1:{S_PORT}/hello"], {"HV_CA_PATH": cadir}); check("https refuses a host name the certificate does not cover (IP vs DNS SAN)", r["RC"] == "60", r)
 r = run([f"https://localhost:{W_PORT}/hello"], {"HV_CA_PATH": f"{work}/otherca"}); check("https refuses wrong host name even though the CA is trusted", r["RC"] == "60", r)
 r = run([S + "/to-http", "--follow"], {"HV_CA_PATH": cadir}); check("https->http redirect refused", r["RC"] == "1", r)
+r = run([f"https://localhost:{SILENT_PORT}/x", "--timeout-ms", "1200"], {"HV_CA_PATH": cadir}); t = tm(r)
+check("the deadline also covers a TLS handshake that never completes", r["RC"] == "28" and 1100 <= t["ELAPSED_MS"] <= 2800 and t["FDS_AFTER"] == t["FDS_BEFORE"], (r["RC"], t))
+r = run([f"https://localhost:{SILENT_PORT}/x", "--cancel-after-ms", "500"], {"HV_CA_PATH": cadir}); t = tm(r)
+check("hv_curl_cancel interrupts a TLS handshake", r["RC"] == "42" and t["ELAPSED_MS"] < 1500 and t["FDS_AFTER"] == t["FDS_BEFORE"], (r["RC"], t))
+r = run([S + "/big", "--discard", "--abort-after-ms", "1"], {"HV_CA_PATH": cadir})
+check("https: a progress callback that says stop ends a transfer in progress", r["RC"] == "42", r)
 
 # --- per-request state on one handle: failure -> success, success -> failure, redirect then failure ---
 def reqs(r):

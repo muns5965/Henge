@@ -1,14 +1,27 @@
 /* Test driver for host/curl_mbedtls.c: curl_tool URL [--post DATA] [--follow] [--headers] [--abort-after N] [--discard] [--also URL]... [--ca]
    Prints the body on stdout; a summary line "RC=<code> HTTP=<status> BYTES=<n> ERR=<message>" on stderr. */
+#include <dirent.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 #include "curl/curl.h"
 int hv_curl_ca_count(const char **where);
 int hv_curl_ca_unparsed(void);
 int hv_curl_tls_completed(void);
 const char *hv_curl_tls_diag(void);
 static size_t bytes, abort_after = 0;
+static long timeout_ms, connect_timeout_ms, cancel_after_ms, global_cancel_after_ms, abort_after_ms;
+static volatile int g_flag;
+static CURL *g_handle;
+static double t_start;
+static double now_s(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
+static int count_fds(void) { int n = 0; DIR *d = opendir("/proc/self/fd"); if (!d) return -1; while (readdir(d)) n++; closedir(d); return n - 3; } /* ".", ".." and the DIR itself */
+static void *canceller(void *arg) { long ms = (long)arg; usleep((useconds_t)ms * 1000); hv_curl_cancel(g_handle); return NULL; }
+static void *flagger(void *arg) { long ms = (long)arg; usleep((useconds_t)ms * 1000); g_flag = 1; return NULL; }
+static int xfer(void *u, curl_off_t a, curl_off_t b, curl_off_t c, curl_off_t d) { (void)u, (void)a, (void)b, (void)c, (void)d; return (now_s() - t_start) * 1000 >= abort_after_ms; }
 static int show_headers, discard;
 static size_t wcb(char *p, size_t s, size_t n, void *u) {
     (void)u;
@@ -32,6 +45,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--discard")) discard = 1;
         else if (!strcmp(argv[i], "--also") && i + 1 < argc && nalso < 16) also[nalso++] = argv[++i];
         else if (!strcmp(argv[i], "--abort-after") && i + 1 < argc) abort_after = (size_t)atol(argv[++i]);
+        else if (!strcmp(argv[i], "--timeout-ms") && i + 1 < argc) timeout_ms = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--connect-timeout-ms") && i + 1 < argc) connect_timeout_ms = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--cancel-after-ms") && i + 1 < argc) cancel_after_ms = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--global-cancel-after-ms") && i + 1 < argc) global_cancel_after_ms = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--abort-after-ms") && i + 1 < argc) abort_after_ms = atol(argv[++i]);
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);
     CURL *c = curl_easy_init();
@@ -45,7 +63,24 @@ int main(int argc, char **argv) {
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L); /* the callers do this; the shim must still verify */
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, (long)follow);
     if (post) { curl_easy_setopt(c, CURLOPT_POSTFIELDS, post); curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)strlen(post)); }
+    if (timeout_ms) curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, timeout_ms);
+    if (connect_timeout_ms) curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout_ms);
+    if (abort_after_ms) { curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xfer); curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L); }
+    g_handle = c;
+    hv_curl_set_cancel_flag(&g_flag);
+    pthread_t th;
+    if (cancel_after_ms) pthread_create(&th, NULL, canceller, (void *)cancel_after_ms);
+    if (global_cancel_after_ms) pthread_create(&th, NULL, flagger, (void *)global_cancel_after_ms);
+    int fds0 = count_fds();
+    t_start = now_s();
     CURLcode rc = curl_easy_perform(c);
+    double el = (now_s() - t_start) * 1000;
+    fprintf(stderr, "ELAPSED_MS=%.0f FDS_BEFORE=%d FDS_AFTER=%d\n", el, fds0, count_fds());
+    hv_curl_cancel_reset(c);
+    g_flag = 0;
+    cancel_after_ms = global_cancel_after_ms = abort_after_ms = timeout_ms = 0;
+    curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, 0L);
+    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 1L);
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     fprintf(stderr, "TLS_VERIFIED=%d\n", hv_curl_tls_completed());

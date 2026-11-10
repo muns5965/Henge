@@ -72,6 +72,10 @@ typedef enum {
     CURLOPT_POSTFIELDSIZE = 60,
     CURLOPT_SSL_VERIFYPEER = 64,
     CURLOPT_HTTPGET = 80,
+    CURLOPT_TIMEOUT = 13,
+    CURLOPT_CONNECTTIMEOUT = 78,
+    CURLOPT_TIMEOUT_MS = 155,
+    CURLOPT_CONNECTTIMEOUT_MS = 156,
 } CURLoption;
 
 typedef enum {
@@ -89,6 +93,13 @@ const char *curl_easy_strerror(CURLcode c);
 struct curl_slist *curl_slist_append(struct curl_slist *list, const char *s);
 void curl_slist_free_all(struct curl_slist *list);
 
+/* Henge additions (host/curl_mbedtls.c only; libcurl has no such calls). All thread-safe.
+   hv_curl_cancel: stop the transfer running on this handle (and any later one until hv_curl_cancel_reset): curl_easy_perform returns CURLE_ABORTED_BY_CALLBACK
+   within about 200 ms, except while a name lookup is in progress (getaddrinfo cannot be interrupted).
+   hv_curl_set_cancel_flag: a process-wide int; while it is non-zero every transfer is stopped the same way (the restore tool's "quit" flag). */
+void hv_curl_cancel(CURL *c);
+void hv_curl_cancel_reset(CURL *c);
+void hv_curl_set_cancel_flag(volatile int *flag);
 #ifdef __cplusplus
 }
 #endif

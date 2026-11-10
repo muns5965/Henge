@@ -20,6 +20,9 @@
 #include "usb_host.h"
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
+/* curl stand-in (host/curl_mbedtls.c): a download stops when this flag turns non-zero. */
+void hv_curl_set_cancel_flag(volatile int *flag);
+extern int global_quit_flag;
 #endif
 
 int usbmuxd_main(int argc, char **argv);
@@ -64,6 +67,8 @@ static void *restore_thread(void *arg) {
     /* libtatsu prints why a signing request failed (a certificate error, the server's refusal) only at debug level >= 1, and idevicerestore sets that level only
        from its command line, which this host does not have. Level 1 is errors; level 2 would print the request, which carries the device's identifiers. */
     tss_set_debug_level(1);
+    /* idevicerestore's own quit flag also ends a stalled download (the stand-in polls it about once a second). */
+    hv_curl_set_cancel_flag((volatile int *)&global_quit_flag);
 #endif
     idevicerestore_set_ipsw(c, g_ipsw);
     idevicerestore_set_cache_path(c, g_cache);

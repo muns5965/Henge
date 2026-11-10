@@ -55,7 +55,66 @@ typedef struct {
     struct curl_slist *headers;
     char *errorbuffer;
     long response_code;
+    long timeout_ms, connect_timeout_ms;   /* CURLOPT_TIMEOUT[_MS]: the whole transfer, redirects included; CURLOPT_CONNECTTIMEOUT[_MS] */
+    volatile int cancel;                   /* hv_curl_cancel(): set from any thread, sticky until hv_curl_cancel_reset() */
+    int stop;                              /* why the running transfer is being stopped: 0 no, 1 deadline, 2 cancel, 3 a progress callback said stop */
+    long long deadline_ns, last_tick_ns;   /* monotonic; deadline 0 = none */
+    long long dl_now, dl_expected;         /* for the progress callbacks that also run while the peer is silent */
 } Easy;
+
+static volatile int *g_cancel_flag; /* hv_curl_set_cancel_flag(): a process-wide flag, e.g. the restore tool's "user wants to quit" */
+
+static long long now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+void hv_curl_cancel(CURL *c) { if (c) __atomic_store_n(&((Easy *)c)->cancel, 1, __ATOMIC_SEQ_CST); }
+void hv_curl_cancel_reset(CURL *c) { if (c) __atomic_store_n(&((Easy *)c)->cancel, 0, __ATOMIC_SEQ_CST); }
+void hv_curl_set_cancel_flag(volatile int *flag) { g_cancel_flag = flag; }
+
+/* Is the running transfer to be stopped? Sets e->stop (first reason wins). Cheap: called before every wait and every body piece. */
+static int stop_check(Easy *e) {
+    if (!e) return 0;
+    if (e->stop) return e->stop;
+    if (e->deadline_ns && now_ns() >= e->deadline_ns) e->stop = 1;
+    else if (__atomic_load_n(&e->cancel, __ATOMIC_SEQ_CST) || (g_cancel_flag && __atomic_load_n(g_cancel_flag, __ATOMIC_SEQ_CST))) e->stop = 2;
+    return e->stop;
+}
+
+/* libcurl calls the progress callbacks about once a second even when no data arrives; a restore tool relies on that to notice "quit" during a stall. */
+static void tick(Easy *e) {
+    if (!e || e->noprogress || (!e->xferinfo && !e->progress)) return;
+    long long n = now_ns();
+    if (n - e->last_tick_ns < 1000000000LL) return;
+    e->last_tick_ns = n;
+    double t = e->dl_expected > 0 ? (double)e->dl_expected : 0;
+    if ((e->xferinfo && e->xferinfo(e->xferinfo_data, e->dl_expected > 0 ? e->dl_expected : 0, e->dl_now, 0, 0) != 0) ||
+        (e->progress && e->progress(e->xferinfo_data, t, (double)e->dl_now, 0, 0) != 0))
+        if (!e->stop) e->stop = 3;
+}
+
+/* Waits for the socket in slices of at most 200 ms so that the deadline, a cancel and the progress callbacks are noticed.
+   1 ready; 0 no activity for limit_ms; -1 stopped (e->stop says why) or poll failed. */
+static int wait_fd(Easy *e, int fd, short ev, long limit_ms) {
+    long long t0 = now_ns();
+    for (;;) {
+        if (stop_check(e)) return -1;
+        long slice = 200;
+        if (e && e->deadline_ns) {
+            long long rem = (e->deadline_ns - now_ns() + 999999) / 1000000;
+            if (rem < slice) slice = rem < 1 ? 1 : (long)rem;
+        }
+        struct pollfd p = {fd, ev, 0};
+        int r = poll(&p, 1, (int)slice);
+        if (r > 0) return 1;
+        if (r < 0 && errno != EINTR) return -1;
+        tick(e);
+        if (e && e->stop) return -1;
+        if ((now_ns() - t0) / 1000000 >= limit_ms) return 0;
+    }
+}
 
 /* ---- trusted CAs, once per process ---- */
 static pthread_mutex_t ca_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -127,23 +186,30 @@ typedef struct {
     mbedtls_entropy_context ent;
     mbedtls_x509_crt plus; /* system CAs + the extra anchor of this host, when it has one */
     int has_plus;
+    Easy *owner;        /* whose transfer this is: its deadline, cancel flag and progress callbacks apply to every wait on the socket */
     char err[CURL_ERROR_SIZE];
-} Conn;
+} Conn; /* fd must stay the first member: the TLS layer is handed the Conn, the plain path the same pointer */
 
 static int bio_send(void *ctx, const unsigned char *b, size_t n) {
+    Conn *c = ctx;
     for (;;) {
-        ssize_t r = send(*(int *)ctx, b, n, MSG_NOSIGNAL);
+        int w = wait_fd(c->owner, c->fd, POLLOUT, IO_TIMEOUT_S * 1000L);
+        if (w <= 0) { errno = w == 0 ? ETIMEDOUT : ECANCELED; return -0x004E; }
+        ssize_t r = send(c->fd, b, n, MSG_NOSIGNAL);
         if (r >= 0) return (int)r;
-        if (errno == EINTR) continue;
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
         return -0x004E; /* a send failure, as mbedtls' own net code reports it */
     }
 }
 
 static int bio_recv(void *ctx, unsigned char *b, size_t n) {
+    Conn *c = ctx;
     for (;;) {
-        ssize_t r = recv(*(int *)ctx, b, n, 0);
+        int w = wait_fd(c->owner, c->fd, POLLIN, IO_TIMEOUT_S * 1000L); /* idle limit; the whole-transfer deadline is checked inside */
+        if (w <= 0) { errno = w == 0 ? ETIMEDOUT : ECANCELED; return -0x004C; }
+        ssize_t r = recv(c->fd, b, n, 0);
         if (r >= 0) return (int)r;
-        if (errno == EINTR) continue;
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
         return -0x004C;
     }
 }
@@ -151,7 +217,7 @@ static int bio_recv(void *ctx, unsigned char *b, size_t n) {
 static int conn_write(Conn *c, const void *p, size_t n) {
     const unsigned char *b = p;
     while (n) {
-        int r = c->tls ? mbedtls_ssl_write(&c->ssl, b, n) : bio_send(&c->fd, b, n);
+        int r = c->tls ? mbedtls_ssl_write(&c->ssl, b, n) : bio_send(c, b, n);
         if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
         if (r <= 0) return -1;
         b += r, n -= (size_t)r;
@@ -162,7 +228,7 @@ static int conn_write(Conn *c, const void *p, size_t n) {
 /* >0 bytes, 0 orderly close, -1 error or timeout. */
 static int conn_read(Conn *c, void *p, size_t n) {
     for (;;) {
-        int r = c->tls ? mbedtls_ssl_read(&c->ssl, p, n) : bio_recv(&c->fd, p, n);
+        int r = c->tls ? mbedtls_ssl_read(&c->ssl, p, n) : bio_recv(c, p, n);
         if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
         if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
         return r < 0 ? -1 : r;
@@ -267,15 +333,19 @@ static int record_cert(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *fl
     return 0;
 }
 
-static CURLcode conn_open(Conn *c, int https, const char *host, const char *port) {
+static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const char *port) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
+    c->owner = e;
     tls_done = 0, tls_diag[0] = 0, chain_len = 0; /* diagnostics describe the connection just made, never an earlier one */
     struct addrinfo hints = {.ai_socktype = SOCK_STREAM}, *res = NULL;
+    if (stop_check(e)) return CURLE_ABORTED_BY_CALLBACK; /* the caller turns e->stop into the right code */
+    /* getaddrinfo cannot be interrupted: a deadline or cancel that arrives during name resolution takes effect when it returns */
     if (getaddrinfo(host, port, &hints, &res) != 0 || !res) {
         snprintf(c->err, sizeof c->err, "could not resolve host %s", host);
-        return CURLE_COULDNT_RESOLVE_HOST;
+        return stop_check(e) ? CURLE_ABORTED_BY_CALLBACK : CURLE_COULDNT_RESOLVE_HOST;
     }
+    if (stop_check(e)) { freeaddrinfo(res); return CURLE_ABORTED_BY_CALLBACK; }
     int fd = -1;
     for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
         int s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
@@ -287,8 +357,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         fcntl_nonblock(s, 1);
         int r = connect(s, a->ai_addr, a->ai_addrlen);
         if (r < 0 && errno == EINPROGRESS) {
-            struct pollfd p = {s, POLLOUT, 0};
-            if (poll(&p, 1, CONNECT_TIMEOUT_MS) == 1) {
+            if (wait_fd(e, s, POLLOUT, e && e->connect_timeout_ms > 0 ? e->connect_timeout_ms : CONNECT_TIMEOUT_MS) == 1) {
                 int e = 0;
                 socklen_t l = sizeof e;
                 getsockopt(s, SOL_SOCKET, SO_ERROR, &e, &l);
@@ -301,7 +370,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
     freeaddrinfo(res);
     if (fd < 0) {
         snprintf(c->err, sizeof c->err, "could not connect to %s:%s", host, port);
-        return CURLE_COULDNT_CONNECT;
+        return stop_check(e) ? CURLE_ABORTED_BY_CALLBACK : CURLE_COULDNT_CONNECT;
     }
     c->fd = fd;
     if (!https) return CURLE_OK;
@@ -337,9 +406,10 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
     }
     if (ret == 0) ret = mbedtls_ssl_set_hostname(&c->ssl, host);
     if (ret == 0) {
-        mbedtls_ssl_set_bio(&c->ssl, &c->fd, bio_send, bio_recv, NULL);
+        mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
         while ((ret = mbedtls_ssl_handshake(&c->ssl)) == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {}
     }
+    if (ret != 0 && stop_check(e)) { conn_close(c); return CURLE_ABORTED_BY_CALLBACK; }
     if (ret != 0) {
         char m[160];
         mbedtls_strerror(ret, m, sizeof m);
@@ -412,6 +482,10 @@ CURLcode curl_easy_setopt(CURL *c, CURLoption opt, ...) {
     case CURLOPT_PROGRESSFUNCTION: e->progress = va_arg(ap, curl_progress_callback); break;
     case CURLOPT_XFERINFODATA: e->xferinfo_data = va_arg(ap, void *); break;
     case CURLOPT_NOPROGRESS: e->noprogress = (int)va_arg(ap, long); break;
+    case CURLOPT_TIMEOUT: e->timeout_ms = va_arg(ap, long) * 1000L; break;
+    case CURLOPT_TIMEOUT_MS: e->timeout_ms = va_arg(ap, long); break;
+    case CURLOPT_CONNECTTIMEOUT: e->connect_timeout_ms = va_arg(ap, long) * 1000L; break;
+    case CURLOPT_CONNECTTIMEOUT_MS: e->connect_timeout_ms = va_arg(ap, long); break;
     default: (void)va_arg(ap, void *); break; /* VERBOSE; SSL_VERIFYPEER is ignored on purpose (see the top) */
     }
     va_end(ap);
@@ -567,7 +641,9 @@ static int deliver(Xfer *x, const char *p, size_t n) {
         size_t w = e->write_cb ? e->write_cb((char *)p, 1, n, e->write_data) : fwrite(p, 1, n, e->write_data ? (FILE *)e->write_data : stdout);
         if (w != n) { x->abort_code = CURLE_WRITE_ERROR; return -1; }
         x->dl += (long long)n;
+        e->dl_now = x->dl, e->dl_expected = x->expected;
     }
+    if (stop_check(e)) { x->abort_code = e->stop == 1 ? CURLE_OPERATION_TIMEDOUT : CURLE_ABORTED_BY_CALLBACK; return -1; } /* data arriving fast never reaches a wait, so check here too */
     if (!e->noprogress) {
         double t = x->expected > 0 ? (double)x->expected : 0;
         if ((e->xferinfo && e->xferinfo(e->xferinfo_data, x->expected > 0 ? x->expected : 0, x->dl, 0, 0) != 0) ||
@@ -680,7 +756,7 @@ static int has_header(struct curl_slist *h, const char *name) {
 static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size_t loccap, int *redirect, long long *dl_total) {
     Conn c;
     *redirect = 0;
-    CURLcode rc = conn_open(&c, u->https, u->host, u->port);
+    CURLcode rc = conn_open(&c, e, u->https, u->host, u->port);
     if (rc) { seterr(e, "%s", c.err); return rc; }
 
     Buf req = {0};
@@ -802,8 +878,7 @@ out:
     return rc;
 }
 
-CURLcode curl_easy_perform(CURL *c) {
-    Easy *e = (Easy *)c;
+static CURLcode perform_hops(Easy *e) {
     if (e->errorbuffer) e->errorbuffer[0] = 0;
     e->response_code = 0;
     if (!e->url) { seterr(e, "no URL set"); return CURLE_URL_MALFORMAT; }
@@ -829,4 +904,29 @@ CURLcode curl_easy_perform(CURL *c) {
         if (redirect == 301 || redirect == 302 || redirect == 303) post = 0; /* as curl: the request becomes a GET */
         snprintf(cur, sizeof cur, "%s", next);
     }
+}
+
+/* One transfer: the deadline starts here and covers every redirect hop; a deadline, hv_curl_cancel() or a progress callback ends it with the code
+   libcurl would give (28 timed out, 42 aborted) whatever the half-finished read or TLS step reported. */
+CURLcode curl_easy_perform(CURL *c) {
+    Easy *e = (Easy *)c;
+    e->stop = 0;
+    e->dl_now = e->dl_expected = 0;
+    e->last_tick_ns = now_ns();
+    e->deadline_ns = e->timeout_ms > 0 ? e->last_tick_ns + e->timeout_ms * 1000000LL : 0;
+    CURLcode rc = perform_hops(e);
+    stop_check(e); /* a stop that arrived while the last bytes were being handled counts only if the transfer had not finished */
+    if (rc && e->stop) {
+        if (e->stop == 1) {
+            rc = CURLE_OPERATION_TIMEDOUT;
+            seterr(e, "Operation timed out after %ld milliseconds with %lld bytes received", e->timeout_ms, e->dl_now);
+        } else {
+            rc = CURLE_ABORTED_BY_CALLBACK;
+            seterr(e, e->stop == 2 ? "Transfer cancelled (hv_curl_cancel or the process-wide cancel flag)" : "Operation was aborted by a progress callback");
+        }
+    } else if (rc == CURLE_ABORTED_BY_CALLBACK && e->errorbuffer && !e->errorbuffer[0]) {
+        seterr(e, "Operation was aborted by a callback");
+    }
+    e->deadline_ns = 0;
+    return rc;
 }

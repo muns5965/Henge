@@ -29,6 +29,12 @@ on:
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
       - tools/vmrun-irecv-build.sh
+      - tools/download-test.sh
+      - tools/restore-selftest-build.sh
+      - tools/restore-selftest.sh
+      - third_party/idevicerestore/**
+      - third_party/restore_config/**
+      - third_party/curl_include/**
       - android/app/src/main/java/**
       - devices/**
       - third_party/**
@@ -138,6 +144,14 @@ jobs:
 
       - name: Test the HTTP/TLS client that replaces libcurl on Android (local servers; public check skipped without network)
         run: tools/curl-test.sh build-curltest
+      - name: Test idevicerestore's real download.c on the HTTP client (local servers; truncation, redirects, deadline, cancel, >3 MB streaming)
+        run: tools/download-test.sh build-dltest
+      - name: Build the whole restore stack natively (libplist, libimobiledevice, libtatsu, libirecovery, usbmuxd, idevicerestore, libzip) with a self-test
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          tools/restore-selftest-build.sh build-rs
+      - name: Run the restore self-test on three bad IPSW inputs (must fail cleanly; usbmuxd must listen; no real network, no real device)
+        run: tools/restore-selftest.sh build-rs/restore_selftest build-rs/work
 
   android-ndk:
     runs-on: ubuntu-24.04
@@ -161,6 +175,11 @@ jobs:
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android
       - name: Build vmrun with libirecovery for Android (--irecv-probe)
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-irecv-build.sh build-android
+      - name: Build the whole restore stack for Android (integrated link of idevicerestore + usbmuxd + libirecovery + libtatsu + libzip + self-test)
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-selftest-build.sh build-android-rs
+          file build-android-rs/restore_selftest
       - name: Survey the macOS-restore libraries for Android (compile, then integrated link; informational)
         continue-on-error: true
         run: |

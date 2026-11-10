@@ -32,7 +32,7 @@
 #endif
 #define HAVE_STPNCPY 1
 
-#ifdef __ANDROID__ /* what the configure scripts find on Android (bionic) */
+#if defined(__ANDROID__) || defined(__linux__) /* what the configure scripts find on Android (bionic) and on glibc Linux (the CI self-test) */
 #define HAVE_NETPACKET_PACKET_H 1
 #define HAVE_PPOLL 1
 #endif

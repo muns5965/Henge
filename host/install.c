@@ -18,6 +18,9 @@
 
 #include "idevicerestore/src/idevicerestore.h"
 #include "usb_host.h"
+#ifdef __ANDROID__
+#include <libtatsu/tss.h>
+#endif
 
 int usbmuxd_main(int argc, char **argv);
 
@@ -57,6 +60,11 @@ static void *restore_thread(void *arg) {
     int flags = FLAG_ERASE;
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
+#ifdef __ANDROID__
+    /* libtatsu prints why a signing request failed (a certificate error, the server's refusal) only at debug level >= 1, and idevicerestore sets that level only
+       from its command line, which this host does not have. Level 1 is errors; level 2 would print the request, which carries the device's identifiers. */
+    tss_set_debug_level(1);
+#endif
     idevicerestore_set_ipsw(c, g_ipsw);
     idevicerestore_set_cache_path(c, g_cache);
     if (g_ecid) idevicerestore_set_ecid(c, g_ecid);

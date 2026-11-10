@@ -109,8 +109,8 @@ static void *probe(void *arg) {
         print_string(d, dd[16]);
     }
     if (n != 18) return NULL;
-    /* The rest only reads: configuration descriptor, DFU functional descriptor, standard and DFU class status. Nothing here changes the device's state
-       (no SET_CONFIGURATION, no DNLOAD, no ABORT/CLRSTATUS). */
+    /* The rest asks questions: configuration descriptor, standard status, DFU GET_STATE and, only from dfuIDLE, DFU GET_STATUS (which can advance some other
+       DFU states, so it is not a harmless read in general). Nothing here sends SET_CONFIGURATION, DNLOAD, ABORT or CLRSTATUS. */
     uint8_t cfg[512] = {0};
     int cn = hv_usb_control(d, 0x80, 6, 0x200, 0, cfg, 9, 2000);
     if (cn >= 9) {
@@ -133,14 +133,21 @@ static void *probe(void *arg) {
             uint8_t state = 0xff;
             r = hv_usb_control(d, 0xA1, 5, 0, (uint16_t)ci.dfu_interface, &state, 1, 2000);
             fprintf(stderr, "usb probe: DFU GET_STATE(interface %d) -> %d: %u (%s)\n", ci.dfu_interface, r, state, r == 1 ? hv_dfu_state_name(state) : "?");
-            uint8_t ds[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-            r = hv_usb_control(d, 0xA1, 3, 0, (uint16_t)ci.dfu_interface, ds, 6, 2000);
-            fprintf(stderr, "usb probe: DFU GET_STATUS(interface %d) -> %d:", ci.dfu_interface, r);
-            for (int i = 0; i < (r > 0 ? r : 0); i++) fprintf(stderr, " %02x", ds[i]);
-            if (r == 6)
-                fprintf(stderr, "  status=%u (%s) pollTimeout=%u ms state=%u (%s) iString=%u", ds[0], hv_dfu_status_name(ds[0]), ds[1] | (ds[2] << 8) | (ds[3] << 16), ds[4],
-                        hv_dfu_state_name(ds[4]), ds[5]);
-            fprintf(stderr, "\n");
+            const char *why = "";
+            if (hv_dfu_should_get_status(r, state, &why)) {
+                uint8_t ds[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+                r = hv_usb_control(d, 0xA1, 3, 0, (uint16_t)ci.dfu_interface, ds, 6, 2000);
+                fprintf(stderr, "usb probe: DFU GET_STATUS(interface %d) -> %d:", ci.dfu_interface, r);
+                for (int i = 0; i < (r > 0 ? r : 0); i++) fprintf(stderr, " %02x", ds[i]);
+                HvDfuStatus st;
+                if (hv_dfu_parse_status(r, ds, &st) == 0)
+                    fprintf(stderr, "  status=%d (%s) pollTimeout=%d ms state=%d (%s) iString=%d\n", st.status, hv_dfu_status_name(st.status), st.poll_timeout_ms, st.state,
+                            hv_dfu_state_name(st.state), st.istring);
+                else
+                    fprintf(stderr, "  (not a 6-byte answer; ignored)\n");
+            } else {
+                fprintf(stderr, "usb probe: DFU GET_STATUS skipped: %s\n", why);
+            }
         } else {
             fprintf(stderr, "usb probe: no DFU interface (class 0xFE subclass 1) in the configuration\n");
         }

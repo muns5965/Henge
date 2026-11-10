@@ -31,4 +31,13 @@ int hv_usb_describe_config(const uint8_t *blob, int len, HvUsbConfigInfo *info, 
 const char *hv_dfu_state_name(int state);
 const char *hv_dfu_status_name(int status);
 
+/* What the probe does with the DFU class requests. GET_STATUS can move some DFU states on (dfuDNLOAD-SYNC, dfuMANIFEST-SYNC, ...), so it is sent
+   only when GET_STATE answered with exactly one byte and that byte is dfuIDLE; in every other case the state is only reported.
+   state_rc is what the control transfer returned (bytes received, or a negative error). Returns 1 to send GET_STATUS, 0 to skip; *why says which. */
+int hv_dfu_should_get_status(int state_rc, int state, const char **why);
+
+/* Reads a GET_STATUS answer: requires exactly 6 bytes. Returns 0 and fills the fields, or -1 (not 6 bytes, or a negative transfer result). */
+typedef struct { int status, poll_timeout_ms, state, istring; } HvDfuStatus;
+int hv_dfu_parse_status(int rc, const uint8_t b[6], HvDfuStatus *out);
+
 #endif

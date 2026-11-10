@@ -40,6 +40,18 @@ int main(void) {
     check("a 0x21 descriptor outside the DFU interface is ignored", ({ uint8_t o[] = {9, 2, 27, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0x03, 1, 1, 0, 9, 0x21, 1, 2, 3, 4, 5, 6, 7};
           hv_usb_describe_config(o, sizeof o, &c, NULL) == 0 && c.dfu_interface == -1 && !c.dfu_func_seen; }));
     check("state names", !strcmp(hv_dfu_state_name(2), "dfuIDLE") && !strcmp(hv_dfu_state_name(10), "dfuERROR") && !strcmp(hv_dfu_state_name(99), "?"));
+    const char *why = NULL;
+    check("GET_STATUS is sent from dfuIDLE with a 1-byte GET_STATE", hv_dfu_should_get_status(1, 2, &why) == 1);
+    check("not sent from dfuDNLOAD-SYNC (3)", hv_dfu_should_get_status(1, 3, &why) == 0 && strstr(why, "not in dfuIDLE"));
+    check("not sent from dfuMANIFEST-SYNC (6) or dfuERROR (10) or appIDLE (0)", !hv_dfu_should_get_status(1, 6, &why) && !hv_dfu_should_get_status(1, 10, &why) && !hv_dfu_should_get_status(1, 0, &why));
+    check("not sent when GET_STATE failed (negative)", hv_dfu_should_get_status(-1, 2, &why) == 0 && strstr(why, "failed"));
+    check("not sent when GET_STATE returned 0 or 2 bytes even if the byte says dfuIDLE", !hv_dfu_should_get_status(0, 2, &why) && !hv_dfu_should_get_status(2, 2, &why) && strstr(why, "exactly 1 byte"));
+    HvDfuStatus st;
+    uint8_t ok6[6] = {0, 0x64, 0, 0, 2, 0};
+    check("GET_STATUS answer of 6 bytes is parsed", hv_dfu_parse_status(6, ok6, &st) == 0 && st.status == 0 && st.poll_timeout_ms == 100 && st.state == 2 && st.istring == 0);
+    uint8_t big[6] = {0, 0xFF, 0xFF, 0xFF, 5, 1};
+    check("3-byte poll timeout is little endian", hv_dfu_parse_status(6, big, &st) == 0 && st.poll_timeout_ms == 0xFFFFFF && st.state == 5);
+    check("an answer that is not 6 bytes (5, 7, 0, negative) is refused", hv_dfu_parse_status(5, ok6, &st) < 0 && hv_dfu_parse_status(7, ok6, &st) < 0 && hv_dfu_parse_status(0, ok6, &st) < 0 && hv_dfu_parse_status(-2, ok6, &st) < 0);
     printf(fails ? "FAILED: %d\n" : "ALL PASS\n", fails);
     return fails != 0;
 }

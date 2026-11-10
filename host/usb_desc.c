@@ -75,3 +75,22 @@ int hv_usb_describe_config(const uint8_t *b, int len, HvUsbConfigInfo *info, FIL
     info->valid = 1;
     return 0;
 }
+
+int hv_dfu_should_get_status(int state_rc, int state, const char **why) {
+    const char *w;
+    int go = 0;
+    if (state_rc != 1) w = state_rc < 0 ? "GET_STATE failed" : "GET_STATE did not return exactly 1 byte";
+    else if (state != 2) w = "not in dfuIDLE; GET_STATUS could move this state on, so it is not sent";
+    else w = "dfuIDLE", go = 1;
+    if (why) *why = w;
+    return go;
+}
+
+int hv_dfu_parse_status(int rc, const uint8_t b[6], HvDfuStatus *o) {
+    if (rc != 6) return -1;
+    o->status = b[0];
+    o->poll_timeout_ms = b[1] | (b[2] << 8) | (b[3] << 16);
+    o->state = b[4];
+    o->istring = b[5];
+    return 0;
+}

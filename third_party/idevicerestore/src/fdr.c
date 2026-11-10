@@ -535,8 +535,9 @@ static int fdr_handle_proxy_cmd(fdr_client_t fdr)
 	if (buf[0] == 0 && buf[1] == 3) {
 		/* Henge: the host name length (buf[2]) and the port must fit inside what was received. Without this check a short or inconsistent packet made the
 		   code read the port from, and terminate the name at, an arbitrary place. */
-		if (bytes < 6 || (uint32_t)buf[2] + 5u != bytes) {
-			logger(LL_ERROR, "FDR %p malformed proxy connect request (%u bytes, name length %u)\n", fdr, bytes, (unsigned)(unsigned char)buf[2]);
+		const unsigned hostlen = (unsigned char)buf[2];   /* unsigned: a name length of 128..255 is not negative */
+		if (bytes < 6 || hostlen + 5u != bytes) {
+			logger(LL_ERROR, "FDR %p malformed proxy connect request (%u bytes, name length %u)\n", fdr, bytes, hostlen);
 			free(buf);
 			return 0;
 		}
@@ -554,7 +555,11 @@ static int fdr_handle_proxy_cmd(fdr_client_t fdr)
 	}
 
 	/* else wait for messages and forward them */
+	/* Henge: the target was chosen by the device. Mark this one connect as an FDR connection so the host policy never lets it reach the private usbmuxd's
+	   registered endpoint (set and cleared around the single call, nothing can return in between). */
+	limd_glue_connect_purpose = LIMD_GLUE_PURPOSE_FDR;
 	int sockfd = socket_connect(host, port);
+	limd_glue_connect_purpose = LIMD_GLUE_PURPOSE_DEFAULT;
 	free(host);
 	if (sockfd < 0) {
 		free(buf);

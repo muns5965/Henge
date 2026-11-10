@@ -31,6 +31,11 @@ if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core an
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do
   grep -q "HV_TSS_HTTPS_ONLY" "$f" || bad "$f builds libtatsu without HV_TSS_HTTPS_ONLY"
 done
+# the restore tool is started through host/restore_session.c only (it refuses to run without the connection policy), and nothing else installs or removes the policy
+if grep -rnE "idevicerestore_start[[:space:]]*\(" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/restore_session\.[ch]:" | grep -v "^host/install\.c:" > /dev/null; then bad "idevicerestore_start is called outside host/restore_session.c"; fi
+# host/install.c still starts the tool directly in its non-Android branch (iOS, Linux); its Android branch must go through the session
+grep -q "hv_restore_session_run_client" host/install.c || bad "host/install.c does not start the tool through the restore session on Android"
+if grep -rn "hv_net_guard_install\|hv_net_guard_uninstall" host devices core android/app/src --include=*.c --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/net_guard\.c:" | grep -v "^host/restore_session\.c:" > /dev/null; then bad "the connection policy is installed or removed outside host/restore_session.c"; fi
 TP=third_party
 FL="-O1 -w -DHAVE_CONFIG_H -I$TP/restore_config -I$TP -I$TP/curl_include -I$TP/libplist/include -I$TP/libtatsu/include -I$TP/libtatsu/src -I$TP/mbedtls/include -Ihost -DPACKAGE_VERSION=\"1.0.5-henge\""
 $CC $FL -DHV_TSS_HTTPS_ONLY -c $TP/libtatsu/src/tss.c -o "$W/tss_ship.o"

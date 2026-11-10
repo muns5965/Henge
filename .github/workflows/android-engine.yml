@@ -36,6 +36,7 @@ on:
       - tools/irecv-test.sh
       - tools/preflight-test.sh
       - tools/netguard-test.sh
+      - tools/fdr-session-test.sh
       - tools/disk-policy-test.sh
       - tools/vmrun-preflight-build.sh
       - tools/vmrun-irecv-build.sh
@@ -201,6 +202,8 @@ jobs:
         run: tools/preflight-test.sh build-rs
       - name: "Test the default-deny connection policy (policy table, real glue sockets, curl stand-in, URLAsset decisions, loopback listeners only)"
         run: tools/netguard-test.sh build-rs
+      - name: "Test the FDR proxy and the URLAsset step against a fake device, and the restore session rules (policy in force before the tool starts, kept while a thread runs)"
+        run: tools/fdr-session-test.sh build-rs
       - name: "Test the install-disk policy (128 GiB sparse macos_disk.img, kept, never resized, reset only on the exact text, temporary directory)"
         run: tools/disk-policy-test.sh build-diskpolicy
 

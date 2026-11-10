@@ -386,6 +386,7 @@ int socket_create_unix(const char *filename)
 }
 
 limd_glue_connect_guard_fn limd_glue_connect_guard = NULL;
+__thread int limd_glue_connect_purpose = 0;
 
 int socket_connect_unix(const char *filename)
 {

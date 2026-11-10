@@ -20,6 +20,7 @@
 #include "usb_host.h"
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
+#include "restore_session.h"
 /* curl stand-in (host/curl_mbedtls.c): a download stops when this flag turns non-zero. */
 void hv_curl_set_cancel_flag(volatile int *flag);
 extern int global_quit_flag;
@@ -74,9 +75,23 @@ static void *restore_thread(void *arg) {
     idevicerestore_set_cache_path(c, g_cache);
     if (g_ecid) idevicerestore_set_ecid(c, g_ecid);
     idevicerestore_set_progress_callback(c, progress, NULL);
-    int r = idevicerestore_start(c);
+    int r;
+#ifdef __ANDROID__
+    /* Android: the restore tool starts only through the session, which refuses to run unless the connection policy (host/net_guard.h) is in force. The allow
+       list holds the private usbmuxd and NOTHING else, so a signing request or a URLAsset download is refused until its destination is approved and added
+       (hv_net_guard_allow_host) -- that approval is a separate step. */
+    if (hv_restore_session_run_client(c, &r) != 0) {
+        fprintf(stderr, "install: refused -- the connection policy is not in force\n");
+        r = -1;
+    }
+#else
+    r = idevicerestore_start(c);
+#endif
     fprintf(stderr, "install: restore finished: %d\n", r);
     idevicerestore_client_free(c);
+#ifdef __ANDROID__
+    hv_restore_session_end();   /* refused (policy stays) if another engine thread is still registered */
+#endif
     g_result = r == 0 ? 0 : -1;
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
     return NULL;
@@ -101,6 +116,14 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     int port = 27100 + (int)(getpid() % 800);
     snprintf(g_mux, sizeof g_mux, "127.0.0.1:%d", port);
     setenv("USBMUXD_SOCKET_ADDRESS", g_mux, 1);
+#ifdef __ANDROID__
+    if (hv_restore_session_begin() != 0) {
+        fprintf(stderr, "install: not started -- the connection policy could not be put in force (a previous run may still be ending)\n");
+        g_result = -1;
+        return -1;
+    }
+    hv_restore_session_allow_usbmuxd((uint16_t)port);
+#endif
     g_ecid = ecid;
     g_progress = cb;
     g_progress_user = user;

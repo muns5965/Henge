@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <stddef.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -58,6 +59,37 @@ int main(void) {
     CHECK(dec(v6("2001:4860:4860::8888", 443), "gs.apple.example") == HV_NET_ALLOW, "public IPv6, approved name: allowed");
     CHECK(dec(v6("::ffff:8.8.8.8", 443), "gs.apple.example") == HV_NET_ALLOW, "IPv4-mapped public address is judged as IPv4: allowed");
 
+    /* 1b. the purpose: a device-chosen FDR target or a web request never uses the registered local endpoint */
+    {
+        struct sockaddr_storage m = v4("127.0.0.1", 27123);
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&m, sizeof m, NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_ALLOW, "purpose DEFAULT: the registered endpoint is allowed");
+        char w[80];
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&m, sizeof m, NULL, HV_NET_P_FDR, w, sizeof w) == HV_NET_DENY, "purpose FDR: the same endpoint is refused (%s)", w);
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&m, sizeof m, "gs.apple.example", HV_NET_P_HTTP, w, sizeof w) == HV_NET_DENY, "purpose HTTP: the same endpoint is refused even for an approved name (%s)", w);
+        hv_net_guard_allow_unix("/tmp/hvng-purpose.sock");
+        struct sockaddr_un u = {.sun_family = AF_UNIX}; strcpy(u.sun_path, "/tmp/hvng-purpose.sock");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&u, sizeof u, NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_ALLOW, "purpose DEFAULT: the registered unix path is allowed");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&u, sizeof u, NULL, HV_NET_P_FDR, NULL, 0) == HV_NET_DENY, "purpose FDR: the registered unix path is refused");
+        /* the length argument is honoured: nothing is read past it */
+        struct sockaddr_storage g = v4("127.0.0.1", 27123);
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g, 0, NULL, HV_NET_P_DEFAULT, w, sizeof w) == HV_NET_DENY, "length 0: refused (%s)", w);
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g, 1, NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_DENY, "length 1 (less than the family field): refused");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g, sizeof(struct sockaddr_in) - 1, NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_DENY, "AF_INET one byte short: refused");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g, sizeof(struct sockaddr_in), NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_ALLOW, "AF_INET exactly its size: judged normally");
+        struct sockaddr_storage g6 = v6("2001:4860:4860::8888", 443);
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g6, sizeof(struct sockaddr_in6) - 1, "gs.apple.example", HV_NET_P_HTTP, NULL, 0) == HV_NET_DENY, "AF_INET6 one byte short: refused");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&g6, sizeof(struct sockaddr_in6), "gs.apple.example", HV_NET_P_HTTP, NULL, 0) == HV_NET_ALLOW, "AF_INET6 exactly its size: judged normally");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&u, offsetof(struct sockaddr_un, sun_path), NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_DENY, "AF_UNIX with no path bytes: refused (an empty path is not the registered one)");
+        CHECK(hv_net_guard_check_p((struct sockaddr *)&u, offsetof(struct sockaddr_un, sun_path) + 5, NULL, HV_NET_P_DEFAULT, NULL, 0) == HV_NET_DENY, "AF_UNIX cut inside the path: refused (only the bytes passed are compared)");
+        /* the guard must stay in force while an engine thread is registered */
+        hv_net_guard_install();
+        CHECK(hv_net_guard_engine_enter() == 0 && hv_net_guard_engine_count() == 1, "engine thread registers while the hooks are intact");
+        CHECK(hv_net_guard_uninstall() == -1 && hv_net_guard_hooks_intact(), "uninstall is refused while an engine thread is registered; the hooks stay");
+        hv_net_guard_engine_leave();
+        CHECK(hv_net_guard_uninstall() == 0 && !hv_net_guard_hooks_intact(), "uninstall works once no engine thread is left");
+        CHECK(hv_net_guard_engine_enter() == -1 && hv_net_guard_engine_count() == 0, "an engine thread cannot register without the hooks");
+    }
+
     /* 2. the URLAsset decision */
     char why[96];
     CHECK(hv_net_guard_check_url("http://gs.apple.example/x", why, sizeof why) == HV_NET_DENY, "http URL refused (%s)", why);
@@ -112,6 +144,11 @@ int main(void) {
     CURLcode rc = curl_easy_perform(c);
     curl_easy_cleanup(c);
     CHECK(rc != CURLE_OK && !pending(lb), "installed: a curl request to loopback port B is refused before connect() (rc %d), its server saw no connection", (int)rc);
+
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", pa);
+    c = curl_easy_init(); curl_easy_setopt(c, CURLOPT_URL, url); curl_easy_setopt(c, CURLOPT_TIMEOUT, 5L);
+    rc = curl_easy_perform(c); curl_easy_cleanup(c);
+    CHECK(rc != CURLE_OK && !pending(la), "installed: a curl request to the REGISTERED usbmuxd endpoint A is refused too (curl never uses the local exception)");
 
     HvNetStats st; hv_net_guard_stats(&st);
     CHECK(st.denied >= 5 && st.allowed >= 2, "counters: %d attempts, %d allowed, %d refused", st.attempts, st.allowed, st.denied);

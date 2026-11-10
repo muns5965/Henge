@@ -2,6 +2,7 @@
 #define _GNU_SOURCE 1
 #include "restore_preflight.h"
 #include "net_guard.h"
+#include "restore_session.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -136,6 +137,7 @@ static void tree_walk(const char *dir, const char *rel, Tree *t) {
 /* ---- the private usbmuxd, as host/install.c starts it ---- */
 static char g_mux[64], g_cache[1024];
 static volatile int g_mux_exited;
+static volatile int g_mux_alive;   /* the private usbmuxd thread was started and not joined: no second run until the process is restarted */
 static int g_still;   /* the restore thread did not return: the guard stays installed for it */
 extern void usbmuxd_request_stop(void);   /* third_party/usbmuxd/src/main.c (Henge): main_loop returns within ~200 ms */
 extern int hv_no_ticket_files;            /* third_party/idevicerestore/src/idevicerestore.c (Henge) */
@@ -217,7 +219,10 @@ static struct idevicerestore_client_t *g_client;
 static volatile int g_rc = 12345, g_done;
 static void *restore_thread(void *arg) {
     (void)arg;
-    g_rc = idevicerestore_start(g_client);
+    int rc = 12345;
+    /* the only way into the tool: refused unless the connection policy is in force, and the policy cannot be removed while this runs */
+    if (hv_restore_session_run_client(g_client, &rc) != 0) rc = 12346;
+    g_rc = rc;
     g_done = 1;
     return NULL;
 }
@@ -235,6 +240,8 @@ static int mux_listening(void) {
 }
 
 int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, FILE *out, int cap_ms, int stage) {
+    int sess = -1;   /* the connection policy session: only a begun session is ended at the report */
+    if (g_mux_alive) { fprintf(out, "restore preflight: refused -- the private usbmuxd of an earlier run is still running (it did not stop); restart the app before running again\n"); return -1; }
     g_nrows = g_failed = g_findings = 0;
     g_still = 0;
     g_calls = 0, g_max_step = -1, g_last_step = -1, g_last_p = -1, g_rc = 12345, g_done = 0;
@@ -249,10 +256,9 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     if (g_failed) goto report;
     /* the connection guard: default deny for every connect() the tool's libraries make (FDR proxy, libusbmuxd, curl stand-in, URLAsset); only the private usbmuxd
        listener is registered below. A signing ticket is never written to a file. */
-    hv_net_guard_reset();
-    hv_net_guard_install();
-    hv_no_ticket_files = 1;
-    row("net_guard", hv_net_guard_active() ? "ok" : "FAILED", "default-deny connection policy installed (glue sockets, curl stand-in, URLAsset); allow list: the private usbmuxd listener only; ticket files disabled");
+    sess = hv_restore_session_begin();
+    row("net_guard", sess == 0 ? "ok" : "FAILED", "default-deny connection policy installed (glue sockets, curl stand-in, URLAsset); allow list: the private usbmuxd listener only; ticket files disabled; the tool can only be started through the session, which refuses to run without it");
+    if (sess != 0) goto report;
     g_mux_exited = 0;
 
     if (hv_usb_wait_online(usb, 60000) < 0) { row("guest_on_bus", "FAILED", "the guest did not come on the USB bus within 60 s; the tool was not started"); goto report; }
@@ -264,10 +270,11 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     snprintf(g_cache, sizeof g_cache, "%s", workdir);
     snprintf(g_mux, sizeof g_mux, "127.0.0.1:%d", 27100 + (int)(getpid() % 800));
     setenv("USBMUXD_SOCKET_ADDRESS", g_mux, 1);
-    hv_net_guard_allow_local("127.0.0.1", (uint16_t)atoi(strrchr(g_mux, ':') + 1));
+    hv_restore_session_allow_usbmuxd((uint16_t)atoi(strrchr(g_mux, ':') + 1));
     hv_libusb_shim_attach(usb);
     pthread_t tm, tr;
     if (pthread_create(&tm, NULL, mux_thread, NULL) != 0) { row("init", "FAILED", "usbmuxd thread did not start"); goto report; }
+    g_mux_alive = 1;
     usleep(300000);
     /* the baseline of the tool's own subscription and handles is taken with usbmuxd already up: it registers its own hotplug callback and keeps it for good */
     static Tree tree0, tree1;
@@ -395,7 +402,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     usbmuxd_request_stop();
     for (int i = 0; i < 100 && !g_mux_exited; i++) usleep(50000);
     int mux_stopped = g_mux_exited;
-    if (mux_stopped) pthread_join(tm, NULL);
+    if (mux_stopped) { pthread_join(tm, NULL); g_mux_alive = 0; }
     FdSnap fd1; ThSnap th1;
     fd_snap(&fd1); th_snap(&th1);
     int hd1 = hv_libusb_open_handles(), hp1 = hv_libusb_hotplug_live(), ho1 = hv_libusb_handles_opened_total();
@@ -430,7 +437,8 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     }
 
 report:
-    if (!g_still) hv_net_guard_uninstall();
+    /* the policy is removed only when no engine thread is left; a thread that did not return keeps being refused */
+    if (sess == 0 && hv_restore_session_end() != 0) g_still = 1;
     if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction, no disk write\n");
     else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction, no disk write\n");
     for (int i = 0; i < g_nrows; i++) fprintf(out, "restore preflight: %-20s %-9s %s\n", g_rows[i].name, g_rows[i].status, g_rows[i].detail);

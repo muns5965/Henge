@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/un.h>
@@ -31,6 +32,7 @@ static HvNetStats g_st;
 static char g_log[MAXL][96];
 static int g_nlog;
 static int g_active;
+static int g_engine;   /* engine threads inside hv_net_guard_engine_enter/leave */
 
 static void note_denied(const char *ip, unsigned port, const char *why) {
     if (g_nlog == MAXL) { memmove(g_log[0], g_log[1], sizeof g_log[0] * (MAXL - 1)); g_nlog--; }
@@ -82,22 +84,31 @@ static const char *classify(const struct sockaddr *a, char *ip, size_t ipcap, un
 
 static void setwhy(char *why, size_t cap, const char *s) { if (why && cap) snprintf(why, cap, "%s", s); }
 
-int hv_net_guard_check(const struct sockaddr *a, socklen_t len, const char *name, char *why, size_t cap) {
-    (void)len;
-    char ip[64], reason[64] = "";
+int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *name, int purpose, char *why, size_t cap) {
+    char ip[64] = "-", reason[64] = "";
     unsigned port = 0;
     int verdict = HV_NET_DENY;
+    /* the local exceptions belong to the library's own link to the private usbmuxd; an address the DEVICE chose (FDR) or a web request never uses them */
+    const int local_ok = (purpose == HV_NET_P_DEFAULT);
     pthread_mutex_lock(&g_mu);
     g_st.attempts++;
-    if (a->sa_family == AF_UNIX) {
+    /* length first: the family field, then the size that family needs, before anything else of the structure is read */
+    if (!a || len < (socklen_t)(offsetof(struct sockaddr, sa_family) + sizeof a->sa_family)) snprintf(reason, sizeof reason, "address too short");
+    else if (a->sa_family == AF_INET && len < sizeof(struct sockaddr_in)) snprintf(reason, sizeof reason, "address too short");
+    else if (a->sa_family == AF_INET6 && len < sizeof(struct sockaddr_in6)) snprintf(reason, sizeof reason, "address too short");
+    else if (a->sa_family == AF_UNIX) {
         const struct sockaddr_un *u = (const struct sockaddr_un *)a;
+        char path[sizeof u->sun_path + 1] = "";
+        size_t have = len > offsetof(struct sockaddr_un, sun_path) ? (size_t)len - offsetof(struct sockaddr_un, sun_path) : 0;
+        if (have > sizeof u->sun_path) have = sizeof u->sun_path;
+        memcpy(path, u->sun_path, have);   /* bounded by what the caller says it passed; path[] ends in 0 */
         snprintf(ip, sizeof ip, "unix");
-        for (int i = 0; i < g_nunix; i++)
-            if (!strncmp(g_unix[i], u->sun_path, sizeof u->sun_path)) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "registered unix path"); }
-        if (verdict == HV_NET_DENY) snprintf(reason, sizeof reason, "unix path not registered");
+        for (int i = 0; i < g_nunix && local_ok; i++)
+            if (!strcmp(g_unix[i], path)) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "registered unix path"); }
+        if (verdict == HV_NET_DENY) snprintf(reason, sizeof reason, local_ok ? "unix path not registered" : "unix path refused for this purpose");
     } else {
         const char *cls = classify(a, ip, sizeof ip, &port);
-        for (int i = 0; i < g_nlocal && verdict == HV_NET_DENY; i++)
+        for (int i = 0; i < g_nlocal && verdict == HV_NET_DENY && local_ok; i++)
             if (g_local[i].port == port && !strcmp(g_local[i].ip, ip)) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "registered local endpoint"); }
         if (verdict == HV_NET_DENY) {
             if (cls) snprintf(reason, sizeof reason, "%s address", cls);
@@ -114,6 +125,9 @@ int hv_net_guard_check(const struct sockaddr *a, socklen_t len, const char *name
     pthread_mutex_unlock(&g_mu);
     setwhy(why, cap, reason);
     return verdict;
+}
+int hv_net_guard_check(const struct sockaddr *a, socklen_t len, const char *name, char *why, size_t cap) {
+    return hv_net_guard_check_p(a, len, name, HV_NET_P_DEFAULT, why, cap);
 }
 
 int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
@@ -191,20 +205,62 @@ size_t hv_net_guard_denied_log(char *out, size_t cap) {
     return n;
 }
 
-static int glue_guard(const struct sockaddr *a, socklen_t len) { return hv_net_guard_check(a, len, NULL, NULL, 0); }
-static int curl_guard(const char *host, const struct sockaddr *a, socklen_t len) { return hv_net_guard_check(a, len, host, NULL, 0); }
+static int glue_guard(const struct sockaddr *a, socklen_t len) {
+    return hv_net_guard_check_p(a, len, NULL, limd_glue_connect_purpose == LIMD_GLUE_PURPOSE_FDR ? HV_NET_P_FDR : HV_NET_P_DEFAULT, NULL, 0);
+}
+static int curl_guard(const char *host, const struct sockaddr *a, socklen_t len) { return hv_net_guard_check_p(a, len, host, HV_NET_P_HTTP, NULL, 0); }
 static int url_guard(const char *url) { return hv_net_guard_check_url(url, NULL, 0); }
 
 void hv_net_guard_install(void) {
+    pthread_mutex_lock(&g_mu);
     limd_glue_connect_guard = glue_guard;
     hv_curl_connect_guard = curl_guard;
     hv_urlasset_guard = url_guard;
     g_active = 1;
+    pthread_mutex_unlock(&g_mu);
 }
-void hv_net_guard_uninstall(void) {
-    limd_glue_connect_guard = NULL;
-    hv_curl_connect_guard = NULL;
-    hv_urlasset_guard = NULL;
-    g_active = 0;
+/* Taking the hooks away turns "refuse" into "allow", so it is refused while any engine thread is registered (hv_net_guard_engine_enter). */
+int hv_net_guard_uninstall(void) {
+    int rc = 0;
+    pthread_mutex_lock(&g_mu);
+    if (g_engine > 0) rc = -1;
+    else {
+        limd_glue_connect_guard = NULL;
+        hv_curl_connect_guard = NULL;
+        hv_urlasset_guard = NULL;
+        g_active = 0;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return rc;
 }
-int hv_net_guard_active(void) { return g_active; }
+int hv_net_guard_active(void) {
+    pthread_mutex_lock(&g_mu);
+    int r = g_active;
+    pthread_mutex_unlock(&g_mu);
+    return r;
+}
+/* All three hooks are really ours (not NULL, not replaced). */
+int hv_net_guard_hooks_intact(void) {
+    pthread_mutex_lock(&g_mu);
+    int r = g_active && limd_glue_connect_guard == glue_guard && hv_curl_connect_guard == curl_guard && hv_urlasset_guard == url_guard;
+    pthread_mutex_unlock(&g_mu);
+    return r;
+}
+int hv_net_guard_engine_enter(void) {
+    pthread_mutex_lock(&g_mu);
+    int ok = g_active && limd_glue_connect_guard == glue_guard && hv_curl_connect_guard == curl_guard && hv_urlasset_guard == url_guard;
+    if (ok) g_engine++;
+    pthread_mutex_unlock(&g_mu);
+    return ok ? 0 : -1;
+}
+void hv_net_guard_engine_leave(void) {
+    pthread_mutex_lock(&g_mu);
+    if (g_engine > 0) g_engine--;
+    pthread_mutex_unlock(&g_mu);
+}
+int hv_net_guard_engine_count(void) {
+    pthread_mutex_lock(&g_mu);
+    int r = g_engine;
+    pthread_mutex_unlock(&g_mu);
+    return r;
+}

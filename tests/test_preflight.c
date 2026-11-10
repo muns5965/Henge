@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 
 #include "../host/restore_preflight.h"
+#include "../host/restore_session.h"
+#include "../host/net_guard.h"
 
 void hv_curl_deny_network(int on);
 
@@ -128,12 +130,31 @@ int main(int argc, char **argv) {
     int r = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, !strcmp(kind, "hang") ? 1500 : 20000, stage);
     g_stop = 1;
     pthread_join(t, NULL);
+    int hang_bad = 0;
+    if (!strcmp(kind, "hang")) {
+        /* the restore thread did not return (the stand-in ROM sleeps 9 s inside it): the policy must still be in force, a second run must be refused, and the policy
+           may be removed only after the thread has ended */
+        printf("scenario hang: engine threads after the run: %d, hooks intact: %d\n", hv_restore_session_engine_threads(), hv_net_guard_hooks_intact());
+        if (hv_restore_session_engine_threads() != 1 || !hv_net_guard_hooks_intact()) { printf("scenario hang: EXPECTATION NOT MET (policy must stay while the thread runs)\n"); hang_bad = 1; }
+        if (hv_restore_session_end() == 0) { printf("scenario hang: EXPECTATION NOT MET (end() removed the policy under a running thread)\n"); hang_bad = 1; }
+        int r2 = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, 1500, stage);
+        printf("scenario hang: second run while the thread runs returned %d (must be refused)\n", r2);
+        if (r2 == 0) hang_bad = 1;
+        for (int i = 0; i < 300 && hv_restore_session_engine_threads() > 0; i++) usleep(50000);
+        printf("scenario hang: thread ended, engine threads %d\n", hv_restore_session_engine_threads());
+        if (hv_restore_session_engine_threads() != 0) hang_bad = 1;
+        if (hv_restore_session_end() != 0 || hv_net_guard_hooks_intact()) { printf("scenario hang: EXPECTATION NOT MET (policy not removable after the thread ended)\n"); hang_bad = 1; }
+        int r3 = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, 1500, stage);
+        printf("scenario hang: third run (the private usbmuxd of the first one never stopped) returned %d (must be refused)\n", r3);
+        if (r3 != -1) hang_bad = 1;
+    }
     if (!strcmp(kind, "curl")) { pthread_join(ta, NULL); printf("scenario curl: the local server saw %d connection(s)\n", g_conn_seen); }
     int bad = 0;
     if (!strcmp(kind, "ok")) bad = r != 0;
     else if (!strcmp(kind, "no-ipsw") || !strcmp(kind, "dnload") || !strcmp(kind, "hang")) bad = r < 1;
     else if (!strcmp(kind, "curl")) bad = !(r >= 1 && g_conn_seen == 0);
     else if (!strncmp(kind, "bad-", 4)) bad = r < 1;   /* a-bad-component, a-bad-identity: the fake IPSW is wrong on purpose */
+    if (hang_bad) bad = 1;
     printf("scenario %s: preflight returned %d -> %s\n", sc, r, bad ? "EXPECTATION NOT MET" : "as expected");
     return bad ? 100 + (r > 0 ? r : 0) : 0;
 }

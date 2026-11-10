@@ -54,6 +54,11 @@ LIMD_GLUE_API int socket_create_unix(const char *filename);
    connection (errno = EACCES, the call returns -1). NULL (the default) changes nothing. */
 typedef int (*limd_glue_connect_guard_fn)(const struct sockaddr *addr, socklen_t addrlen);
 LIMD_GLUE_API extern limd_glue_connect_guard_fn limd_glue_connect_guard;
+/* Henge: why the calling thread is about to connect, read by the hook. The caller sets it immediately before ONE connect call and puts it back to
+   LIMD_GLUE_PURPOSE_DEFAULT immediately after, with no early exit between the two. DEFAULT is every library-internal connection (libusbmuxd's own link);
+   FDR is the proxy connection to a host:port the DEVICE named. */
+enum { LIMD_GLUE_PURPOSE_DEFAULT = 0, LIMD_GLUE_PURPOSE_FDR = 1 };
+LIMD_GLUE_API extern __thread int limd_glue_connect_purpose;
 
 LIMD_GLUE_API int socket_connect_unix(const char *filename);
 #endif

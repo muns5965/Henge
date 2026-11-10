@@ -8,6 +8,9 @@
      size      128 GiB = 137,438,953,472 bytes, a sparse file (it takes only what the guest writes)
    Rules: an existing file is never replaced, truncated, extended or shrunk by this module; a size that differs from the design value is REPORTED and needs an explicit
    decision by the user; there is no automatic re-creation. Resetting needs the exact confirmation text below.
+   The directory is opened once and every step is relative to it (no link followed, device/inode of the file re-checked right before the removal); create and reset refuse a
+   directory that is not owned by the caller or is writable by group/others. A swap of the file by someone who can write to that directory in the last instant before
+   unlinkat cannot be excluded by any check, so the directory must be the app's private one.
    Nothing in the app calls the creating or resetting functions yet: creating the install disk is a separate approval. The tests run them in a temporary directory. */
 #define HV_INSTALL_DISK_NAME "macos_disk.img"
 #define HV_INSTALL_DISK_BYTES (128ULL << 30)

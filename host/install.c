@@ -85,6 +85,16 @@ static void *restore_thread(void *arg) {
 int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, HvInstallProgress cb,
                      void *user) {
     if (!usb) return -1;
+#ifdef __ANDROID__
+    /* One restore at a time: a second start would run two restore threads over the same files and the same usbmuxd port. */
+    static volatile int started;
+    if (started && g_result == 1) {
+        fprintf(stderr, "install: a restore is already running\n");
+        return -1;
+    }
+    started = 1;
+    g_result = 1;
+#endif
     snprintf(g_ipsw, sizeof g_ipsw, "%s", ipsw);
     snprintf(g_cache, sizeof g_cache, "%s", workdir);
     /* A private usbmuxd on loopback; the restore tools find it through this. */

@@ -11,7 +11,7 @@ FL="-std=gnu11 -D_GNU_SOURCE -O2 -g -w -DHAVE_CONFIG_H -Icore -Ihost -Idevices -
 R="$OUT/irecv"
 mkdir -p "$R"
 objs=""
-for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/src/thread.c $TP/libirecovery/src/libirecovery.c host/libusb_shim.c host/irecv_probe.c; do
+for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/src/thread.c $TP/libirecovery/src/libirecovery.c host/libusb_shim.c host/irecv_probe.c host/dnload_probe.c; do
   o="$R/$(basename "${f%.*}").o"
   extra=""; [ "$(basename "$f")" = libirecovery.c ] && extra='-DPACKAGE_VERSION="1.3.1-henge"'
   $CC $FL $extra -c "$f" -o "$o" 2> "$o.log" || { echo "FAILED  $f"; head -20 "$o.log"; exit 1; }

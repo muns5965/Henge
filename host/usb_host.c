@@ -120,7 +120,9 @@ static void *probe(void *arg) {
     } else {
         fprintf(stderr, "usb probe: configuration descriptor -> %d\n", cn);
     }
+    if (cn > 0) hv_usb_hexdump(stderr, "usb probe: configuration descriptor raw", cfg, cn);
     HvUsbConfigInfo ci;
+    if (cn >= 9 && cfg[6]) print_string(d, cfg[6]); /* iConfiguration; a failed lookup only prints a line */
     if (cn >= 9 && hv_usb_describe_config(cfg, cn, &ci, stderr) == 0) {
         if (ci.dfu_istring) print_string(d, (uint8_t)ci.dfu_istring);
         uint8_t st[2] = {0xff, 0xff};

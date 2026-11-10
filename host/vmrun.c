@@ -13,6 +13,9 @@
 #include <unistd.h>
 
 #include "vm.h"
+#ifdef HV_IRECV_PROBE
+#include "irecv_probe.h"
+#endif
 #include "vmapple.h"
 
 static int exited;
@@ -113,7 +116,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -134,10 +137,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--recreate-blank")) recreate_blank = 1; /* with --make-blank: start the files named blank_* from scratch */
         else if (!strcmp(a, "--psci-log")) psci_log = 1;             /* print every PSCI call the guest makes (function, x1..x3, pc) */
         else if (!strcmp(a, "--usb-probe")) usb_probe = 1; /* log USB port events and probe the device from the host side (descriptor + strings) */
+        else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -150,6 +154,17 @@ int main(int argc, char **argv) {
     if (usb_probe) { /* read by the VM when it creates the USB port, so before hv_vm_create */
         setenv("HV_VUSB_LOG", "1", 1);
         setenv("HV_VUSB_PROBE", "1", 1);
+    }
+    if (irecv_probe) {
+#ifdef HV_IRECV_PROBE
+        if (usb_probe) { fprintf(stderr, "vmrun: --irecv-probe and --usb-probe both talk to the device; use one\n"); return 2; }
+        if (!cfg.installer) { fprintf(stderr, "vmrun: --irecv-probe needs --installer (the DFU boot)\n"); return 2; }
+        setenv("HV_VUSB_LOG", "1", 1);
+        setenv("HV_LIBUSB_LOG", "1", 1);
+#else
+        fprintf(stderr, "vmrun: this build has no libirecovery in it (--irecv-probe unavailable)\n");
+        return 2;
+#endif
     }
     if (make_blank && recreate_blank) {
         /* only files whose name starts with "blank_" are ever removed: a real installed disk is never touched */
@@ -175,6 +190,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("vmrun created in %.0f ms\n", (now() - t0) * 1e3);
+#ifdef HV_IRECV_PROBE
+    if (irecv_probe) {
+        HvVmapple *bd0 = hv_vm_board();
+        if (bd0 && bd0->vusb) hv_irecv_probe_start(bd0->vusb, cfg.ecid);
+        else fprintf(stderr, "vmrun: no USB port in this boot mode; --irecv-probe has nothing to open\n");
+    }
+#endif
     status("start", 0);
     hv_vm_start(1, on_exit_cb);
     double t1 = now(), next = 2;

@@ -1,6 +1,7 @@
 /* host/usb_desc.c on synthetic configuration descriptors (no device). */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "../host/usb_desc.c"
 
 static int fails;
@@ -17,6 +18,19 @@ int main(void) {
     check("DFU interface found: number 0, protocol 2 (DFU mode), iInterface 5", c.dfu_interface == 0 && c.dfu_protocol == 2 && c.dfu_istring == 5);
     check("DFU functional decoded: attributes 0x0B, detach 255 ms, transfer 2048, bcd 0x011A",
           c.dfu_func_seen && c.dfu_attributes == 0x0B && c.dfu_detach_timeout == 255 && c.dfu_transfer_size == 2048 && c.dfu_bcd_version == 0x011A);
+
+    /* Apple's shape seen on the device: 9 + 9 + 7 = 25 bytes, DFU interface with protocol 0, 7-byte functional descriptor */
+    uint8_t apple[] = {9, 2, 25, 0, 1, 1, 5, 0x80, 0xFA, 9, 4, 0, 0, 0, 0xFE, 1, 0, 0, 7, 0x21, 0x0D, 0x10, 0x27, 0x00, 0x10};
+    check("7-byte DFU functional descriptor (Apple form) decoded, no bcd", hv_usb_describe_config(apple, sizeof apple, &c, stdout) == 0 && c.dfu_func_seen && c.dfu_func_length == 7 &&
+          c.dfu_attributes == 0x0D && c.dfu_detach_timeout == 10000 && c.dfu_transfer_size == 4096 && c.dfu_bcd_version == -1 && c.dfu_protocol == 0 && c.dfu_interface == 0);
+    check("9-byte form still reports length 9 and bcd", hv_usb_describe_config(dfu, sizeof dfu, &c, NULL) == 0 && c.dfu_func_length == 9 && c.dfu_bcd_version == 0x011A);
+    uint8_t cut9[] = {9, 2, 25, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0xFE, 1, 2, 0, 9, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x08};
+    check("functional descriptor declaring 9 bytes with only 7 left is rejected, nothing read past the end", hv_usb_describe_config(cut9, sizeof cut9, &c, NULL) == -1 && !c.dfu_func_seen);
+    uint8_t cut7[] = {9, 2, 24, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0xFE, 1, 0, 0, 7, 0x21, 0x0D, 0x10, 0x27, 0x00};
+    check("functional descriptor declaring 7 bytes with 6 left is rejected", hv_usb_describe_config(cut7, sizeof cut7, &c, NULL) == -1 && !c.dfu_func_seen);
+    uint8_t odd8[] = {9, 2, 26, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0xFE, 1, 0, 0, 8, 0x21, 0x0D, 0x10, 0x27, 0x00, 0x10, 0};
+    check("an 8-byte 0x21 descriptor is not decoded as DFU functional", hv_usb_describe_config(odd8, sizeof odd8, &c, NULL) == 0 && !c.dfu_func_seen);
+    check("hexdump prints 16 bytes per line", ({ char *bp; size_t bl; FILE *f = open_memstream(&bp, &bl); hv_usb_hexdump(f, "x", apple, sizeof apple); fclose(f); int ok = strstr(bp, "x (25 bytes):\n  09 02 19 00") && strchr(strchr(bp, '\n') + 1, '\n') && strstr(bp, "\n  21 0d") == NULL ? 1 : 0; free(bp); ok; }));
 
     uint8_t two[] = {9, 2, 34, 0, 1, 1, 0, 0x80, 50,
                      9, 4, 0, 0, 1, 0x08, 6, 0x50, 0,          /* mass storage, not DFU */

@@ -15,6 +15,13 @@ const char *hv_dfu_status_name(int s) {
     return s >= 0 && s <= 15 ? n[s] : "?";
 }
 
+void hv_usb_hexdump(FILE *out, const char *label, const uint8_t *b, int len) {
+    if (!out) return;
+    fprintf(out, "%s (%d bytes):", label, len);
+    for (int i = 0; i < len; i++) fprintf(out, "%s%02x", i % 16 == 0 ? "\n  " : " ", b[i]);
+    fprintf(out, "\n");
+}
+
 int hv_usb_describe_config(const uint8_t *b, int len, HvUsbConfigInfo *info, FILE *out) {
     HvUsbConfigInfo z;
     memset(&z, 0, sizeof z);
@@ -55,16 +62,22 @@ int hv_usb_describe_config(const uint8_t *b, int len, HvUsbConfigInfo *info, FIL
         } else if (t == 5 && dl >= 7) {
             info->endpoints++;
             if (out) fprintf(out, "    endpoint 0x%02x attributes 0x%02x maxpacket %d interval %d\n", b[p + 2], b[p + 3], b[p + 4] | (b[p + 5] << 8), b[p + 6]);
-        } else if (t == 0x21 && dl == 9 && in_dfu) {
+        } else if (t == 0x21 && (dl == 7 || dl == 9) && in_dfu) {
+            /* DFU 1.0 has the 7-byte form (no bcdDFUVersion; Apple's boot ROMs use it), DFU 1.1 the 9-byte one. The length is checked against the
+               descriptor's own bLength, and the loop above already made sure p+dl is inside the blob. */
             info->dfu_func_seen = 1;
+            info->dfu_func_length = dl;
             info->dfu_attributes = b[p + 2];
             info->dfu_detach_timeout = b[p + 3] | (b[p + 4] << 8);
             info->dfu_transfer_size = b[p + 5] | (b[p + 6] << 8);
-            info->dfu_bcd_version = b[p + 7] | (b[p + 8] << 8);
-            if (out)
-                fprintf(out, "    DFU functional: attributes 0x%02x (canDnload=%d canUpload=%d manifestTolerant=%d willDetach=%d) detachTimeout=%d transferSize=%d bcdDFU=0x%04x\n",
+            info->dfu_bcd_version = dl == 9 ? b[p + 7] | (b[p + 8] << 8) : -1;
+            if (out) {
+                fprintf(out, "    DFU functional (%d bytes): attributes 0x%02x (canDnload=%d canUpload=%d manifestTolerant=%d willDetach=%d) detachTimeout=%d transferSize=%d", dl,
                         info->dfu_attributes, info->dfu_attributes & 1, (info->dfu_attributes >> 1) & 1, (info->dfu_attributes >> 2) & 1, (info->dfu_attributes >> 3) & 1,
-                        info->dfu_detach_timeout, info->dfu_transfer_size, info->dfu_bcd_version);
+                        info->dfu_detach_timeout, info->dfu_transfer_size);
+                if (dl == 9) fprintf(out, " bcdDFU=0x%04x\n", info->dfu_bcd_version);
+                else fprintf(out, " (no bcdDFUVersion in this form; the 7-byte form alone does not say which DFU revision the device implements)\n");
+            }
         } else if (out) {
             fprintf(out, "    other descriptor type 0x%02x length %d\n", t, dl);
         }

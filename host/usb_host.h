@@ -23,6 +23,17 @@ int64_t hv_usb_wait_online(HvVirtioUsb *d, int timeout_ms);
 /* host/libusb_shim.c: the device its libusb API drives. */
 void hv_libusb_shim_attach(HvVirtioUsb *d);
 
+/* The control requests the stand-in libusb has carried, oldest first (the last HV_CTRL_LOG_MAX are kept). `result` is the byte count or a negative libusb
+   error; `done` is 0 while the request is still in flight. */
+#define HV_CTRL_LOG_MAX 128
+typedef struct {
+    int seq, result, done;
+    uint8_t bmRequestType, bRequest;
+    uint16_t wValue, wIndex, wLength;
+} HvCtrlRecord;
+int hv_libusb_ctrl_count(void);
+int hv_libusb_ctrl_get(int k, HvCtrlRecord *out); /* 1 if entry k is still held */
+
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */
 void hv_usb_probe_start(HvVirtioUsb *d);
 

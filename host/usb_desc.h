@@ -16,16 +16,20 @@ typedef struct {
     int dfu_interface;       /* bInterfaceNumber of the first DFU interface (class 0xFE, subclass 1), or -1 */
     int dfu_protocol;        /* 1 = runtime, 2 = DFU mode, as in that interface; -1 if none */
     int dfu_alt;
-    int dfu_func_seen;       /* a DFU functional descriptor (0x21, length 9) followed it */
+    int dfu_func_seen;       /* a DFU functional descriptor (0x21, length 7 or 9) followed it */
+    int dfu_func_length;     /* 7 (DFU 1.0 form) or 9 */
     int dfu_attributes;      /* bmAttributes: bit0 canDnload, bit1 canUpload, bit2 manifestationTolerant, bit3 willDetach */
     int dfu_detach_timeout;
     int dfu_transfer_size;
-    int dfu_bcd_version;
+    int dfu_bcd_version;     /* -1 for the 7-byte form, which has none */
     int dfu_istring;         /* iInterface of the DFU interface */
 } HvUsbConfigInfo;
 
 /* Describes `blob` (len bytes) on `out` (may be NULL) and fills `info`. Returns 0 if it is a well-formed configuration, -1 otherwise. */
 int hv_usb_describe_config(const uint8_t *blob, int len, HvUsbConfigInfo *info, FILE *out);
+
+/* Prints `len` bytes as hex, 16 per line, under `label`. */
+void hv_usb_hexdump(FILE *out, const char *label, const uint8_t *b, int len);
 
 /* Name of a DFU state (bState of GET_STATE / GET_STATUS), or "?" */
 const char *hv_dfu_state_name(int state);

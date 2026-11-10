@@ -128,6 +128,16 @@ public class MainActivity extends Activity {
         installerButton.setOnClickListener(v -> runVmrun(true));
         root.addView(installerButton);
 
+        final Button irecvButton = new Button(this);
+        irecvButton.setText("복원 라이브러리 USB 연결 시험 (libirecovery로 장치 열기, 30초)");
+        irecvButton.setOnClickListener(v -> runVmrun(true, true));
+        root.addView(irecvButton);
+        final TextView irecvNote = new TextView(this);
+        irecvNote.setText("위 버튼: 설치기(DFU)로 부팅한 뒤 복원 도구가 쓰는 libirecovery로 가상 USB 장치를 열고 닫기만 합니다. "
+                + "USB 구성(SET_CONFIGURATION 1)을 선택하므로 장치 상태가 바뀔 수 있습니다. 펌웨어 전송·Apple 서명 요청·IPSW 다운로드는 하지 않습니다.");
+        irecvNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(irecvNote);
+
         final Button tlsButton = new Button(this);
         tlsButton.setText("HTTPS·CA 저장소 확인 (공개 사이트)");
         tlsButton.setOnClickListener(v -> runTlsCheck(false));
@@ -589,6 +599,11 @@ public class MainActivity extends Activity {
 
     /** installer=true boots the ROM in DFU (installer) mode. Both modes use new blank disk/aux files each time and log PSCI calls. */
     private void runVmrun(final boolean installer) {
+        runVmrun(installer, false);
+    }
+
+    /** irecv=true (needs installer): the program with libirecovery in it opens the virtual USB device through the library (--irecv-probe instead of --usb-probe). */
+    private void runVmrun(final boolean installer, final boolean irecv) {
         if (running) return;
         running = true;
         setButtons(false);
@@ -604,8 +619,8 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, "libvmrun.so");
-                if (!exe.exists()) acc.append("vmrun 실행 파일이 이 APK에 없습니다.\n");
+                File exe = new File(libDir, irecv ? "libvmrunirecv.so" : "libvmrun.so");
+                if (!exe.exists()) acc.append(irecv ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
                 else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
                     acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
                     base.mkdirs();
@@ -629,7 +644,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add("--usb-probe");
+                    if (installer) cmd.add(irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
@@ -690,6 +705,17 @@ public class MainActivity extends Activity {
                                .append(w.equals(got) ? " → 일치 (ECID 전달만 확인, Apple 서명 수용은 별개)\n" : " → 불일치 또는 미확인\n");
                         } catch (NumberFormatException ex) {
                             acc.append("config.txt의 ecid 값을 해석하지 못했습니다: ").append(want).append('\n');
+                        }
+                    }
+                    if (irecv) {
+                        String all = text.toString();
+                        int a = all.indexOf("irecv probe: ===== result =====");
+                        int b = all.indexOf("irecv probe: done");
+                        if (a >= 0) {
+                            int e = b >= a ? all.indexOf('\n', b) : -1;
+                            acc.append("\n— 요약 —\n").append(all, a, e > 0 ? e : all.length()).append('\n');
+                        } else {
+                            acc.append("\n— 요약 없음: 시험이 결과 표까지 가지 못했습니다(위 irecv probe 줄 참고) —\n");
                         }
                     }
                     acc.append("이 출력은 게스트가 부팅했다는 증거가 아닙니다. pc/el/esr 줄과 종료 사유를 확인하세요.\n");

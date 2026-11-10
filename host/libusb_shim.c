@@ -219,6 +219,10 @@ static void run(Xfer *x) {
         int r = hv_usb_control(g_usb, s->bmRequestType, s->bRequest, libusb_le16_to_cpu(s->wValue),
                                libusb_le16_to_cpu(s->wIndex), t->buffer + 8, libusb_le16_to_cpu(s->wLength),
                                limit ? limit : 60000);
+        if (r < 0 && g_log)
+            fprintf(stderr, "libusb shim: control request failed below libusb: hv_usb_control returned %d (%s) -> reported as %s\n", r,
+                    r == HV_USB_ESTALL ? "the device answered STALL" : r == HV_USB_ETIMEOUT ? "no answer in time" : r == HV_USB_EGONE ? "the guest left the bus" : "an abort/reset/other answer",
+                    r == HV_USB_ESTALL ? "STALL" : r == HV_USB_ETIMEOUT ? "TIMED_OUT" : "NO_DEVICE");
         if (r >= 0) complete(x, LIBUSB_TRANSFER_COMPLETED, r); /* data bytes, not counting the setup */
         else complete(x, r == HV_USB_ESTALL ? LIBUSB_TRANSFER_STALL : r == HV_USB_ETIMEOUT ? LIBUSB_TRANSFER_TIMED_OUT
                                                                                             : LIBUSB_TRANSFER_NO_DEVICE, 0);
@@ -512,8 +516,48 @@ static int sync_xfer(struct libusb_transfer *t) {
     }
 }
 
+/* Every control request that goes through this API is recorded (a small ring), so a caller can say afterwards which requests a library such as
+   libirecovery made, in which order, and what each returned. The numbers also appear in the HV_LIBUSB_LOG lines, next to the virtio-usb lines. */
+static HvCtrlRecord g_ctrl[HV_CTRL_LOG_MAX];
+static unsigned g_ctrl_n; /* total recorded; entry k lives in slot k % HV_CTRL_LOG_MAX */
+static pthread_mutex_t g_ctrl_mu = PTHREAD_MUTEX_INITIALIZER;
+
+int hv_libusb_ctrl_count(void) {
+    pthread_mutex_lock(&g_ctrl_mu);
+    int n = (int)g_ctrl_n;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    return n;
+}
+
+int hv_libusb_ctrl_get(int k, HvCtrlRecord *out) {
+    int ok = 0;
+    pthread_mutex_lock(&g_ctrl_mu);
+    if (k >= 0 && (unsigned)k < g_ctrl_n && g_ctrl_n - (unsigned)k <= HV_CTRL_LOG_MAX) *out = g_ctrl[k % HV_CTRL_LOG_MAX], ok = 1;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    return ok;
+}
+
+static int ctrl_transfer(libusb_device_handle *h, uint8_t rt, uint8_t req, uint16_t val, uint16_t idx, unsigned char *data, uint16_t len, unsigned int timeout);
+
 int libusb_control_transfer(libusb_device_handle *h, uint8_t rt, uint8_t req, uint16_t val, uint16_t idx,
                             unsigned char *data, uint16_t len, unsigned int timeout) {
+    pthread_mutex_lock(&g_ctrl_mu);
+    unsigned k = g_ctrl_n++;
+    HvCtrlRecord *r = &g_ctrl[k % HV_CTRL_LOG_MAX];
+    r->seq = (int)k, r->bmRequestType = rt, r->bRequest = req, r->wValue = val, r->wIndex = idx, r->wLength = len, r->result = 0, r->done = 0;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    if (g_log) fprintf(stderr, "libusb shim: ctrl#%u begin rt=%02x req=%02x value=%04x index=%04x length=%u\n", k, rt, req, val, idx, len);
+    int res = ctrl_transfer(h, rt, req, val, idx, data, len, timeout);
+    pthread_mutex_lock(&g_ctrl_mu);
+    r = &g_ctrl[k % HV_CTRL_LOG_MAX];
+    if (r->seq == (int)k) r->result = res, r->done = 1;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    if (g_log) fprintf(stderr, "libusb shim: ctrl#%u end -> %d (%s)\n", k, res, res < 0 ? libusb_error_name(res) : "bytes");
+    return res;
+}
+
+static int ctrl_transfer(libusb_device_handle *h, uint8_t rt, uint8_t req, uint16_t val, uint16_t idx,
+                         unsigned char *data, uint16_t len, unsigned int timeout) {
     uint8_t *buf = malloc(8u + len);
     if (!buf) return LIBUSB_ERROR_NO_MEM;
     libusb_fill_control_setup(buf, rt, req, val, idx, len);

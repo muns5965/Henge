@@ -27,6 +27,8 @@ on:
       - tools/curltool-build.sh
       - tools/tatsu-test.sh
       - tools/check-apple-ca.sh
+      - tools/irecv-test.sh
+      - tools/vmrun-irecv-build.sh
       - android/app/src/main/java/**
       - devices/**
       - third_party/**
@@ -106,6 +108,12 @@ jobs:
           cc -std=gnu11 -Wall -Wextra -o test_usbdesc tests/test_usbdesc.c
           ./test_usbdesc
 
+      - name: Test libirecovery opening the virtual USB device (real libirecovery + libusb stand-in + probe, against a stand-in for the ROM; five scenarios)
+        run: CC=clang tools/irecv-test.sh build-irecvtest
+
+      - name: Build vmrun with libirecovery in it (--irecv-probe)
+        run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-irecv-build.sh build-linux
+
       - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers
         run: tools/tatsu-test.sh build-curltest
 
@@ -151,6 +159,8 @@ jobs:
       - name: Build the device models and link test_devices for Android (graphics on a stub)
         continue-on-error: true
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android
+      - name: Build vmrun with libirecovery for Android (--irecv-probe)
+        run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-irecv-build.sh build-android
       - name: Survey the macOS-restore libraries for Android (compile, then integrated link; informational)
         continue-on-error: true
         run: |
@@ -167,5 +177,6 @@ jobs:
             build-android/test_devices
             build-android/test_vm
             build-android/vmrun
+            build-android/vmrun_irecv
             build-android/romextract
             build-android/restore-survey.txt

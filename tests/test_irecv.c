@@ -6,6 +6,10 @@
      stall-setcfg  - STALLs SET_CONFIGURATION
      wrong-ecid    - the serial string carries another ECID
      no-device     - the guest never goes on the bus (wait is short)
+     reattach      - after the library closed its handle the device leaves the bus and comes back (new session): events must pair up ADD, REMOVE, ADD -> all pass
+     gone          - after the close the device leaves and does not come back: the events stage must FAIL (last event is a REMOVE), nothing else
+     inject-dnload - a side thread sends a DFU DNLOAD through the libusb API during the run: the boundary stage must FAIL
+     inject-bulk   - a side thread submits a bulk transfer through the libusb API during the run: the boundary stage must FAIL
    Exit status: what hv_irecv_probe_run returned (failed stages), 100 + n if the scenario's expectation on the control log is not met. */
 #define _GNU_SOURCE 1
 #include <inttypes.h>
@@ -15,6 +19,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <libusb.h>
+
 #include "../host/irecv_probe.h"
 #include "../devices/virtio_usb.h"
 
@@ -23,6 +29,30 @@ static volatile int g_stop;
 static int g_cfg, g_stall_setcfg;
 static uint64_t g_dev_ecid;
 static int g_setcfg_seen, g_setcfg_value;
+static const char *g_sc;
+static int g_getstate_seen;   /* DFU GET_STATE requests the ROM has answered: the 1st is before the library, the 2nd after it closed its handle */
+
+/* Runs on its own thread once the probe has closed the library's handle (the 2nd GET_STATE), so the probe's stages are over and only its final wait is left. */
+static void *after_close(void *arg) {
+    (void)arg;
+    if (!strcmp(g_sc, "reattach") || !strcmp(g_sc, "gone")) {
+        usleep(150000);
+        hv_vusb_set_online(g_u, 0);
+        if (!strcmp(g_sc, "reattach")) { usleep(300000); hv_vusb_set_online(g_u, 1); }
+    } else if (!strcmp(g_sc, "inject-dnload") || !strcmp(g_sc, "inject-bulk")) {
+        libusb_device **l = NULL;
+        ssize_t n = libusb_get_device_list(NULL, &l);
+        libusb_device_handle *h = NULL;
+        if (n > 0 && libusb_open(l[0], &h) == 0) {
+            unsigned char b[16] = {0};
+            if (!strcmp(g_sc, "inject-dnload")) libusb_control_transfer(h, 0x21, 1, 0, 0, b, sizeof b, 500);   /* DFU_DNLOAD, block 0 */
+            else { int got = 0; libusb_bulk_transfer(h, 0x04, b, sizeof b, &got, 500); }
+            libusb_close(h);
+        }
+        if (l) libusb_free_device_list(l, 1);
+    }
+    return NULL;
+}
 
 static const uint8_t dev_desc[18] = {0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0xac, 0x05, 0x27, 0x12, 0x00, 0x00, 0x02, 0x03, 0x04, 0x01};
 static const uint8_t cfg_desc[25] = {9, 2, 25, 0, 1, 1, 5, 0x80, 0xFA, 9, 4, 0, 0, 0, 0xFE, 1, 0, 0, 7, 0x21, 0x0D, 0x10, 0x27, 0x00, 0x10};
@@ -67,7 +97,10 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
         reply(HV_VUSB_RSP_DATA, NULL, 0);
         return;
     }
-    else if (rt == 0xA1 && rq == 5) { buf[0] = 2; n = 1; }
+    else if (rt == 0xA1 && rq == 5) {
+        buf[0] = 2; n = 1;
+        if (++g_getstate_seen == 2) { pthread_t t; if (pthread_create(&t, NULL, after_close, NULL) == 0) pthread_detach(t); }
+    }
     else if (rt == 0xA1 && rq == 3) { const uint8_t st[6] = {0, 0x32, 0, 0, 2, 0}; memcpy(buf, st, 6); n = 6; }
     if (n < 0) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
     reply(HV_VUSB_RSP_DATA, buf, (uint32_t)n);
@@ -88,6 +121,7 @@ static void *rom(void *arg) {
 
 int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "ok";
+    g_sc = sc;
     uint64_t ecid = 0x2d2a8d94f32ba4d2ull;
     g_dev_ecid = !strcmp(sc, "wrong-ecid") ? 0x1111222233334444ull : ecid;
     g_cfg = !strcmp(sc, "configured") ? 1 : 0;
@@ -108,6 +142,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(sc, "stall-setcfg")) bad = !(g_setcfg_seen == 1 && r >= 1);
     else if (!strcmp(sc, "wrong-ecid")) bad = !(g_setcfg_seen == 0 && r >= 1);
     else if (!strcmp(sc, "no-device")) bad = !(r == -1);
+    else if (!strcmp(sc, "reattach")) bad = !(r == 0);
+    else if (!strcmp(sc, "gone") || !strcmp(sc, "inject-dnload") || !strcmp(sc, "inject-bulk")) bad = !(r == 1);
     printf("scenario %s: probe returned %d, SET_CONFIGURATION seen %d times (value %d) -> %s\n", sc, r, g_setcfg_seen, g_setcfg_value, bad ? "EXPECTATION NOT MET" : "as expected");
     return bad ? 100 + (r > 0 ? r : 0) : 0;
 }

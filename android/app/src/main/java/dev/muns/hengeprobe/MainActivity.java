@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
         done.addView(irecvButton);
         final TextView irecvNote = new TextView(this);
         irecvNote.setText("위 버튼: 설치기(DFU)로 부팅한 뒤 복원 도구가 쓰는 libirecovery로 가상 USB 장치를 열고 닫기만 합니다. "
-                + "USB 구성(SET_CONFIGURATION 1)을 선택하므로 장치 상태가 바뀔 수 있습니다. 펌웨어 전송·Apple 서명 요청·IPSW 다운로드는 하지 않습니다.");
+                + "USB 구성(SET_CONFIGURATION 1)을 선택하므로 장치 상태가 바뀔 수 있습니다. 펌웨어 전송·Apple 서명 요청·IPSW 다운로드는 하지 않습니다. 복원 도구가 쓰는 장치 이벤트(나타남/사라짐, 다시 붙기)를 듣고, 끝나면 '다운로드·업로드·중단 요청이나 데이터 전송이 없었는지'를 결과 표(events, boundary)에 적습니다.");
         irecvNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         done.addView(irecvNote);
 

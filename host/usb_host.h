@@ -32,6 +32,7 @@ typedef struct {
     uint16_t wValue, wIndex, wLength;
 } HvCtrlRecord;
 int hv_libusb_ctrl_count(void);
+int hv_libusb_data_transfer_count(void); /* bulk/interrupt/isochronous transfers submitted through the API so far (firmware goes out this way; control requests are counted above) */
 int hv_libusb_ctrl_get(int k, HvCtrlRecord *out); /* 1 if entry k is still held */
 
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */

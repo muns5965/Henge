@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <libirecovery.h>
@@ -85,8 +86,43 @@ static const char *req_name(const HvCtrlRecord *r) {
     return "vendor request";
 }
 
+/* ---- device events: what idevicerestore listens to (irecv_device_event_subscribe) to learn the mode and to wait for the device to come back ---- */
+typedef struct { int type; int mode; int have_ecid; uint64_t ecid; int ms; } Ev;
+#define EV_MAX 32
+static Ev g_ev[EV_MAX];
+static int g_nev, g_ev_dropped;
+static pthread_mutex_t g_ev_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct timespec g_ev_t0;
+
+static int ms_since(const struct timespec *t0) {
+    struct timespec n;
+    clock_gettime(CLOCK_MONOTONIC, &n);
+    return (int)((n.tv_sec - t0->tv_sec) * 1000 + (n.tv_nsec - t0->tv_nsec) / 1000000);
+}
+
+static void ev_cb(const irecv_device_event_t *e, void *user) {
+    (void)user;
+    pthread_mutex_lock(&g_ev_mu);
+    if (g_nev < EV_MAX) {
+        Ev *v = &g_ev[g_nev++];
+        v->type = (int)e->type, v->mode = (int)e->mode, v->ms = ms_since(&g_ev_t0);
+        v->have_ecid = e->device_info && e->device_info->have_ecid;
+        v->ecid = e->device_info ? e->device_info->ecid : 0;
+    } else {
+        g_ev_dropped++;
+    }
+    pthread_mutex_unlock(&g_ev_mu);
+}
+
+static int ev_count(void) {
+    pthread_mutex_lock(&g_ev_mu);
+    int n = g_nev;
+    pthread_mutex_unlock(&g_ev_mu);
+    return n;
+}
+
 int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) {
-    enum { S_DISCOVER, S_OPEN, S_INFO_STR, S_INFO_TABLE, S_CLOSE, S_COUNT };
+    enum { S_EVENTS, S_DISCOVER, S_OPEN, S_INFO_STR, S_INFO_TABLE, S_CLOSE, S_BOUNDARY, S_COUNT };
     Stage st[S_COUNT];
     for (int i = 0; i < S_COUNT; i++) st[i].name = "", st[i].r = ST_NOT_REACHED, st[i].note[0] = 0;
     int64_t sess = hv_usb_wait_online(usb, wait_ms);
@@ -97,6 +133,18 @@ int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) 
 
     int cfg_before, state_before, cfg_after = -2, state_after = -2;
     read_state(usb, out, "before the library touches the device", &cfg_before, &state_before);
+
+    /* Stage 0: the device-event interface idevicerestore relies on. Subscribed first and kept until the end, so the bus reset that the open below causes is seen too. */
+    int ctrl0 = hv_libusb_ctrl_count(), data0 = hv_libusb_data_transfer_count();
+    pthread_mutex_lock(&g_ev_mu);
+    g_nev = g_ev_dropped = 0;
+    pthread_mutex_unlock(&g_ev_mu);
+    clock_gettime(CLOCK_MONOTONIC, &g_ev_t0);
+    irecv_device_event_context_t ectx = NULL;
+    irecv_error_t sub = irecv_device_event_subscribe(&ectx, ev_cb, NULL);
+    if (sub == IRECV_E_SUCCESS) {
+        for (int w = 0; w < 60 && ev_count() == 0; w++) usleep(50000);   /* up to 3 s for the first ADD */
+    }
 
     /* Stage 1: discovery through the same libusb API libirecovery uses (this is where the stand-in resets the bus and reads the descriptors). */
     int first_req = hv_libusb_ctrl_count();
@@ -176,6 +224,53 @@ int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) 
     }
     usleep(100000);
     read_state(usb, out, "after the library closed its handle", &cfg_after, &state_after);
+
+    /* Stage 0 verdict: let late events (the open's bus reset) arrive, then stop listening. */
+    usleep(1000000);
+    if (sub == IRECV_E_SUCCESS && ectx) irecv_device_event_unsubscribe(ectx);
+    Ev evs[EV_MAX];
+    int nev, dropped;
+    pthread_mutex_lock(&g_ev_mu);
+    nev = g_nev, dropped = g_ev_dropped;
+    memcpy(evs, g_ev, sizeof evs);
+    pthread_mutex_unlock(&g_ev_mu);
+    int adds = 0, removes = 0, bad_ecid = 0, bad_mode = 0;
+    for (int i = 0; i < nev; i++) {
+        fprintf(out, "irecv probe: event #%d at +%d ms: %s, mode value 0x%04x, ECID %s0x%016" PRIx64 "\n", i, evs[i].ms, evs[i].type == IRECV_DEVICE_ADD ? "ADD" : "REMOVE",
+                (unsigned)evs[i].mode, evs[i].have_ecid ? "" : "(absent) ", evs[i].ecid);
+        if (evs[i].type == IRECV_DEVICE_ADD) {
+            adds++;
+            if (!evs[i].have_ecid || evs[i].ecid != ecid) bad_ecid++;
+            if (evs[i].mode != IRECV_K_DFU_MODE && evs[i].mode != IRECV_K_WTF_MODE && evs[i].mode != IRECV_K_PORT_DFU_MODE && !(evs[i].mode >= 0x1280 && evs[i].mode <= 0x1283)) bad_mode++;
+        } else {
+            removes++;
+        }
+    }
+    if (sub != IRECV_E_SUCCESS) stage(&st[S_EVENTS], "events", ST_FAILED, "irecv_device_event_subscribe -> %d (%s)", (int)sub, irecv_err(sub));
+    else if (adds == 0) stage(&st[S_EVENTS], "events", ST_FAILED, "no ADD event arrived (%d REMOVE)", removes);
+    else if (bad_ecid || bad_mode) stage(&st[S_EVENTS], "events", ST_FAILED, "%d ADD event(s) with another ECID than requested, %d with a mode libirecovery does not call DFU/WTF", bad_ecid, bad_mode);
+    else if (evs[nev - 1].type != IRECV_DEVICE_ADD) stage(&st[S_EVENTS], "events", ST_FAILED, "the last event is a REMOVE: the device left and did not come back (%d ADD, %d REMOVE)", adds, removes);
+    else if (adds != removes + 1 || dropped) stage(&st[S_EVENTS], "events", ST_FAILED, "ADD/REMOVE do not pair up (%d ADD, %d REMOVE, %d event(s) not recorded)", adds, removes, dropped);
+    else stage(&st[S_EVENTS], "events", ST_OK, "%d ADD, %d REMOVE; the first ADD at +%d ms carries the requested ECID and a DFU-family mode; the device is present at the end", adds, removes, evs[0].ms);
+
+    /* Boundary: everything that went through the libusb API since before the subscription. Nothing may be a DFU download/upload/detach/abort/clear-status, a vendor
+       request, or a bulk/interrupt transfer (firmware goes out as data). Reads (descriptors, configuration, GET_STATE, GET_STATUS) and SET_CONFIGURATION are allowed. */
+    {
+        int c1 = hv_libusb_ctrl_count(), d1 = hv_libusb_data_transfer_count();
+        int forbidden = 0, lost = 0, getstatus = 0, total = c1 - ctrl0;
+        for (int k = ctrl0; k < c1; k++) {
+            HvCtrlRecord r;
+            if (!hv_libusb_ctrl_get(k, &r)) { lost++; continue; }
+            uint8_t type = (r.bmRequestType >> 5) & 3;
+            if (type == 2) forbidden++;
+            else if (type == 1 && (r.bRequest == 0 || r.bRequest == 1 || r.bRequest == 2 || r.bRequest == 4 || r.bRequest == 6)) forbidden++;
+            else if (type == 1 && r.bRequest == 3) getstatus++;
+        }
+        if (forbidden || (d1 - data0) || lost)
+            stage(&st[S_BOUNDARY], "boundary", ST_FAILED, "%d control request(s) through the API: %d forbidden (download/upload/detach/abort/clear-status/vendor), %d no longer in the log; %d data transfer(s) (must be 0)", total, forbidden, lost, d1 - data0);
+        else
+            stage(&st[S_BOUNDARY], "boundary", ST_OK, "%d control request(s) through the API (%d DFU GET_STATUS), no download/upload/detach/abort/clear-status/vendor request, %d data transfer(s); no TSS code is linked into this program", total, getstatus, d1 - data0);
+    }
 
     fprintf(out, "irecv probe: control requests that went through the stand-in libusb API during the run (the bus reset and descriptor reads of its device enumeration are done below that API and are not listed), in order (seq, bmRequestType, bRequest, wValue, wIndex, wLength -> result):\n");
     int last = hv_libusb_ctrl_count();

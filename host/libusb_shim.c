@@ -379,7 +379,11 @@ void libusb_free_transfer(struct libusb_transfer *t) {
     free((char *)t - offsetof(XferBox, t));
 }
 
+static int g_data_xfers; /* non-control transfers submitted (atomic): lets a probe say that no data was sent */
+int hv_libusb_data_transfer_count(void) { return __atomic_load_n(&g_data_xfers, __ATOMIC_ACQUIRE); }
+
 int libusb_submit_transfer(struct libusb_transfer *t) {
+    if (t->type != LIBUSB_TRANSFER_TYPE_CONTROL) __atomic_add_fetch(&g_data_xfers, 1, __ATOMIC_ACQ_REL);
     pthread_once(&g_workers_once, workers_init);
     if (!t->dev_handle || t->dev_handle->dev->gone) return LIBUSB_ERROR_NO_DEVICE;
     Xfer *x = xfer_of(t);

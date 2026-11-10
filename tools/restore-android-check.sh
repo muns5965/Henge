@@ -2,8 +2,8 @@
 # Survey, not a build: which of the macOS-restore libraries (third_party, as tools/build_ios_restore.sh builds them for iOS)
 # compile for Android, one file at a time, and what an integrated link still lacks. Nothing here is run on a device.
 # Stages, reported separately: (1) compile each file, (2) per-group result, (3) integrated link with the engine and a tiny main
-# that references the installer entry points; unresolved symbols are listed by family. A curl_* family is expected (host/curl_shim.m is
-# Objective-C and has no Android counterpart yet): it is an unresolved dependency, not an incompatibility of the libraries.
+# that references the installer entry points; unresolved symbols are listed by family. A curl_* family would mean host/curl_mbedtls.c (the
+# Android stand-in for host/curl_shim.m) is not being linked.
 # Usage: CC=<ndk clang> tools/restore-android-check.sh <output dir>   (after engine-build.sh and devices-build.sh used the same dir)
 set -u
 OUT=${1:?output dir}
@@ -61,6 +61,7 @@ group irecv "-DPACKAGE_VERSION=\"1.3.1-henge\"" $TP/libirecovery/src/libirecover
 group muxd "-DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
 group idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" $TP/idevicerestore/src/*.c
 group henge "-std=gnu11 -D_GNU_SOURCE -Icore -Ihost -Idevices" host/libusb_shim.c host/install.c
+group curl "-std=gnu11 -D_GNU_SOURCE -Ihost" host/curl_mbedtls.c
 
 SUMMARY="$SUMMARY
 $(printf '%-12s %s' libzip "$ZIPNOTE")"
@@ -79,7 +80,7 @@ for f in "$OUT"/dev_*.o "$OUT"/vm_*.o; do ENG="$ENG $f"; done
 for o in classify operands translate dispatch mmu memop exception sysreg machine jit_region disk enter; do ENG="$ENG $OUT/$o.o"; done
 AR="$(dirname "$CC")/llvm-ar"
 rm -f "$R/librestore.a"; "$AR" rcs "$R/librestore.a" $OBJS   # an archive, as on iOS: libcnary's own main is only linked if something asks for it
-$CC -O1 -w "$R/linkmain.c" "$R/librestore.a" ${ZIPLIB:-} $ENG -lz -llog -Wl,--error-limit=0 -o "$R/linktest" > "$R/link.log" 2>&1
+$CC -O1 -w "$R/linkmain.c" "$R/librestore.a" ${ZIPLIB:-} $ENG -lz -llog -lm -Wl,--error-limit=0 -o "$R/linktest" > "$R/link.log" 2>&1
 rc=$?
 if [ $rc = 0 ]; then echo "linked"; else
   grep -o "undefined symbol: [A-Za-z0-9_.]*" "$R/link.log" | sort -u | sed 's/undefined symbol: //' > "$R/undef.txt"

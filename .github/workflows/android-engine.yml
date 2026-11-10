@@ -23,6 +23,7 @@ on:
       - tools/engine-build.sh
       - tools/devices-build.sh
       - tools/restore-android-check.sh
+      - tools/curl-test.sh
       - devices/**
       - third_party/**
       - .github/workflows/android-engine.yml
@@ -89,6 +90,9 @@ jobs:
             echo "=== romextract was not built"; rc4=1
           fi
           [ $rc = 0 ] && [ $rc2 = 0 ] && [ $rc3 = 0 ] && [ $rc4 = 0 ]
+
+      - name: Test the HTTP/TLS client that replaces libcurl on Android (local servers; public check skipped without network)
+        run: tools/curl-test.sh build-curltest
 
   android-ndk:
     runs-on: ubuntu-24.04

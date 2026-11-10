@@ -20,6 +20,7 @@ typedef struct {
 void hv_curl_last(HvCurlLast *out);
 /* Thread-local cap on the DECODED response body (after chunked framing is removed; this client does no content decompression). 0 = none (the default). Header
    bytes have their own fixed cap. An over-long body ends the request with CURLE_FILESIZE_EXCEEDED before the bytes reach the write callback. */
-void hv_curl_set_body_cap(long long bytes);
+/* Returns the cap that was set before (0 = none), so a caller can put it back. */
+long long hv_curl_set_body_cap(long long bytes);
 
 #endif

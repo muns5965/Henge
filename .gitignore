@@ -11,3 +11,10 @@ build-pf.build.log
 build-eng69/
 build-tssstage/
 build-tssctl/
+build-curltest/
+build-diskpolicy/
+build-rac/
+build-rs/
+build-rs.build.log
+build-*.build.log
+build-tssprobe/

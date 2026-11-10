@@ -23,6 +23,12 @@ typedef enum {
     HV_TSS_TRANSPORT_OTHER   /* any other curl failure, including a real unsupported protocol */
 } HvTssCode;
 
+/* What each field covers. libtatsu may retry, and the curl stand-in's record describes only the LAST curl_easy_perform:
+     attempts                          libtatsu's count of attempts for the whole request (from its diagnosis)
+     tss_status                        the TSS STATUS in libtatsu's final diagnosis (-1 = none); not a count over attempts
+     http, curl_code                   the last attempt (http: its status line, curl_code: its failure, 0 = the transport worked)
+     addrs_denied, addrs_tried         connection statistics of the last curl run only
+     body_to_lib, max_buf              body bytes handed to libtatsu and the largest internal buffer, last curl run only */
 typedef struct {
     HvTssCode code;
     int attempts;            /* libtatsu's attempts, as observed (0 if unknown) */

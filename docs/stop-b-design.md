@@ -155,6 +155,20 @@
 
 PC와 GitHub Actions. `tools/tss-stage-test.sh`, `android-engine.yml`의 독립 단계, `continue-on-error` 없음.
 
+### 5.6 결과 필드의 관측 범위
+
+| 필드 | 관측 범위 |
+| --- | --- |
+| `attempts` | libtatsu가 보고한 전체 시도 횟수 |
+| `tss_status` | libtatsu 최종 진단에서 확인한 TSS 상태값 (시도 누적 통계가 아님) |
+| `http`, `curl_code` | 마지막 시도 또는 최종 실패의 상태 |
+| `addrs_denied`, `addrs_tried` | 마지막 curl 실행의 연결 통계 |
+| `body_to_lib`, `max_buf` | 마지막 curl 실행의 본문·버퍼 통계 |
+
+### 5.7 본문 상한의 복원
+
+`hv_curl_set_body_cap`은 이전 값을 돌려주고, `hv_tss_send`는 어떤 경로로 끝나든 이전 값을 되돌린다. 시험은 상한 12345를 걸어 둔 채 정상·정책 거부·응답 초과·서버 거절·취소·인증서 실패로 끝나는 요청을 보낸 뒤, 같은 스레드의 20 KB 응답 요청이 실제로 12345 상한에 막히는지(저장된 값이 아니라 동작)를 확인한다. 대조: 상한 없이는 같은 요청이 통과한다. 복원을 빼면 6건 모두 실패함을 확인했다.
+
 ## 6. 구현 상태
 
 1. shim 요청별 기록과 정책 거부 전달, 본문·헤더 상한: 구현 (`host/curl_mbedtls.c`, `host/curl_last.h`, 스탠드인 헤더에 `CURLE_FILESIZE_EXCEEDED`).
@@ -175,6 +189,7 @@ PC와 GitHub Actions. `tools/tss-stage-test.sh`, `android-engine.yml`의 독립 
 
 - 서명 서버가 가상 장치 식별값에 어떻게 반응하는지는 실제 요청 없이는 알 수 없다 (미검증).
 - 가짜 서버는 응답 형식만 흉내 낸다. 실제 서버의 지연, 오류 문구, 정책 변경은 재현하지 못한다.
+- 시험용 키·인증서는 시험 실행마다 `openssl`로 새로 만든다(유효 2일). 과거 커밋에 추적되던 `build-curltest/`의 키는 실서비스에 쓰인 적이 없으며 재사용하지 않는다.
 - 요청별 기록은 스레드별이다. 요청이 다른 스레드로 넘어가는 호출 경로에는 쓸 수 없다.
 - 내용 압축(gzip)은 지원하지 않으므로 압축 해제 후 크기 검사는 해당 없다. 지원을 추가하면 별도 상한이 필요하다.
 - 복원 모드 이후의 펌웨어 TSS 약 10곳은 이번 단계 범위가 아니다 (`restore-architecture.md` 3절).

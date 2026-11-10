@@ -91,7 +91,7 @@ int (*hv_curl_connect_guard)(const char *host, const struct sockaddr *a, socklen
 static __thread HvCurlLast g_last;
 static __thread long long g_body_cap;
 void hv_curl_last(HvCurlLast *out) { *out = g_last; }
-void hv_curl_set_body_cap(long long bytes) { g_body_cap = bytes > 0 ? bytes : 0; }
+long long hv_curl_set_body_cap(long long bytes) { long long old = g_body_cap; g_body_cap = bytes > 0 ? bytes : 0; return old; }
 
 void hv_curl_deny_network(int on) { __atomic_store_n(&g_deny, on ? 1 : 0, __ATOMIC_SEQ_CST); }
 int hv_curl_deny_active(void) { return __atomic_load_n(&g_deny, __ATOMIC_SEQ_CST); }

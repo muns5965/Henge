@@ -74,9 +74,9 @@ void hv_tss_classify(const char *diag, const HvCurlLast *last, int got_plist, Hv
 }
 
 plist_t hv_tss_send(plist_t request, const char *url, HvTssResult *out) {
-    hv_curl_set_body_cap(HV_TSS_BODY_CAP);
+    const long long before = hv_curl_set_body_cap(HV_TSS_BODY_CAP);   /* this thread's earlier cap (if any) is put back on every way out */
     plist_t r = tss_request_send(request, url);
-    hv_curl_set_body_cap(0);
+    hv_curl_set_body_cap(before);
     HvCurlLast last;
     hv_curl_last(&last);
     hv_tss_classify(tss_last_diag(), &last, r != NULL, out);

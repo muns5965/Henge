@@ -30,6 +30,7 @@ __thread int limd_glue_connect_purpose;
 void tss_set_max_attempts(int n);
 void tss_set_debug_level(int l);
 void hv_curl_set_cancel_flag(volatile int *flag);
+long long hv_curl_set_body_cap(long long bytes);
 
 static volatile int g_connects;
 int __real_connect(int fd, const struct sockaddr *a, socklen_t l);
@@ -59,7 +60,8 @@ int __wrap_getaddrinfo(const char *n, const char *s, const struct addrinfo *h, s
 static volatile int g_flag;
 static void *canceller(void *arg) { usleep((useconds_t)(long)arg * 1000); g_flag = 1; return NULL; }
 static double now_s(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
-static size_t sink(char *p, size_t s, size_t n, void *u) { (void)p, (void)u; return s * n; }
+static long long g_sunk;
+static size_t sink(char *p, size_t s, size_t n, void *u) { (void)p, (void)u; g_sunk += (long long)(s * n); return s * n; }
 
 static plist_t mkreq(void) {
     plist_t r = plist_new_dict();
@@ -73,7 +75,8 @@ int main(int argc, char **argv) {
     if (argc < 2) return 2;
     const char *url = argv[1];
     int allow = 0, attempts = 0, n = 1, direct = 0;
-    long cancel_ms = 0;
+    long cancel_ms = 0, cap_before = 0, then_allow = 0;
+    const char *then_url = NULL;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--allow-port") && i + 1 < argc) allow = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--attempts") && i + 1 < argc) attempts = atoi(argv[++i]);
@@ -81,6 +84,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--resolve") && i + 1 < argc) g_resolve = argv[++i];
         else if (!strcmp(argv[i], "--cancel-after-ms") && i + 1 < argc) cancel_ms = atol(argv[++i]);
         else if (!strcmp(argv[i], "--direct")) direct = 1;
+        else if (!strcmp(argv[i], "--cap-before") && i + 1 < argc) cap_before = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--then") && i + 1 < argc) then_url = argv[++i];
+        else if (!strcmp(argv[i], "--then-allow") && i + 1 < argc) then_allow = atol(argv[++i]);
     }
     (void)g_port_for_resolve;
     hv_net_guard_install();
@@ -99,6 +105,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     tss_set_debug_level(1);
+    if (cap_before) hv_curl_set_body_cap(cap_before);   /* a cap this thread already had; hv_tss_send must put it back */
     if (attempts) tss_set_max_attempts(attempts);
     plist_t *reqs = calloc((size_t)n, sizeof *reqs);
     HvTssResult *res = calloc((size_t)n, sizeof *res);
@@ -113,5 +120,17 @@ int main(int argc, char **argv) {
                r->curl_code, r->addrs_denied, r->addrs_tried, r->body_to_lib, r->max_buf);
     }
     printf("SENT=%d STOPPED_AT=%d CONNECTS=%d ELAPSED_MS=%.0f\n", sent, stopped, g_connects, el * 1000);
+    if (then_url) {   /* a plain request on the same thread afterwards: the earlier cap must really apply to it (behaviour, not just the stored value) */
+        g_flag = 0;
+        if (then_allow) hv_net_guard_test_allow_loopback((uint16_t)then_allow);
+        CURL *c = curl_easy_init();
+        curl_easy_setopt(c, CURLOPT_URL, then_url);
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, sink);
+        g_sunk = 0;
+        CURLcode rc = curl_easy_perform(c);
+        printf("THEN RC=%d BODY=%lld\n", (int)rc, g_sunk);
+        long long left = hv_curl_set_body_cap(0);
+        printf("CAP_LEFT=%lld\n", left);
+    }
     return 0;
 }

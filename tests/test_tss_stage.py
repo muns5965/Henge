@@ -98,6 +98,7 @@ class Server:
             c.sendall(b"\r\n")
         elif k == "/cut_mid":
             c.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 1000\r\n\r\n" + b"q" * 100)
+        elif k == "/mid": self.reply(c, 200, b"m" * 20000)
         elif k == "/silent": time.sleep(12)
         elif k == "/seq":
             self.reply(c, 200, ok_body() if no <= 2 else b"STATUS=8&MESSAGE=nope")
@@ -185,6 +186,20 @@ for path, why in [("/over", "1 MiB + 1 byte"), ("/big_cl", "Content-Length 4 MiB
     if path in ("/over", "/big_cl", "/big_decl_chunk"):
         check(f"{path}: nothing of the body reached libtatsu", r and r[0]["body"] == 0, out)
 
+# 4b. a cap the thread already had comes back after hv_tss_send, whichever way the request ended, and still applies to the next request
+def cap_case(label, first_url, first_args, env=None):
+    out, err, _ = run(first_url, *first_args, "--allow-port", str(S.port), "--cap-before", "12345", "--then", u(S, "/mid"), "--then-allow", str(S.port), env=env)
+    check(f"cap kept across hv_tss_send ({label}): the next 20 KB request is still stopped by the old 12345-byte cap, and it is still set",
+          "THEN RC=63 BODY=0" in out and "CAP_LEFT=12345" in out, out[-300:])
+cap_case("normal reply", u(S, "/ok"), [])
+cap_case("policy refusal", u(S2, "/ok"), [])
+cap_case("reply too large", u(S, "/over"), [])
+cap_case("server refusal", u(S, "/rejected"), ["--attempts", "1"])
+cap_case("cancelled", u(S, "/silent"), ["--cancel-after-ms", "500", "--attempts", "1"])
+out, err, _ = run(u(S, "/ok"), "--allow-port", str(S.port), "--then", u(S, "/mid"))
+check("control: without an earlier cap the same 20 KB request passes (so the case above tests the cap)", "THEN RC=0 BODY=20000" in out and "CAP_LEFT=0" in out, out[-200:])
+
+
 # 5. a sequence stops at the first request that is not OK
 n0 = len(S.requests)
 out, err, _ = run(u(S, "/seq"), "--allow-port", str(S.port), "--n", "5", "--attempts", "1"); r, t = parse(out)
@@ -216,6 +231,8 @@ SM = Server(tls=mm)
 out, err, dt = run(f"https://localhost:{SM.port}/ok", "--allow-port", str(SM.port), env={"HV_CA_PATH": mmd}); r, t = parse(out)
 check("trusted certificate for another host name: TLS_FAILED, one attempt, nothing sent", r and r[0]["code"] == "TLS_FAILED" and r[0]["attempts"] == 1 and len(SM.requests) == 0, (out,))
 no_leak("tls", out, err)
+out, err, _ = run(f"https://localhost:{ST.port}/ok", "--allow-port", str(ST.port), "--cap-before", "12345", "--then", u(S, "/mid"), "--then-allow", str(S.port), env={"HV_CA_PATH": other})
+check("cap kept across hv_tss_send (certificate failure)", "TLS_FAILED" in out and "THEN RC=63 BODY=0" in out and "CAP_LEFT=12345" in out, out[-300:])
 
 # 8. no URL that is not https (libtatsu's own check) -> NOT_SENT
 out, err, _ = run("ftp://127.0.0.1/x", "--allow-port", str(S.port)); r, t = parse(out)

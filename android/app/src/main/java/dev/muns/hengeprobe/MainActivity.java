@@ -138,6 +138,32 @@ public class MainActivity extends Activity {
         irecvNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(irecvNote);
 
+        final Button dnloadButton = new Button(this);
+        dnloadButton.setText("DFU 더미 DNLOAD 시험 A0~A2 (16바이트 1회, 실제 ROM으로 전송)");
+        dnloadButton.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("실제 ROM에 DNLOAD를 보냅니다")
+                .setMessage("설치기(DFU)로 부팅한 가상 장치에 USB 요청 6개를 보냅니다: GET_CONFIGURATION, 필요하면 SET_CONFIGURATION(1), "
+                        + "GET_STATE, 0으로 채운 16바이트 DNLOAD(블록 0) 1회, GET_STATE. GET_STATUS·ABORT·길이 0 DNLOAD·두 번째 블록은 보내지 않고, "
+                        + "예상 밖의 응답이 하나라도 나오면 즉시 멈춥니다. Apple 서명 요청·IPSW 다운로드·복원은 하지 않습니다. 실행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true))
+                .show());
+        root.addView(dnloadButton);
+        final TextView dnloadNote = new TextView(this);
+        dnloadNote.setText("위 버튼: 결과는 '요청과 응답' 기록이며 ROM이 그 바이트를 펌웨어로 받아들였다는 뜻이 아닙니다. 누를 때마다 새 빈 디스크로 다시 부팅합니다.");
+        dnloadNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(dnloadNote);
+
+        final Button selftestButton = new Button(this);
+        selftestButton.setText("복원 도구 자체 시험 (앱 안에서 적재·스레드·loopback, 잘못된 IPSW 3종)");
+        selftestButton.setOnClickListener(v -> runRestoreSelftest());
+        root.addView(selftestButton);
+        final TextView selftestNote = new TextView(this);
+        selftestNote.setText("위 버튼: 복원 도구 전체(usbmuxd·libirecovery·libtatsu·idevicerestore)를 이 앱 안에서 시작해 가짜 IPSW 3개로 깔끔히 실패하는지, "
+                + "usbmuxd가 loopback에서 ListDevices에 답하는지 봅니다. 네트워크·장치·Apple 서버를 쓰지 않습니다. 실제 복원이 되는지와는 별개입니다.");
+        selftestNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(selftestNote);
+
         final Button tlsButton = new Button(this);
         tlsButton.setText("HTTPS·CA 저장소 확인 (공개 사이트)");
         tlsButton.setOnClickListener(v -> runTlsCheck(false));
@@ -604,6 +630,12 @@ public class MainActivity extends Activity {
 
     /** irecv=true (needs installer): the program with libirecovery in it opens the virtual USB device through the library (--irecv-probe instead of --usb-probe). */
     private void runVmrun(final boolean installer, final boolean irecv) {
+        runVmrun(installer, irecv, false);
+    }
+
+    /** dnload=true (needs installer): --dnload-probe, stage A0-A2 of the DFU download test (host/dnload_probe.h), run by the same program as irecv. */
+    private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload) {
+        final boolean irecv = irecvIn;
         if (running) return;
         running = true;
         setButtons(false);
@@ -619,8 +651,8 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, irecv ? "libvmrunirecv.so" : "libvmrun.so");
-                if (!exe.exists()) acc.append(irecv ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                File exe = new File(libDir, irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                if (!exe.exists()) acc.append(irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
                 else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
                     acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
                     base.mkdirs();
@@ -644,7 +676,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add(irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer) cmd.add(dnload ? "--dnload-probe" : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
@@ -707,6 +739,11 @@ public class MainActivity extends Activity {
                             acc.append("config.txt의 ecid 값을 해석하지 못했습니다: ").append(want).append('\n');
                         }
                     }
+                    if (dnload) {
+                        StringBuilder sum = new StringBuilder();
+                        for (String ln : text.toString().split("\n")) if (ln.startsWith("dnload probe:")) sum.append(ln).append('\n');
+                        acc.append(sum.length() > 0 ? "\n— 요약 (dnload probe 줄 전체) —\n" + sum : "\n— dnload probe 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
+                    }
                     if (irecv) {
                         String all = text.toString();
                         int a = all.indexOf("irecv probe: ===== result =====");
@@ -719,6 +756,77 @@ public class MainActivity extends Activity {
                         }
                     }
                     acc.append("이 출력은 게스트가 부팅했다는 증거가 아닙니다. pc/el/esr 줄과 종료 사유를 확인하세요.\n");
+                }
+            } catch (Exception e) {
+                acc.append("실행 오류: ").append(e).append('\n');
+            }
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    /** Runs librestoreselftest.so (tests/test_restore_stack.c: the whole restore stack started the way the app starts it) three times, each with an IPSW that
+     *  cannot be restored: a path that does not exist, 4 KB of random bytes, a zip without BuildManifest. Pass = exit 0, usbmuxd answered a ListDevices on the
+     *  loopback socket, and the restore ended in a clean failure (RESTORE_RESULT=-1). No network, no device, no Apple server. */
+    private void runRestoreSelftest() {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        final String libDir = getApplicationInfo().nativeLibraryDir;
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            try {
+                File exe = new File(libDir, "librestoreselftest.so");
+                if (!exe.exists()) {
+                    acc.append("복원 도구 자체 시험 프로그램이 이 APK에 없습니다(빌드 실패).\n");
+                } else {
+                    File work = new File(getFilesDir(), "rs");
+                    File w = new File(work, "w");
+                    w.mkdirs();
+                    File bad = new File(work, "bad.ipsw");
+                    byte[] rnd = new byte[4096];
+                    new java.security.SecureRandom().nextBytes(rnd);
+                    try (java.io.FileOutputStream fo = new java.io.FileOutputStream(bad)) { fo.write(rnd); }
+                    File nom = new File(work, "nomanifest.ipsw");
+                    try (java.util.zip.ZipOutputStream zo = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(nom))) {
+                        zo.putNextEntry(new java.util.zip.ZipEntry("readme.txt"));
+                        zo.write("x".getBytes(StandardCharsets.UTF_8));
+                        zo.closeEntry();
+                    }
+                    File[] inputs = {new File(work, "missing.ipsw"), bad, nom};
+                    String[] names = {"없는 파일", "무작위 4KB", "BuildManifest 없는 zip"};
+                    int passed = 0;
+                    for (int i = 0; i < inputs.length; i++) {
+                        ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath(), inputs[i].getAbsolutePath(), w.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true);
+                        pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                        Process p = pb.start();
+                        StringBuilder out = new StringBuilder();
+                        Thread rd = new Thread(() -> {
+                            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                                String line;
+                                while ((line = br.readLine()) != null) synchronized (out) { out.append(line).append('\n'); }
+                            } catch (IOException ignored) { }
+                        });
+                        rd.start();
+                        boolean done = p.waitFor(90, java.util.concurrent.TimeUnit.SECONDS);
+                        if (!done) p.destroyForcibly();
+                        rd.join(2000);
+                        String o;
+                        synchronized (out) { o = out.toString(); }
+                        int code = done ? p.exitValue() : -999;
+                        boolean ok = done && code == 0 && o.contains("MUX_LISTENING=1") && o.contains("MUX_PROTOCOL_OK=1") && o.contains("RESTORE_RESULT=-1");
+                        if (ok) passed++;
+                        acc.append(ok ? "통과 " : "실패 ").append(names[i]).append(" (종료 코드 ").append(done ? String.valueOf(code) : "시간 초과").append(")\n");
+                        for (String ln : o.split("\n")) if (ln.startsWith("MUX_") || ln.startsWith("RESTORE_RESULT") || ln.startsWith("hv_install_start")) acc.append("  ").append(ln).append('\n');
+                        if (!ok) {
+                            String[] lines = o.split("\n");
+                            acc.append("  — 출력 끝부분 —\n");
+                            for (int k = Math.max(0, lines.length - 15); k < lines.length; k++) acc.append("  ").append(lines[k]).append('\n');
+                        }
+                        show(acc.toString());
+                    }
+                    acc.append("\n결과: ").append(passed).append("/3 통과. 이것은 앱 안에서 복원 도구가 적재되고 스레드가 돌며 loopback usbmuxd가 응답하고 잘못된 IPSW에서 깔끔히 실패한다는 확인이며, 실제 복원 성공의 증거가 아닙니다.\n");
                 }
             } catch (Exception e) {
                 acc.append("실행 오류: ").append(e).append('\n');

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -40,6 +41,43 @@ static int mux_listening(int port) {
     return ok;
 }
 
+/* One real usbmuxd exchange over the loopback socket: a ListDevices plist request (protocol version 1 header: length, version, message 8 = plist, tag), the reply read
+   back. Returns 1 when the reply is a plist message that has a DeviceList (the virtual port has no device behind it, so the list is expected to be empty). */
+static int mux_list_devices(int port, char *what, size_t wl) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) { snprintf(what, wl, "connect failed"); close(s); return 0; }
+    struct timeval tv = {5, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    const char *body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+                       "<plist version=\"1.0\"><dict><key>MessageType</key><string>ListDevices</string><key>ClientVersionString</key><string>selftest</string>"
+                       "<key>ProgName</key><string>selftest</string></dict></plist>";
+    uint32_t hdr[4] = {(uint32_t)(16 + strlen(body)), 1, 8, 1};
+    char pkt[1024];
+    memcpy(pkt, hdr, 16);
+    memcpy(pkt + 16, body, strlen(body));
+    if (send(s, pkt, 16 + strlen(body), 0) < 0) { snprintf(what, wl, "send failed"); close(s); return 0; }
+    char rep[4096];
+    size_t got = 0;
+    uint32_t want = 0;
+    while (got < sizeof rep - 1) {
+        ssize_t n = recv(s, rep + got, sizeof rep - 1 - got, 0);
+        if (n <= 0) break;
+        got += (size_t)n;
+        if (got >= 4 && !want) memcpy(&want, rep, 4);
+        if (want && got >= want) break;
+    }
+    close(s);
+    rep[got] = 0;
+    if (got < 16) { snprintf(what, wl, "reply too short (%zu bytes)", got); return 0; }
+    uint32_t msg;
+    memcpy(&msg, rep + 8, 4);
+    int ok = msg == 8 && strstr(rep + 16, "DeviceList") != NULL;
+    snprintf(what, wl, "%zu bytes, message type %u, %s", got, msg, ok ? "has DeviceList" : "no DeviceList");
+    return ok;
+}
+
 int main(int argc, char **argv) {
     const char *ipsw = argc > 1 ? argv[1] : "/nonexistent/no-such.ipsw";
     const char *work = argc > 2 ? argv[2] : "/tmp";
@@ -54,9 +92,12 @@ int main(int argc, char **argv) {
     int listening = 0;
     for (int i = 0; i < 40 && !listening; i++) { listening = mux_listening(port); if (!listening) usleep(100000); }
     printf("MUX_LISTENING=%d (127.0.0.1:%d)\n", listening, port);
+    char what[200] = "";
+    int proto = listening ? mux_list_devices(port, what, sizeof what) : 0;
+    printf("MUX_PROTOCOL_OK=%d (%s)\n", proto, what);
     time_t t0 = time(NULL);
     while (hv_install_result() == 1 && time(NULL) - t0 < 40) usleep(100000);
     printf("RESTORE_RESULT=%d AFTER_S=%ld LAST_STEP=%d PROGRESS_CALLS=%d\n", hv_install_result(), (long)(time(NULL) - t0), last_step, steps);
     fflush(stdout);
-    _exit(hv_install_result() < 0 && listening ? 0 : 1); /* the mux thread never returns on its own: leave without waiting for it */
+    _exit(hv_install_result() < 0 && listening && proto ? 0 : 1); /* the mux thread never returns on its own: leave without waiting for it */
 }

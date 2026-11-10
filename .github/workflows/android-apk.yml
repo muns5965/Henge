@@ -26,6 +26,15 @@ on:
       - tools/check-apple-ca.sh
       - third_party/mbedtls/**
       - tools/vmrun-irecv-build.sh
+      - tools/restore-selftest-build.sh
+      - third_party/idevicerestore/**
+      - third_party/usbmuxd/**
+      - third_party/libusbmuxd/**
+      - third_party/libimobiledevice/**
+      - third_party/libplist/**
+      - third_party/libtatsu/**
+      - third_party/libzip/**
+      - third_party/curl_include/**
       - third_party/libirecovery/**
       - third_party/libimobiledevice-glue/**
       - third_party/libusb-1.0/**
@@ -76,6 +85,10 @@ jobs:
           # A failure here fails the APK: the HTTPS buttons need it. No -DHV_ALLOW_CA_ENV here: the shipped copy trusts only the system stores.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/curltool-build.sh build-curltool \
             && cp build-curltool/curl_tool android/app/src/main/jniLibs/arm64-v8a/libcurltool.so
+          # The whole restore stack with its self-test (the "restore tool self-test" button). Its own program; a failure leaves the APK without that button's program.
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-selftest-build.sh build-restore \
+            && cp build-restore/restore_selftest android/app/src/main/jniLibs/arm64-v8a/librestoreselftest.so || echo "::warning::the restore self-test did not build; the APK goes without that button's program"
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake

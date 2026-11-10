@@ -10,7 +10,7 @@ rc=0
 for f in "$W/missing.ipsw" "$W/bad.ipsw" "$W/nomanifest.ipsw"; do
   mkdir -p "$W/w"
   out=$(timeout 120 "$BIN" "$f" "$W/w" 2>&1); st=$?
-  echo "$out" | grep -E "RESTORE_RESULT|MUX_LISTENING" | tr '\n' ' '; echo " exit=$st  ($(basename $f))"
-  echo "$out" | grep -q "RESTORE_RESULT=-1" && echo "$out" | grep -q "MUX_LISTENING=1" && [ $st -eq 0 ] || { echo "FAIL: $f"; echo "$out" | tail -15; rc=1; }
+  echo "$out" | grep -E "RESTORE_RESULT|MUX_LISTENING|MUX_PROTOCOL" | tr '\n' ' '; echo " exit=$st  ($(basename $f))"
+  echo "$out" | grep -q "RESTORE_RESULT=-1" && echo "$out" | grep -q "MUX_LISTENING=1" && echo "$out" | grep -q "MUX_PROTOCOL_OK=1" && [ $st -eq 0 ] || { echo "FAIL: $f"; echo "$out" | tail -15; rc=1; }
 done
 exit $rc

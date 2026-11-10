@@ -30,6 +30,7 @@ on:
       - tools/irecv-test.sh
       - tools/vmrun-irecv-build.sh
       - tools/download-test.sh
+      - tools/dnload-test.sh
       - tools/restore-selftest-build.sh
       - tools/restore-selftest.sh
       - third_party/idevicerestore/**
@@ -117,6 +118,8 @@ jobs:
       - name: Test libirecovery opening the virtual USB device (real libirecovery + libusb stand-in + probe, against a stand-in for the ROM; five scenarios)
         run: CC=clang tools/irecv-test.sh build-irecvtest
 
+      - name: Test the DFU download probe A0-A2 against a stand-in for the ROM (eleven scenarios; exact requests, bytes, order, stop rules; nothing real is sent)
+        run: CC=clang tools/dnload-test.sh build-dnloadtest
       - name: Build vmrun with libirecovery in it (--irecv-probe)
         run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-irecv-build.sh build-linux
 

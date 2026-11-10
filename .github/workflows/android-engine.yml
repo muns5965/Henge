@@ -25,6 +25,7 @@ on:
       - tools/restore-android-check.sh
       - tools/curl-test.sh
       - tools/curltool-build.sh
+      - tools/tatsu-test.sh
       - tools/check-apple-ca.sh
       - android/app/src/main/java/**
       - devices/**
@@ -99,6 +100,9 @@ jobs:
           mkdir -p build-java
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
+
+      - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers
+        run: tools/tatsu-test.sh build-curltest
 
       - name: Look at the TSS server's certificate chain with our client (informational; the chain does not depend on the device)
         continue-on-error: true

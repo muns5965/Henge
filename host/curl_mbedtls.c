@@ -270,6 +270,7 @@ static int record_cert(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *fl
 static CURLcode conn_open(Conn *c, int https, const char *host, const char *port) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
+    tls_done = 0, tls_diag[0] = 0, chain_len = 0; /* diagnostics describe the connection just made, never an earlier one */
     struct addrinfo hints = {.ai_socktype = SOCK_STREAM}, *res = NULL;
     if (getaddrinfo(host, port, &hints, &res) != 0 || !res) {
         snprintf(c->err, sizeof c->err, "could not resolve host %s", host);
@@ -320,9 +321,6 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
     }
     free(an.pem_owned);
     if (fa == 1) roots = &c->plus;
-    tls_done = 0;
-    tls_diag[0] = 0;
-    chain_len = 0;
     c->tls = 1;
     mbedtls_ssl_init(&c->ssl);
     mbedtls_ssl_config_init(&c->conf);
@@ -371,6 +369,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         return CURLE_SSL_CONNECT_ERROR;
     }
     tls_done = 1;
+    tls_diag[0] = 0, chain_len = 0; /* verified: the chain dump is for failures only */
     return CURLE_OK;
 }
 
@@ -705,6 +704,7 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
     }
     for (struct curl_slist *h = e->headers; h; h = h->next) {
         if (!strchr(h->data, ':') || strpbrk(h->data, "\r\n")) continue; /* never let a header line smuggle another */
+        { const char *colon = strchr(h->data, ':'); const char *v = colon + 1; while (*v == ' ' || *v == '\t') v++; if (!*v) continue; } /* as libcurl: "Expect:" removes a header */
         if (!strncasecmp(h->data, "Content-Length:", 15) || !strncasecmp(h->data, "Host:", 5) || !strncasecmp(h->data, "Connection:", 11)) continue;
         buf_add(&req, h->data, strlen(h->data));
         buf_add(&req, "\r\n", 2);

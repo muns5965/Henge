@@ -26,6 +26,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path
         if p == "/hello": self.send(200, b"hello world", [("X-Test", "1")])
+        elif p == "/hdrs": self.send(200, ",".join(sorted(k.lower() for k in self.headers.keys())).encode())
         elif p == "/ua": self.send(200, (self.headers.get("X-Henge-Test", "") + "|" + self.headers.get("Host", "")).encode())
         elif p == "/big": self.send(200, BIG)
         elif p == "/nolen":
@@ -102,6 +103,7 @@ r = run([B + "/hello", "--headers"])
 check("http get", r["RC"] == "0" and r["HTTP"] == "200" and r["out"] == b"hello world", r)
 check("header callback format", "H: HTTP/1.1 200\r\n" in r["stderr"] and "H: X-Test: 1" in r["stderr"] and r["stderr"].rstrip().splitlines()[-2:-1] != None, r["stderr"])
 r = run([B + "/ua"]); check("custom header + Host", r["out"] == b"yes|127.0.0.1:%d" % HTTP_PORT, r["out"])
+r = run([B + "/hdrs"]); check("'Expect:' (empty value) removes the header instead of sending it", b"expect" not in r["out"] and b"x-henge-test" in r["out"], r["out"])
 r = run([B + "/big"]); check("3 MB body streamed intact", hashlib.sha256(r["out"]).digest() == hashlib.sha256(BIG).digest(), len(r["out"]))
 r = run([B + "/nolen"]); check("close-delimited body", r["RC"] == "0" and r["out"] == b"close-delimited-body", r)
 r = run([B + "/chunked"]); check("chunked body", r["RC"] == "0" and r["out"] == b"abc" + b"defgh" + b"0123456789" * 100, r["out"][:60])
@@ -136,6 +138,28 @@ r = run([S + "/echo", "--post", "k=v"], {"HV_CA_PATH": cadir}); check("https pos
 r = run([f"https://127.0.0.1:{S_PORT}/hello"], {"HV_CA_PATH": cadir}); check("https refuses a host name the certificate does not cover (IP vs DNS SAN)", r["RC"] == "60", r)
 r = run([f"https://localhost:{W_PORT}/hello"], {"HV_CA_PATH": f"{work}/otherca"}); check("https refuses wrong host name even though the CA is trusted", r["RC"] == "60", r)
 r = run([S + "/to-http", "--follow"], {"HV_CA_PATH": cadir}); check("https->http redirect refused", r["RC"] == "1", r)
+
+# --- per-request state on one handle: failure -> success, success -> failure, redirect then failure ---
+def reqs(r):
+    d = {}
+    for ln in r["stderr"].splitlines():
+        if ln.startswith("REQ ") and " RC=" in ln:
+            parts = ln.split(" ", 2)[1:]
+            d[int(parts[0])] = dict(kv.split("=", 1) for kv in parts[1].split(" ", 4)[:4] if "=" in kv)
+        elif ln.startswith("RC="):
+            d[1] = dict(kv.split("=", 1) for kv in ln.split(" ", 3)[:3])
+            d[1]["TLS_VERIFIED"] = "1" if "TLS_VERIFIED=1" in r["stderr"].split("RC=")[0] else "0"
+            d[1]["DIAG_BYTES"] = r["stderr"].split("REQ 1 DIAG_BYTES=")[1].split()[0]
+    return d
+WH = f"https://localhost:{W_PORT}"   # certificate from 'other': untrusted when only cadir is trusted
+r = run([WH + "/hello", "--also", S + "/hello"], {"HV_CA_PATH": cadir}); q = reqs(r)
+check("same handle, failure then success: the failure's diagnostics are gone after the success",
+      q[1]["RC"] == "60" and int(q[1]["DIAG_BYTES"]) > 0 and q[2]["RC"] == "0" and q[2]["TLS_VERIFIED"] == "1" and q[2]["DIAG_BYTES"] == "0", r["stderr"][-600:])
+r = run([S + "/hello", "--also", WH + "/hello"], {"HV_CA_PATH": cadir}); q = reqs(r)
+check("same handle, success then failure: a success leaves no diagnostics, the failure has them",
+      q[1]["RC"] == "0" and q[1]["DIAG_BYTES"] == "0" and q[2]["RC"] == "60" and int(q[2]["DIAG_BYTES"]) > 0, r["stderr"][-600:])
+r = run([S + "/hello", "--also", B + "/hello"], {"HV_CA_PATH": cadir}); q = reqs(r)
+check("same handle, TLS then plain http: diagnostics and TLS flag do not carry over", q[2]["RC"] == "0" and q[2]["TLS_VERIFIED"] == "0" and q[2]["DIAG_BYTES"] == "0", r["stderr"][-400:])
 
 # --- per-host extra trust anchors (the mechanism that lets gs.apple.com chain to Apple Root CA) ---
 dual = mkcert("dual", "localhost", ",IP:127.0.0.1")

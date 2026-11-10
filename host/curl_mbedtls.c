@@ -59,6 +59,7 @@ typedef struct {
     volatile int cancel;                   /* hv_curl_cancel(): set from any thread, sticky until hv_curl_cancel_reset() */
     int stop;                              /* why the running transfer is being stopped: 0 no, 1 deadline, 2 cancel, 3 a progress callback said stop */
     long long deadline_ns, last_tick_ns;   /* monotonic; deadline 0 = none */
+    long long content_length;              /* of the final response; -1 when absent or chunked (CURLINFO_CONTENT_LENGTH_DOWNLOAD_T) */
     long long dl_now, dl_expected;         /* for the progress callbacks that also run while the peer is silent */
 } Easy;
 
@@ -449,7 +450,7 @@ void curl_global_cleanup(void) {}
 
 CURL *curl_easy_init(void) {
     Easy *e = calloc(1, sizeof *e);
-    if (e) e->noprogress = 1;
+    if (e) e->noprogress = 1, e->content_length = -1;
     return (CURL *)e;
 }
 
@@ -497,6 +498,7 @@ CURLcode curl_easy_getinfo(CURL *c, CURLINFO info, ...) {
     va_list ap;
     va_start(ap, info);
     if (info == CURLINFO_RESPONSE_CODE) *va_arg(ap, long *) = e->response_code;
+    else if (info == CURLINFO_CONTENT_LENGTH_DOWNLOAD_T) *va_arg(ap, long long *) = e->content_length;
     va_end(ap);
     return CURLE_OK;
 }
@@ -859,6 +861,7 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
     free(loc);
 
     x.expected = chunked ? -1 : clen;
+    e->content_length = x.expected;
     int nobody = status == 204 || status == 304 || (status >= 100 && status < 200);
     if (nobody) rc = CURLE_OK;
     else if (chunked) rc = body_chunked(&x, rd);
@@ -881,6 +884,7 @@ out:
 static CURLcode perform_hops(Easy *e) {
     if (e->errorbuffer) e->errorbuffer[0] = 0;
     e->response_code = 0;
+    e->content_length = -1;
     if (!e->url) { seterr(e, "no URL set"); return CURLE_URL_MALFORMAT; }
     char cur[2100];
     snprintf(cur, sizeof cur, "%s", e->url);

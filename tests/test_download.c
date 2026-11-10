@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -33,6 +35,11 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc < 4) return 2;
+    if (getenv("HV_TEST_FSIZE")) { /* the disk fills up: writes beyond this many bytes fail with EFBIG */
+        struct rlimit rl = {(rlim_t)atoll(getenv("HV_TEST_FSIZE")), (rlim_t)atoll(getenv("HV_TEST_FSIZE"))};
+        signal(SIGXFSZ, SIG_IGN);
+        setrlimit(RLIMIT_FSIZE, &rl);
+    }
     if (argc > 4) {
         pthread_t t;
         pthread_create(&t, NULL, quitter, (void *)atol(argv[4]));

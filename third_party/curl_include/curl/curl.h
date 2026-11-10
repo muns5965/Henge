@@ -80,6 +80,7 @@ typedef enum {
 
 typedef enum {
     CURLINFO_RESPONSE_CODE = 0x200002,
+    CURLINFO_CONTENT_LENGTH_DOWNLOAD_T = 0x600008, /* a 64-bit integer (curl_off_t): the final response's Content-Length, -1 if absent or chunked */
 } CURLINFO;
 
 CURLcode curl_global_init(long flags);

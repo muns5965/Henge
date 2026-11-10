@@ -16,9 +16,9 @@
 #ifdef HV_IRECV_PROBE
 #include "irecv_probe.h"
 #include "dnload_probe.h"
+#endif
 #ifdef HV_TSS_PROBE
 #include "tss_probe.h"
-#endif
 #endif
 #include "vmapple.h"
 

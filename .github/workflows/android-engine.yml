@@ -109,6 +109,7 @@ jobs:
           mkdir -p apple-ca && echo | openssl s_client -connect gs.apple.com:443 -servername gs.apple.com -showcerts 2>/dev/null | awk '/BEGIN CERT/{n++} {if(n==3) print}' | sed '/END CERT/q' > apple-ca/root.pem
           FP=$(openssl x509 -in apple-ca/root.pem -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d : | tr a-f A-F)
           echo "root SHA-256: $FP"
+          echo "ROOTPEM-BEGIN"; cat apple-ca/root.pem; echo "ROOTPEM-END"
           if [ "$FP" = "B0B1730ECBC7FF4505142C49F1295E6EDA6BCAED7E2C68C5BE91B5A11001F024" ]; then
             echo "fingerprint matches Apple's published value"
             HV_CA_PATH=apple-ca build-curltest/curl_tool "https://gs.apple.com/TSS/controller?action=2" --discard 2>&1 | grep -E "TLS_VERIFIED|RC=|VERIFY_FLAGS"

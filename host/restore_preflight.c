@@ -3,6 +3,7 @@
 #include "restore_preflight.h"
 #include "net_guard.h"
 #include "restore_session.h"
+#include "disk_policy.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -116,10 +117,10 @@ static void stop_a(const struct hv_stop_a_info *i) {
 
 /* ---- files in the work directory (what the run wrote) ---- */
 #define MAXF 512
-typedef struct { int n; char path[MAXF][300]; long long size[MAXF]; long long total; } Tree;
+typedef struct { int n; char path[MAXF][300]; long long size[MAXF], mtime[MAXF]; long long total; int unreadable, overflow; } Tree;   /* unreadable: a directory or entry that could not be read; overflow: files beyond MAXF */
 static void tree_walk(const char *dir, const char *rel, Tree *t) {
     DIR *d = opendir(dir);
-    if (!d) return;
+    if (!d) { t->unreadable++; return; }
     struct dirent *e;
     while ((e = readdir(d))) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
@@ -127,11 +128,21 @@ static void tree_walk(const char *dir, const char *rel, Tree *t) {
         snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
         snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
         struct stat st;
-        if (lstat(full, &st) != 0) continue;
+        if (lstat(full, &st) != 0) { t->unreadable++; continue; }
         if (S_ISDIR(st.st_mode)) tree_walk(full, r, t);
-        else if (t->n < MAXF) { snprintf(t->path[t->n], sizeof t->path[0], "%s", r); t->size[t->n] = st.st_size; t->n++; t->total += st.st_size; }
+        else if (t->n < MAXF) { snprintf(t->path[t->n], sizeof t->path[0], "%s", r); t->size[t->n] = st.st_size; t->mtime[t->n] = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec; t->n++; t->total += st.st_size; }
+        else t->overflow++;
     }
     closedir(d);
+}
+
+/* for tests/test_preflight.c: what the work-directory snapshot sees (and what makes it incomplete) */
+int hv_restore_preflight_snapshot_probe(const char *dir, int *files, int *unreadable, int *overflow) {
+    static Tree t;
+    memset(&t, 0, sizeof t);
+    tree_walk(dir, "", &t);
+    *files = t.n, *unreadable = t.unreadable, *overflow = t.overflow;
+    return t.unreadable || t.overflow;
 }
 
 /* ---- the private usbmuxd, as host/install.c starts it ---- */
@@ -204,14 +215,19 @@ static int th_count(const ThSnap *s, const char *nm) { int c = 0; for (int i = 0
 typedef struct { const char *name; const char *status; char detail[800]; } Row;
 static Row g_rows[40];
 static int g_nrows, g_failed, g_findings;
-static void row(const char *name, const char *status, const char *fmt, ...) {
+static void row_v(int cleanup, const char *name, const char *status, const char *fmt, va_list ap) {
     Row *r = &g_rows[g_nrows++];
     r->name = name, r->status = status;
-    va_list ap;
-    va_start(ap, fmt);
     vsnprintf(r->detail, sizeof r->detail, fmt, ap);
-    va_end(ap);
-    if (!strcmp(status, "FAILED")) g_failed++;
+    if (!strcmp(status, "FAILED")) { g_failed++; if (cleanup) g_findings++; }
+}
+static void row(const char *name, const char *status, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); row_v(0, name, status, fmt, ap); va_end(ap);
+}
+/* A row about something the run must leave as it found it (handles, threads, descriptors, the private usbmuxd, the client). g_findings counts the FAILED ones:
+   rows, not root causes -- one stuck thread can fail several of them, and each is reported. */
+static void row_cleanup(const char *name, const char *status, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); row_v(1, name, status, fmt, ap); va_end(ap);
 }
 
 /* ---- the restore thread ---- */
@@ -383,7 +399,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
                 zok && ((zs.comp_method == ZIP_CM_STORE) == (g_sa.seekable != 0)) ? "agrees" : "DISAGREES with what libzip says");
             struct statvfs sv; unsigned long long avail = 0;
             if (statvfs(workdir, &sv) == 0) avail = (unsigned long long)sv.f_bavail * sv.f_frsize;
-            row("extraction_rule", "info", "the tool's rule: extract %s (os entry opened: %d, seekable: %d, FLAG_SHSHONLY unset: %d). If it did, the target would be under %s (the cache directory) and the file would take %llu bytes; free space on that file system: %llu bytes -> %s. This run extracted nothing.",
+            row("extraction_rule", "info", "the tool's rule: extract %s (os entry opened: %d, seekable: %d, FLAG_SHSHONLY unset: %d). If it did, the target would be under %s (the cache directory) and the file would take %llu bytes; free space on that file system: %llu bytes -> %s. This run stopped before that step (see stopped=), so no extraction was started.",
                 g_sa.needs && !g_sa.shsh ? "YES" : "no", g_sa.os_opened, g_sa.seekable, !g_sa.shsh, g_sa.cache[0] ? g_sa.cache : "(no cache dir: a temp file)", zok ? (unsigned long long)zs.size : 0ULL, avail,
                 !(g_sa.needs && !g_sa.shsh) ? "not needed" : (zok && avail > zs.size) ? "enough" : "NOT enough");
         }
@@ -392,7 +408,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     /* 5. clean-up, category by category. Only then: the tool frees its client. */
     if (still_running) {
         /* the thread still uses the client: freeing it now would be a use-after-free. Leave it, say so, and do not build the clean-up rows on a half-alive tool. */
-        row("client_free", "FAILED", "NOT done: the restore thread has not returned, so the client is left allocated (reported as a leak, not freed under a running thread)");
+        row_cleanup("client_free", "FAILED", "NOT done: the restore thread has not returned, so the client is left allocated (reported as a leak, not freed under a running thread)");
         goto report;
     }
     idevicerestore_client_free(g_client);
@@ -406,45 +422,84 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     FdSnap fd1; ThSnap th1;
     fd_snap(&fd1); th_snap(&th1);
     int hd1 = hv_libusb_open_handles(), hp1 = hv_libusb_hotplug_live(), ho1 = hv_libusb_handles_opened_total();
-    row("usb_handles", hd1 == hd0 ? "ok" : "FAILED", "device handles open: %d before, %d after (%d opened during the run) -- observed at the libusb stand-in", hd0, hd1, ho1 - ho0);
-    row("event_subscription", hp1 <= hp0 ? "ok" : "FAILED", "hotplug callbacks registered: %d before the tool started (that count includes the private usbmuxd's own), %d after the tool freed its client and usbmuxd stopped -- observed at the libusb stand-in", hp0, hp1);
+    row_cleanup("usb_handles", hd1 == hd0 ? "ok" : "FAILED", "device handles open: %d before, %d after (%d opened during the run) -- observed at the libusb stand-in", hd0, hd1, ho1 - ho0);
+    row_cleanup("event_subscription", hp1 <= hp0 ? "ok" : "FAILED", "hotplug callbacks registered: %d before the tool started (that count includes the private usbmuxd's own), %d after the tool freed its client and usbmuxd stopped -- observed at the libusb stand-in", hp0, hp1);
     int ipsw_fds_after = fd_count_target(&fd1, real);
-    row("ipsw_fd", ipsw_fds_after == 0 ? "ok" : "FAILED", "file descriptors on the IPSW: %d while the archive was open, %d after the client was freed -- by /proc/self/fd (the vendored ipsw_open used to keep one open for good; it now closes the probe handle)", ipsw_fds_open, ipsw_fds_after);
+    row_cleanup("ipsw_fd", ipsw_fds_after == 0 ? "ok" : "FAILED", "file descriptors on the IPSW: %d while the archive was open, %d after the client was freed -- by /proc/self/fd (the vendored ipsw_open used to keep one open for good; it now closes the probe handle)", ipsw_fds_open, ipsw_fds_after);
     int mux_up = mux_listening();
     {
-        int nthr = th1.n - th0.n, mux_new = th_count(&th1, "hv-usbmuxd") - th_count(&th0, "hv-usbmuxd");
-        char names[200] = "";
-        for (int i = 0; i < th1.n; i++) { if (strstr(names, th1.name[i])) continue; char one[48]; snprintf(one, sizeof one, "%s%s x%d", names[0] ? ", " : "", th1.name[i], th_count(&th1, th1.name[i])); strncat(names, one, sizeof names - strlen(names) - 1); }
-        int other = nthr - mux_new;
-        row("threads", other <= 0 ? "ok" : "info", "%d before, %d after; +%d is the usbmuxd thread, %d other(s) not explained by it. After: %s", th0.n, th1.n, mux_new, other < 0 ? 0 : other, names);
+        /* by name: no name may have more threads than before (a thread that was replaced by one of the same name is not seen; thread ids are not tracked) */
+        int nthr = th1.n - th0.n, grew = 0;
+        char names[200] = "", grown[120] = "";
+        for (int i = 0; i < th1.n; i++) {
+            if (strstr(names, th1.name[i])) continue;
+            char one[48]; snprintf(one, sizeof one, "%s%s x%d", names[0] ? ", " : "", th1.name[i], th_count(&th1, th1.name[i])); strncat(names, one, sizeof names - strlen(names) - 1);
+            if (th_count(&th1, th1.name[i]) > th_count(&th0, th1.name[i])) { grew++; snprintf(one, sizeof one, "%s%s", grown[0] ? ", " : "", th1.name[i]); strncat(grown, one, sizeof grown - strlen(grown) - 1); }
+        }
+        row_cleanup("threads", (nthr <= 0 && !grew) ? "ok" : "FAILED", "%d before, %d after; compared by thread name: %s%s%s. After: %s", th0.n, th1.n,
+            grew ? "MORE threads than before for: " : "no name has more threads than before", grown, (th1.n >= MAXTH || th0.n >= MAXTH) ? " (snapshot limit reached: not reliable)" : "", names);
     }
-    row("usbmuxd", mux_stopped && !mux_up ? "ok" : "FAILED", "stop requested after the client was freed: the thread %s and its loopback socket %s", mux_stopped ? "returned and was joined" : "did NOT return within 5 s", mux_up ? "STILL LISTENS" : "no longer answers");
-    row("fds", fd1.n <= fd0.n ? "ok" : "info", "open descriptors %d before, %d after (sockets %d->%d, pipes %d->%d, anon_inode %d->%d, files %d->%d); the difference is the usbmuxd listener and its poll set, not attributed further", fd0.n, fd1.n,
-        fd_count_kind(&fd0, "socket"), fd_count_kind(&fd1, "socket"), fd_count_kind(&fd0, "pipe"), fd_count_kind(&fd1, "pipe"), fd_count_kind(&fd0, "anon_inode"), fd_count_kind(&fd1, "anon_inode"), fd_count_kind(&fd0, "file"), fd_count_kind(&fd1, "file"));
+    row_cleanup("usbmuxd", mux_stopped && !mux_up ? "ok" : "FAILED", "stop requested after the client was freed: the thread %s and its loopback socket %s", mux_stopped ? "returned and was joined" : "did NOT return within 5 s", mux_up ? "STILL LISTENS" : "no longer answers");
+    {
+        /* by kind, and for files by path: nothing may have more descriptors than before. A descriptor swapped for another of the same kind and target is not seen. */
+        const char *kinds[] = {"socket", "pipe", "anon_inode", "file", "other"};
+        char grown[160] = "";
+        int grew = 0;
+        for (unsigned k = 0; k < sizeof kinds / sizeof *kinds; k++)
+            if (fd_count_kind(&fd1, kinds[k]) > fd_count_kind(&fd0, kinds[k])) { grew++; char one[40]; snprintf(one, sizeof one, "%s%s", grown[0] ? ", " : "", kinds[k]); strncat(grown, one, sizeof grown - strlen(grown) - 1); }
+        for (int i = 0; i < fd1.n; i++)
+            if (!strcmp(fd1.kind[i], "file") && fd_count_target(&fd1, fd1.target[i]) > fd_count_target(&fd0, fd1.target[i])) { grew++; char one[200]; snprintf(one, sizeof one, "%sfile %.60s", grown[0] ? ", " : "", fd1.target[i]); strncat(grown, one, sizeof grown - strlen(grown) - 1); break; }
+        row_cleanup("fds", (!grew && fd1.n <= fd0.n && fd1.n < MAXFD) ? "ok" : "FAILED", "open descriptors %d before, %d after (sockets %d->%d, pipes %d->%d, anon_inode %d->%d, files %d->%d); %s%s%s", fd0.n, fd1.n,
+            fd_count_kind(&fd0, "socket"), fd_count_kind(&fd1, "socket"), fd_count_kind(&fd0, "pipe"), fd_count_kind(&fd1, "pipe"), fd_count_kind(&fd0, "anon_inode"), fd_count_kind(&fd1, "anon_inode"), fd_count_kind(&fd0, "file"), fd_count_kind(&fd1, "file"),
+            grew ? "MORE than before for: " : "no kind and no file path has more than before", grown, fd1.n >= MAXFD ? " (snapshot limit reached: not reliable)" : "");
+    }
     row("process", !timed_out ? "ok" : "FAILED", "the restore thread %s within %d ms", timed_out ? "did NOT finish" : "finished", cap_ms);
     {
         memset(&tree1, 0, sizeof tree1);
         tree_walk(workdir, "", &tree1);
-        int added = 0; long long bytes = 0; char first[400] = "";
+        int added = 0, removed = 0, changed = 0; long long bytes = 0; char first[400] = "";
         for (int i = 0; i < tree1.n; i++) {
             int found = 0;
-            for (int j = 0; j < tree0.n; j++) if (!strcmp(tree0.path[j], tree1.path[i])) { found = 1; if (tree0.size[j] != tree1.size[i]) bytes += tree1.size[i] - tree0.size[j]; }
+            for (int j = 0; j < tree0.n; j++) if (!strcmp(tree0.path[j], tree1.path[i])) {
+                found = 1;
+                if (tree0.size[j] != tree1.size[i] || tree0.mtime[j] != tree1.mtime[i]) { changed++; bytes += tree1.size[i] - tree0.size[j]; if (strlen(first) < 250) { char one[300]; snprintf(one, sizeof one, "%s%s changed", first[0] ? ", " : "", tree1.path[i]); strncat(first, one, sizeof first - strlen(first) - 1); } }
+            }
             if (!found) { added++; bytes += tree1.size[i]; if (strlen(first) < 250) { char one[300]; snprintf(one, sizeof one, "%s%s (%lld B)", first[0] ? ", " : "", tree1.path[i], tree1.size[i]); strncat(first, one, sizeof first - strlen(first) - 1); } }
         }
-        int big = bytes > (1 << 20);
-        row("local_writes", big ? "FAILED" : "info", "files in the work directory: %d before, %d after; %d new file(s), %lld bytes added%s%s%s. Only this directory is measured (not the IPSW, not other app files); the BuildManifest is read into memory",
-            tree0.n, tree1.n, added, bytes, first[0] ? ": " : "", first, big ? " -- MORE THAN 1 MiB: something large was written" : "");
+        for (int j = 0; j < tree0.n; j++) {
+            int found = 0;
+            for (int i = 0; i < tree1.n; i++) if (!strcmp(tree0.path[j], tree1.path[i])) { found = 1; break; }
+            if (!found) { removed++; if (strlen(first) < 250) { char one[300]; snprintf(one, sizeof one, "%s%s removed", first[0] ? ", " : "", tree0.path[j]); strncat(first, one, sizeof first - strlen(first) - 1); } }
+        }
+        int incomplete = tree0.unreadable || tree1.unreadable || tree0.overflow || tree1.overflow;
+        int ok = !incomplete && !added && !removed && !changed;
+        char lead[200] = "";
+        if (incomplete) snprintf(lead, sizeof lead, "snapshot_incomplete (%s%s%s): the result below cannot be trusted. ", (tree0.unreadable || tree1.unreadable) ? "a directory or entry could not be read" : "", ((tree0.unreadable || tree1.unreadable) && (tree0.overflow || tree1.overflow)) ? "; " : "", (tree0.overflow || tree1.overflow) ? "more than 512 files, the rest were not recorded" : "");
+        row("local_writes", ok ? "ok" : "FAILED", "%sfiles in the work directory: %d before, %d after; %d new, %d removed, %d changed (size or modification time), %lld bytes net%s%.200s. File system state before vs after, not a check of write calls: a file created and deleted in between, or rewritten with the same size and time, is not seen. Only this directory is measured",
+            lead, tree0.n, tree1.n, added, removed, changed, bytes, first[0] ? ": " : "", first);
+    }
+    {
+        /* information only: it never fails the preflight. The IPSW's directory is where the app keeps the virtual Mac's files. */
+        char dir[1024], note[400];
+        snprintf(dir, sizeof dir, "%s", ipsw);
+        char *sl = strrchr(dir, '/'); if (sl) *sl = 0; else snprintf(dir, sizeof dir, ".");
+        HvDiskInfo di; hv_install_disk_check(dir, &di, note, sizeof note);
+        row("install_disk", "info", "%s (checked read-only: existence, type and size only, never the contents; nothing was created, changed or removed)", note);
+        char b1[1100], b2[1100]; struct stat sb1, sb2;
+        snprintf(b1, sizeof b1, "%s/blank_disk.img", dir); snprintf(b2, sizeof b2, "%s/blank_aux.img", dir);
+        row("temp_disks", "info", "blank_disk.img %s, blank_aux.img %s: temporary files, NOT the install disk. The app starts vmrun with --recreate-blank, which deletes and recreates blank_* at every start (before this preflight begins); this preflight itself does not write them",
+            stat(b1, &sb1) == 0 ? "present" : "absent", stat(b2, &sb2) == 0 ? "present" : "absent");
     }
 
 report:
     /* the policy is removed only when no engine thread is left; a thread that did not return keeps being refused */
     if (sess == 0 && hv_restore_session_end() != 0) g_still = 1;
-    if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction, no disk write\n");
-    else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction, no disk write\n");
+    if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction started (the run stops before that step); no write to the restore target disk (observed as: no bulk USB transfer to the virtual Mac)\n");
+    else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction started (the run stops before that step); no write to the restore target disk (observed as: no bulk USB transfer to the virtual Mac)\n");
     for (int i = 0; i < g_nrows; i++) fprintf(out, "restore preflight: %-20s %-9s %s\n", g_rows[i].name, g_rows[i].status, g_rows[i].detail);
-    if (g_failed == 0 && stage == HV_PF_STOP_A) fprintf(out, "restore preflight RESULT: preflight_completed stopped=before_rootfs (observed), %d clean-up finding(s) in the library (rows marked leaked / usbmuxd). This is NOT a restore: nothing was personalized, sent, extracted or installed.\n", g_findings + 1);
-    else if (g_failed == 0) fprintf(out, "restore preflight RESULT: preflight_completed stopped=noaction (inferred), %d clean-up finding(s) in the library (rows marked leaked / usbmuxd). This is NOT a restore: nothing was personalized, sent or installed.\n", g_findings + 1);
-    else fprintf(out, "restore preflight RESULT: FAILED (%d row(s)). Not a restore.\n", g_failed);
+    if (g_failed == 0 && stage == HV_PF_STOP_A) fprintf(out, "restore preflight RESULT: preflight_completed stopped=before_rootfs (observed), %d clean-up failed row(s) (rows about handles, threads, descriptors, the private usbmuxd and the client; counted as rows, not as root causes). This is NOT a restore: nothing was personalized, sent, extracted or installed.\n", g_findings);
+    else if (g_failed == 0) fprintf(out, "restore preflight RESULT: preflight_completed stopped=noaction (inferred), %d clean-up failed row(s) (rows about handles, threads, descriptors, the private usbmuxd and the client; counted as rows, not as root causes). This is NOT a restore: nothing was personalized, sent or installed.\n", g_findings);
+    else fprintf(out, "restore preflight RESULT: FAILED (%d row(s), %d of them clean-up rows). Not a restore.\n", g_failed, g_findings);
     fflush(out);
     return g_failed;
 }

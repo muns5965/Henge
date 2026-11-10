@@ -66,6 +66,43 @@ static void hook_dnload(void) {
 
 static void hook_hang(void) { usleep(9000000); }
 
+/* failure injection: things a run must not leave behind, done on the ROM thread while the tool runs */
+static const char *g_work;
+static void hook_leakfd(void) { int p[2]; if (pipe(p) == 0) { /* never closed */ } }
+static void *sleeper(void *a) { (void)a; pthread_setname_np(pthread_self(), "leakthr"); sleep(25); return NULL; }
+static void hook_leakthread(void) { pthread_t t; if (pthread_create(&t, NULL, sleeper, NULL) == 0) pthread_detach(t); }
+static void wfile(const char *name, const char *content) { char p[1200]; snprintf(p, sizeof p, "%s/%s", g_work, name); FILE *f = fopen(p, "w"); if (f) { fputs(content, f); fclose(f); } }
+static void hook_wnew(void) { wfile("new.txt", "x"); }
+static void hook_wmod(void) { wfile("pre.txt", "a much longer content than before"); }
+static void hook_wdel(void) { char p[1200]; snprintf(p, sizeof p, "%s/pre.txt", g_work); unlink(p); }
+static void hook_w513(void) { char n[32]; for (int i = 0; i < 513; i++) { snprintf(n, sizeof n, "many%03d.txt", i); wfile(n, "x"); } }
+
+static int snapshot_tests(void) {
+    int fails = 0, f, u, o;
+    char d[] = "/tmp/hvsnap-XXXXXX";
+    if (!mkdtemp(d)) return 1;
+    g_work = d;
+    #define SCHECK(c, ...) do { if (c) printf("PASS "); else { printf("FAIL "); fails++; } printf(__VA_ARGS__); printf("\n"); } while (0)
+    int inc = hv_restore_preflight_snapshot_probe(d, &f, &u, &o);
+    SCHECK(!inc && f == 0 && !u && !o, "snapshot of an empty directory: complete, 0 files");
+    wfile("a.txt", "x");
+    inc = hv_restore_preflight_snapshot_probe(d, &f, &u, &o);
+    SCHECK(!inc && f == 1, "snapshot sees a file");
+    inc = hv_restore_preflight_snapshot_probe("/nonexistent-hvsnap-dir", &f, &u, &o);
+    SCHECK(inc && u == 1, "snapshot of a directory that cannot be opened: incomplete, unreadable=%d", u);
+    hook_w513();
+    inc = hv_restore_preflight_snapshot_probe(d, &f, &u, &o);
+    SCHECK(inc && o >= 2 && f == 512, "snapshot with 514 files: incomplete, records 512, overflow=%d", o);
+    char sub[300]; snprintf(sub, sizeof sub, "%s/locked", d); mkdir(sub, 0755); chmod(sub, 0);
+    if (geteuid() != 0) {
+        for (int i = 0; i < 514; i++) { char n[320]; snprintf(n, sizeof n, "%s/many%03d.txt", d, i); unlink(n); }
+        inc = hv_restore_preflight_snapshot_probe(d, &f, &u, &o);
+        SCHECK(inc && u == 1, "snapshot with a directory without permission: incomplete, unreadable=%d", u);
+    } else printf("SKIP unreadable-by-permission case (running as root: chmod 000 does not stop root; the nonexistent-directory case above covers the same opendir failure)\n");
+    chmod(sub, 0755);
+    return fails;
+}
+
 static int progress_tests(void) {
     struct { const char *name; int calls, maxs, lasts; double lastp; int want; } t[] = {
         {"DETECT 0.6 last, nothing later", 7, 0, 0, 0.6, 1},
@@ -100,6 +137,7 @@ static int progress_tests(void) {
 int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "ok";
     if (!strcmp(sc, "progress")) return progress_tests();
+    if (!strcmp(sc, "snapshot")) return snapshot_tests();
     g_sc = "ok";
     int stage = !strncmp(sc, "a-", 2) ? HV_PF_STOP_A : HV_PF_NOACTION;
     const char *kind = stage == HV_PF_STOP_A ? sc + 2 : sc;
@@ -123,6 +161,13 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(kind, "dnload")) g_hook_serial = hook_dnload;
     if (!strcmp(kind, "hang")) g_hook_serial = hook_hang;
+    g_work = argc > 3 ? argv[3] : ".";
+    if (!strcmp(kind, "leakfd")) g_hook_serial = hook_leakfd;
+    if (!strcmp(kind, "leakthread")) g_hook_serial = hook_leakthread;
+    if (!strcmp(kind, "wnew")) g_hook_serial = hook_wnew;
+    if (!strcmp(kind, "wmod")) { g_hook_serial = hook_wmod; wfile("pre.txt", "short"); }
+    if (!strcmp(kind, "wdel")) { g_hook_serial = hook_wdel; wfile("pre.txt", "short"); }
+    if (!strcmp(kind, "w513")) g_hook_serial = hook_w513;
     pthread_create(&t, NULL, rom, NULL);
     hv_vusb_set_online(g_u, 1);
     const char *ipsw = !strcmp(kind, "no-ipsw") ? "/nonexistent/fake.ipsw" : (argc > 2 ? argv[2] : "fake.ipsw");
@@ -153,7 +198,8 @@ int main(int argc, char **argv) {
     if (!strcmp(kind, "ok")) bad = r != 0;
     else if (!strcmp(kind, "no-ipsw") || !strcmp(kind, "dnload") || !strcmp(kind, "hang")) bad = r < 1;
     else if (!strcmp(kind, "curl")) bad = !(r >= 1 && g_conn_seen == 0);
-    else if (!strncmp(kind, "bad-", 4)) bad = r < 1;   /* a-bad-component, a-bad-identity: the fake IPSW is wrong on purpose */
+    else if (!strncmp(kind, "bad-", 4)) bad = r < 1;
+    else if (!strcmp(kind, "leakfd") || !strcmp(kind, "leakthread") || !strcmp(kind, "wnew") || !strcmp(kind, "wmod") || !strcmp(kind, "wdel") || !strcmp(kind, "w513")) bad = r < 1;   /* a-bad-component, a-bad-identity: the fake IPSW is wrong on purpose */
     if (hang_bad) bad = 1;
     printf("scenario %s: preflight returned %d -> %s\n", sc, r, bad ? "EXPECTATION NOT MET" : "as expected");
     return bad ? 100 + (r > 0 ? r : 0) : 0;

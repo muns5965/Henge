@@ -33,4 +33,7 @@ int hv_restore_preflight_progress_verdict(int calls, int max_step, int last_step
 /* The same for stop A: the tool must have reported progress up to PREPARE 0.0 and no further (PREPARE 0.2 comes after the root filesystem step). */
 int hv_restore_preflight_progress_verdict_a(int calls, int max_step, int last_step, double last_p, char *note, int cap);
 
+/* Test support: the work-directory snapshot of a directory. Returns 1 if it is incomplete (unreadable entry or more files than it records). */
+int hv_restore_preflight_snapshot_probe(const char *dir, int *files, int *unreadable, int *overflow);
+
 #endif

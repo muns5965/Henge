@@ -37,7 +37,7 @@ cmake -S $TP/libzip -B "$ZB" $TCF -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS
   && [ -f "$ZB/lib/libzip.a" ] || { echo "FAILED libzip"; tail -5 "$R/libzip.cfg.log" "$R/libzip.build.log"; exit 1; }
 add idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DHV_SAFE_DOWNLOAD -DHV_STOP_BEFORE_ROOTFS -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"'" $TP/idevicerestore/src/*.c
 add idrs "-I$ZB -I$TP/idevicerestore/src -DHV_STOP_BEFORE_ROOTFS -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"' -std=gnu11 -D_GNU_SOURCE" host/restore_session.c
-add henge "-std=gnu11 -D_GNU_SOURCE" host/libusb_shim.c host/install.c host/usb_host.c host/curl_mbedtls.c host/net_guard.c devices/virtio_usb.c
+add henge "-std=gnu11 -D_GNU_SOURCE" host/libusb_shim.c host/install.c host/usb_host.c host/curl_mbedtls.c host/net_guard.c host/disk_policy.c devices/virtio_usb.c
 add test "-std=gnu11 -D_GNU_SOURCE" tests/test_restore_stack.c
 
 while [ "$(jobs -rp | wc -l)" -gt 0 ]; do wait -n || FAIL=1; done

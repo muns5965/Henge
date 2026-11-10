@@ -52,22 +52,30 @@ run() { # name binary scenario ipsw want... (patterns that must appear in the ou
   return $r
 }
 run progress test_pf progress fake.ipsw "^PASS progress verdict DETECT" "^PASS progress verdict \\(stop A\\) PREPARE 0.0" || rc=1
-run ok test_pf ok fake.ipsw "ipsw_open +ok" "init +ok" "progress +ok" "network_requests +ok" "data_transfers +ok" "stopped=noaction +inferred" "usb_handles +ok" "event_subscription +ok" "net_guard +ok" "connections +ok" "ipsw_fd +ok" "RESULT: preflight_completed stopped=noaction" "usbmuxd +ok.*returned and was joined" || rc=1
+run ok test_pf ok fake.ipsw "ipsw_open +ok" "init +ok" "progress +ok" "network_requests +ok" "data_transfers +ok" "stopped=noaction +inferred" "usb_handles +ok" "event_subscription +ok" "net_guard +ok" "connections +ok" "ipsw_fd +ok" "RESULT: preflight_completed stopped=noaction \\(inferred\\), 0 clean-up failed row" "usbmuxd +ok.*returned and was joined" || rc=1
 run no-ipsw test_pf no-ipsw fake.ipsw "ipsw_open +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run curl test_pf curl fake.ipsw "network_requests +FAILED" "([1-9][0-9]*) attempt\\(s\\), \\1 refused" "server saw 0 connection" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run dnload test_pf dnload fake.ipsw "data_transfers +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run negative test_pf_neg ok fake.ipsw "init +FAILED" "stopped=noaction +FAILED" "RESULT: FAILED" ; [ $? = 102 ] || { echo "negative control: expected exit 102 (the ok scenario's expectation not met)"; rc=1; }
-run hang test_pf hang fake.ipsw "init +FAILED" "TIMEOUT" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
+run hang test_pf hang fake.ipsw "init +FAILED" "TIMEOUT" "client_free +FAILED" "RESULT: FAILED \\([0-9]+ row\\(s\\), [1-9][0-9]* of them clean-up rows" || { [ $? -ge 100 ] && rc=1; }
 # stop A
 run a-stored test_pf a-ok a_stored.ipsw "init +ok" "progress +ok" "stopped=before_rootfs +direct" "identity +ok.*Customer Erase Install" "macos_variant +info +present" "components +ok" "rootfs_entry +ok.*method stored.*seekable.*agrees" \
-  "extraction_rule +info.*extract no" "local_writes +info.*0 new file" "network_requests +ok" "connections +ok" "data_transfers +ok" "ipsw_fd +ok" "usbmuxd +ok" "threads +ok" "RESULT: preflight_completed stopped=before_rootfs \\(observed\\)" || rc=1
-run a-deflated test_pf a-ok a_deflated.ipsw "stopped=before_rootfs +direct" "rootfs_entry +ok.*method deflate.*NOT seekable.*agrees" "extraction_rule +info.*extract YES.*This run extracted nothing" "local_writes +info.*0 new file" "RESULT: preflight_completed stopped=before_rootfs" || rc=1
+  "extraction_rule +info.*extract no" "local_writes +ok.*0 new, 0 removed, 0 changed" "network_requests +ok" "connections +ok" "data_transfers +ok" "ipsw_fd +ok" "usbmuxd +ok" "threads +ok" "RESULT: preflight_completed stopped=before_rootfs \\(observed\\), 0 clean-up failed row" "install_disk +info" "temp_disks +info.*NOT the install disk" || rc=1
+run a-deflated test_pf a-ok a_deflated.ipsw "stopped=before_rootfs +direct" "rootfs_entry +ok.*method deflate.*NOT seekable.*agrees" "extraction_rule +info.*extract YES.*no extraction was started" "local_writes +ok.*0 new, 0 removed, 0 changed" "RESULT: preflight_completed stopped=before_rootfs" || rc=1
 run a-missing test_pf a-bad-component a_missing.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "identity +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run a-wrongmodel test_pf a-bad-identity a_wrongmodel.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run a-curl test_pf a-curl a_stored.ipsw "network_requests +FAILED" "server saw 0 connection" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run a-dnload test_pf a-dnload a_stored.ipsw "data_transfers +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
+# failure injection (each its own run, so a failure says which check caught it): what a run must not leave behind
+run snapshot test_pf snapshot fake.ipsw "^PASS snapshot of a directory that cannot be opened" "^PASS snapshot with 514 files" || rc=1
+run a-leakfd test_pf a-leakfd a_stored.ipsw "fds +FAILED.*MORE than before for: pipe" "RESULT: FAILED \\([0-9]+ row\\(s\\), 1 of them clean-up rows" || { [ $? -ge 100 ] && rc=1; }
+run a-leakthread test_pf a-leakthread a_stored.ipsw "threads +FAILED.*MORE threads than before for: leakthr" "RESULT: FAILED \\([0-9]+ row\\(s\\), 1 of them clean-up rows" || { [ $? -ge 100 ] && rc=1; }
+run a-wnew test_pf a-wnew a_stored.ipsw "local_writes +FAILED.*1 new, 0 removed, 0 changed.*new.txt" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
+run a-wmod test_pf a-wmod a_stored.ipsw "local_writes +FAILED.*0 new, 0 removed, 1 changed.*pre.txt changed" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
+run a-wdel test_pf a-wdel a_stored.ipsw "local_writes +FAILED.*0 new, 1 removed, 0 changed.*pre.txt removed" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
+run a-w513 test_pf a-w513 a_stored.ipsw "local_writes +FAILED +snapshot_incomplete .*more than 512 files" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 # negative control for stop A: without the stop the tool goes on and extracts the deflated rootfs into the work directory (the fake manifest then stops it before any signing request); local_writes must show the file
-run a-negative test_pf_neg a-ok a_deflated.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "local_writes +[A-Za-z]+ +files in the work directory: 0 before, 1 after; 1 new file.*rootfs.dmg" "RESULT: FAILED"; r=$?
+run a-negative test_pf_neg a-ok a_deflated.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "local_writes +FAILED +files in the work directory: 0 before, 1 after; 1 new, 0 removed, 0 changed.*rootfs.dmg" "RESULT: FAILED"; r=$?
 [ $r -ge 100 ] || { echo "a-negative: expected the ok scenario's expectation not to be met (exit >= 100), got $r"; rc=1; }
 # the files the run left in its work dir: nothing beyond usbmuxd's own (no rootfs, no manifest)
 echo "work dir after the ok run:"; ls -la "$OUT/pf/work" | tail -n +2

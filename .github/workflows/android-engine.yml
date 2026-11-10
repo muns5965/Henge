@@ -134,7 +134,7 @@ jobs:
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-tss-build.sh build-linux
           set +e
-          build-linux/vmrun_tss --tss-probe --rom /nonexistent 2>&1 | tee build-linux/tss-refuse.txt
+          build-linux/vmrun_tss --tss-probe --rom /nonexistent --disk /nonexistent --aux /nonexistent 2>&1 | tee build-linux/tss-refuse.txt
           grep -q "needs --installer" build-linux/tss-refuse.txt
 
       - name: TSS probe core against mock IPSW and TSS servers (one attempt whatever goes wrong; nothing sent when anything before it fails; no value in the output)

@@ -39,7 +39,7 @@ $CC $FL -DHV_TSS_PROBE -c host/vmrun.c -o "$R/vmrun.o" 2> "$R/vmrun.o.log" || { 
 eobjs=""; for o in classify operands translate dispatch mmu memop exception sysreg machine jit_region disk enter; do eobjs="$eobjs $OUT/$o.o"; done
 dobjs="$(ls $OUT/dev_*.o)"
 vobjs="$OUT/vm_vm.o $OUT/vm_stubs_portable.o $OUT/vm_usb_host.o"
-if $CC $FL "$R/vmrun.o" $objs "$R/mb/curl_mbedtls.o" $R/mb/obj/*.o "$ZB/lib/libzip.a" $vobjs $eobjs $dobjs -lz ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS:--lm -lpthread} -o "$OUT/vmrun_tss" 2> "$R/link.log"; then
+if $CC $FL "$R/vmrun.o" $objs "$R/mb/curl_mbedtls.o" $R/mb/obj/*.o "$ZB/lib/libzip.a" $vobjs $eobjs $dobjs -lz -lm ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS:--lpthread} -o "$OUT/vmrun_tss" 2> "$R/link.log"; then
   echo "linked  $OUT/vmrun_tss"
 else
   echo "FAILED  link vmrun_tss"; head -30 "$R/link.log"; exit 1

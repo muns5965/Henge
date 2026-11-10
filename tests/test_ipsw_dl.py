@@ -74,12 +74,12 @@ BURL = f"http://127.0.0.1:{srv.server_address[1]}/big.ipsw"
 
 def fresh(name):
     d = os.path.join(work, name); shutil.rmtree(d, ignore_errors=True); os.makedirs(d); M.clear(); del REQS[:]; return d
-def args(d, *extra, url=URL, size=N, sha=SHA, stop=None, cap=None, reserve=1 << 20, retries=0, base=20):
+def args(d, *extra, url=URL, size=N, sha=SHA, stop=None, cap=None, reserve=1 << 20, retries=0, base=20, extra_args=()):
     a = ["--dir", d, "--url", url, "--size", str(size), "--sha256", sha, "--name", "t.ipsw", "--reserve", str(reserve), "--commit-every", str(1 << 20),
          "--retries", str(retries), "--retry-base-ms", str(base)]
     if stop: a += ["--stop-after", str(stop)]
     if cap is not None: a += ["--avail-cap", str(cap)]
-    return a + list(extra)
+    return a + list(extra) + list(extra_args)
 def run(a, t=tool, timeout=120):
     t0 = time.time(); r = subprocess.run([t] + a, capture_output=True, timeout=timeout)
     out = r.stdout.decode() + r.stderr.decode(); return out, r.returncode, time.time() - t0
@@ -248,6 +248,17 @@ check("a drop after every 1 MiB (25 in a row): progress resets the count, so it 
 d = fresh("t12c"); M["drop_each"] = 0
 out, rc, _ = run(args(d, retries=3))
 check("a server that never delivers a byte: gives up after 3 reconnects (4 requests), exit 5, nothing installed, the state is kept", rc == 5 and len(REQS) == 4 and "gave up" in out and fsize(P(d)) is None, (rc, len(REQS), out[-300:]))
+d = fresh("t12h"); M["drop_each"] = 1
+out, rc, _ = run(args(d, retries=3))
+check("a server that hands out 1 byte per connection: the count is NOT reset by that, gives up after 3 reconnects (4 requests), exit 5", rc == 5 and len(REQS) == 4 and "gave up" in out and "without progress" in out, (rc, len(REQS), out[-300:]))
+d = fresh("t12i"); M["drop_each"] = 300 * 1024
+out, rc, _ = run(args(d, retries=3, extra_args=["--max-total", "200"]))   # ~88 requests for 26 MB: more than the default total of 50
+check("300 KiB per connection: the bytes add up since the last reset, so 1 MiB resets the count and the run completes", rc == 0 and read(P(d)) == DATA and len(REQS) > 20, (rc, len(REQS), out[-300:]))
+d = fresh("t12j"); M["drop_each"] = 1 << 20
+out, rc, _ = run(args(d, retries=3, extra_args=["--max-total", "10"]))
+check("1 MiB of progress per connection but more than 10 reconnects in one run: stops after 10 reconnects (11 requests), exit 5, state kept", rc == 5 and len(REQS) == 11 and "after 10 reconnects in this run" in out and fsize(P(d)) is None and (committed(d) or 0) > 0, (rc, len(REQS), out[-300:]))
+out, rc, _ = run(args(d, retries=3, extra_args=["--max-total", "10"]))
+check("  the next run starts its own count and continues from the kept bytes", len(REQS) > 11 and REQS[11][1] != "bytes=0-", (rc, REQS[11:13]))
 d = fresh("t12d"); M["status_seq"] = [503, 503, None]
 out, rc, _ = run(args(d, retries=3))
 check("503, 503, then the file: retried and completed", rc == 0 and read(P(d)) == DATA and len(REQS) == 3, (rc, len(REQS), out[-300:]))
@@ -271,6 +282,27 @@ time.sleep(0.6); t0 = time.time(); p.send_signal(signal.SIGTERM)
 try: o, _ = p.communicate(timeout=10)
 except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
 check("SIGTERM during a reconnect wait: exit 8 within a second, no further request", p.returncode == 8 and time.time() - t0 < 2 and len(REQS) == 1, (p.returncode, time.time() - t0, len(REQS), o[-200:]))
+
+# ---- 12b. status: lock probe and metadata age ----
+def status_line(d):
+    out, _, _ = run(["--status", "--dir", d, "--name", "t.ipsw", "--size", str(N), "--url", URL, "--sha256", SHA]); return out
+d = fresh("t14a")
+s = status_line(d)
+check("status of an empty directory: lock=free, no lock file created by the probe, meta_age=-1", "lock=free" in s and "meta_age=-1" in s and not os.path.exists(P(d, ".lock")), s)
+run(args(d, stop=3 << 20)); s = status_line(d)
+check("  after a paused run: lock=free, meta_age is a small number of seconds", "lock=free" in s and re.search(r"meta_age=(\d+)", s) and int(re.search(r"meta_age=(\d+)", s)[1]) < 30, s)
+d = fresh("t14b"); M["slow"] = 1
+p = subprocess.Popen([tool] + args(d), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+for _ in range(100):
+    if len(REQS) >= 1: break
+    time.sleep(0.05)
+time.sleep(0.5); s = status_line(d)
+out2, rc2, _ = run(args(d))
+check("while a downloader runs: status says lock=held (and the probe does not disturb it); a second start is refused with code 2", "lock=held" in s and rc2 == 2 and "another download" in out2, (s, rc2, out2[-200:]))
+p.send_signal(signal.SIGTERM)
+try: o, _ = p.communicate(timeout=10)
+except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
+check("  the running one still stops cleanly on SIGTERM (exit 8) and afterwards the status says lock=free", p.returncode == 8 and "lock=free" in status_line(d), (p.returncode, o[-200:]))
 
 # ---- 13. the shipped build ----
 d = fresh("t13"); n = len(REQS)

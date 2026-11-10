@@ -16,7 +16,9 @@
    - stop_after: pause (not an error) once that many bytes are committed; .part and metadata stay and a later run continues.
    - reconnects: a dropped connection or a transient answer (408/429/5xx) is retried from the committed byte, with a doubling wait (bounded) and the same checks on
      every reply; the running hash is kept, nothing is read again. Progress resets the count of failures in a row; an untrustworthy answer (200, other range, ETag/size
-     change, 4xx) is never retried. Without progress the run ends with exit 5 after max_retries reconnects.
+     change, 4xx) is never retried. The count of failures in a row is reset only when at least DL_MIN_PROGRESS (1 MiB, an empirical value, not from a standard) has
+     arrived SINCE THE LAST RESET, summed over attempts, so a server that hands out a few bytes per connection cannot keep the run alive. Without that progress
+     the run ends with exit 5 after max_retries reconnects; in any case after max_total reconnects in one run.
    - cancel: *cancel != 0 ends the transfer (or a reconnect wait) at once; the state is flushed first; exit 8. */
 #ifndef HV_IPSW_DL_H
 #define HV_IPSW_DL_H
@@ -37,6 +39,7 @@ typedef struct {
     long connect_timeout_s;        /* default 20 */
     unsigned max_retries;          /* default 6: reconnects in a row WITHOUT progress before giving up (any progress resets the count); 0 = never reconnect */
     unsigned retry_base_ms;        /* default 2000: wait before a reconnect, doubled per failure in a row (at most x32, at most 60 s) */
+    unsigned max_total;            /* default 50: reconnects in ONE run, however much progress there was (0 = the default); the next run starts the count again */
     const volatile int *cancel;    /* optional */
     FILE *out;                     /* progress and log lines, prefixed "dl: " */
 } DlCfg;

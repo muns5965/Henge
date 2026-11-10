@@ -43,7 +43,7 @@ static void setmsg(char *dst, size_t cap, const char *fmt, ...) {
 
 void dl_cfg_default(DlCfg *c) {
     memset(c, 0, sizeof *c);
-    c->reserve = 512ULL << 20; c->commit_every = 16ULL << 20; c->connect_timeout_s = 20; c->max_retries = 6; c->retry_base_ms = 2000;
+    c->reserve = 512ULL << 20; c->commit_every = 16ULL << 20; c->connect_timeout_s = 20; c->max_retries = 6; c->retry_base_ms = 2000; c->max_total = 50;
 }
 
 static int url_ok(const char *u) {
@@ -234,6 +234,9 @@ static int xfer_cb(void *ud, curl_off_t a, curl_off_t b, curl_off_t c, curl_off_
     return 0;
 }
 
+/* Progress that resets the count of failures in a row: an empirical threshold, not from any standard. */
+#define DL_MIN_PROGRESS (1ULL << 20)
+
 static int lock_dir(Dl *d, char *msg, size_t cap) {
     d->lockfd = open(d->lockp, O_RDWR | O_CREAT, 0600);
     if (d->lockfd < 0) { setmsg(msg, cap, "cannot open the lock file (%s)", strerror(errno)); return DL_REFUSED; }
@@ -407,16 +410,23 @@ int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
     /* 6. the transfer, with bounded reconnects */
     {
         int fails = 0, total = 0;
+        const int max_total = c->max_total ? (int)c->max_total : 50;
+        uint64_t reset_at = d->committed;   /* committed bytes when the failure count was last reset */
         for (;;) {
-            uint64_t before = d->committed;
             int tr = attempt(d, msg, cap);
             if (tr == TR_COMPLETE) { rc = finalize(d, msg, cap); break; }
             if (tr == TR_PAUSED) { rc = DL_PAUSED; break; }
             if (tr == TR_CANCEL) { rc = DL_CANCELLED; break; }
             if (tr == TR_SERVER) { rc = DL_SERVER; break; }
             if (tr == TR_FATAL) { rc = DL_INTERRUPTED; break; }
-            if (d->committed > before) fails = 0; else fails++;      /* progress resets the count */
+            /* only DL_MIN_PROGRESS bytes since the last reset (summed over attempts) reset the count; less counts as one more failure in a row */
+            if (d->committed - reset_at >= DL_MIN_PROGRESS) { fails = 0; reset_at = d->committed; } else fails++;
             if (c->max_retries == 0) { rc = DL_INTERRUPTED; break; }
+            if (total >= max_total) {
+                char why3[300]; snprintf(why3, sizeof why3, "%s", msg);
+                setmsg(msg, cap, "gave up after %d reconnects in this run; the partial download is kept, run again to continue (%s)", total, why3);
+                rc = DL_INTERRUPTED; break;
+            }
             if (fails > (int)c->max_retries) {
                 char why2[300]; snprintf(why2, sizeof why2, "%s", msg);
                 setmsg(msg, cap, "gave up after %d attempts in a row without progress; the partial download is kept (%s)", fails, why2);
@@ -442,8 +452,13 @@ int ipsw_dl_status(const DlCfg *c, FILE *out) {
     long long part = stat(d->part, &st) == 0 ? (long long)st.st_size : -1;
     uint64_t com = 0; char et[160], why[200];
     int mr = meta_read(d, &com, et, sizeof et, why, sizeof why);
-    fprintf(out, "dl: STATUS total=%llu final=%lld part=%lld committed=%lld meta=%s%s%s\n", LLU(c->expect_size), fin, part, mr == 0 ? (long long)com : -1LL,
-            mr == 0 ? "ok" : mr == 1 ? "none" : "damaged", mr < 0 ? ": " : "", mr < 0 ? why : "");
+    /* lock=held: a live downloader holds the flock (the kernel drops it when that process dies). Read-only probe: the lock file is not created, and a shared
+       lock attempt fails only while an exclusive one is held. meta_age = seconds since the metadata was last written (it moves every commit_every bytes). */
+    const char *lk = "free"; int lf = open(d->lockp, O_RDONLY);
+    if (lf >= 0) { if (flock(lf, LOCK_SH | LOCK_NB) != 0 && errno == EWOULDBLOCK) lk = "held"; close(lf); }
+    long long age = -1; if (stat(d->meta, &st) == 0) { time_t now = time(NULL); age = now >= st.st_mtime ? (long long)(now - st.st_mtime) : 0; }
+    fprintf(out, "dl: STATUS total=%llu final=%lld part=%lld committed=%lld lock=%s meta_age=%lld meta=%s%s%s\n", LLU(c->expect_size), fin, part, mr == 0 ? (long long)com : -1LL,
+            lk, age, mr == 0 ? "ok" : mr == 1 ? "none" : "damaged", mr < 0 ? ": " : "", mr < 0 ? why : "");
     return 0;
 }
 

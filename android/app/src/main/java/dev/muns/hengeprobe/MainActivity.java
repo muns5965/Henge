@@ -68,6 +68,8 @@ public class MainActivity extends Activity {
     private File progressFile;
     private volatile boolean running;
     private volatile IpswDownload ipswDl;
+    private volatile boolean dlDialogOpen;   // the confirmation dialog is up (or its status read is running): no second dialog, no delete meanwhile
+    private volatile boolean dlWatching;     // watching a download that another process (earlier tap, other window) is already running
     private Button dlStopButton;
     private ScrollView pageScroll;
 
@@ -82,7 +84,7 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad * 2, pad, pad);
 
-        // Finished tests live in a section that starts folded; the ROM boot buttons stay on top.
+        // Finished tests (also the ROM boot, DFU, restore-tool, TLS, BuildManifest and TSS probes) live in one section that starts folded; the IPSW download buttons stay on top.
         final LinearLayout done = new LinearLayout(this);
         done.setOrientation(LinearLayout.VERTICAL);
         done.setVisibility(View.GONE);
@@ -130,22 +132,22 @@ public class MainActivity extends Activity {
         vmrunButton = new Button(this);
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
         vmrunButton.setOnClickListener(v -> runVmrun(false));
-        root.addView(vmrunButton);
+        done.addView(vmrunButton);
 
         installerButton = new Button(this);
         installerButton.setText("ROM 설치기(DFU) 부팅 시험 (VM 고유 ECID, 30초)");
         installerButton.setOnClickListener(v -> runVmrun(true));
-        root.addView(installerButton);
+        done.addView(installerButton);
 
         final Button irecvButton = new Button(this);
         irecvButton.setText("복원 라이브러리 USB 연결 시험 (libirecovery로 장치 열기, 30초)");
         irecvButton.setOnClickListener(v -> runVmrun(true, true));
-        root.addView(irecvButton);
+        done.addView(irecvButton);
         final TextView irecvNote = new TextView(this);
         irecvNote.setText("위 버튼: 설치기(DFU)로 부팅한 뒤 복원 도구가 쓰는 libirecovery로 가상 USB 장치를 열고 닫기만 합니다. "
                 + "USB 구성(SET_CONFIGURATION 1)을 선택하므로 장치 상태가 바뀔 수 있습니다. 펌웨어 전송·Apple 서명 요청·IPSW 다운로드는 하지 않습니다.");
         irecvNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        root.addView(irecvNote);
+        done.addView(irecvNote);
 
         final Button dnloadButton = new Button(this);
         dnloadButton.setText("DFU 더미 DNLOAD 시험 A0~A2 (16바이트 1회, 실제 ROM으로 전송)");
@@ -157,11 +159,11 @@ public class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true))
                 .show());
-        root.addView(dnloadButton);
+        done.addView(dnloadButton);
         final TextView dnloadNote = new TextView(this);
         dnloadNote.setText("위 버튼: 결과는 '요청과 응답' 기록이며 ROM이 그 바이트를 펌웨어로 받아들였다는 뜻이 아닙니다. 누를 때마다 새 빈 디스크로 다시 부팅합니다.");
         dnloadNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        root.addView(dnloadNote);
+        done.addView(dnloadNote);
 
         final Button a3Button = new Button(this);
         a3Button.setText("DFU 시험 A3: A0~A2 재현 + GET_STATUS 1회 (실제 ROM으로 전송)");
@@ -173,7 +175,7 @@ public class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true, true))
                 .show());
-        root.addView(a3Button);
+        done.addView(a3Button);
 
         final Button a4Button = new Button(this);
         a4Button.setText("DFU 시험 A4: A0~A3 재현 + ABORT 1회 + GET_STATE 1회 (실제 ROM으로 전송)");
@@ -185,47 +187,47 @@ public class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true, 4))
                 .show());
-        root.addView(a4Button);
+        done.addView(a4Button);
 
         final Button selftestButton = new Button(this);
         selftestButton.setText("복원 도구 자체 시험 (앱 안에서 적재·스레드·loopback, 잘못된 IPSW 3종)");
         selftestButton.setOnClickListener(v -> runRestoreSelftest());
-        root.addView(selftestButton);
+        done.addView(selftestButton);
         final TextView selftestNote = new TextView(this);
         selftestNote.setText("위 버튼: 복원 도구 전체(usbmuxd·libirecovery·libtatsu·idevicerestore)를 이 앱 안에서 시작해 가짜 IPSW 3개로 깔끔히 실패하는지, "
                 + "usbmuxd가 loopback에서 ListDevices에 답하는지 봅니다. 네트워크·장치·Apple 서버를 쓰지 않습니다. 실제 복원이 되는지와는 별개입니다.");
         selftestNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        root.addView(selftestNote);
+        done.addView(selftestNote);
 
         final Button tlsButton = new Button(this);
         tlsButton.setText("HTTPS·CA 저장소 확인 (공개 사이트)");
         tlsButton.setOnClickListener(v -> runTlsCheck(false));
-        root.addView(tlsButton);
+        done.addView(tlsButton);
 
         final Button appleButton = new Button(this);
         appleButton.setText("Apple 서명 서버 TLS 확인 (GET 한 번)");
         appleButton.setOnClickListener(v -> runTlsCheck(true));
-        root.addView(appleButton);
+        done.addView(appleButton);
 
         final Button bmButton = new Button(this);
         bmButton.setText("BuildManifest 부분 조회 (Apple CDN, Range 요청만)");
         bmButton.setOnClickListener(v -> runBuildManifestProbe());
-        root.addView(bmButton);
+        done.addView(bmButton);
         final TextView bmNote = new TextView(this);
         bmNote.setText("macOS 15.6.1 IPSW(약 16 GiB)에서 BuildManifest.plist만 Range 요청으로 읽습니다(최대 24회·4 MiB, 강한 ETag 필수, 파일 저장 없음). "
                 + "전체 다운로드·TSS 요청·복원은 하지 않습니다. 결과(요청 범위·응답 코드·칩/보드 일치)가 이 화면에 나옵니다.");
         bmNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        root.addView(bmNote);
+        done.addView(bmNote);
 
         final Button tssButton = new Button(this);
         tssButton.setText("TSS 서명 가능성 확인 (Apple 서버로 1회 전송)");
         tssButton.setOnClickListener(v -> confirmTssProbe());
-        root.addView(tssButton);
+        done.addView(tssButton);
         final TextView tssNote = new TextView(this);
         tssNote.setText("가상 Mac을 DFU까지 부팅해 ROM이 알려주는 ECID·APNonce·SEPNonce를 읽고, macOS 15.6.1 Erase Install 구성으로 만든 서명 요청을 Apple에 정확히 1회 보냅니다. "
                 + "누르면 먼저 확인 창이 나옵니다. 받은 서명 값은 저장·표시하지 않습니다. 복원·IPSW 전체 다운로드·펌웨어 전송은 하지 않습니다.");
         tssNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        root.addView(tssNote);
+        done.addView(tssNote);
 
         final Button dlButton = new Button(this);
         dlButton.setText("IPSW 다운로드 (전체 15.66 GiB, 이어받기)");
@@ -252,11 +254,11 @@ public class MainActivity extends Activity {
         root.addView(dlNote);
 
         final Button toggle = new Button(this);
-        toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
+        toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");
         toggle.setOnClickListener(v -> {
             boolean open = done.getVisibility() != View.VISIBLE;
             done.setVisibility(open ? View.VISIBLE : View.GONE);
-            toggle.setText(open ? "▼ 완료된 시험 접기" : "▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
+            toggle.setText(open ? "▼ 완료된 시험 접기" : "▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");
         });
         root.addView(toggle);
         root.addView(done);
@@ -1038,25 +1040,73 @@ public class MainActivity extends Activity {
 
     /** Reads the state first (no network), then asks. The program re-checks everything itself. */
     private void confirmIpswDownload() {
-        if (running) return;
+        if (running || dlDialogOpen || dlWatching) return;
         File exe = new File(getApplicationInfo().nativeLibraryDir, "libipswdl.so");
         if (!exe.exists()) { show("libipswdl.so가 이 APK에 없습니다(빌드 실패). 아무것도 받지 않았습니다.\n"); return; }
-        running = true;   // the status call is quick; keeps a second tap out
+        dlDialogOpen = true;   // stays set from this tap until the dialog is gone: a second tap cannot open a second dialog, and the delete button waits
         new Thread(() -> {
             IpswDownload.Result st = new IpswDownload(exe, ipswDir()).status();
-            running = false;
             final long committed = field(st.detail, "committed"), part = field(st.detail, "part"), fin = field(st.detail, "final");
             final boolean metaOk = st.detail.contains("meta=ok"), metaNone = st.detail.contains("meta=none");
-            if (fin > 0) { runOnUiThread(() -> runIpswDownload(exe, 0, true)); return; }   // a finished file: the program only verifies it, no network
+            if (st.detail.contains("lock=held")) {   // a downloader of this file is already alive: do not start another, show what it is doing
+                dlDialogOpen = false;
+                watchRunningIpsw(exe);
+                return;
+            }
+            if (fin > 0) { dlDialogOpen = false; runOnUiThread(() -> runIpswDownload(exe, 0, true)); return; }   // a finished file: the program only verifies it, no network
             boolean fresh = metaNone && part <= 0;                                           // nothing on disk
             boolean consistent = metaOk && (part >= committed || committed == 0);            // the program cuts a longer .part, refuses a shorter one
             if (!fresh && !consistent) {
+                dlDialogOpen = false;
                 show("받던 파일의 상태를 확인하지 못해 시작하지 않았습니다(메타데이터 손상, .part 없음/짧음 등). 아무것도 보내지 않았습니다.\n" + st.detail
                         + "\n처음부터 받으려면 'IPSW 받던 파일 삭제'를 누르세요.\n");
                 return;
             }
             final long have = fresh ? 0 : committed;
             runOnUiThread(() -> askIpswDownload(exe, have));
+        }).start();
+    }
+
+    /**
+     * A downloader process of this file is alive (started by an earlier tap, it outlives the screen). Nothing is started; every few seconds the state is read again
+     * (no network) and shown: bytes, speed from the change, seconds since the metadata was written. It cannot stop that process from here (no way to reach it yet):
+     * force-stopping the app does, and the download resumes later.
+     */
+    private void watchRunningIpsw(final File exe) {
+        if (dlWatching) return;
+        dlWatching = true;
+        runOnUiThread(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        final long t0 = System.currentTimeMillis();
+        final String head = "이미 다른 곳에서 IPSW를 받고 있습니다. 새로 시작하지 않았습니다. (이 화면은 5초마다 상태만 읽습니다. 네트워크 요청은 하지 않습니다.)\n"
+                + "이 화면에서는 그 다운로드를 멈출 수 없습니다. 멈추려면 설정 → 앱 → 이 앱 → 강제 종료를 누르세요(받은 부분은 남고 다시 이어받을 수 있습니다).\n\n";
+        new Thread(() -> {
+            long prev = -1, prevT = 0; double ema = 0;
+            try {
+                while (!isFinishing() && !isDestroyed()) {
+                    IpswDownload.Result r = new IpswDownload(exe, ipswDir()).status();
+                    long now = System.currentTimeMillis();
+                    long com = field(r.detail, "committed"), age = field(r.detail, "meta_age"), fin = field(r.detail, "final");
+                    boolean held = r.detail.contains("lock=held");
+                    if (prev >= 0 && com > prev && now > prevT) {
+                        double inst = (com - prev) / ((now - prevT) / 1000.0);
+                        ema = ema == 0 ? inst : 0.7 * ema + 0.3 * inst;
+                    }
+                    if (com != prev) { prev = com; prevT = now; }
+                    if (!held) {
+                        show(fin > 0 ? "그 다운로드가 끝났습니다. 최종 파일이 있습니다(" + gib(fin) + "). 'IPSW 다운로드' 버튼을 누르면 SHA-256 검증만 다시 합니다.\n"
+                                     : "그 다운로드 프로세스가 끝났습니다. 확정된 양: " + gib(Math.max(com, 0)) + " / 15.66 GiB. 'IPSW 다운로드' 버튼으로 이어받을 수 있습니다.\n" + r.detail + "\n");
+                        return;
+                    }
+                    String eta = ema > 1 && com >= 0 ? hms((16814137790L - com) / ema) : "계산 중";
+                    show(head + String.format(java.util.Locale.US, "확정된 양: %s / 15.66 GiB (%.2f%%)\n최근 속도(확정 단위 16 MiB로 계단식): %.1f MB/s   남은 시간: %s\n"
+                            + "메타데이터 마지막 갱신: %d초 전 (몇 분째 그대로면 멈췄을 수 있습니다)\n지켜본 시간: %s\n\n%s\n",
+                            gib(Math.max(com, 0)), 100.0 * Math.max(com, 0) / 16814137790L, ema / 1048576.0, eta, age, hms((now - t0) / 1000.0), r.detail));
+                    try { Thread.sleep(5000); } catch (InterruptedException e) { return; }
+                }
+            } finally {
+                dlWatching = false;
+                runOnUiThread(() -> getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+            }
         }).start();
     }
 
@@ -1079,9 +1129,11 @@ public class MainActivity extends Activity {
                 + "나가는 요청: Apple CDN(updates.cdn-apple.com, HTTPS·인증서 검증)에 Range 요청" + (have > 0 ? "(저장해 둔 ETag로 If-Range)" : "") + ". 이 폰의 IP 주소가 서버에 보입니다. ECID·서명 정보는 보내지 않습니다.\n\n"
                 + "저장 위치: 앱 내부 저장소(files/vm). 사용 가능: " + (free < 0 ? "확인 못 함" : gib(free)) + "\n"
                 + "네트워크: " + netText + "\n\n"
+                + "전력·발열: 오래 화면을 켜 두므로 배터리가 줄고 폰이 뜨거워질 수 있습니다. 충전기를 연결하고, 많이 뜨거워지면 '다운로드 중단'을 누르세요.\n\n"
                 + "무결성: 다 받은 뒤 SHA-256을 계산해 기대값(ipsw.me 한 곳에서만 확인한 값)과 같을 때만 최종 파일로 확정합니다. 다르면 파일이 손상된 것인지 기대값이 틀린 것인지 구분되지 않으며, 받은 파일은 남겨 둡니다.\n\n"
                 + "서명(TSS)·복원·VM 실행은 하지 않습니다.")
-            .setNegativeButton("취소", null);
+            .setNegativeButton("취소", null)
+            .setOnDismissListener(d -> dlDialogOpen = false);   // cancel, back, tap outside or start: the dialog is gone, the guard is released
         if (net.equals("NONE")) { b.show(); return; }
         b.setPositiveButton(wifi ? "받기 시작" : "그래도 받기", (d, w) -> runIpswDownload(exe, have, false));
         b.show();
@@ -1154,12 +1206,14 @@ public class MainActivity extends Activity {
             IpswDownload.Result r = new IpswDownload(exe, ipswDir()).status();
             long free;
             try { free = new StatFs(ipswDir().getAbsolutePath()).getAvailableBytes(); } catch (Throwable t) { free = -1; }
-            show("IPSW 다운로드 상태\n" + r.detail + "\n(final=최종 파일 크기, part=받는 중인 파일, committed=확정 바이트, 없으면 -1)\n사용 가능한 공간: " + (free < 0 ? "확인 못 함" : gib(free)) + "\n");
+            show("IPSW 다운로드 상태\n" + r.detail + "\n(final=최종 파일 크기, part=받는 중인 파일, committed=확정 바이트, 없으면 -1, lock=held는 지금 받는 프로세스가 살아 있음, meta_age=메타데이터를 마지막으로 쓴 지 몇 초)\n"
+                    + (r.detail.contains("lock=held") ? "지금 다른 곳에서 받는 중입니다. 'IPSW 다운로드'를 누르면 진행을 보여 줍니다(새로 시작하지 않습니다).\n" : "")
+                    + "사용 가능한 공간: " + (free < 0 ? "확인 못 함" : gib(free)) + "\n");
         }).start();
     }
 
     private void confirmIpswDelete() {
-        if (running) return;
+        if (running || dlDialogOpen) return;
         File exe = new File(getApplicationInfo().nativeLibraryDir, "libipswdl.so");
         if (!exe.exists()) { show("libipswdl.so가 이 APK에 없습니다.\n"); return; }
         new AlertDialog.Builder(this)

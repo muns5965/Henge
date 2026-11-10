@@ -42,6 +42,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--reserve")) c.reserve = strtoull(NEXT(), NULL, 10);
         else if (!strcmp(a, "--retries")) c.max_retries = (unsigned)strtoul(NEXT(), NULL, 10);
         else if (!strcmp(a, "--retry-base-ms")) c.retry_base_ms = (unsigned)strtoul(NEXT(), NULL, 10);
+        else if (!strcmp(a, "--max-total")) c.max_total = (unsigned)strtoul(NEXT(), NULL, 10);
 #endif
         else { printf("dl: RESULT 2 unknown argument %s\n", a); return 2; }
     }

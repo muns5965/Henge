@@ -1,0 +1,45 @@
+/* host/usb_desc.c on synthetic configuration descriptors (no device). */
+#include <stdio.h>
+#include <string.h>
+#include "../host/usb_desc.c"
+
+static int fails;
+static void check(const char *name, int ok) { printf("%s %s\n", ok ? "PASS" : "FAIL", name); if (!ok) fails++; }
+
+int main(void) {
+    /* configuration (9) + DFU interface alt 0 (9) + DFU functional (9) = 27 bytes, the shape USB DFU 1.1 requires */
+    uint8_t dfu[] = {9, 2, 27, 0, 1, 1, 0, 0x80, 50,
+                     9, 4, 0, 0, 0, 0xFE, 1, 2, 5,
+                     9, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x08, 0x1A, 0x01};
+    HvUsbConfigInfo c;
+    check("DFU configuration parses", hv_usb_describe_config(dfu, sizeof dfu, &c, stdout) == 0 && c.valid);
+    check("one interface, no endpoints", c.interfaces == 1 && c.endpoints == 0 && c.num_interfaces == 1 && c.total_length == 27);
+    check("DFU interface found: number 0, protocol 2 (DFU mode), iInterface 5", c.dfu_interface == 0 && c.dfu_protocol == 2 && c.dfu_istring == 5);
+    check("DFU functional decoded: attributes 0x0B, detach 255 ms, transfer 2048, bcd 0x011A",
+          c.dfu_func_seen && c.dfu_attributes == 0x0B && c.dfu_detach_timeout == 255 && c.dfu_transfer_size == 2048 && c.dfu_bcd_version == 0x011A);
+
+    uint8_t two[] = {9, 2, 34, 0, 1, 1, 0, 0x80, 50,
+                     9, 4, 0, 0, 1, 0x08, 6, 0x50, 0,          /* mass storage, not DFU */
+                     7, 5, 0x81, 2, 0x00, 0x02, 0,
+                     9, 4, 1, 0, 0, 0xFE, 1, 1, 0};             /* DFU runtime, no functional descriptor */
+    check("non-DFU interface and endpoint, then a DFU one without functional descriptor", hv_usb_describe_config(two, sizeof two, &c, NULL) == 0 && c.endpoints == 1 && c.interfaces == 2 &&
+          c.dfu_interface == 1 && c.dfu_protocol == 1 && !c.dfu_func_seen);
+
+    uint8_t none[] = {9, 2, 9, 0, 0, 1, 0, 0x80, 50};
+    check("configuration with nothing in it parses, no DFU", hv_usb_describe_config(none, sizeof none, &c, NULL) == 0 && c.dfu_interface == -1 && c.dfu_protocol == -1);
+
+    uint8_t shortbuf[] = {9, 2, 27, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0};
+    check("wTotalLength larger than what was read is rejected", hv_usb_describe_config(shortbuf, sizeof shortbuf, &c, NULL) == -1 && !c.valid);
+    uint8_t runoff[] = {9, 2, 18, 0, 1, 1, 0, 0x80, 50, 20, 4, 0, 0, 0, 0xFE, 1, 2, 0};
+    check("a descriptor whose length runs past the end is rejected", hv_usb_describe_config(runoff, sizeof runoff, &c, NULL) == -1);
+    uint8_t zerolen[] = {9, 2, 12, 0, 1, 1, 0, 0x80, 50, 0, 4, 0};
+    check("a zero-length descriptor cannot loop forever", hv_usb_describe_config(zerolen, sizeof zerolen, &c, NULL) == -1);
+    uint8_t wrongtype[] = {9, 1, 9, 0, 0, 1, 0, 0x80, 50};
+    check("a device descriptor is not a configuration", hv_usb_describe_config(wrongtype, sizeof wrongtype, &c, NULL) == -1);
+    check("fewer than 9 bytes is rejected", hv_usb_describe_config(dfu, 5, &c, NULL) == -1);
+    check("a 0x21 descriptor outside the DFU interface is ignored", ({ uint8_t o[] = {9, 2, 27, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 0, 0x03, 1, 1, 0, 9, 0x21, 1, 2, 3, 4, 5, 6, 7};
+          hv_usb_describe_config(o, sizeof o, &c, NULL) == 0 && c.dfu_interface == -1 && !c.dfu_func_seen; }));
+    check("state names", !strcmp(hv_dfu_state_name(2), "dfuIDLE") && !strcmp(hv_dfu_state_name(10), "dfuERROR") && !strcmp(hv_dfu_state_name(99), "?"));
+    printf(fails ? "FAILED: %d\n" : "ALL PASS\n", fails);
+    return fails != 0;
+}

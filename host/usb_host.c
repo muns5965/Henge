@@ -1,4 +1,5 @@
 #include "usb_host.h"
+#include "usb_desc.c" /* included, not compiled separately: the Apple Makefiles list usb_host.c only */
 
 #include <pthread.h>
 #include <stdio.h>
@@ -106,6 +107,43 @@ static void *probe(void *arg) {
         print_string(d, dd[14]);
         print_string(d, dd[15]);
         print_string(d, dd[16]);
+    }
+    if (n != 18) return NULL;
+    /* The rest only reads: configuration descriptor, DFU functional descriptor, standard and DFU class status. Nothing here changes the device's state
+       (no SET_CONFIGURATION, no DNLOAD, no ABORT/CLRSTATUS). */
+    uint8_t cfg[512] = {0};
+    int cn = hv_usb_control(d, 0x80, 6, 0x200, 0, cfg, 9, 2000);
+    if (cn >= 9) {
+        int total = cfg[2] | (cfg[3] << 8);
+        if (total > 9 && total <= (int)sizeof cfg) cn = hv_usb_control(d, 0x80, 6, 0x200, 0, cfg, (uint16_t)total, 2000);
+        fprintf(stderr, "usb probe: configuration descriptor -> %d bytes (wTotalLength %d)\n", cn, total);
+    } else {
+        fprintf(stderr, "usb probe: configuration descriptor -> %d\n", cn);
+    }
+    HvUsbConfigInfo ci;
+    if (cn >= 9 && hv_usb_describe_config(cfg, cn, &ci, stderr) == 0) {
+        if (ci.dfu_istring) print_string(d, (uint8_t)ci.dfu_istring);
+        uint8_t st[2] = {0xff, 0xff};
+        int r = hv_usb_control(d, 0x80, 0, 0, 0, st, 2, 2000);
+        fprintf(stderr, "usb probe: standard GET_STATUS(device) -> %d: %02x %02x\n", r, st[0], st[1]);
+        uint8_t cv = 0xff;
+        r = hv_usb_control(d, 0x80, 8, 0, 0, &cv, 1, 2000);
+        fprintf(stderr, "usb probe: GET_CONFIGURATION -> %d: %u\n", r, cv);
+        if (ci.dfu_interface >= 0) {
+            uint8_t state = 0xff;
+            r = hv_usb_control(d, 0xA1, 5, 0, (uint16_t)ci.dfu_interface, &state, 1, 2000);
+            fprintf(stderr, "usb probe: DFU GET_STATE(interface %d) -> %d: %u (%s)\n", ci.dfu_interface, r, state, r == 1 ? hv_dfu_state_name(state) : "?");
+            uint8_t ds[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+            r = hv_usb_control(d, 0xA1, 3, 0, (uint16_t)ci.dfu_interface, ds, 6, 2000);
+            fprintf(stderr, "usb probe: DFU GET_STATUS(interface %d) -> %d:", ci.dfu_interface, r);
+            for (int i = 0; i < (r > 0 ? r : 0); i++) fprintf(stderr, " %02x", ds[i]);
+            if (r == 6)
+                fprintf(stderr, "  status=%u (%s) pollTimeout=%u ms state=%u (%s) iString=%u", ds[0], hv_dfu_status_name(ds[0]), ds[1] | (ds[2] << 8) | (ds[3] << 16), ds[4],
+                        hv_dfu_state_name(ds[4]), ds[5]);
+            fprintf(stderr, "\n");
+        } else {
+            fprintf(stderr, "usb probe: no DFU interface (class 0xFE subclass 1) in the configuration\n");
+        }
     }
     return NULL;
 }

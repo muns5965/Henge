@@ -1,0 +1,77 @@
+/* Included by host/usb_host.c (and by tests/test_usbdesc.c); not a separate translation unit, so no build file has to list it. */
+#include "usb_desc.h"
+
+#include <string.h>
+
+const char *hv_dfu_state_name(int s) {
+    static const char *n[] = {"appIDLE", "appDETACH", "dfuIDLE", "dfuDNLOAD-SYNC", "dfuDNBUSY", "dfuDNLOAD-IDLE",
+                              "dfuMANIFEST-SYNC", "dfuMANIFEST", "dfuMANIFEST-WAIT-RESET", "dfuUPLOAD-IDLE", "dfuERROR"};
+    return s >= 0 && s <= 10 ? n[s] : "?";
+}
+
+const char *hv_dfu_status_name(int s) {
+    static const char *n[] = {"OK", "errTARGET", "errFILE", "errWRITE", "errERASE", "errCHECK_ERASED", "errPROG", "errVERIFY",
+                              "errADDRESS", "errNOTDONE", "errFIRMWARE", "errVENDOR", "errUSBR", "errPOR", "errUNKNOWN", "errSTALLEDPKT"};
+    return s >= 0 && s <= 15 ? n[s] : "?";
+}
+
+int hv_usb_describe_config(const uint8_t *b, int len, HvUsbConfigInfo *info, FILE *out) {
+    HvUsbConfigInfo z;
+    memset(&z, 0, sizeof z);
+    z.dfu_interface = z.dfu_protocol = z.dfu_alt = -1;
+    *info = z;
+    if (len < 9 || b[0] != 9 || b[1] != 2) {
+        if (out) fprintf(out, "config: not a configuration descriptor header\n");
+        return -1;
+    }
+    info->total_length = b[2] | (b[3] << 8);
+    info->num_interfaces = b[4];
+    info->configuration_value = b[5];
+    if (out)
+        fprintf(out, "config: wTotalLength=%d bNumInterfaces=%d bConfigurationValue=%d iConfiguration=%d bmAttributes=0x%02x bMaxPower=%d mA\n", info->total_length,
+                info->num_interfaces, info->configuration_value, b[6], b[7], b[8] * 2);
+    if (info->total_length > len || info->total_length < 9) {
+        if (out) fprintf(out, "config: wTotalLength %d does not fit the %d bytes read\n", info->total_length, len);
+        return -1;
+    }
+    int in_dfu = 0;
+    for (int p = b[0]; p < info->total_length;) {
+        int dl = b[p];
+        if (dl < 2 || p + dl > info->total_length) {
+            if (out) fprintf(out, "config: descriptor at %d has length %d and runs off the end\n", p, dl);
+            return -1;
+        }
+        int t = b[p + 1];
+        if (t == 4 && dl >= 9) {
+            info->interfaces++;
+            in_dfu = 0;
+            if (out)
+                fprintf(out, "  interface %d alt %d: %d endpoints, class 0x%02x subclass 0x%02x protocol 0x%02x iInterface=%d\n", b[p + 2], b[p + 3], b[p + 4],
+                        b[p + 5], b[p + 6], b[p + 7], b[p + 8]);
+            if (b[p + 5] == 0xFE && b[p + 6] == 1 && info->dfu_interface < 0) {
+                info->dfu_interface = b[p + 2], info->dfu_alt = b[p + 3], info->dfu_protocol = b[p + 7], info->dfu_istring = b[p + 8];
+                in_dfu = 1;
+            }
+        } else if (t == 5 && dl >= 7) {
+            info->endpoints++;
+            if (out) fprintf(out, "    endpoint 0x%02x attributes 0x%02x maxpacket %d interval %d\n", b[p + 2], b[p + 3], b[p + 4] | (b[p + 5] << 8), b[p + 6]);
+        } else if (t == 0x21 && dl == 9 && in_dfu) {
+            info->dfu_func_seen = 1;
+            info->dfu_attributes = b[p + 2];
+            info->dfu_detach_timeout = b[p + 3] | (b[p + 4] << 8);
+            info->dfu_transfer_size = b[p + 5] | (b[p + 6] << 8);
+            info->dfu_bcd_version = b[p + 7] | (b[p + 8] << 8);
+            if (out)
+                fprintf(out, "    DFU functional: attributes 0x%02x (canDnload=%d canUpload=%d manifestTolerant=%d willDetach=%d) detachTimeout=%d transferSize=%d bcdDFU=0x%04x\n",
+                        info->dfu_attributes, info->dfu_attributes & 1, (info->dfu_attributes >> 1) & 1, (info->dfu_attributes >> 2) & 1, (info->dfu_attributes >> 3) & 1,
+                        info->dfu_detach_timeout, info->dfu_transfer_size, info->dfu_bcd_version);
+        } else if (out) {
+            fprintf(out, "    other descriptor type 0x%02x length %d\n", t, dl);
+        }
+        p += dl;
+    }
+    if (info->interfaces != info->num_interfaces && out)
+        fprintf(out, "config: note: %d interface descriptors (alternate settings included) for bNumInterfaces=%d\n", info->interfaces, info->num_interfaces);
+    info->valid = 1;
+    return 0;
+}

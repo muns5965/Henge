@@ -101,6 +101,11 @@ jobs:
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
 
+      - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
+        run: |
+          cc -std=gnu11 -Wall -Wextra -o test_usbdesc tests/test_usbdesc.c
+          ./test_usbdesc
+
       - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers
         run: tools/tatsu-test.sh build-curltest
 

@@ -124,7 +124,7 @@ public class MainActivity extends Activity {
         root.addView(vmrunButton);
 
         installerButton = new Button(this);
-        installerButton.setText("ROM 설치기(DFU) 부팅 시험 (vmrun, 30초)");
+        installerButton.setText("ROM 설치기(DFU) 부팅 시험 (VM 고유 ECID, 30초)");
         installerButton.setOnClickListener(v -> runVmrun(true));
         root.addView(installerButton);
 
@@ -574,6 +574,37 @@ public class MainActivity extends Activity {
         runVmrun(false);
     }
 
+    /** The test VM's ECID: made once (random, 2^40 <= ecid < 2^62, like the iOS app), kept in the VM folder and reused on every run.
+     *  An unreadable or malformed file is reported and left alone, never replaced silently. Returns the value, or null with the reason in acc. */
+    private Long vmEcid(File dir, StringBuilder acc) {
+        File f = new File(dir, "vm_ecid.txt");
+        try {
+            if (f.exists()) {
+                String t = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+                if (t.startsWith("ecid=0x") && t.length() > 7 && t.length() <= 23) {
+                    long v = Long.parseUnsignedLong(t.substring(7), 16);
+                    if (v >= (1L << 40) && v < (1L << 62)) return v;
+                }
+                acc.append("VM의 ECID 파일이 손상되어 있어 바꾸지 않고 멈춥니다: ").append(f).append(" (내용 확인 후 직접 지우면 새로 만듭니다)\n");
+                return null;
+            }
+            java.security.SecureRandom rnd = new java.security.SecureRandom();
+            long v;
+            do { v = rnd.nextLong() & ((1L << 62) - 1); } while (v < (1L << 40));
+            File tmp = new File(dir, "vm_ecid.txt.tmp");
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(tmp)) {
+                o.write(String.format("ecid=0x%x\n", v).getBytes(StandardCharsets.UTF_8));
+                o.getFD().sync();
+            }
+            java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            acc.append("이 VM의 ECID를 새로 만들어 저장했습니다.\n");
+            return v;
+        } catch (Exception e) {
+            acc.append("ECID를 읽거나 저장하지 못했습니다: ").append(e).append('\n');
+            return null;
+        }
+    }
+
     /** installer=true boots the ROM in DFU (installer) mode. Both modes use new blank disk/aux files each time and log PSCI calls. */
     private void runVmrun(final boolean installer) {
         if (running) return;
@@ -619,6 +650,12 @@ public class MainActivity extends Activity {
                     if (installer) cmd.add("--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
+                    Long vmEcid = null;
+                    if (installer && !cfg.containsKey("ecid")) {
+                        vmEcid = vmEcid(priv, acc);
+                        if (vmEcid == null) { show(acc.toString()); running = false; setButtons(true); return; }
+                        cfg.put("ecid", String.format("0x%x", vmEcid));
+                    }
                     String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},
                             {"jit_mb", "--jit-mb"}, {"seconds", "--seconds"}, {"log", "--log"}, {"aux_offset", "--aux-offset"}};
                     for (String[] m : map) if (cfg.containsKey(m[0])) { cmd.add(m[1]); cmd.add(cfg.get(m[0])); }
@@ -653,6 +690,18 @@ public class MainActivity extends Activity {
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
+                    if (installer) {
+                        String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
+                        try {
+                            String w = String.format("%016X", Long.decode(want));
+                            java.util.regex.Matcher mm = java.util.regex.Pattern.compile("ECID:([0-9A-Fa-f]{16})").matcher(text);
+                            String got = mm.find() ? mm.group(1).toUpperCase() : null;
+                            acc.append("DFU 문자열 ECID 확인: 설정 ").append(w).append(" / DFU ").append(got == null ? "(읽지 못함)" : got)
+                               .append(w.equals(got) ? " → 일치 (ECID 전달만 확인, Apple 서명 수용은 별개)\n" : " → 불일치 또는 미확인\n");
+                        } catch (NumberFormatException ex) {
+                            acc.append("config.txt의 ecid 값을 해석하지 못했습니다: ").append(want).append('\n');
+                        }
+                    }
                     acc.append("이 출력은 게스트가 부팅했다는 증거가 아닙니다. pc/el/esr 줄과 종료 사유를 확인하세요.\n");
                 }
             } catch (Exception e) {

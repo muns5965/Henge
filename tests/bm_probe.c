@@ -46,26 +46,39 @@ static int scan(const uint8_t *buf, size_t len) {
     return both ? 0 : 2;
 }
 
+static const char *classify(const char *e) {
+    if (strstr(e, "resolve")) return "DNS";
+    if (strstr(e, "certificate") || strstr(e, "TLS") || strstr(e, "SSL")) return "TLS";
+    if (strstr(e, "connect") || strstr(e, "timed out") || strstr(e, "transfer failed")) return "connection";
+    if (strstr(e, "not 206")) return "HTTP status (not 206: Range ignored, file changed, or 403/404)";
+    if (strstr(e, "strong ETag")) return "policy stop (no strong ETag)";
+    if (strstr(e, "limit")) return "limit reached";
+    if (strstr(e, "CRC") || strstr(e, "zip") || strstr(e, "entries") || strstr(e, "no entry")) return "ZIP structure";
+    return "other";
+}
+
 int main(int argc, char **argv) {
     const char *url = DEFAULT_URL, *file = NULL;
     for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "--file") && i + 1 < argc) file = argv[++i]; else url = argv[i]; }
     if (file) {
         FILE *f = fopen(file, "rb"); if (!f) { printf("cannot open %s\n", file); return 3; }
-        static uint8_t b[8 << 20]; size_t n = fread(b, 1, sizeof b, f); fclose(f);
+        static uint8_t b[48 << 20]; size_t n = fread(b, 1, sizeof b, f); fclose(f);
         return scan(b, n);
     }
     RzLimits L; rz_limits_default(&L);
-    L.max_requests = 24; L.max_bytes = 4u << 20; L.require_strong_etag = 1; L.trace = stdout;
+    L.max_requests = 24; L.max_bytes = 4u << 20;
+    L.max_entry_bytes = 48u << 20;   /* the manifest is ~19 MB when inflated (seen on a phone run); the 4 MiB limit that matters is the one on bytes received */ L.require_strong_etag = 1; L.trace = stdout;
     printf("PLAN: Range requests only, at most %u requests and %llu bytes, strong ETag required, BuildManifest.plist only, nothing stored, no TSS\n", L.max_requests, (unsigned long long)L.max_bytes);
     char err[300] = "";
     RemoteZip *z = rz_open(url, &L, err, sizeof err);
     const RzStats *s = z ? rz_stats(z) : NULL;
-    if (!z) { printf("OPEN FAILED: %s\n", err); printf("(a refusal for a missing strong ETag or an unexpected reply is a result of this test, not a verdict on the server)\n"); return 1; }
+    if (!z) { printf("CLASS: %s\n", classify(err)); printf("OPEN FAILED: %s\n", err); printf("(a refusal for a missing strong ETag or an unexpected reply is a result of this test, not a verdict on the server)\n"); return 1; }
     printf("OPEN: ok, archive %llu bytes, strong ETag %s, consistency %s\n", (unsigned long long)s->size, s->strong_etag ? "yes" : "no", s->consistency_weak ? "weak" : "strong");
     uint8_t *d = NULL; size_t n = 0;
-    if (rz_read_entry(z, "BuildManifest.plist", &d, &n, err, sizeof err)) { printf("ENTRY FAILED: %s\nSTATS requests=%u bytes=%llu wire=%llu\n", err, s->requests, (unsigned long long)s->bytes, (unsigned long long)s->wire_bytes); rz_close(z); return 1; }
+    if (rz_read_entry(z, "BuildManifest.plist", &d, &n, err, sizeof err)) { printf("CLASS: %s\nENTRY FAILED: %s\nSTATS requests=%u bytes=%llu wire=%llu\n", classify(err), err, s->requests, (unsigned long long)s->bytes, (unsigned long long)s->wire_bytes); rz_close(z); return 1; }
     printf("ENTRY: BuildManifest.plist %zu bytes (uncompressed)\nSTATS requests=%u bytes=%llu wire=%llu\n", n, s->requests, (unsigned long long)s->bytes, (unsigned long long)s->wire_bytes);
     int rc = scan(d, n);
+    printf("CLASS: %s\n", rc == 0 ? "success: manifest read, chip/board match found" : rc == 2 ? "manifest read, NO identity matches chip/board" : "manifest read, unexpected layout");
     free(d); rz_close(z);
     return rc;
 }

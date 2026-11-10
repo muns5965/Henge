@@ -7,6 +7,7 @@
 int hv_curl_ca_count(const char **where);
 int hv_curl_ca_unparsed(void);
 int hv_curl_tls_completed(void);
+const char *hv_curl_tls_diag(void);
 static size_t bytes, abort_after = 0;
 static int show_headers, discard;
 static size_t wcb(char *p, size_t s, size_t n, void *u) {
@@ -45,6 +46,7 @@ int main(int argc, char **argv) {
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     fprintf(stderr, "TLS_VERIFIED=%d\n", hv_curl_tls_completed());
+    if (hv_curl_tls_diag()[0]) fprintf(stderr, "TLS_DIAG:\n%s", hv_curl_tls_diag());
     fprintf(stderr, "RC=%d HTTP=%ld BYTES=%zu ERR=%s\n", (int)rc, code, bytes, err);
     curl_easy_cleanup(c);
     curl_slist_free_all(h);

@@ -64,10 +64,9 @@ jobs:
           if [ -f build-engine/vmrun ]; then cp build-engine/vmrun android/app/src/main/jniLibs/arm64-v8a/libvmrun.so; fi
           if [ -f build-engine/romextract ]; then cp build-engine/romextract android/app/src/main/jniLibs/arm64-v8a/libromextract.so; fi
           # The HTTP/TLS client that replaces libcurl (host/curl_mbedtls.c) with its test driver: the app's "HTTPS·CA" buttons run it.
-          # No -DHV_ALLOW_CA_ENV here: the shipped copy trusts only the system stores.
+          # A failure here fails the APK: the HTTPS buttons need it. No -DHV_ALLOW_CA_ENV here: the shipped copy trusts only the system stores.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/curltool-build.sh build-curltool \
-            && cp build-curltool/curl_tool android/app/src/main/jniLibs/arm64-v8a/libcurltool.so \
-            || echo "::warning::curl_tool did not build; the HTTPS buttons will say it is missing"
+            && cp build-curltool/curl_tool android/app/src/main/jniLibs/arm64-v8a/libcurltool.so
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake

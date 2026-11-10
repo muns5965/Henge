@@ -128,6 +128,7 @@ S = f"https://localhost:{S_PORT}"
 r = run([S + "/hello"], {"HV_CA_PATH": f"{work}/emptyca"}); check("https refused when no CA can be loaded (no fallback to unchecked)", r["RC"] == "77", r)
 os.makedirs(f"{work}/otherca", exist_ok=True); shutil.copy(other[1], f"{work}/otherca/o.pem")
 r = run([S + "/hello"], {"HV_CA_PATH": f"{work}/otherca"}); check("https refuses an untrusted certificate (VERIFYPEER=0 is ignored)", r["RC"] == "60", r)
+check("untrusted certificate: diagnostics carry flags and the server's certificate", "VERIFY_FLAGS=0x" in r["stderr"] and "CERT depth 0" in r["stderr"] and "subject name" in r["stderr"] and "flags=0x" in r["ERR"], r["stderr"][:400])
 r = run([S + "/hello"], {"HV_CA_PATH": cadir}); check("https works with a trusted CA", r["RC"] == "0" and r["out"] == b"hello world", r)
 r = run([S + "/big"], {"HV_CA_PATH": cadir}); check("https 3 MB body intact", hashlib.sha256(r["out"]).digest() == hashlib.sha256(BIG).digest(), len(r["out"]))
 r = run([S + "/echo", "--post", "k=v"], {"HV_CA_PATH": cadir}); check("https post", r["out"].startswith(b"3:k=v"), r["out"])

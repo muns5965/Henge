@@ -194,11 +194,14 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
         long build = 0;
+        String sha = "?";
         try {
-            build = getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            build = pi.getLongVersionCode();
+            sha = pi.versionName;
         } catch (Exception ignored) {
         }
-        return "빌드 번호: " + build + " (CI 실행 번호; 클수록 최신)\n기기: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+        return "빌드 번호: " + build + " (CI 실행 번호; 클수록 최신, 커밋 " + sha + ")\n기기: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
                 + "Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
                 + "ABI: " + Build.SUPPORTED_ABIS[0] + ", 페이지 크기: " + page + "\n";
     }

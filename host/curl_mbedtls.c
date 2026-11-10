@@ -57,6 +57,8 @@ static pthread_mutex_t ca_mu = PTHREAD_MUTEX_INITIALIZER;
 static mbedtls_x509_crt ca_chain;
 static int ca_state; /* 0 not tried, 1 loaded, -1 none */
 static int ca_count, ca_failed;
+static __thread char tls_diag[12288];
+static __thread size_t chain_len;
 static __thread int tls_done; /* the last request on this thread finished its TLS handshake with a verified certificate */
 static char ca_where[256];
 
@@ -98,6 +100,9 @@ int hv_curl_ca_count(const char **where) {
 
 /* Files in the CA directory that could not be parsed (negative: the directory read itself failed). */
 int hv_curl_ca_unparsed(void) { load_cas(); return ca_state == 1 ? ca_failed : 0; }
+
+/* Why the last certificate check on this thread failed: flags, and every certificate the server sent (subject, issuer, signature, key). Empty otherwise. */
+const char *hv_curl_tls_diag(void) { return tls_diag; }
 
 /* 1 if the last request on this thread completed a TLS handshake whose certificate chain and host name were verified. */
 int hv_curl_tls_completed(void) { return tls_done; }
@@ -169,6 +174,17 @@ static void conn_close(Conn *c) {
     c->fd = -1;
 }
 
+/* Called by mbedtls for every certificate of the chain while it verifies it (leaf first). It only records; the verdict is untouched. */
+static int record_cert(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
+    (void)ctx;
+    size_t left = sizeof tls_diag - chain_len;
+    if (left < 1400) return 0;
+    chain_len += (size_t)snprintf(tls_diag + chain_len, left, "CERT depth %d, flags for it 0x%x:\n", depth, (unsigned)*flags);
+    int n = mbedtls_x509_crt_info(tls_diag + chain_len, sizeof tls_diag - chain_len, "  ", crt);
+    if (n > 0) chain_len += (size_t)n;
+    return 0;
+}
+
 static CURLcode conn_open(Conn *c, int https, const char *host, const char *port) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
@@ -212,6 +228,8 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         return CURLE_SSL_CACERT_BADFILE;
     }
     tls_done = 0;
+    tls_diag[0] = 0;
+    chain_len = 0;
     c->tls = 1;
     mbedtls_ssl_init(&c->ssl);
     mbedtls_ssl_config_init(&c->conf);
@@ -222,6 +240,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
     if (ret == 0) {
         mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED); /* the policy: always */
         mbedtls_ssl_conf_ca_chain(&c->conf, &ca_chain, NULL);
+        mbedtls_ssl_conf_verify(&c->conf, record_cert, NULL);
         mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
         ret = mbedtls_ssl_setup(&c->ssl, &c->conf);
     }
@@ -235,13 +254,26 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         mbedtls_strerror(ret, m, sizeof m);
         uint32_t flags = mbedtls_ssl_get_verify_result(&c->ssl);
         if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED || (flags && flags != 0xFFFFFFFF)) {
-            char v[160] = "";
-            mbedtls_x509_crt_verify_info(v, sizeof v, "", flags);
-            snprintf(c->err, sizeof c->err, "certificate check failed for %.100s: %.100s", host, v[0] ? v : m);
+            char v[512] = "";
+            mbedtls_x509_crt_verify_info(v, sizeof v, "", flags); /* one line per flag, each ending in a newline */
+            for (char *q = v; *q; q++) if (*q == '\n') *q = ';';
+            snprintf(c->err, sizeof c->err, "certificate check failed for %.80s: flags=0x%x %.150s", host, (unsigned)flags, v);
+            /* the whole story goes to the diagnostics buffer, for the person reading the log */
+            /* the chain was recorded by record_cert while mbedtls verified it; put the summary in front */
+            char head[200];
+            int hn = snprintf(head, sizeof head, "VERIFY_FLAGS=0x%x\nCA_COUNT=%d CA_FROM=%s\n", (unsigned)flags, ca_count, ca_where);
+            if (hn > 0 && chain_len + (size_t)hn < sizeof tls_diag) {
+                memmove(tls_diag + hn, tls_diag, chain_len + 1);
+                memcpy(tls_diag, head, (size_t)hn);
+                chain_len += (size_t)hn;
+            }
+            if (chain_len == (size_t)hn || chain_len == 0) snprintf(tls_diag + chain_len, sizeof tls_diag - chain_len, "(no certificate was presented)\n");
             conn_close(c);
             return CURLE_PEER_FAILED_VERIFICATION;
         }
-        snprintf(c->err, sizeof c->err, "TLS handshake with %.100s failed: %.80s", host, m);
+        char m2[160];
+        mbedtls_strerror(ret, m2, sizeof m2);
+        snprintf(c->err, sizeof c->err, "TLS handshake with %.100s failed: %.80s", host, m2);
         conn_close(c);
         return CURLE_SSL_CONNECT_ERROR;
     }

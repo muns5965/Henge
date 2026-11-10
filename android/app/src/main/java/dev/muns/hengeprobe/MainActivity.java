@@ -199,6 +199,16 @@ public class MainActivity extends Activity {
         appleButton.setOnClickListener(v -> runTlsCheck(true));
         root.addView(appleButton);
 
+        final Button bmButton = new Button(this);
+        bmButton.setText("BuildManifest 부분 조회 (Apple CDN, Range 요청만)");
+        bmButton.setOnClickListener(v -> runBuildManifestProbe());
+        root.addView(bmButton);
+        final TextView bmNote = new TextView(this);
+        bmNote.setText("macOS 15.6.1 IPSW(약 16 GiB)에서 BuildManifest.plist만 Range 요청으로 읽습니다(최대 24회·4 MiB, 강한 ETag 필수, 파일 저장 없음). "
+                + "전체 다운로드·TSS 요청·복원은 하지 않습니다. 결과(요청 범위·응답 코드·칩/보드 일치)가 이 화면에 나옵니다.");
+        bmNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(bmNote);
+
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
         toggle.setOnClickListener(v -> {
@@ -920,6 +930,24 @@ public class MainActivity extends Activity {
                 }
                 acc.append("\nHTTP 4xx/5xx여도 TLS가 통과면 연결·인증서 쪽은 정상입니다. 이 시험은 복원이나 서명 요청 성공이 아닙니다.\n");
             }
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    /** Runs libbmprobe.so: the approved BuildManifest-only partial read (see tests/bm_probe.c for the fixed limits). */
+    private void runBuildManifestProbe() {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        final String libDir = getApplicationInfo().nativeLibraryDir;
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder("BuildManifest 부분 조회 중… (최대 1분)\n");
+            show(acc.toString());
+            File exe = new File(libDir, "libbmprobe.so");
+            if (!exe.exists()) acc.append("libbmprobe.so가 이 APK에 없습니다.\n");
+            else acc.append(runTool(exe));
             show(acc.toString());
             running = false;
             setButtons(true);

@@ -28,6 +28,7 @@ on:
       - tools/tatsu-test.sh
       - tools/tss-dryrun-test.sh
       - tools/remote-zip-test.sh
+      - tools/bmprobe-build.sh
       - tools/check-no-test-flags.sh
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
@@ -137,6 +138,13 @@ jobs:
 
       - name: Remote ZIP64 partial reader (BuildManifest.plist) against local Range servers (a 5 GiB virtual archive; nothing leaves the runner)
         run: CC=clang tools/remote-zip-test.sh build-rz
+
+      - name: BuildManifest probe builds and scans a local manifest for the virtual machine's chip/board (no network)
+        run: |
+          CC=clang tools/bmprobe-build.sh build-bmp
+          python3 -c "import plistlib;i={'UniqueBuildID':b'x','ApChipID':'0xfe00','ApBoardID':'0x20','Info':{}};plistlib.dump({'BuildIdentities':[i,dict(i,ApBoardID='0x22')]},open('build-bmp/bm.plist','wb'))"
+          build-bmp/bm_probe --file build-bmp/bm.plist | tee build-bmp/bm.out
+          grep -q "1 with chip and board" build-bmp/bm.out
 
       - name: Look at the TSS server's certificate chain with our client (informational; the chain does not depend on the device)
         continue-on-error: true

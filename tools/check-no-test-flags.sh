@@ -13,7 +13,7 @@ CC=${CC:-cc}; W=${1:-build-flagcheck}; mkdir -p "$W"
 fail=0
 bad() { echo "FAIL $*"; fail=1; }
 # files that build what ships (the test scripts tatsu-test.sh, curl-test.sh, download-test.sh and the engine workflow's test steps are the places allowed to use them)
-for f in tools/restore-selftest-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh \
+for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh \
          android/app/src/main/cpp/CMakeLists.txt android/app/build.gradle .github/workflows/android-apk.yml .github/workflows/build-henge.yml ios/project.yml Makefile; do
   [ -f "$f" ] || continue
   if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only http switch (HV_TSS_/HV_RZ_ALLOW_HTTP_TEST)"; fi

@@ -14,7 +14,10 @@
      The committed prefix is read again and hashed before the transfer continues, so the final SHA-256 covers every byte of the file.
    - free space is checked before the first request (remaining bytes + a reserve); the caller may only lower the figure, never raise it.
    - stop_after: pause (not an error) once that many bytes are committed; .part and metadata stay and a later run continues.
-   - cancel: *cancel != 0 ends the transfer at the next chunk; the state is flushed first. */
+   - reconnects: a dropped connection or a transient answer (408/429/5xx) is retried from the committed byte, with a doubling wait (bounded) and the same checks on
+     every reply; the running hash is kept, nothing is read again. Progress resets the count of failures in a row; an untrustworthy answer (200, other range, ETag/size
+     change, 4xx) is never retried. Without progress the run ends with exit 5 after max_retries reconnects.
+   - cancel: *cancel != 0 ends the transfer (or a reconnect wait) at once; the state is flushed first; exit 8. */
 #ifndef HV_IPSW_DL_H
 #define HV_IPSW_DL_H
 #include <stddef.h>
@@ -32,6 +35,8 @@ typedef struct {
     uint64_t reserve;              /* default 512 MiB kept free beyond the remaining bytes */
     uint64_t commit_every;         /* default 16 MiB: bytes between fsync + metadata */
     long connect_timeout_s;        /* default 20 */
+    unsigned max_retries;          /* default 6: reconnects in a row WITHOUT progress before giving up (any progress resets the count); 0 = never reconnect */
+    unsigned retry_base_ms;        /* default 2000: wait before a reconnect, doubled per failure in a row (at most x32, at most 60 s) */
     const volatile int *cancel;    /* optional */
     FILE *out;                     /* progress and log lines, prefixed "dl: " */
 } DlCfg;
@@ -41,9 +46,10 @@ enum {
     DL_REFUSED = 2,         /* nothing was sent: bad arguments, no space, another downloader, URL policy */
     DL_STATE = 3,           /* nothing was sent: the files on disk are inconsistent; no automatic resume */
     DL_SERVER = 4,          /* the server's answer cannot be trusted (200, wrong range, ETag/size changed, 4xx); .part kept */
-    DL_INTERRUPTED = 5,     /* network, timeout, disk write or cancel; .part and metadata are consistent; run again to resume */
+    DL_INTERRUPTED = 5,     /* network trouble that outlasted the reconnects, a disk write error; .part and metadata are consistent; run again to resume */
     DL_HASH_MISMATCH = 6,   /* complete but SHA-256 differs; .part kept, nothing installed */
-    DL_PAUSED = 7           /* stop_after reached; run again to continue */
+    DL_PAUSED = 7,          /* stop_after reached; run again to continue */
+    DL_CANCELLED = 8        /* stopped on request (SIGTERM / cancel flag); state flushed, run again to continue */
 };
 
 void dl_cfg_default(DlCfg *c);

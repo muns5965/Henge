@@ -16,7 +16,7 @@ final class IpswDownload {
         void onLine(String line);
     }
 
-    /** Result of a run: the program's exit code (0 done, 2 refused, 3 state, 4 server, 5 interrupted, 6 hash mismatch, 7 paused) and its last RESULT text. */
+    /** Result of a run: the program's exit code (0 done, 2 refused, 3 state, 4 server, 5 interrupted, 6 hash mismatch, 7 paused, 8 stopped on request) and its last RESULT text. */
     static final class Result {
         int code = -1;
         String text = "";
@@ -32,12 +32,13 @@ final class IpswDownload {
         this.dir = dir;
     }
 
-    /** Blocking; call from a worker thread. stopAfter = 0 is not allowed by this stage's program (it needs --stop-after). */
+    /** Blocking; call from a worker thread. stopAfter = 0: download to the end (--full); otherwise pause at that many bytes. */
     Result run(long stopAfter, Listener l) {
         List<String> cmd = new ArrayList<>();
         cmd.add(exe.getAbsolutePath());
         cmd.add("--dir"); cmd.add(dir.getAbsolutePath());
         if (stopAfter > 0) { cmd.add("--stop-after"); cmd.add(Long.toString(stopAfter)); }
+        else cmd.add("--full");   // to the end; the program then checks the SHA-256 and installs the file only if it matches
         return exec(cmd, l);
     }
 

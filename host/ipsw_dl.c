@@ -43,7 +43,7 @@ static void setmsg(char *dst, size_t cap, const char *fmt, ...) {
 
 void dl_cfg_default(DlCfg *c) {
     memset(c, 0, sizeof *c);
-    c->reserve = 512ULL << 20; c->commit_every = 16ULL << 20; c->connect_timeout_s = 20;
+    c->reserve = 512ULL << 20; c->commit_every = 16ULL << 20; c->connect_timeout_s = 20; c->max_retries = 6; c->retry_base_ms = 2000;
 }
 
 static int url_ok(const char *u) {
@@ -280,6 +280,64 @@ static int finalize(Dl *d, char *msg, size_t cap) {
     return DL_DONE;
 }
 
+enum { TR_COMPLETE, TR_PAUSED, TR_CANCEL, TR_SERVER, TR_RETRY, TR_FATAL };
+/* One request from d->committed on. msg = the reason. TR_RETRY: network trouble or a transient server answer; the state on disk is consistent and the next request may
+   follow. TR_SERVER: the answer cannot be trusted (never retried). TR_FATAL: disk or internal problem (never retried). The hash keeps running across requests, so a
+   reconnect does not read the file again. */
+static int attempt(Dl *d, char *msg, size_t cap) {
+    const DlCfg *c = d->c;
+    uint64_t committed = d->committed;
+    if (lseek(d->fd, (off_t)committed, SEEK_SET) < 0) { setmsg(msg, cap, "cannot seek (%s)", strerror(errno)); return TR_FATAL; }
+    Rq r; memset(&r, 0, sizeof r);
+    r.d = d; r.start = committed; r.identity = 1;
+    CURL *h = curl_easy_init();
+    if (!h) { setmsg(msg, cap, "curl init failed"); return TR_FATAL; }
+    char rng[64], ifr[220], errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0;
+    snprintf(rng, sizeof rng, "Range: bytes=%llu-", LLU(committed));
+    struct curl_slist *hd = curl_slist_append(NULL, rng);
+    hd = curl_slist_append(hd, "Accept-Encoding: identity");
+    if (d->etag[0]) { snprintf(ifr, sizeof ifr, "If-Range: %s", d->etag); hd = curl_slist_append(hd, ifr); }
+    lg(d, "REQUEST %s%s", rng + 7, d->etag[0] ? " (If-Range with the stored strong ETag)" : " (first request, ETag not yet known)");
+    curl_easy_setopt(h, CURLOPT_URL, c->url);
+    curl_easy_setopt(h, CURLOPT_HTTPHEADER, hd);
+    curl_easy_setopt(h, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, (curl_write_callback)hdr_cb);
+    curl_easy_setopt(h, CURLOPT_HEADERDATA, &r);
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, (curl_write_callback)body_cb);
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, &r);
+    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)xfer_cb);
+    curl_easy_setopt(h, CURLOPT_XFERINFODATA, &r);
+    curl_easy_setopt(h, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, c->connect_timeout_s ? c->connect_timeout_s : 20L);
+    curl_easy_setopt(h, CURLOPT_TIMEOUT, 0L);   /* no limit on the whole transfer; the stand-in's idle limit (60 s) applies */
+    curl_easy_setopt(h, CURLOPT_USERAGENT, "Henge-ipsw-dl/1");
+    CURLcode crc = curl_easy_perform(h);
+    curl_slist_free_all(hd); curl_easy_cleanup(h);
+    if (!r.refused && crc == CURLE_OK && !r.headers_done) finish_headers(&r);
+    if (d->etag[0]) commit(d);      /* leave a consistent state behind, whatever happened */
+    lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(c->expect_size));
+
+    if (r.io_error) { setmsg(msg, cap, "disk write failed (%s): the partial download is kept", strerror(r.io_errno)); return TR_FATAL; }
+    if (d->meta_broken) { setmsg(msg, cap, "the state could not be saved to disk: the partial download is kept"); return TR_FATAL; }
+    if (r.refused) { setmsg(msg, cap, "%s", r.reason); return r.transient ? TR_RETRY : TR_SERVER; }
+    if (r.cancelled) { setmsg(msg, cap, "stopped on request at %llu bytes; run again to continue", LLU(d->committed)); return TR_CANCEL; }
+    if (r.paused) { setmsg(msg, cap, "paused at %llu bytes as planned; run again to continue", LLU(d->committed)); return TR_PAUSED; }
+    if (crc != CURLE_OK) { setmsg(msg, cap, "transfer interrupted at %llu bytes: %s", LLU(d->committed), errbuf[0] ? errbuf : "network error"); return TR_RETRY; }
+    if (d->committed != c->expect_size) { setmsg(msg, cap, "the server closed the connection at %llu of %llu bytes", LLU(d->committed), LLU(c->expect_size)); return TR_RETRY; }
+    return TR_COMPLETE;
+}
+/* sleeps in slices; returns 1 when a cancel arrives */
+static int wait_ms(const Dl *d, long ms) {
+    while (ms > 0) {
+        if (d->c->cancel && *d->c->cancel) return 1;
+        long k = ms < 100 ? ms : 100;
+        usleep((useconds_t)k * 1000); ms -= k;
+    }
+    return d->c->cancel && *d->c->cancel;
+}
+
 int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
     Dl dl, *d = &dl; int rc;
     if (msg && cap) msg[0] = 0;
@@ -345,48 +403,31 @@ int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
     mbedtls_sha256_starts(&d->sha, 0);
     if (committed) { lg(d, "re-reading %llu committed bytes", LLU(committed)); if (hash_prefix(d, d->fd, committed) != 0) { setmsg(msg, cap, "the .part file cannot be read back: not resuming automatically"); rc = DL_STATE; goto out; } }
     if (committed == c->expect_size) { rc = finalize(d, msg, cap); goto out; }
-    if (lseek(d->fd, (off_t)committed, SEEK_SET) < 0) { setmsg(msg, cap, "cannot seek (%s)", strerror(errno)); rc = DL_STATE; goto out; }
 
-    /* 6. the transfer */
-    Rq r; memset(&r, 0, sizeof r);
-    r.d = d; r.start = committed; r.identity = 1;
-    CURL *h = curl_easy_init();
-    if (!h) { setmsg(msg, cap, "curl init failed"); rc = DL_INTERRUPTED; goto out; }
-    char rng[64], ifr[220], errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0;
-    snprintf(rng, sizeof rng, "Range: bytes=%llu-", LLU(committed));
-    struct curl_slist *hd = curl_slist_append(NULL, rng);
-    hd = curl_slist_append(hd, "Accept-Encoding: identity");
-    if (d->etag[0]) { snprintf(ifr, sizeof ifr, "If-Range: %s", d->etag); hd = curl_slist_append(hd, ifr); }
-    lg(d, "REQUEST %s%s", rng + 7, d->etag[0] ? " (If-Range with the stored strong ETag)" : " (first request, ETag not yet known)");
-    curl_easy_setopt(h, CURLOPT_URL, c->url);
-    curl_easy_setopt(h, CURLOPT_HTTPHEADER, hd);
-    curl_easy_setopt(h, CURLOPT_HTTPGET, 1L);
-    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, (curl_write_callback)hdr_cb);
-    curl_easy_setopt(h, CURLOPT_HEADERDATA, &r);
-    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, (curl_write_callback)body_cb);
-    curl_easy_setopt(h, CURLOPT_WRITEDATA, &r);
-    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)xfer_cb);
-    curl_easy_setopt(h, CURLOPT_XFERINFODATA, &r);
-    curl_easy_setopt(h, CURLOPT_ERRORBUFFER, errbuf);
-    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, c->connect_timeout_s ? c->connect_timeout_s : 20L);
-    curl_easy_setopt(h, CURLOPT_TIMEOUT, 0L);   /* no limit on the whole transfer; the stand-in's idle limit (60 s) applies */
-    curl_easy_setopt(h, CURLOPT_USERAGENT, "Henge-ipsw-dl/1");
-    CURLcode crc = curl_easy_perform(h);
-    curl_slist_free_all(hd); curl_easy_cleanup(h);
-    if (!r.refused && crc == CURLE_OK && !r.headers_done) finish_headers(&r);
-    if (d->etag[0]) commit(d);      /* leave a consistent state behind, whatever happened */
-    lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(c->expect_size));
-
-    if (r.io_error) { setmsg(msg, cap, "disk write failed (%s): the partial download is kept", strerror(r.io_errno)); rc = DL_INTERRUPTED; goto out; }
-    if (d->meta_broken) { setmsg(msg, cap, "the state could not be saved to disk: the partial download is kept"); rc = DL_INTERRUPTED; goto out; }
-    if (r.refused) { setmsg(msg, cap, "%s", r.reason); rc = r.transient ? DL_INTERRUPTED : DL_SERVER; goto out; }
-    if (r.cancelled) { setmsg(msg, cap, "stopped on request at %llu bytes; run again to continue", LLU(d->committed)); rc = DL_INTERRUPTED; goto out; }
-    if (r.paused) { setmsg(msg, cap, "paused at %llu bytes as planned; run again to continue", LLU(d->committed)); rc = DL_PAUSED; goto out; }
-    if (crc != CURLE_OK) { setmsg(msg, cap, "transfer interrupted at %llu bytes: %s", LLU(d->committed), errbuf[0] ? errbuf : "network error"); rc = DL_INTERRUPTED; goto out; }
-    if (d->committed != c->expect_size) { setmsg(msg, cap, "the server closed the connection at %llu of %llu bytes", LLU(d->committed), LLU(c->expect_size)); rc = DL_INTERRUPTED; goto out; }
-    rc = finalize(d, msg, cap);
+    /* 6. the transfer, with bounded reconnects */
+    {
+        int fails = 0, total = 0;
+        for (;;) {
+            uint64_t before = d->committed;
+            int tr = attempt(d, msg, cap);
+            if (tr == TR_COMPLETE) { rc = finalize(d, msg, cap); break; }
+            if (tr == TR_PAUSED) { rc = DL_PAUSED; break; }
+            if (tr == TR_CANCEL) { rc = DL_CANCELLED; break; }
+            if (tr == TR_SERVER) { rc = DL_SERVER; break; }
+            if (tr == TR_FATAL) { rc = DL_INTERRUPTED; break; }
+            if (d->committed > before) fails = 0; else fails++;      /* progress resets the count */
+            if (c->max_retries == 0) { rc = DL_INTERRUPTED; break; }
+            if (fails > (int)c->max_retries) {
+                char why2[300]; snprintf(why2, sizeof why2, "%s", msg);
+                setmsg(msg, cap, "gave up after %d attempts in a row without progress; the partial download is kept (%s)", fails, why2);
+                rc = DL_INTERRUPTED; break;
+            }
+            long base = c->retry_base_ms ? (long)c->retry_base_ms : 2000, delay = base << (fails > 0 ? (fails - 1 > 5 ? 5 : fails - 1) : 0);
+            if (delay > 60000 && base <= 60000) delay = 60000;
+            lg(d, "RECONNECT %d (%d in a row without progress, %llu of %llu bytes): %s; next request in %ld ms", ++total, fails, LLU(d->committed), LLU(c->expect_size), msg, delay);
+            if (wait_ms(d, delay)) { setmsg(msg, cap, "stopped on request at %llu bytes; run again to continue", LLU(d->committed)); rc = DL_CANCELLED; break; }
+        }
+    }
 out:
     mbedtls_sha256_free(&d->sha);
     cleanup(d);

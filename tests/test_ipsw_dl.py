@@ -24,6 +24,10 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         rng, ifr = self.headers.get("Range"), self.headers.get("If-Range")
         REQS.append((self.path, rng, ifr))
+        if M.get("status_seq"):
+            st = M["status_seq"].pop(0)
+            if st:
+                self.send_response(st); self.send_header("Content-Length", "0"); self.send_header("Connection", "close"); self.end_headers(); return
         if "status" in M:
             self.send_response(M["status"]); self.send_header("Content-Length", "0"); self.send_header("Connection", "close"); self.end_headers(); return
         big = self.path.startswith("/big")
@@ -45,6 +49,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(body_len)); self.send_header("Connection", "close"); self.end_headers()
         sent = 0; chunk = 256 * 1024
         drop = M.pop("drop_once", None) if "drop_once" in M else None
+        if M.get("drop_seq"): drop = M["drop_seq"].pop(0)
+        elif M.get("drop_each") is not None: drop = M["drop_each"]
         try:
             while sent < body_len:
                 n = min(chunk, body_len - sent)
@@ -68,8 +74,9 @@ BURL = f"http://127.0.0.1:{srv.server_address[1]}/big.ipsw"
 
 def fresh(name):
     d = os.path.join(work, name); shutil.rmtree(d, ignore_errors=True); os.makedirs(d); M.clear(); del REQS[:]; return d
-def args(d, *extra, url=URL, size=N, sha=SHA, stop=None, cap=None, reserve=1 << 20):
-    a = ["--dir", d, "--url", url, "--size", str(size), "--sha256", sha, "--name", "t.ipsw", "--reserve", str(reserve), "--commit-every", str(1 << 20)]
+def args(d, *extra, url=URL, size=N, sha=SHA, stop=None, cap=None, reserve=1 << 20, retries=0, base=20):
+    a = ["--dir", d, "--url", url, "--size", str(size), "--sha256", sha, "--name", "t.ipsw", "--reserve", str(reserve), "--commit-every", str(1 << 20),
+         "--retries", str(retries), "--retry-base-ms", str(base)]
     if stop: a += ["--stop-after", str(stop)]
     if cap is not None: a += ["--avail-cap", str(cap)]
     return a + list(extra)
@@ -207,7 +214,7 @@ time.sleep(0.5); p.send_signal(signal.SIGTERM)
 try: o, _ = p.communicate(timeout=15)
 except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
 ps = fsize(P(d, ".part"))
-check("SIGTERM during the transfer: exit 5, the state is flushed and consistent", p.returncode == 5 and ps and committed(d) == ps, (p.returncode, ps, committed(d), o[-200:]))
+check("SIGTERM during the transfer: exit 8 (stopped on request, not a network error), the state is flushed and consistent", p.returncode == 8 and ps and committed(d) == ps, (p.returncode, ps, committed(d), o[-200:]))
 M.clear(); out, rc, _ = run(args(d))
 check("  and the download resumes and verifies", rc == 0 and read(P(d)) == DATA, (rc, out[-300:]))
 
@@ -228,14 +235,53 @@ t0 = time.time(); out, rc, _ = run(args(d, url=BURL, size=BIG_TOTAL, sha=bsha), 
 check("a 4.5 GiB prefix already on disk: Range 'bytes=4831838208-', the tail is fetched, the SHA-256 over all %.1f GiB verifies" % (BIG_TOTAL / 2**30),
       rc == 0 and REQS and REQS[-1][1] == f"bytes={BIG_PRE}-" and os.path.getsize(P(d)) == BIG_TOTAL, (rc, REQS, out[-400:]))
 
-# ---- 12. the shipped build ----
-d = fresh("t12"); n = len(REQS)
+# ---- 12. reconnects ----
+d = fresh("t12a"); M["drop_seq"] = [3 << 20, 4 << 20, 5 << 20]
+out, rc, _ = run(args(d, retries=3))
+starts = [int(re.match(r"bytes=(\d+)-", q[1])[1]) for q in REQS]
+check("three dropped connections in one run: reconnected each time from the committed byte, completed and verified, the file equals the original",
+      rc == 0 and read(P(d)) == DATA and len(REQS) == 4 and starts[0] == 0 and all(starts[i] > starts[i - 1] for i in range(1, 4)) and all(q[2] == '"e1"' for q in REQS[1:]), (rc, REQS, out[-500:]))
+check("  a reconnect does not read the file again (one 're-reading' only at most, none on a fresh start)", out.count("re-reading") == 0 and out.count("RECONNECT") == 3, out[-600:])
+d = fresh("t12b"); M["drop_each"] = 1 << 20
+out, rc, _ = run(args(d, retries=2))
+check("a drop after every 1 MiB (25 in a row): progress resets the count, so it completes with 2 retries allowed", rc == 0 and read(P(d)) == DATA and len(REQS) >= 25, (rc, len(REQS), out[-300:]))
+d = fresh("t12c"); M["drop_each"] = 0
+out, rc, _ = run(args(d, retries=3))
+check("a server that never delivers a byte: gives up after 3 reconnects (4 requests), exit 5, nothing installed, the state is kept", rc == 5 and len(REQS) == 4 and "gave up" in out and fsize(P(d)) is None, (rc, len(REQS), out[-300:]))
+d = fresh("t12d"); M["status_seq"] = [503, 503, None]
+out, rc, _ = run(args(d, retries=3))
+check("503, 503, then the file: retried and completed", rc == 0 and read(P(d)) == DATA and len(REQS) == 3, (rc, len(REQS), out[-300:]))
+d = fresh("t12e"); M["drop_seq"] = [3 << 20]
+def flip_after_first():   # the ETag changes right after the first request
+    for _ in range(300):
+        if REQS: time.sleep(0.4); M["etag"] = '"e2"'; return
+        time.sleep(0.02)
+threading.Thread(target=flip_after_first, daemon=True).start()
+out, rc, _ = run(args(d, retries=3, base=1500))
+check("the file changes on the server between two requests: the reconnect sees a 200, ends with exit 4 and is not retried again, .part kept", rc == 4 and len(REQS) == 2 and fsize(P(d)) is None and fsize(P(d, ".part")) and "200" in out, (rc, len(REQS), out[-400:]))
+d = fresh("t12f"); M["drop_seq"] = [3 << 20]
+out, rc, _ = run(args(d, retries=3, base=100))
+check("(control) a single drop with reconnects allowed completes", rc == 0 and read(P(d)) == DATA, (rc, out[-300:]))
+d = fresh("t12g"); M["drop_each"] = 0
+p = subprocess.Popen([tool] + args(d, retries=5, base=5000), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+for _ in range(100):
+    if len(REQS) >= 1: break
+    time.sleep(0.05)
+time.sleep(0.6); t0 = time.time(); p.send_signal(signal.SIGTERM)
+try: o, _ = p.communicate(timeout=10)
+except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
+check("SIGTERM during a reconnect wait: exit 8 within a second, no further request", p.returncode == 8 and time.time() - t0 < 2 and len(REQS) == 1, (p.returncode, time.time() - t0, len(REQS), o[-200:]))
+
+# ---- 13. the shipped build ----
+d = fresh("t13"); n = len(REQS)
 out, rc, _ = run(["--dir", d], t=shipped)
-check("shipped build without --stop-after: refused, nothing sent ('a full download is not enabled')", rc == 2 and "not enabled" in out, (rc, out))
-out, rc, _ = run(["--dir", d, "--stop-after", str(2 << 30)], t=shipped)
-check("shipped build with a stop point above 1 GiB: refused", rc == 2 and "not enabled" in out, (rc, out))
+check("shipped build without --full or --stop-after: refused, nothing sent", rc == 2 and "nothing to do" in out, (rc, out))
+out, rc, _ = run(["--dir", d, "--full", "--stop-after", "1000"], t=shipped)
+check("shipped build: --full and --stop-after together are refused", rc == 2 and "exclude each other" in out, (rc, out))
 out, rc, _ = run(["--dir", d, "--stop-after", "1000", "--url", URL], t=shipped)
 check("shipped build has no --url (or any other test argument)", rc == 2 and "unknown argument" in out, (rc, out))
+out, rc, _ = run(["--dir", d, "--stop-after", "1000", "--retries", "9"], t=shipped)
+check("shipped build has no --retries / --retry-base-ms either", rc == 2 and "unknown argument" in out, (rc, out))
 st = subprocess.run(["strings", shipped], capture_output=True).stdout.decode()
 check("shipped binary: compiled-in Apple URL and SHA-256, no loopback allowance", "updates.cdn-apple.com" in st and "3d87686b691ac765" in st and "127.0.0.1" not in st, "")
 check("test binary does contain the loopback allowance (so the check above is not vacuous)", "127.0.0.1" in subprocess.run(["strings", tool], capture_output=True).stdout.decode(), "")

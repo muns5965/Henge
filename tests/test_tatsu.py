@@ -69,7 +69,7 @@ check("libtatsu's headers arrive (Content-type, Cache-Control, User-Agent) and '
 out, err, _ = run(f"http://127.0.0.1:{P}/chunked")
 check("a chunked reply is reassembled for libtatsu", "RESULT: plist" in out and "ApImg4Ticket" in out, (out, err))
 out, err, dt = run(f"http://127.0.0.1:{P}/rejected")
-check("a TSS error reply (STATUS=8) gives NULL and the server's message reaches the log", "RESULT: null" in out and "isn't eligible" in err, (out, err))
+check("a TSS error reply (STATUS=8) gives NULL; the server's text does not reach the log (it can echo identifiers)", "RESULT: null" in out and "isn't eligible" not in err and "TSS server returned" not in err, (out, err))
 
 # TLS: a server whose certificate is not trusted. libtatsu retries 15 times with 2 s sleeps; the message from our client must reach its log.
 def mkcert(name, cn):
@@ -86,8 +86,8 @@ check("https TSS reply over a trusted certificate", "RESULT: plist" in out, (out
 os.makedirs(f"{work}/tssemptyca", exist_ok=True)
 shutil.copy(mkcert("tssother", "other.example")[1], f"{work}/tssemptyca/o.pem")
 out, err, dt = run(f"https://localhost:{PT}/ok", {"HV_CA_PATH": f"{work}/tssemptyca"})
-check("untrusted certificate: libtatsu stops at once (no retry, no other host) and the certificate error reaches its log",
-      "RESULT: null" in out and "certificate check failed" in err and "not retrying" in err and dt < 8, (out, err[-400:], dt))
+check("untrusted certificate: libtatsu stops at once (no retry, no other host); its log names only the curl code, no error text",
+      "RESULT: null" in out and "not retrying (curl" in err and dt < 8, (out, err[-400:], dt))
 # host name mismatch: the certificate is trusted but is for another name
 os.makedirs(f"{work}/tssmism", exist_ok=True)
 cm = mkcert("tssmismatch", "other.example"); shutil.copy(cm[1], f"{work}/tssmism/m.pem")

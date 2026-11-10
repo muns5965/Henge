@@ -99,11 +99,13 @@ int hv_tss_probe_core(const HvTssProbeCfg *c, FILE *out) {
         free(t);
         plist_free(resp);
     } else {
+        /* The diagnosis is a fixed vocabulary (attempts, HTTP code, STATUS number, a MESSAGE_CLASS chosen by this tool); no server text is in it. */
         const char *d = tss_last_diag();
-        const char *cls = strstr(d, "transport error") ? "transport (DNS/TLS/connection/timeout): says nothing about signing"
-                        : strstr(d, "STATUS=") ? "the server answered and refused or rejected this request (see STATUS/MESSAGE; not a verdict beyond this one request)"
-                        : strstr(d, "without STATUS") ? "unexpected reply (not a TSS answer)" : "no usable reply";
-        fprintf(out, P "CLASS: %s\n" P "detail: %s\n", cls, d);
+        const char *cls = strstr(d, "TRANSPORT:") ? "transport (DNS/TLS/connection/timeout): says nothing about signing"
+                        : strstr(d, "TSS_STATUS:") ? "the server answered and refused or rejected this request (not a verdict beyond this one request; MESSAGE_CLASS is this tool's guess)"
+                        : strstr(d, "NOT_A_TSS_REPLY") ? "unexpected reply (not a TSS answer)"
+                        : strstr(d, "SUCCESS_BUT_NOT_A_PLIST") ? "server said SUCCESS but the reply was not a plist" : "no usable reply";
+        fprintf(out, P "CLASS: %s\n" P "%s\n", cls, d);
     }
     fprintf(out, P "done. Nothing was stored. Local policy and recovery-OS requests, and everything after them, were not tried.\n");
     plist_free(req); plist_free(p); plist_free(root);

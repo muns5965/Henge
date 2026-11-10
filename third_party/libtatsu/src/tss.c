@@ -1747,33 +1747,67 @@ static int tss_curl_error_retryable(CURLcode rc)
 #define TSS_HTTPS_MAX_ATTEMPTS 6
 #define TSS_HTTPS_MAX_SECONDS 150
 
-/* Controls and a scrubbed diagnosis for the Android TSS probe (host/tss_probe_core.c). Only in this build flavour. */
+/* Controls and a diagnosis for the Android TSS probe (host/tss_probe_core.c). Only in this build flavour.
+   The diagnosis is built from a fixed vocabulary: numbers the library itself measured (attempts, HTTP code, curl code), the server's STATUS
+   number when it is a small plain number, and a MESSAGE_CLASS chosen by this code. No text from the server (MESSAGE, the start of an unknown
+   reply, curl's error text) is ever copied into it, so nothing the server echoes (an ECID, a nonce, a ticket fragment) can reach a log. */
 static int tss_max_attempts = TSS_HTTPS_MAX_ATTEMPTS;
 static long tss_connect_s = 20, tss_total_s = 60;
-static char tss_diag[240];
+static char tss_diag[200];
 void tss_set_max_attempts(int n) { if (n >= 1 && n <= TSS_HTTPS_MAX_ATTEMPTS) tss_max_attempts = n; }
 void tss_set_timeouts(long connect_s, long total_s) { if (connect_s > 0) tss_connect_s = connect_s; if (total_s > 0) tss_total_s = total_s; }
 const char* tss_last_diag(void) { return tss_diag; }
-/* Printable ASCII only; any run of 6+ digits or 12+ hex digits (an ECID, a nonce, a ticket fragment) becomes '#'. */
+
+/* Case-insensitive search of needle inside s[0..n) without copying s. */
+static int tss_span_has(const char* s, size_t n, const char* needle)
+{
+	size_t m = strlen(needle);
+	for (size_t i = 0; i + m <= n; i++)
+		if (!strncasecmp(s + i, needle, m)) return 1;
+	return 0;
+}
+/* "eligible" only counts when it is negated: "not eligible", "isn't eligible" (also URL-encoded), "ineligible". A bare "eligible" does not. */
+static int tss_span_not_eligible(const char* s, size_t n)
+{
+	const char* w = "eligible";
+	for (size_t i = 0; i + 8 <= n; i++) {
+		if (strncasecmp(s + i, w, 8)) continue;
+		if (i >= 2 && !strncasecmp(s + i - 2, "in", 2)) return 1;                        /* ineligible */
+		if (i >= 4 && !strncasecmp(s + i - 4, "not ", 4)) return 1;                      /* not eligible */
+		if (i >= 4 && !strncasecmp(s + i - 4, "n't ", 4)) return 1;                      /* isn't eligible */
+		if (i >= 3 && !strncasecmp(s + i - 3, "nt ", 3)) return 1;                        /* isnt eligible */
+		if (i >= 6 && !strncasecmp(s + i - 6, "n%27t ", 6)) return 1;                    /* isn%27t eligible */
+	}
+	return 0;
+}
+static const char* tss_message_class(const char* msg, size_t n)
+{
+	if (tss_span_not_eligible(msg, n)) return "NOT_ELIGIBLE";
+	int mal = tss_span_has(msg, n, "malformed"), internal = tss_span_has(msg, n, "internal error");
+	if (mal && internal) return "MALFORMED_OR_INTERNAL";
+	if (mal) return "MALFORMED";
+	if (internal) return "SERVER_INTERNAL";
+	return "UNKNOWN";
+}
+static const char* tss_curl_class(CURLcode rc)
+{
+	switch (rc) {
+	case CURLE_COULDNT_RESOLVE_HOST: return "DNS";
+	case CURLE_COULDNT_CONNECT: return "CONNECT";
+	case CURLE_OPERATION_TIMEDOUT: return "TIMEOUT";
+	case CURLE_GOT_NOTHING: case CURLE_SEND_ERROR: case CURLE_RECV_ERROR: return "IO";
+	case CURLE_UNSUPPORTED_PROTOCOL: return "POLICY_REFUSED";
+	default: return "TLS_OR_OTHER";
+	}
+}
 static void tss_diag_set(const char* fmt, ...)
 {
-	char raw[400];
 	va_list ap;
 	va_start(ap, fmt);
-	vsnprintf(raw, sizeof(raw), fmt, ap);
+	vsnprintf(tss_diag, sizeof(tss_diag), fmt, ap);
 	va_end(ap);
-	size_t o = 0, i = 0, n = strlen(raw);
-	while (i < n && o + 2 < sizeof(tss_diag)) {
-		size_t j = i;
-		int digits_only = 1;
-		while (j < n && isxdigit((unsigned char)raw[j])) { if (!isdigit((unsigned char)raw[j])) digits_only = 0; j++; }
-		size_t run = j - i;
-		if (run >= 12 || (digits_only && run >= 6)) { tss_diag[o++] = '#'; i = j; continue; }
-		if (run) { while (i < j && o + 2 < sizeof(tss_diag)) tss_diag[o++] = raw[i++]; continue; }
-		unsigned char c = (unsigned char)raw[i++];
-		tss_diag[o++] = (c >= 32 && c < 127) ? (char)c : '?';
-	}
-	tss_diag[o] = 0;
+	/* the arguments are numbers and fixed words; make sure of printable ASCII anyway */
+	for (char* c = tss_diag; *c; c++) if ((unsigned char)*c < 32 || (unsigned char)*c > 126) *c = '?';
 }
 #endif
 
@@ -1862,9 +1896,11 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, tss_connect_s);
 		curl_easy_setopt(handle, CURLOPT_TIMEOUT, tss_total_s);
 #endif
+#ifndef HV_TSS_HTTPS_ONLY
 		if (debug_level >= 2) {
 			curl_easy_setopt(handle, CURLOPT_VERBOSE, 1L);
 		}
+#endif
 
 		debug("Sending TSS request attempt %d... ", retry);
 
@@ -1878,23 +1914,27 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 
 #ifdef HV_TSS_HTTPS_ONLY
 		if (curl_rc != CURLE_OK) {
-			tss_diag_set("transport error (curl %d): %s", (int)curl_rc, curl_error_message);
+			tss_diag_set("TSS_ATTEMPTS: %d / TRANSPORT: curl %d %s / MESSAGE_RAW: suppressed", retry, (int)curl_rc, tss_curl_class(curl_rc));
 		} else if (strstr(response->content, "MESSAGE=SUCCESS")) {
-			tss_diag_set("HTTP %ld, MESSAGE=SUCCESS", http_code);
+			tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / TSS_STATUS: 0 / MESSAGE_CLASS: SUCCESS / MESSAGE_RAW: suppressed", retry, http_code);
 		} else {
 			const char* st = strstr(response->content, "STATUS=");
 			const char* ms = strstr(response->content, "MESSAGE=");
 			if (st) {
-				char msg[110] = "";
-				if (ms) { size_t k = strcspn(ms + 8, "&\r\n"); if (k > 100) k = 100; memcpy(msg, ms + 8, k); msg[k] = 0; }
-				tss_diag_set("HTTP %ld, STATUS=%d MESSAGE=%s", http_code, atoi(st + 7), msg);
+				/* STATUS is shown only as a plain number of at most 3 digits; anything else is OTHER */
+				const char* d = st + 7; int nd = 0, v = 0;
+				while (nd < 4 && d[nd] >= '0' && d[nd] <= '9') { v = v * 10 + (d[nd] - '0'); nd++; }
+				int plain = nd >= 1 && nd <= 3 && !(d[nd] >= '0' && d[nd] <= '9');
+				const char* cls = "NONE";
+				if (ms) { ms += 8; cls = tss_message_class(ms, strcspn(ms, "&\r\n")); }
+				if (plain) tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / TSS_STATUS: %d / MESSAGE_CLASS: %s / MESSAGE_RAW: suppressed", retry, http_code, v, cls);
+				else tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / TSS_STATUS: OTHER / MESSAGE_CLASS: %s / MESSAGE_RAW: suppressed", retry, http_code, cls);
 			} else {
-				char head[90]; size_t k = strlen(response->content); if (k > 80) k = 80; memcpy(head, response->content, k); head[k] = 0;
-				tss_diag_set("HTTP %ld, reply without STATUS: %s", http_code, head);
+				tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / NOT_A_TSS_REPLY / MESSAGE_RAW: suppressed", retry, http_code);
 			}
 		}
 		if (!tss_curl_error_retryable(curl_rc)) {
-			error("ERROR: tss_send_request: not retrying: %s\n", curl_error_message);
+			error("ERROR: tss_send_request: not retrying (curl %d)\n", (int)curl_rc);
 			status_code = -1;
 			break;
 		}
@@ -1907,16 +1947,20 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 			break;
 		}
 
+#ifndef HV_TSS_HTTPS_ONLY /* the server's text can echo identifiers: this flavour never prints it */
 		if (response->length > 0) {
 			error("TSS server returned: %s\n", response->content);
 		}
+#endif
 
 		char* status = strstr(response->content, "STATUS=");
 		if (status) {
 			sscanf(status+7, "%d&%*s", &status_code);
 		}
 		if (status_code == -1) {
+#ifndef HV_TSS_HTTPS_ONLY
 			error("%s\n", curl_error_message);
+#endif
 			// no status code in response. retry
 			free(response->content);
 			free(response);
@@ -1945,12 +1989,16 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	}
 
 	if (status_code != 0) {
+#ifdef HV_TSS_HTTPS_ONLY
+		error("ERROR: TSS request failed (status=%d; see tss_last_diag)\n", status_code);
+#else
 		if (response && strstr(response->content, "MESSAGE=") != NULL) {
 			char* message = strstr(response->content, "MESSAGE=") + strlen("MESSAGE=");
 			error("ERROR: TSS request failed (status=%d, message=%s)\n", status_code, message);
 		} else {
 			error("ERROR: TSS request failed: %s (status=%d)\n", curl_error_message, status_code);
 		}
+#endif
 		free(request);
 		if (response) free(response->content);
 		if (response) free(response);
@@ -1961,7 +2009,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	if (tss_data == NULL) {
 		error("ERROR: Incorrectly formatted TSS response\n");
 #ifdef HV_TSS_HTTPS_ONLY
-		tss_diag_set("reply has MESSAGE=SUCCESS but is not a plist");
+		tss_diag_set("TSS_ATTEMPTS: %d / SUCCESS_BUT_NOT_A_PLIST / MESSAGE_RAW: suppressed", retry);
 #endif
 		free(request);
 		free(response->content);
@@ -2130,5 +2178,8 @@ int tss_response_get_blob_by_entry(plist_t response, const char* entry, unsigned
 
 void tss_set_debug_level(int level)
 {
+#ifdef HV_TSS_HTTPS_ONLY
+	if (level > 1) level = 1; /* level 2 would dump the request (ECID, nonces) and curl's verbose stream */
+#endif
 	debug_level = level;
 }

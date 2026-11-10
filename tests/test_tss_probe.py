@@ -53,6 +53,7 @@ class Tss(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/ok"): out = b"STATUS=0&MESSAGE=SUCCESS&REQUEST_STRING=" + RESP
         elif self.path.startswith("/rej94"): out = b"STATUS=94&MESSAGE=This device isn't eligible for the requested build."
         elif self.path.startswith("/rej8"): out = b"STATUS=8&MESSAGE=An internal error occurred 2d2a8d94f32ba4d2 for ECID 3274619340111111111"
+        elif self.path.startswith("/m/"): out, code = MSGS[self.path[3:].split("?")[0]]
         elif self.path.startswith("/garbage"): out = b"this is not a TSS reply"
         elif self.path.startswith("/http500"): out = b"<html>Internal Server Error</html>"; code = 500
         elif self.path.startswith("/badplist"): out = b"STATUS=0&MESSAGE=SUCCESS&REQUEST_STRING=not xml"
@@ -77,7 +78,24 @@ def run(url, *args, ipsw=IPSW, timeout=60):
     out = r.stdout.decode() + r.stderr.decode()
     return out, r.returncode, time.time() - t0
 
-SECRET = [str(ECID), f"{ECID:x}", f"{ECID:X}", "5c" * 6, "6d" * 6, base64.b64encode(bytes([0x5c]) * 32).decode()[:12], base64.b64encode(TICKET).decode()[:8], "TICKETBYTES", "3274619340111111111"]
+E = str(ECID); NH = ("5c" * 32); NB = base64.b64encode(bytes([0x5c]) * 32).decode(); TH = "TICKETBYTES"
+LONG = ("The quick brown fox jumps over the lazy dog and keeps going, " * 8).encode()
+MSGS = {   # name -> (reply body, HTTP code); each carries fragments that must never reach the output
+    "noteligible": (f"STATUS=94&MESSAGE=Device {E[:6]} is not eligible for build {E[-6:]}".encode(), 200),
+    "isnt": (b"STATUS=94&MESSAGE=This device isn't eligible for the requested build.", 200),
+    "isnt_enc": (b"STATUS=94&MESSAGE=This device isn%27t eligible for the requested build.", 200),
+    "inelig": (b"STATUS=69&MESSAGE=ineligible", 200),
+    "bare_eligible": (b"STATUS=1&MESSAGE=This device is eligible", 200),
+    "malformed": (f"STATUS=100&MESSAGE=The request was malformed near {NH}".encode(), 200),
+    "internal": (f"STATUS=126&MESSAGE=An internal error occurred {NB}".encode(), 200),
+    "both": (b"STATUS=126&MESSAGE=An internal error occured, most likely the request was malformed", 200),
+    "unknown": (f"STATUS=7&MESSAGE=Something unexpected about {E} and {ECID:x} and {NH[:20]}".encode(), 200),
+    "long": (b"STATUS=7&MESSAGE=" + LONG, 200),
+    "bigstatus": (f"STATUS={E}&MESSAGE=x".encode(), 200),
+    "garbage_ids": (f"nothing like a TSS reply {E[:8]} {NB} {TH} {E[-8:]}".encode(), 200),
+    "http500_ids": (f"<html>Internal Server Error {E} {NH}</html>".encode(), 500),
+}
+SECRET = [str(ECID), f"{ECID:x}", f"{ECID:X}", "5c" * 6, "6d" * 6, base64.b64encode(bytes([0x5c]) * 32).decode()[:12], base64.b64encode(TICKET).decode()[:8], "TICKETBYTES", "3274619340111111111", E[:6], E[-6:], E[:8], E[-8:], NH[:20], NB[:20], "The quick brown", "Something unexpected", "near ", "occurred", "isn't", "most likely", "This device"]
 def clean(out): return not any(x in out for x in SECRET)
 
 out, rc, _ = run(tss("ok"))
@@ -91,13 +109,34 @@ check("  no ECID, nonce or ticket value in the output", clean(out), out)
 check("  the Range reads stayed inside the approved limits (<= 24 requests, <= 4 MiB)", re.search(r"manifest read: \d+ bytes inflated, (\d+) requests, (\d+) bytes", out) and int(re.search(r"(\d+) requests", out)[1]) <= 24 and int(re.search(r", (\d+) bytes received", out)[1]) <= 4 << 20, out[:400])
 
 out, rc, _ = run(tss("rej94"))
-check("a refusal (STATUS 94): exit 1, one attempt, status and message in the account, classified as an answer from the server", rc == 1 and len(tss_seen) == 1 and "STATUS=94" in out and "answered and refused" in out, (rc, out[-400:], len(tss_seen)))
+check("a refusal (STATUS 94): exit 1, one attempt, status and message in the account, classified as an answer from the server", rc == 1 and len(tss_seen) == 1 and "TSS_STATUS: 94" in out and "MESSAGE_CLASS: NOT_ELIGIBLE" in out and "TSS_ATTEMPTS: 1" in out and "MESSAGE_RAW: suppressed" in out and "answered and refused" in out and clean(out), (rc, out[-400:], len(tss_seen)))
 out, rc, _ = run(tss("rej8"))
-check("a message that contains the ECID in decimal and hex: the output masks it", rc == 1 and clean(out) and len(tss_seen) == 1, out[-400:])
+check("a message that contains the ECID in decimal and hex: not echoed, classified SERVER_INTERNAL", rc == 1 and clean(out) and len(tss_seen) == 1 and "MESSAGE_CLASS: SERVER_INTERNAL" in out, out[-400:])
+
+# server text is never echoed, whatever it contains; the class is only our guess from fixed patterns
+def msg(name, cls, status, http="200"):
+    o, r, _ = run(tss("m/" + name))
+    ok = r == 1 and len(tss_seen) == 1 and clean(o) and f"MESSAGE_CLASS: {cls}" in o and f"TSS_STATUS: {status}" in o and f"HTTP: {http}" in o and "MESSAGE_RAW: suppressed" in o
+    check(f"message '{name}': class {cls}, STATUS {status}, no server text or ID fragment in the output, one attempt", ok, (r, o[-420:], len(tss_seen)))
+msg("noteligible", "NOT_ELIGIBLE", "94")
+msg("isnt", "NOT_ELIGIBLE", "94")
+msg("isnt_enc", "NOT_ELIGIBLE", "94")
+msg("inelig", "NOT_ELIGIBLE", "69")
+msg("bare_eligible", "UNKNOWN", "1")          # 'eligible' alone is not a refusal
+msg("malformed", "MALFORMED", "100")
+msg("internal", "SERVER_INTERNAL", "126")
+msg("both", "MALFORMED_OR_INTERNAL", "126")   # one reply, two possible causes: not decided here
+msg("unknown", "UNKNOWN", "7")
+msg("long", "UNKNOWN", "7")
+msg("bigstatus", "UNKNOWN", "OTHER")          # a STATUS that is not a small plain number is not shown
+o, r, _ = run(tss("m/garbage_ids"))
+check("an unknown reply that contains IDs: only 'NOT_A_TSS_REPLY' is shown", r == 1 and clean(o) and "NOT_A_TSS_REPLY" in o and len(tss_seen) == 1, o[-300:])
+o, r, _ = run(tss("m/http500_ids"))
+check("an HTTP 500 page that contains IDs: HTTP code only", r == 1 and clean(o) and "HTTP: 500" in o and len(tss_seen) == 1, o[-300:])
 out, rc, dt = run(tss("garbage"))
-check("a reply that is not a TSS answer: one attempt", rc == 1 and len(tss_seen) == 1 and "without STATUS" in out and dt < 8, (rc, len(tss_seen), dt, out[-300:]))
+check("a reply that is not a TSS answer: one attempt", rc == 1 and len(tss_seen) == 1 and "NOT_A_TSS_REPLY" in out and clean(out) and dt < 8, (rc, len(tss_seen), dt, out[-300:]))
 out, rc, dt = run(tss("http500"))
-check("HTTP 500: one attempt, the HTTP status is in the account", rc == 1 and len(tss_seen) == 1 and "HTTP 500" in out, (rc, len(tss_seen), out[-300:]))
+check("HTTP 500: one attempt, the HTTP status is in the account", rc == 1 and len(tss_seen) == 1 and "HTTP: 500" in out and clean(out), (rc, len(tss_seen), out[-300:]))
 out, rc, dt = run(tss("badplist"))
 check("SUCCESS but not a plist: one attempt, no ticket claimed", rc == 1 and len(tss_seen) == 1 and "ticket issued" not in out, (rc, len(tss_seen), out[-300:]))
 out, rc, dt = run(tss("hang"), "--timeout", "2")

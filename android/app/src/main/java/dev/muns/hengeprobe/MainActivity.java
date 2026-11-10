@@ -155,6 +155,18 @@ public class MainActivity extends Activity {
         dnloadNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(dnloadNote);
 
+        final Button a3Button = new Button(this);
+        a3Button.setText("DFU 시험 A3: A0~A2 재현 + GET_STATUS 1회 (실제 ROM으로 전송)");
+        a3Button.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("실제 ROM에 DNLOAD와 GET_STATUS를 보냅니다")
+                .setMessage("A0~A2(리셋, 구성, GET_STATE, 0으로 채운 16바이트 DNLOAD 블록 0, GET_STATE)를 앞선 시험과 똑같이 재현합니다. "
+                        + "A2가 상태 5일 때만 GET_STATUS를 정확히 1회 보내고 그 뒤에는 아무것도 보내지 않습니다. GET_STATUS는 장치 상태를 앞으로 진행시킬 수 있습니다. "
+                        + "ABORT·두 번째 GET_STATUS·길이 0 DNLOAD·두 번째 블록·Apple 서명 요청·IPSW 다운로드·복원은 하지 않습니다. 실행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true, true))
+                .show());
+        root.addView(a3Button);
+
         final Button selftestButton = new Button(this);
         selftestButton.setText("복원 도구 자체 시험 (앱 안에서 적재·스레드·loopback, 잘못된 IPSW 3종)");
         selftestButton.setOnClickListener(v -> runRestoreSelftest());
@@ -649,6 +661,11 @@ public class MainActivity extends Activity {
 
     /** dnload=true (needs installer): --dnload-probe, stage A0-A2 of the DFU download test (host/dnload_probe.h), run by the same program as irecv. */
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload) {
+        runVmrun(installer, irecvIn, dnload, false);
+    }
+
+    /** a3=true (with dnload): --dnload-probe-a3, A0-A2 and then one GET_STATUS. */
+    private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final boolean a3) {
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -690,7 +707,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add(dnload ? "--dnload-probe" : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer) cmd.add(dnload ? (a3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;

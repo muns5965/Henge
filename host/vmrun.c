@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -138,12 +138,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--recreate-blank")) recreate_blank = 1; /* with --make-blank: start the files named blank_* from scratch */
         else if (!strcmp(a, "--psci-log")) psci_log = 1;             /* print every PSCI call the guest makes (function, x1..x3, pc) */
         else if (!strcmp(a, "--usb-probe")) usb_probe = 1; /* log USB port events and probe the device from the host side (descriptor + strings) */
+        else if (!strcmp(a, "--dnload-probe-a3")) dnload_probe = dnload_a3 = 1; /* A0-A2 plus ONE GET_STATUS (see host/dnload_probe.h) */
         else if (!strcmp(a, "--dnload-probe")) dnload_probe = 1; /* stage A0-A2 of the DFU download test (see host/dnload_probe.h); a vmrun built with HV_IRECV_PROBE */
         else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--dnload-probe] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--dnload-probe | --dnload-probe-a3] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -205,7 +206,7 @@ int main(int argc, char **argv) {
 #ifdef HV_IRECV_PROBE
     if (dnload_probe) {
         HvVmapple *bd1 = hv_vm_board();
-        if (bd1 && bd1->vusb) hv_dnload_probe_start(bd1->vusb);
+        if (bd1 && bd1->vusb) hv_dnload_probe_start(bd1->vusb, dnload_a3);
         else fprintf(stderr, "vmrun: no USB port in this boot mode; --dnload-probe has nothing to talk to\n");
     }
     if (irecv_probe) {

@@ -205,6 +205,15 @@ public class MainActivity extends Activity {
         // The whole page scrolls (buttons and result together). Before, only the result box scrolled, and with this many buttons it was squeezed to nothing and the buttons
         // below the screen could not be reached.
         root.addView(output, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // the same copy button under the result (the one above scrolls out of sight when a run brings the result into view), and a way back to the top
+        Button copyBottom = new Button(this);
+        copyBottom.setText("결과 복사");
+        copyBottom.setOnClickListener(v -> copyResult());
+        root.addView(copyBottom);
+        Button toTop = new Button(this);
+        toTop.setText("맨 위로");
+        toTop.setOnClickListener(v -> pageScroll.smoothScrollTo(0, 0));
+        root.addView(toTop);
         pageScroll = new ScrollView(this);
         pageScroll.setFillViewport(true);
         pageScroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -732,7 +741,7 @@ public class MainActivity extends Activity {
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer) {
+                    if (installer && !dnload) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));

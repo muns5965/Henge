@@ -1,6 +1,7 @@
 package dev.muns.hengeprobe;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -208,6 +209,16 @@ public class MainActivity extends Activity {
                 + "전체 다운로드·TSS 요청·복원은 하지 않습니다. 결과(요청 범위·응답 코드·칩/보드 일치)가 이 화면에 나옵니다.");
         bmNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(bmNote);
+
+        final Button tssButton = new Button(this);
+        tssButton.setText("TSS 서명 가능성 확인 (Apple 서버로 1회 전송)");
+        tssButton.setOnClickListener(v -> confirmTssProbe());
+        root.addView(tssButton);
+        final TextView tssNote = new TextView(this);
+        tssNote.setText("가상 Mac을 DFU까지 부팅해 ROM이 알려주는 ECID·APNonce·SEPNonce를 읽고, macOS 15.6.1 Erase Install 구성으로 만든 서명 요청을 Apple에 정확히 1회 보냅니다. "
+                + "누르면 먼저 확인 창이 나옵니다. 받은 서명 값은 저장·표시하지 않습니다. 복원·IPSW 전체 다운로드·펌웨어 전송은 하지 않습니다.");
+        tssNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(tssNote);
 
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
@@ -693,6 +704,8 @@ public class MainActivity extends Activity {
 
     /** stage (with dnload): 2 = --dnload-probe (A0-A2), 3 = --dnload-probe-a3 (+ one GET_STATUS), 4 = --dnload-probe-a4 (+ one ABORT and one GET_STATE). */
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
+        final boolean tss = tssMode;
+        tssMode = false;
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -709,8 +722,8 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
-                if (!exe.exists()) acc.append(irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                File exe = new File(libDir, tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                if (!exe.exists()) acc.append(tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
                 else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
                     acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
                     base.mkdirs();
@@ -734,7 +747,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add(dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
@@ -742,7 +755,7 @@ public class MainActivity extends Activity {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
                         switch (er.status) {
                             case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
-                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음: ").append(String.format("0x%x", er.value)).append('\n'); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
                             default:
                                 acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
                                    .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
@@ -756,7 +769,9 @@ public class MainActivity extends Activity {
                     for (String[] m : map) if (cfg.containsKey(m[0])) { cmd.add(m[1]); cmd.add(cfg.get(m[0])); }
                     File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
                     cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
-                    acc.append("명령: ").append(android.text.TextUtils.join(" ", cmd)).append('\n');
+                    java.util.List<String> shown = new java.util.ArrayList<>(cmd);
+                    if (tss) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
+                    acc.append("명령: ").append(android.text.TextUtils.join(" ", shown)).append('\n');
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
                     pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
@@ -785,7 +800,7 @@ public class MainActivity extends Activity {
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer && !dnload) { // the dnload probe does not read the DFU string, so there is nothing to compare
+                    if (installer && !dnload && !tss) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));
@@ -934,6 +949,25 @@ public class MainActivity extends Activity {
             running = false;
             setButtons(true);
         }).start();
+    }
+
+    private boolean tssMode;
+
+    /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */
+    private void confirmTssProbe() {
+        if (running) return;
+        new AlertDialog.Builder(this)
+            .setTitle("Apple 서명 서버로 1회 전송합니다")
+            .setMessage("대상: macOS Sequoia 15.6.1 (24G90), 가상 Mac(칩 0xFE00·보드 0x20)의 Customer Erase Install 구성\n\n"
+                + "먼저 IPSW에서 BuildManifest만 Range 요청으로 읽습니다(최대 24회·4 MiB, 파일 저장 없음).\n\n"
+                + "Apple(gs.apple.com, HTTPS·인증서 검증)로 나가는 정보:\n"
+                + "• 이 가상 Mac의 ECID\n• ROM이 알려준 APNonce·SEPNonce\n• 해당 빌드 구성의 구성요소 해시\n• 이 폰의 IP 주소(접속 자체에 따름)\n\n"
+                + "전송은 정확히 1회이며 자동 재시도가 없습니다. 받은 서명 값과 ECID·nonce는 저장하거나 화면에 표시하지 않습니다. "
+                + "결과가 '서명 발급'이어도 복원 성공을 뜻하지 않습니다(복원에는 요청이 더 필요합니다).\n\n"
+                + "IPSW 전체 다운로드, 펌웨어 전송, 복원은 하지 않습니다.")
+            .setPositiveButton("전송", (d, w) -> { tssMode = true; runVmrun(true, false, false, 2); })
+            .setNegativeButton("취소", null)
+            .show();
     }
 
     /** Runs libbmprobe.so: the approved BuildManifest-only partial read (see tests/bm_probe.c for the fixed limits). */

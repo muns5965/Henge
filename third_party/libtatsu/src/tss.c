@@ -30,6 +30,8 @@
 #include <inttypes.h>
 #include <time.h>
 #include <strings.h>
+#include <stdarg.h>
+#include <ctype.h>
 
 #ifndef _MSC_VER
 #include <unistd.h>
@@ -1744,6 +1746,35 @@ static int tss_curl_error_retryable(CURLcode rc)
 }
 #define TSS_HTTPS_MAX_ATTEMPTS 6
 #define TSS_HTTPS_MAX_SECONDS 150
+
+/* Controls and a scrubbed diagnosis for the Android TSS probe (host/tss_probe_core.c). Only in this build flavour. */
+static int tss_max_attempts = TSS_HTTPS_MAX_ATTEMPTS;
+static long tss_connect_s = 20, tss_total_s = 60;
+static char tss_diag[240];
+void tss_set_max_attempts(int n) { if (n >= 1 && n <= TSS_HTTPS_MAX_ATTEMPTS) tss_max_attempts = n; }
+void tss_set_timeouts(long connect_s, long total_s) { if (connect_s > 0) tss_connect_s = connect_s; if (total_s > 0) tss_total_s = total_s; }
+const char* tss_last_diag(void) { return tss_diag; }
+/* Printable ASCII only; any run of 6+ digits or 12+ hex digits (an ECID, a nonce, a ticket fragment) becomes '#'. */
+static void tss_diag_set(const char* fmt, ...)
+{
+	char raw[400];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(raw, sizeof(raw), fmt, ap);
+	va_end(ap);
+	size_t o = 0, i = 0, n = strlen(raw);
+	while (i < n && o + 2 < sizeof(tss_diag)) {
+		size_t j = i;
+		int digits_only = 1;
+		while (j < n && isxdigit((unsigned char)raw[j])) { if (!isdigit((unsigned char)raw[j])) digits_only = 0; j++; }
+		size_t run = j - i;
+		if (run >= 12 || (digits_only && run >= 6)) { tss_diag[o++] = '#'; i = j; continue; }
+		if (run) { while (i < j && o + 2 < sizeof(tss_diag)) tss_diag[o++] = raw[i++]; continue; }
+		unsigned char c = (unsigned char)raw[i++];
+		tss_diag[o++] = (c >= 32 && c < 127) ? (char)c : '?';
+	}
+	tss_diag[o] = 0;
+}
 #endif
 
 plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
@@ -1757,7 +1788,8 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	int url_count = 6;
 	unsigned int size = 0;
 #ifdef HV_TSS_HTTPS_ONLY
-	max_retries = TSS_HTTPS_MAX_ATTEMPTS;
+	max_retries = tss_max_attempts;
+	tss_diag[0] = 0;
 	url_count = 3; /* the https entries only */
 	time_t started = time(NULL);
 	if (server_url_string && !tss_url_allowed(server_url_string)) {
@@ -1827,8 +1859,8 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 			debug("Request URL set to %s\n", urls[url_index]);
 		}
 #ifdef HV_TSS_HTTPS_ONLY
-		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 20L);
-		curl_easy_setopt(handle, CURLOPT_TIMEOUT, 60L);
+		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, tss_connect_s);
+		curl_easy_setopt(handle, CURLOPT_TIMEOUT, tss_total_s);
 #endif
 		if (debug_level >= 2) {
 			curl_easy_setopt(handle, CURLOPT_VERBOSE, 1L);
@@ -1837,10 +1869,30 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 		debug("Sending TSS request attempt %d... ", retry);
 
 		CURLcode curl_rc = curl_easy_perform(handle);
+#ifdef HV_TSS_HTTPS_ONLY
+		long http_code = 0;
+		curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
+#endif
 		curl_slist_free_all(header);
 		curl_easy_cleanup(handle);
 
 #ifdef HV_TSS_HTTPS_ONLY
+		if (curl_rc != CURLE_OK) {
+			tss_diag_set("transport error (curl %d): %s", (int)curl_rc, curl_error_message);
+		} else if (strstr(response->content, "MESSAGE=SUCCESS")) {
+			tss_diag_set("HTTP %ld, MESSAGE=SUCCESS", http_code);
+		} else {
+			const char* st = strstr(response->content, "STATUS=");
+			const char* ms = strstr(response->content, "MESSAGE=");
+			if (st) {
+				char msg[110] = "";
+				if (ms) { size_t k = strcspn(ms + 8, "&\r\n"); if (k > 100) k = 100; memcpy(msg, ms + 8, k); msg[k] = 0; }
+				tss_diag_set("HTTP %ld, STATUS=%d MESSAGE=%s", http_code, atoi(st + 7), msg);
+			} else {
+				char head[90]; size_t k = strlen(response->content); if (k > 80) k = 80; memcpy(head, response->content, k); head[k] = 0;
+				tss_diag_set("HTTP %ld, reply without STATUS: %s", http_code, head);
+			}
+		}
 		if (!tss_curl_error_retryable(curl_rc)) {
 			error("ERROR: tss_send_request: not retrying: %s\n", curl_error_message);
 			status_code = -1;
@@ -1908,6 +1960,9 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	char* tss_data = strstr(response->content, "<?xml");
 	if (tss_data == NULL) {
 		error("ERROR: Incorrectly formatted TSS response\n");
+#ifdef HV_TSS_HTTPS_ONLY
+		tss_diag_set("reply has MESSAGE=SUCCESS but is not a plist");
+#endif
 		free(request);
 		free(response->content);
 		free(response);

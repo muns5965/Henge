@@ -33,6 +33,8 @@ on:
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
       - tools/vmrun-irecv-build.sh
+      - tools/vmrun-tss-build.sh
+      - tools/tss-probe-test.sh
       - tools/download-test.sh
       - tools/dnload-test.sh
       - tools/restore-selftest-build.sh
@@ -127,6 +129,17 @@ jobs:
       - name: Build vmrun with libirecovery in it (--irecv-probe)
         run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-irecv-build.sh build-linux
 
+      - name: Build vmrun with the TSS probe in it (--tss-probe; nothing is sent here) and check that it refuses to start without the DFU boot
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-tss-build.sh build-linux
+          set +e
+          build-linux/vmrun_tss --tss-probe --rom /nonexistent 2>&1 | tee build-linux/tss-refuse.txt
+          grep -q "needs --installer" build-linux/tss-refuse.txt
+
+      - name: TSS probe core against mock IPSW and TSS servers (one attempt whatever goes wrong; nothing sent when anything before it fails; no value in the output)
+        run: CC=clang tools/tss-probe-test.sh build-tssprobe
+
       - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers (https-only build and test build)
         run: tools/tatsu-test.sh build-curltest
 
@@ -198,6 +211,11 @@ jobs:
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-android
       - name: Build vmrun with libirecovery for Android (--irecv-probe)
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-irecv-build.sh build-android
+
+      - name: Build vmrun with the TSS probe in it for Android (link only)
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-tss-build.sh build-android
       - name: Build the whole restore stack for Android (integrated link of idevicerestore + usbmuxd + libirecovery + libtatsu + libzip + self-test)
         run: |
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null

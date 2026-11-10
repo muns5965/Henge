@@ -16,6 +16,9 @@
 #ifdef HV_IRECV_PROBE
 #include "irecv_probe.h"
 #include "dnload_probe.h"
+#ifdef HV_TSS_PROBE
+#include "tss_probe.h"
+#endif
 #endif
 #include "vmapple.h"
 
@@ -117,7 +120,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0, tss_probe = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -141,11 +144,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--dnload-probe-a4")) dnload_probe = dnload_a4 = 1; /* A0-A3, then ONE ABORT and ONE GET_STATE (host/dnload_probe.h) */
         else if (!strcmp(a, "--dnload-probe-a3")) dnload_probe = dnload_a3 = 1; /* A0-A2 plus ONE GET_STATUS (see host/dnload_probe.h) */
         else if (!strcmp(a, "--dnload-probe")) dnload_probe = 1; /* stage A0-A2 of the DFU download test (see host/dnload_probe.h); a vmrun built with HV_IRECV_PROBE */
+        else if (!strcmp(a, "--tss-probe")) tss_probe = 1; /* needs a vmrun built with HV_TSS_PROBE: ONE request to Apple's TSS server, see host/tss_probe.h */
         else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -166,6 +170,16 @@ int main(int argc, char **argv) {
         setenv("HV_VUSB_LOG", "1", 1);
 #else
         fprintf(stderr, "vmrun: this build has no dnload probe in it (--dnload-probe unavailable)\n");
+        return 2;
+#endif
+    }
+    if (tss_probe) {
+#ifdef HV_TSS_PROBE
+        if (usb_probe || irecv_probe || dnload_probe) { fprintf(stderr, "vmrun: --tss-probe cannot be combined with the other USB probes\n"); return 2; }
+        if (!cfg.installer) { fprintf(stderr, "vmrun: --tss-probe needs --installer (the DFU boot)\n"); return 2; }
+        if (seconds < 120) seconds = 120;
+#else
+        fprintf(stderr, "vmrun: this build has no TSS probe in it (--tss-probe unavailable)\n");
         return 2;
 #endif
     }
@@ -194,8 +208,9 @@ int main(int argc, char **argv) {
         if (stat(cfg.disk, &sb) != 0) printf("vmrun: new blank disk %s (%llu GB, sparse): %s\n", cfg.disk, disk_gb, make_sparse(cfg.disk, disk_gb << 30) == 0 ? "ok" : "FAILED");
         if (stat(cfg.aux, &sb) != 0) printf("vmrun: new auxiliary storage %s: %s\n", cfg.aux, make_aux(cfg.aux) == 0 ? "ok" : "FAILED");
     }
-    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB (0 = the VM's default), ecid %llx, seed %llx, aux_offset %llu, installer %d, psci_log %d, seconds %.0f\n",
-           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (unsigned long long)cfg.ecid,
+    char ecid_txt[24];
+    printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB (0 = the VM's default), ecid %s, seed %llx, aux_offset %llu, installer %d, psci_log %d, seconds %.0f\n",
+           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, tss_probe ? "(hidden)" : (snprintf(ecid_txt, sizeof ecid_txt, "%llx", (unsigned long long)cfg.ecid), ecid_txt),
            (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, psci_log, seconds);
     char err[512] = "";
     double t0 = now();
@@ -204,6 +219,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("vmrun created in %.0f ms\n", (now() - t0) * 1e3);
+#ifdef HV_TSS_PROBE
+    if (tss_probe) {
+        HvVmapple *bd2 = hv_vm_board();
+        if (bd2 && bd2->vusb) hv_tss_probe_start(bd2->vusb, cfg.ecid);
+        else fprintf(stderr, "vmrun: no USB port in this boot mode; --tss-probe has nothing to talk to\n");
+    }
+#endif
 #ifdef HV_IRECV_PROBE
     if (dnload_probe) {
         HvVmapple *bd1 = hv_vm_board();
@@ -222,7 +244,11 @@ int main(int argc, char **argv) {
     Sample prev, cur;
     sample(&prev);
     int changes = 0;
-    while (!EXITED() && now() - t1 < seconds) {
+    while (!EXITED() && now() - t1 < seconds
+#ifdef HV_TSS_PROBE
+           && !(tss_probe && hv_tss_probe_finished())
+#endif
+           ) {
         usleep(10000);
         sample(&cur);
         if (changes < 40 && (cur.el != prev.el || cur.esr != prev.esr || cur.vbar != prev.vbar)) {

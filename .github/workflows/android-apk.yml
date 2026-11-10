@@ -27,6 +27,7 @@ on:
       - tools/check-apple-ca.sh
       - third_party/mbedtls/**
       - tools/vmrun-irecv-build.sh
+      - tools/vmrun-tss-build.sh
       - tools/restore-selftest-build.sh
       - third_party/idevicerestore/**
       - third_party/usbmuxd/**
@@ -81,6 +82,10 @@ jobs:
           # vmrun with libirecovery (the "restore library USB connection" button). Its own program, so a failure here leaves the plain vmrun and the rest alone.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-irecv-build.sh build-engine \
             && cp build-engine/vmrun_irecv android/app/src/main/jniLibs/arm64-v8a/libvmrunirecv.so || echo "::warning::vmrun with libirecovery did not build; the APK goes without that button's program"
+          # vmrun with the TSS probe (the "TSS 서명 가능성 확인" button): its own program; the APK goes without that button's program if it fails.
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-tss-build.sh build-engine \
+            && cp build-engine/vmrun_tss android/app/src/main/jniLibs/arm64-v8a/libvmruntss.so || echo "::warning::vmrun with the TSS probe did not build; the APK goes without that button's program"
           if [ -f build-engine/romextract ]; then cp build-engine/romextract android/app/src/main/jniLibs/arm64-v8a/libromextract.so; fi
           # The HTTP/TLS client that replaces libcurl (host/curl_mbedtls.c) with its test driver: the app's "HTTPS·CA" buttons run it.
           # A failure here fails the APK: the HTTPS buttons need it. No -DHV_ALLOW_CA_ENV here: the shipped copy trusts only the system stores.

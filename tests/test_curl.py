@@ -181,6 +181,9 @@ r = run([B + "/404"]); check("404 is a transfer success with status 404", r["RC"
 r = run([B + "/r1"]); check("redirect not followed without FOLLOWLOCATION", r["HTTP"] == "302" and r["out"] == b"", r)
 r = run([B + "/r2", "--follow"]); check("redirect chain followed", r["HTTP"] == "200" and r["out"] == b"hello world", r)
 r = run([B + "/rel/a", "--follow"]); check("relative redirect", r["out"] == b"rel-b", r)
+for h in ("gs.apple.com", "GS.Apple.com.akadns.net", "gs.apple.com.v.aaplimg.com"):
+    r = run([f"http://{h}/TSS/controller?action=2", "--post", "x=1"])
+    check(f"plain http to the TSS host {h} is refused before any lookup", r["RC"] == "1" and "refusing plain http to Apple's TSS server" in r["stderr"], r)
 r = run([B + "/loop", "--follow"]); check("redirect loop stops", r["RC"] == "47", r)
 r = run([B + "/post-redir", "--post", "x=1", "--follow"]); check("POST becomes GET after 302", r["out"] == b"GET-after-redirect", r["out"])
 r = run([B + "/short"]); check("truncated sized body is an error", r["RC"] == "56", r)

@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <time.h>
+#include <strings.h>
 
 #ifndef _MSC_VER
 #include <unistd.h>
@@ -36,7 +38,9 @@
 #define sleep(n) Sleep(n * 1000)
 #endif
 
+#ifndef HV_TSS_NO_SEND /* tools/tss-dryrun-test.sh builds without the send path and without any HTTP client */
 #include <curl/curl.h>
+#endif
 #include <plist/plist.h>
 
 #include "common.h"
@@ -1693,6 +1697,7 @@ int tss_request_add_cryptex_tags(plist_t request, plist_t parameters, plist_t ov
 	return 0;
 }
 
+#ifndef HV_TSS_NO_SEND
 static size_t tss_write_callback(char* data, size_t size, size_t nmemb, tss_response* response)
 {
 	size_t total = size * nmemb;
@@ -1706,6 +1711,41 @@ static size_t tss_write_callback(char* data, size_t size, size_t nmemb, tss_resp
 	return total;
 }
 
+#ifdef HV_TSS_HTTPS_ONLY
+/* Henge/Android policy (compiled in by the Android build scripts; the iOS and stock builds are unchanged): the signing server is reached over
+   https only. Plain-http fallbacks are not in the URL list, an https URL given by the caller is the only kind accepted, and host/curl_mbedtls.c
+   refuses plain http to the TSS hosts again and https->http redirects. HV_TSS_ALLOW_HTTP_TEST is for tests/test_tatsu.py only: it admits
+   http://127.0.0.1 and http://localhost (mock servers) and nothing else; tools/check-no-test-flags.sh makes sure no shipped build sets it. */
+static int tss_url_allowed(const char* url)
+{
+	if (!strncasecmp(url, "https://", 8)) return 1;
+#ifdef HV_TSS_ALLOW_HTTP_TEST
+	if (!strncasecmp(url, "http://127.0.0.1", 16) || !strncasecmp(url, "http://localhost", 16)) return 1;
+#endif
+	return 0;
+}
+
+/* Which curl results are worth another attempt. A failed certificate or a policy refusal is never retried: asking again, or asking another
+   host name, would only repeat or hide a security signal. Network trouble and a reply without STATUS are retried within the limits below. */
+static int tss_curl_error_retryable(CURLcode rc)
+{
+	switch (rc) {
+	case CURLE_OK:
+	case CURLE_COULDNT_RESOLVE_HOST:
+	case CURLE_COULDNT_CONNECT:
+	case CURLE_OPERATION_TIMEDOUT:
+	case CURLE_GOT_NOTHING:
+	case CURLE_SEND_ERROR:
+	case CURLE_RECV_ERROR:
+		return 1;
+	default: /* certificate/CA problems, TLS handshake failure, unsupported protocol, malformed URL, too many redirects, aborted, write error */
+		return 0;
+	}
+}
+#define TSS_HTTPS_MAX_ATTEMPTS 6
+#define TSS_HTTPS_MAX_SECONDS 150
+#endif
+
 plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 {
 	debug_plist(tss_request);
@@ -1714,7 +1754,17 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	int status_code = -1;
 	int retry = 0;
 	int max_retries = 15;
+	int url_count = 6;
 	unsigned int size = 0;
+#ifdef HV_TSS_HTTPS_ONLY
+	max_retries = TSS_HTTPS_MAX_ATTEMPTS;
+	url_count = 3; /* the https entries only */
+	time_t started = time(NULL);
+	if (server_url_string && !tss_url_allowed(server_url_string)) {
+		error("ERROR: tss_send_request: refusing a TSS URL that is not https\n");
+		return NULL;
+	}
+#endif
 	char curl_error_message[CURL_ERROR_SIZE];
 
 	const char* urls[6] = {
@@ -1732,6 +1782,12 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	memset(curl_error_message, '\0', CURL_ERROR_SIZE);
 
 	while (retry++ < max_retries) {
+#ifdef HV_TSS_HTTPS_ONLY
+		if (retry > 1 && time(NULL) - started >= TSS_HTTPS_MAX_SECONDS) {
+			error("ERROR: tss_send_request: giving up after %d seconds\n", TSS_HTTPS_MAX_SECONDS);
+			break;
+		}
+#endif
 		response = NULL;
 		CURL* handle = curl_easy_init();
 		if (handle == NULL) {
@@ -1766,20 +1822,33 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 			curl_easy_setopt(handle, CURLOPT_URL, server_url_string);
 			debug("Request URL set to %s\n", server_url_string);
 		} else {
-			int url_index = (retry - 1) % 6;
+			int url_index = (retry - 1) % url_count;
 			curl_easy_setopt(handle, CURLOPT_URL, urls[url_index]);
 			debug("Request URL set to %s\n", urls[url_index]);
 		}
+#ifdef HV_TSS_HTTPS_ONLY
+		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 20L);
+		curl_easy_setopt(handle, CURLOPT_TIMEOUT, 60L);
+#endif
 		if (debug_level >= 2) {
 			curl_easy_setopt(handle, CURLOPT_VERBOSE, 1L);
 		}
 
 		debug("Sending TSS request attempt %d... ", retry);
 
-		curl_easy_perform(handle);
+		CURLcode curl_rc = curl_easy_perform(handle);
 		curl_slist_free_all(header);
 		curl_easy_cleanup(handle);
 
+#ifdef HV_TSS_HTTPS_ONLY
+		if (!tss_curl_error_retryable(curl_rc)) {
+			error("ERROR: tss_send_request: not retrying: %s\n", curl_error_message);
+			status_code = -1;
+			break;
+		}
+#else
+		(void)curl_rc;
+#endif
 		if (strstr(response->content, "MESSAGE=SUCCESS")) {
 			status_code = 0;
 			debug("response successfully received\n");
@@ -1858,6 +1927,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 
 	return tss_resp;
 }
+#endif /* HV_TSS_NO_SEND */
 
 static int tss_response_get_data_by_key(plist_t response, const char* name, unsigned char** buffer, unsigned int* length)
 {

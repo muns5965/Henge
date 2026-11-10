@@ -24,7 +24,7 @@ add plist "-I$TP/libplist/libcnary/include -DPACKAGE_VERSION='\"2.8.0-henge\"'" 
 add glue "-DPACKAGE_VERSION='\"1.3.3-henge\"'" $TP/libimobiledevice-glue/src/*.c
 add usbmuxdc "-DPACKAGE_VERSION='\"2.1.1-henge\"' -DPACKAGE_STRING='\"libusbmuxd\"'" $TP/libusbmuxd/src/*.c
 add imd "-DHAVE_MBEDTLS -DPACKAGE_VERSION='\"1.4.0-henge\"' -DPACKAGE_STRING='\"libimobiledevice\"' -I$TP/libimobiledevice/src -I$TP/libimobiledevice/common" $TP/libimobiledevice/src/*.c $TP/libimobiledevice/common/*.c
-add tatsu "-DPACKAGE_VERSION='\"1.0.5-henge\"'" $TP/libtatsu/src/*.c
+add tatsu "-DHV_TSS_HTTPS_ONLY -DPACKAGE_VERSION='\"1.0.5-henge\"'" $TP/libtatsu/src/*.c
 add irecv "-DPACKAGE_VERSION='\"1.3.1-henge\"'" $TP/libirecovery/src/libirecovery.c
 add muxd "-DPACKAGE_NAME='\"usbmuxd\"' -DPACKAGE_VERSION='\"1.1.1-henge\"' -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level" $TP/usbmuxd/src/*.c
 

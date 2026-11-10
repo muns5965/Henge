@@ -26,6 +26,9 @@ on:
       - tools/curl-test.sh
       - tools/curltool-build.sh
       - tools/tatsu-test.sh
+      - tools/tss-dryrun-test.sh
+      - tools/remote-zip-test.sh
+      - tools/check-no-test-flags.sh
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
       - tools/vmrun-irecv-build.sh
@@ -123,8 +126,17 @@ jobs:
       - name: Build vmrun with libirecovery in it (--irecv-probe)
         run: CC=clang EXTRA_LIBS="-lpthread -lm" tools/vmrun-irecv-build.sh build-linux
 
-      - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers
+      - name: Test the real libtatsu (TSS requests) through the HTTP client, against mock TSS servers (https-only build and test build)
         run: tools/tatsu-test.sh build-curltest
+
+      - name: The shipped build has no test switches and libtatsu is https-only there
+        run: CC=clang tools/check-no-test-flags.sh build-flagcheck
+
+      - name: TSS dry run (real request builders, send path compiled out, no value printed) on a synthetic identity
+        run: CC=clang tools/tss-dryrun-test.sh build-dryrun
+
+      - name: Remote ZIP64 partial reader (BuildManifest.plist) against local Range servers (a 5 GiB virtual archive; nothing leaves the runner)
+        run: CC=clang tools/remote-zip-test.sh build-rz
 
       - name: Look at the TSS server's certificate chain with our client (informational; the chain does not depend on the device)
         continue-on-error: true

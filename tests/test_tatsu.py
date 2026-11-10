@@ -3,6 +3,7 @@
 import http.server, os, socketserver, ssl, subprocess, sys, threading, time
 
 tool, work = sys.argv[1], sys.argv[2]
+ship = sys.argv[3] if len(sys.argv) > 3 else None   # the build the app ships: https only, no test option
 os.makedirs(work, exist_ok=True)
 fails = []
 seen = []   # (headers dict lower-case, body)
@@ -24,6 +25,8 @@ class H(http.server.BaseHTTPRequestHandler):
             out = b"STATUS=0&MESSAGE=SUCCESS&REQUEST_STRING=" + PLIST
         elif self.path.startswith("/chunked"):
             out = None
+        elif self.path.startswith("/nostatus"):
+            out = b"garbage without a status"
         elif self.path.startswith("/rejected"):
             out = b"STATUS=8&MESSAGE=This device isn't eligible for the requested build."
         else:
@@ -51,10 +54,10 @@ def start(tls=None):
     threading.Thread(target=s.serve_forever, daemon=True).start()
     return s.server_address[1]
 
-def run(url, env=None, timeout=90):
+def run(url, env=None, timeout=90, exe=None):
     e = dict(os.environ); e.update(env or {})
     t0 = time.time()
-    r = subprocess.run([tool, url], capture_output=True, env=e, timeout=timeout)
+    r = subprocess.run([exe or tool, url], capture_output=True, env=e, timeout=timeout)
     return r.stdout.decode(), r.stderr.decode(), time.time() - t0
 
 P = start()
@@ -83,7 +86,33 @@ check("https TSS reply over a trusted certificate", "RESULT: plist" in out, (out
 os.makedirs(f"{work}/tssemptyca", exist_ok=True)
 shutil.copy(mkcert("tssother", "other.example")[1], f"{work}/tssemptyca/o.pem")
 out, err, dt = run(f"https://localhost:{PT}/ok", {"HV_CA_PATH": f"{work}/tssemptyca"})
-check("untrusted certificate: libtatsu fails after its retries and the certificate error reaches its log (client's message, not a silent empty reply)",
-      "RESULT: null" in out and "certificate check failed" in err, (out, err[-400:]))
+check("untrusted certificate: libtatsu stops at once (no retry, no other host) and the certificate error reaches its log",
+      "RESULT: null" in out and "certificate check failed" in err and "not retrying" in err and dt < 8, (out, err[-400:], dt))
+# host name mismatch: the certificate is trusted but is for another name
+os.makedirs(f"{work}/tssmism", exist_ok=True)
+cm = mkcert("tssmismatch", "other.example"); shutil.copy(cm[1], f"{work}/tssmism/m.pem")
+PM = start(tls=cm); n0 = len(seen)
+out, err, dt = run(f"https://localhost:{PM}/ok", {"HV_CA_PATH": f"{work}/tssmism"})
+check("trusted certificate for another host name: refused, not retried, the request never reaches the handler",
+      "RESULT: null" in out and "not retrying" in err and dt < 8 and len(seen) == n0, (out, err[-300:], dt, len(seen) - n0))
+# retry limit: replies without STATUS are retried, six attempts at most (2 s apart)
+n0 = len(seen)
+out, err, dt = run(f"http://127.0.0.1:{P}/nostatus")
+check("a reply without STATUS: exactly 6 attempts, then NULL", "RESULT: null" in out and len(seen) - n0 == 6, (out, len(seen) - n0, err[-200:]))
+# connection refused: retryable, bounded
+s0 = socketserver.TCPServer.allow_reuse_address
+import socket
+sk = socket.socket(); sk.bind(("127.0.0.1", 0)); dead = sk.getsockname()[1]; sk.close()
+out, err, dt = run(f"http://127.0.0.1:{dead}/ok")
+check("connection refused: retried (6 attempts, ~2 s apart), then NULL within the bound", "RESULT: null" in out and 8 <= dt < 40, (out, dt))
+# https only: the build the app ships
+if ship:
+    n0 = len(seen)
+    out, err, dt = run(f"http://127.0.0.1:{P}/ok", exe=ship)
+    check("shipped build: an http:// URL is refused, nothing is sent", "RESULT: null" in out and "not https" in err and len(seen) == n0 and dt < 3, (out, err[-200:], len(seen) - n0))
+    out, err, dt = run("http://gs.apple.com/TSS/controller?action=2", exe=ship)
+    check("shipped build: http:// to the Apple host is refused", "RESULT: null" in out and "not https" in err and dt < 3, (out, err[-200:]))
+    out, err, dt = run(f"https://localhost:{PT}/ok", {"HV_CA_PATH": cad}, exe=ship)
+    check("shipped build: https to a trusted mock still works (the same code path as the test build)", "RESULT: plist" in out, (out, err[-200:]))
 print("FAILED:", fails if fails else "none")
 sys.exit(1 if fails else 0)

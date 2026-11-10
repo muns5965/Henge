@@ -6,6 +6,7 @@
      tools set it to 0 "to allow untrusted locations"; the iOS stand-in, NSURLSession, verifies regardless, and so does this).
      If no trusted CA certificate can be loaded the request fails; it never falls back to not checking.
    - A redirect from https to plain http is refused. Redirects are followed only with CURLOPT_FOLLOWLOCATION, at most 10.
+   - Plain http to Apple's TSS hosts (gs.apple.com and its two alternate names) is refused on every hop, first request or redirect, in every build. No option re-enables it.
    - Trusted CAs come from the first of these that yields certificates: $HV_CA_PATH, the Android system stores
      (/apex/com.android.conscrypt/cacerts, /system/etc/security/cacerts) and /etc/ssl/certs. Loaded once per process.
    - Extra trust anchors are per host, never global: Apple's TSS server (gs.apple.com) chains to Apple Root CA, which public stores lack, so that
@@ -881,6 +882,13 @@ out:
     return rc;
 }
 
+/* Apple's signing server must only ever be reached over TLS (second line of defence behind libtatsu's own check). */
+static int is_tss_host(const char *h) {
+    static const char *const names[] = {"gs.apple.com", "gs.apple.com.akadns.net", "gs.apple.com.v.aaplimg.com"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) if (!strcasecmp(h, names[i])) return 1;
+    return 0;
+}
+
 static CURLcode perform_hops(Easy *e) {
     if (e->errorbuffer) e->errorbuffer[0] = 0;
     e->response_code = 0;
@@ -894,6 +902,7 @@ static CURLcode perform_hops(Easy *e) {
         Url u;
         int pr = parse_url(cur, &u);
         if (pr) { seterr(e, pr == CURLE_UNSUPPORTED_PROTOCOL ? "only http and https URLs are supported" : "malformed URL"); return (CURLcode)pr; }
+        if (!u.https && is_tss_host(u.host)) { seterr(e, "refusing plain http to Apple's TSS server %s", u.host); return CURLE_UNSUPPORTED_PROTOCOL; }
         char next[2100];
         int redirect = 0;
         CURLcode rc = do_request(e, &u, post, next, sizeof next, &redirect, &total);

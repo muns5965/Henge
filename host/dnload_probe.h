@@ -34,6 +34,16 @@ typedef struct {
     int a4_sent;         /* 1 once the ABORT went out */
     int a4_result;       /* the transfer result of the ABORT (0 = answered, negative HV_USB_E* code) */
     int a5_state;        /* the GET_STATE after the ABORT; -1 = no answer / not sent */
+    /* A session change: the guest left the bus and came back (the session number moved on) or went away, noticed either while a request was in flight or
+       just before one would have gone out. The host only learns THAT it happened between two points, never exactly when or why, so this records the bounds:
+       the last request that got an answer and the request that was in flight (or stopped). Nothing is sent to the new session (no descriptor read, no
+       GET_STATE, no reset): the sequence ends. */
+    int gone;                 /* 1 when the sequence ended because of a session change */
+    int gone_request;         /* 1-based number of the request in flight, or the one that would have been next */
+    int gone_sent;            /* 1 = that request had gone out (its answer was lost); 0 = the check stopped it before it was sent */
+    int last_answered;        /* 1-based number of the last request the device answered (STALL counts as an answer); 0 = none */
+    int64_t session_before;   /* the session the sequence started in */
+    int64_t session_after;    /* the session read right after the change was noticed; -1 = the guest was not on the bus */
 } HvDnloadResult;
 #define HV_DNLOAD_MAX_REQUESTS 8
 #define HV_DNLOAD_MAX_REQUESTS_A4 9 /* A0-A3 use 7, ABORT and the GET_STATE after it make 9; only the A4 mode has this limit */

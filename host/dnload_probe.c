@@ -2,6 +2,7 @@
 #include "usb_desc.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -15,6 +16,9 @@ typedef struct {
     int sent;
     double t0;
     int limit;
+    uint32_t session;        /* the session the sequence runs in; any other session ends it */
+    HvDnloadResult *res;
+    char last_tag[8];        /* stage name of the last answered request */
 } Ctx;
 
 static double now_ms(void) { /* monotonic, with sub-millisecond resolution */
@@ -37,11 +41,36 @@ static void hex(FILE *o, const uint8_t *d, int n) {
     for (int i = 0; i < n; i++) fprintf(o, "%s%02x", i ? " " : "", d[i]);
 }
 
-/* One control request, logged with everything it carried. Refuses (-100) past the request limit or the total time limit. */
+/* The guest's session changed (or it left the bus). Records the bounds and says plainly what is and is not known; nothing is sent to the new session. */
+static void note_gone(Ctx *c, const char *tag, int sent) {
+    HvDnloadResult *res = c->res;
+    uint32_t now_s = 0;
+    int on = hv_vusb_online(c->u, &now_s);
+    res->gone = 1;
+    res->gone_sent = sent;
+    res->gone_request = c->sent + (sent ? 0 : 1);
+    res->session_after = on ? (int64_t)now_s : -1;
+    if (sent) fprintf(c->out, "dnload probe: [%s] SESSION CHANGE noticed while request #%d was in flight (its answer was lost)\n", tag, res->gone_request);
+    else fprintf(c->out, "dnload probe: [%s] SESSION CHANGE noticed before request #%d; it was NOT sent\n", tag, res->gone_request);
+    if (res->last_answered) fprintf(c->out, "dnload probe: [%s]   last answered request: #%d (%s)\n", tag, res->last_answered, c->last_tag);
+    else fprintf(c->out, "dnload probe: [%s]   no request had been answered yet\n", tag);
+    if (on) fprintf(c->out, "dnload probe: [%s]   session %u -> %u (guest on the bus)\n", tag, c->session, now_s);
+    else fprintf(c->out, "dnload probe: [%s]   session %u -> guest not on the bus\n", tag, c->session);
+    fprintf(c->out, "dnload probe: [%s]   the host cannot tell when between those two points the guest left or which request, if any, caused it; "
+                    "the new session is not queried (no descriptor read, no GET_STATE, no reset, nothing more is sent)\n", tag);
+}
+
+/* One control request, logged with everything it carried. Refuses (-100) past the request limit or the total time limit.
+   A request is not sent into a session other than the one the sequence started in (-3 = HV_USB_EGONE, recorded as a session change). */
 static int ctrl(Ctx *c, const char *tag, uint8_t rt, uint8_t rq, uint16_t val, uint16_t idx, void *data, uint16_t len) {
     if (c->sent >= c->limit || now_ms() - c->t0 > TOTAL_MS) {
         fprintf(c->out, "dnload probe: %s refused (request or time limit)\n", tag);
         return -100;
+    }
+    uint32_t cur = 0;
+    if (!hv_vusb_online(c->u, &cur) || cur != c->session) {
+        note_gone(c, tag, 0);
+        return HV_USB_EGONE;
     }
     c->sent++;
     int in = (rt & 0x80) != 0;
@@ -50,10 +79,22 @@ static int ctrl(Ctx *c, const char *tag, uint8_t rt, uint8_t rq, uint16_t val, u
     fprintf(c->out, "\n");
     double t = now_ms();
     int r = hv_usb_control(c->u, rt, rq, val, idx, data, len, TIMEOUT_MS);
+    if (r == HV_USB_ETIMEOUT || r == HV_USB_EIO) {
+        /* hv_usb_control reads the session only when it starts to wait, so a guest that re-attached just after the request went out shows as a timeout
+           instead of "left the bus": look at the session itself. */
+        uint32_t cur2 = 0;
+        if (!hv_vusb_online(c->u, &cur2) || cur2 != c->session) r = HV_USB_EGONE;
+    }
     fprintf(c->out, "dnload probe: [%s]   -> %d", tag, r);
     if (r < 0) fprintf(c->out, " (%s)", err_name(r));
     else if (in && r > 0) { fprintf(c->out, ": "); hex(c->out, data, r); }
     fprintf(c->out, "  (%.3f ms)\n", now_ms() - t);
+    if (r >= 0 || r == HV_USB_ESTALL) { /* the device answered (a STALL is an answer) */
+        c->res->last_answered = c->sent;
+        snprintf(c->last_tag, sizeof c->last_tag, "%s", tag);
+    } else if (r == HV_USB_EGONE) {
+        note_gone(c, tag, 1);
+    }
     return r;
 }
 
@@ -69,7 +110,7 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
     HvDnloadResult res;
     memset(&res, 0, sizeof res);
     res.a0_state = res.a2_state = res.a5_state = -1;
-    Ctx c = {usb, out, 0, now_ms(), with_status >= HV_DNLOAD_A4 ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS};
+    Ctx c = {.u = usb, .out = out, .t0 = now_ms(), .limit = with_status >= HV_DNLOAD_A4 ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS};
     int rv = 0;
     int64_t s = hv_usb_wait_online(usb, wait_ms);
     if (s < 0) {
@@ -78,10 +119,15 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
         return -1;
     }
     fprintf(out, "dnload probe: guest online (session %lld). Stage %s only; the sequence stops at the first anything-unexpected.\n", (long long)s, with_status >= HV_DNLOAD_A4 ? "A0-A5 (A4 = one ABORT, A5 = one GET_STATE)" : with_status ? "A0-A3" : "A0-A2");
+    c.session = (uint32_t)s;
+    c.res = &res;
+    res.session_before = s;
+    res.session_after = -1;
 
     /* setup */
     int r = hv_usb_reset(usb, TIMEOUT_MS);
     fprintf(out, "dnload probe: [setup] bus reset -> %d%s\n", r, r < 0 ? " (stop)" : "");
+    if (r == HV_USB_EGONE) note_gone(&c, "setup", 1);
     if (r < 0) { res.stopped_at = 1; goto done; }
     uint8_t cfg = 0xff;
     r = ctrl(&c, "setup", 0x80, 8, 0, 0, &cfg, 1);
@@ -184,7 +230,18 @@ done:
             default: fprintf(out, "dnload probe: reading: unexpected state; recorded, not interpreted.\n"); break;
             }
         }
+        else if (res.gone && res.gone_request > 0)
+            fprintf(out, "dnload probe: A5: no state was read, so whether the ABORT took the device back to dfuIDLE is NOT known; the session changed first (see SESSION CHANGE).\n");
         fprintf(out, "dnload probe: A4/A5 are the last requests: no CLR_STATUS, no second ABORT, no retry, no further GET_STATUS, no DNLOAD was sent.\n");
+    }
+    if (res.gone) {
+        char last[32];
+        if (res.last_answered) snprintf(last, sizeof last, "#%d (%s)", res.last_answered, c.last_tag);
+        else snprintf(last, sizeof last, "none");
+        fprintf(out, "dnload probe: SESSION CHANGE summary: session %lld -> %lld (-1 = not on the bus); the request in flight or next was #%d (%s); the last answered request was %s.\n",
+                (long long)res.session_before, (long long)res.session_after, res.gone_request, res.gone_sent ? "it had been sent" : "it was not sent", last);
+        fprintf(out, "dnload probe: SESSION CHANGE reading: the guest re-attached (a new session) at some point between those two requests. This run cannot say whether the request before it, "
+                     "the one in flight, or something the guest's own ROM did caused it. Nothing was sent to the new session.\n");
     }
     fprintf(out, "dnload probe: nothing further is sent. (CPU state: see the vmrun lines; it is context only.)\n");
     rv = res.stopped_at;

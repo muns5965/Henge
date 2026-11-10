@@ -26,6 +26,7 @@
 static HvVirtioUsb *g_u;
 static volatile int g_stop;
 static int g_cfg, g_state, g_gs_mode, g_abort_mode;
+static int g_pending_bump; /* the stand-in re-attaches (session + 1) when the next request arrives, without answering it */
 static const char *g_sc;
 #define MAXLOG 64
 static struct { uint8_t rt, rq; uint16_t val, idx, len; uint8_t data[64]; int dlen; } g_log[MAXLOG];
@@ -45,6 +46,9 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
         g_n++;
     }
     uint8_t b[8];
+    /* session-change scenarios: the guest's ROM re-enables the port (as bdif.c's REG_UNK2 write does): a new session, queued messages dropped, no answer */
+    if (g_abort_mode == 8 && rt == 0x80 && rq == 8) { hv_vusb_set_online(g_u, 1); return; } /* during the setup */
+    if (g_pending_bump) { g_pending_bump = 0; hv_vusb_set_online(g_u, 1); return; }          /* the request after the ABORT */
     if (rt == 0x80 && rq == 8) { b[0] = (uint8_t)g_cfg; reply(HV_VUSB_RSP_DATA, b, 1); return; }
     if (rt == 0x00 && rq == 9) {
         if (!strcmp(g_sc, "stall-setcfg")) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
@@ -82,6 +86,8 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
         case 2: g_state = 10; break;                              /* dfuERROR */
         case 3: reply(HV_VUSB_RSP_STALL, NULL, 0); return;
         case 4: return;                                           /* no answer */
+        case 5: g_state = 2; g_pending_bump = 1; break;           /* ABORT answered; the guest re-attaches while the next request is in flight */
+        case 6: hv_vusb_set_online(g_u, 1); return;               /* the guest re-attaches while the ABORT itself is in flight */
         default: g_state = 2; break;                              /* back to dfuIDLE */
         }
         reply(HV_VUSB_RSP_DATA, NULL, 0);
@@ -130,6 +136,8 @@ int main(int argc, char **argv) {
         {"a4-status-err", "idle-after", 1, 6, 1, 2, 0, 0, -1}, {"a4-a3-state2", "idle-after", 7, 6, 1, 2, 0, 0, -1}, {"a4-a3-stall", "idle-after", 4, 5, 1, 2, 0, 0, -1},
         {"a4-a3-short", "idle-after", 5, 5, 1, 2, 0, 0, -1},   {"a4-state3", "sync", 0, 5, 0, 2, 0, 0, -1},           {"a4-not-idle", "not-idle", 0, 2, 0, 2, 0, 0, -1},
         {"a4-stall-dnload", "stall-dnload", 0, 3, 0, 2, 0, 0, -1},
+        /* session changes (the ROM re-attaches: session + 1, queues dropped). A4 reattach = what the phone showed: ABORT answered, the GET_STATE after it lost. */
+        {"a4-reattach", "idle-after", 0, 6, 1, 2, 5, 1, -1},   {"a4-abort-gone", "idle-after", 0, 6, 1, 2, 6, 1, -1},   {"setup-gone", "idle-after", 0, 1, 0, 2, 8, 0, -1},
     };
     int with_status = 0, a3_ret = 0, a3_gs = 0, a4_abort = 0, a4_a5 = -1, a4_mode = 0;
     g_sc = name;
@@ -175,7 +183,7 @@ int main(int argc, char **argv) {
     }
     if (with_status) { /* the checks that only exist for the A3 runs */
         if (a3_gs == 1) {
-            int tail = 0, abort_n = a4_abort, a5_n = a4_abort && g_abort_mode != 3 && g_abort_mode != 4;
+            int tail = 0, abort_n = a4_abort, a5_n = a4_abort && g_abort_mode != 3 && g_abort_mode != 4 && g_abort_mode != 6;
             tail = abort_n + a5_n;
             int b = g_n - tail; /* index just past GET_STATUS */
             if (b < 4 || !(g_log[b - 4].rt == 0xA1 && g_log[b - 4].rq == 5 && g_log[b - 3].rt == 0x21 && g_log[b - 3].rq == 1 && g_log[b - 2].rt == 0xA1 && g_log[b - 2].rq == 5 && g_log[b - 1].rt == 0xA1 && g_log[b - 1].rq == 3 && g_log[b - 1].len == 6)) {
@@ -195,6 +203,24 @@ int main(int argc, char **argv) {
             if (g_gs_mode == 4 && res.a3_len != HV_USB_ESTALL) { printf("A3 STALL not recorded\n"); bad = 1; }
         } else if (res.a3_sent) { printf("A3 was sent although its conditions were not met\n"); bad = 1; }
         if (a4_mode && a3_gs == 1 && !a4_abort && count(0x21, 6)) { printf("ABORT sent although A3 was not clean\n"); bad = 1; }
+    }
+    /* session changes: recorded with their bounds, and nothing is sent after them; every other scenario must NOT report one */
+    {
+        int gone_sc = g_abort_mode == 5 || g_abort_mode == 6 || g_abort_mode == 8;
+        if (!gone_sc && res.gone) { printf("a session change was reported in a scenario without one\n"); bad = 1; }
+        if (gone_sc) {
+            int wreq = g_abort_mode == 5 ? 9 : g_abort_mode == 6 ? 8 : 1, wlast = g_abort_mode == 5 ? 8 : g_abort_mode == 6 ? 7 : 0;
+            if (!res.gone || !res.gone_sent || res.gone_request != wreq || res.last_answered != wlast || res.session_before != 1 || res.session_after != 2) {
+                printf("session change not recorded as expected: gone %d sent %d request %d (want %d) last answered %d (want %d) session %lld -> %lld (want 1 -> 2)\n", res.gone, res.gone_sent,
+                       res.gone_request, wreq, res.last_answered, wlast, (long long)res.session_before, (long long)res.session_after);
+                bad = 1;
+            }
+            if (g_n != wreq) { printf("%d requests seen, expected %d (nothing may follow a session change)\n", g_n, wreq); bad = 1; }
+            if (g_abort_mode == 5 && (res.a4_result != 0 || res.a5_state != -1 || g_log[g_n - 1].rt != 0xA1 || g_log[g_n - 1].rq != 5)) { printf("reattach: ABORT should be answered and the A5 state absent\n"); bad = 1; }
+            if (g_abort_mode == 6 && (res.a4_result != HV_USB_EGONE || res.a5_state != -1 || count(0xA1, 5) != 2)) { printf("abort-gone: ABORT should end in EGONE and no GET_STATE follow\n"); bad = 1; }
+            if (g_abort_mode == 8 && (res.stopped_at != 1 || g_n != 1)) { printf("setup-gone: should stop in the setup after one request\n"); bad = 1; }
+            if (count(0x00, 9) != (g_abort_mode == 8 ? 0 : 1) || count(0x21, 1) != (g_abort_mode == 8 ? 0 : 1)) { printf("unexpected requests around a session change\n"); bad = 1; }
+        }
     }
     if (!strcmp(g_sc, "not-idle") && (dn != 0 || count(0xA1, 5) != 1)) { printf("data sent although the device was not in dfuIDLE\n"); bad = 1; }
     if ((!strcmp(g_sc, "stall-dnload") || !strcmp(g_sc, "silent-dnload")) && (dn != 1 || count(0xA1, 5) != 1)) { printf("after the failed DNLOAD another request was sent\n"); bad = 1; }

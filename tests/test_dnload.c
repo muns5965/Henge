@@ -25,7 +25,7 @@
 
 static HvVirtioUsb *g_u;
 static volatile int g_stop;
-static int g_cfg, g_state, g_gs_mode;
+static int g_cfg, g_state, g_gs_mode, g_abort_mode;
 static const char *g_sc;
 #define MAXLOG 64
 static struct { uint8_t rt, rq; uint16_t val, idx, len; uint8_t data[64]; int dlen; } g_log[MAXLOG];
@@ -70,9 +70,21 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
         case 4: reply(HV_VUSB_RSP_STALL, NULL, 0); return;
         case 5: reply(HV_VUSB_RSP_DATA, st, 3); return;                 /* short answer */
         case 6: return;                                                 /* no answer at all */
+        case 7: st[4] = 2; break;                                        /* clean status but bState 2 */
         default: break;
         }
         reply(HV_VUSB_RSP_DATA, st, 6);
+        return;
+    }
+    if (rt == 0x21 && rq == 6) { /* ABORT */
+        switch (g_abort_mode) {
+        case 1: break;                                            /* acknowledged, state unchanged */
+        case 2: g_state = 10; break;                              /* dfuERROR */
+        case 3: reply(HV_VUSB_RSP_STALL, NULL, 0); return;
+        case 4: return;                                           /* no answer */
+        default: g_state = 2; break;                              /* back to dfuIDLE */
+        }
+        reply(HV_VUSB_RSP_DATA, NULL, 0);
         return;
     }
     if (rt == 0x21 && rq == 1) { /* DNLOAD */
@@ -107,16 +119,22 @@ static int count(uint8_t rt, uint8_t rq) {
 int main(int argc, char **argv) {
     const char *name = argc > 1 ? argv[1] : "sync";
     /* A3 scenarios: name -> {base scenario for the device's A0-A2 behaviour, GET_STATUS mode, expected return, GET_STATUS requests expected} */
-    static const struct { const char *name, *base; int gs_mode, ret, gs_count; } a3[] = {
-        {"a3-ok", "idle-after", 0, 0, 1},         {"a3-err-status", "idle-after", 1, 0, 1}, {"a3-poll0", "idle-after", 2, 0, 1}, {"a3-pollbig", "idle-after", 3, 0, 1},
-        {"a3-stall", "idle-after", 4, 5, 1},      {"a3-short", "idle-after", 5, 5, 1},      {"a3-silent", "idle-after", 6, 5, 1},
-        {"a3-state3", "sync", 0, 5, 0},           {"a3-ignored", "ignored", 0, 5, 0},       {"a3-error-state", "error-after", 0, 5, 0},
-        {"a3-not-idle", "not-idle", 0, 2, 0},     {"a3-stall-dnload", "stall-dnload", 0, 3, 0}, {"a3-stall-state", "stall-state", 0, 2, 0},
+    static const struct { const char *name, *base; int gs_mode, ret, gs_count, level, abort_mode, abort_count, a5; } a3[] = {
+        {"a3-ok", "idle-after", 0, 0, 1, 1, 0, 0, -1},         {"a3-err-status", "idle-after", 1, 0, 1, 1, 0, 0, -1}, {"a3-poll0", "idle-after", 2, 0, 1, 1, 0, 0, -1}, {"a3-pollbig", "idle-after", 3, 0, 1, 1, 0, 0, -1},
+        {"a3-stall", "idle-after", 4, 5, 1, 1, 0, 0, -1},      {"a3-short", "idle-after", 5, 5, 1, 1, 0, 0, -1},      {"a3-silent", "idle-after", 6, 5, 1, 1, 0, 0, -1},
+        {"a3-state3", "sync", 0, 5, 0, 1, 0, 0, -1},           {"a3-ignored", "ignored", 0, 5, 0, 1, 0, 0, -1},       {"a3-error-state", "error-after", 0, 5, 0, 1, 0, 0, -1},
+        {"a3-not-idle", "not-idle", 0, 2, 0, 1, 0, 0, -1},     {"a3-stall-dnload", "stall-dnload", 0, 3, 0, 1, 0, 0, -1}, {"a3-stall-state", "stall-state", 0, 2, 0, 1, 0, 0, -1},
+        /* A4: ABORT only after a clean A3; GET_STATE (A5) only after an answered ABORT; nothing after that */
+        {"a4-ok", "idle-after", 0, 0, 1, 2, 0, 1, 2},          {"a4-stays5", "idle-after", 0, 0, 1, 2, 1, 1, 5},       {"a4-error", "idle-after", 0, 0, 1, 2, 2, 1, 10},
+        {"a4-abort-stall", "idle-after", 0, 6, 1, 2, 3, 1, -1}, {"a4-abort-silent", "idle-after", 0, 6, 1, 2, 4, 1, -1},
+        {"a4-status-err", "idle-after", 1, 6, 1, 2, 0, 0, -1}, {"a4-a3-state2", "idle-after", 7, 6, 1, 2, 0, 0, -1}, {"a4-a3-stall", "idle-after", 4, 5, 1, 2, 0, 0, -1},
+        {"a4-a3-short", "idle-after", 5, 5, 1, 2, 0, 0, -1},   {"a4-state3", "sync", 0, 5, 0, 2, 0, 0, -1},           {"a4-not-idle", "not-idle", 0, 2, 0, 2, 0, 0, -1},
+        {"a4-stall-dnload", "stall-dnload", 0, 3, 0, 2, 0, 0, -1},
     };
-    int with_status = 0, a3_ret = 0, a3_gs = 0;
+    int with_status = 0, a3_ret = 0, a3_gs = 0, a4_abort = 0, a4_a5 = -1, a4_mode = 0;
     g_sc = name;
     for (unsigned i = 0; i < sizeof a3 / sizeof a3[0]; i++)
-        if (!strcmp(name, a3[i].name)) { g_sc = a3[i].base, g_gs_mode = a3[i].gs_mode, a3_ret = a3[i].ret, a3_gs = a3[i].gs_count, with_status = 1; }
+        if (!strcmp(name, a3[i].name)) { g_sc = a3[i].base, g_gs_mode = a3[i].gs_mode, a3_ret = a3[i].ret, a3_gs = a3[i].gs_count, with_status = a3[i].level, g_abort_mode = a3[i].abort_mode, a4_abort = a3[i].abort_count, a4_a5 = a3[i].a5, a4_mode = a3[i].level == 2; }
     g_cfg = !strcmp(g_sc, "configured") ? 1 : 0;
     g_state = !strcmp(g_sc, "not-idle") ? 8 : 2;
     g_u = calloc(1, sizeof *g_u);
@@ -137,8 +155,8 @@ int main(int argc, char **argv) {
     if (with_status) want = a3_ret;
     int bad = r != want;
     /* things that must never be sent, in any scenario */
-    if (count(0xA1, 3) != (with_status ? a3_gs : 0) || count(0x21, 6) || count(0x21, 4) || count(0xA1, 2) || count(0x21, 0) || count(0xA1, 0xff) || g_resets > 1) { printf("FORBIDDEN request seen (a GET_STATUS beyond the one allowed, ABORT/CLR_STATUS/UPLOAD/DETACH or a second reset)\n"); bad = 1; }
-    if (g_n > HV_DNLOAD_MAX_REQUESTS) { printf("more than %d requests\n", HV_DNLOAD_MAX_REQUESTS); bad = 1; }
+    if (count(0xA1, 3) != (with_status ? a3_gs : 0) || count(0x21, 6) != a4_abort || count(0x21, 4) || count(0xA1, 2) || count(0x21, 0) || count(0xA1, 0xff) || g_resets > 1) { printf("FORBIDDEN request seen (a GET_STATUS beyond the one allowed, ABORT/CLR_STATUS/UPLOAD/DETACH or a second reset)\n"); bad = 1; }
+    if (g_n > (a4_mode ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS)) { printf("more than %d requests\n", HV_DNLOAD_MAX_REQUESTS); bad = 1; }
     int dn = count(0x21, 1);
     if (dn > 1) { printf("more than one DNLOAD\n"); bad = 1; }
     for (int i = 0; i < g_n; i++) if (g_log[i].rt == 0x21 && g_log[i].rq == 1) {
@@ -157,10 +175,17 @@ int main(int argc, char **argv) {
     }
     if (with_status) { /* the checks that only exist for the A3 runs */
         if (a3_gs == 1) {
-            if (g_n < 4 || !(g_log[g_n - 4].rt == 0xA1 && g_log[g_n - 4].rq == 5 && g_log[g_n - 3].rt == 0x21 && g_log[g_n - 2].rt == 0xA1 && g_log[g_n - 2].rq == 5 && g_log[g_n - 1].rt == 0xA1 && g_log[g_n - 1].rq == 3 && g_log[g_n - 1].len == 6)) {
-                printf("A3 run: the last four requests are not GET_STATE, DNLOAD, GET_STATE, GET_STATUS(6)\n"); bad = 1;
+            int tail = 0, abort_n = a4_abort, a5_n = a4_abort && g_abort_mode != 3 && g_abort_mode != 4;
+            tail = abort_n + a5_n;
+            int b = g_n - tail; /* index just past GET_STATUS */
+            if (b < 4 || !(g_log[b - 4].rt == 0xA1 && g_log[b - 4].rq == 5 && g_log[b - 3].rt == 0x21 && g_log[b - 3].rq == 1 && g_log[b - 2].rt == 0xA1 && g_log[b - 2].rq == 5 && g_log[b - 1].rt == 0xA1 && g_log[b - 1].rq == 3 && g_log[b - 1].len == 6)) {
+                printf("A3 run: the requests are not ... GET_STATE, DNLOAD, GET_STATE, GET_STATUS(6)\n"); bad = 1;
             }
-            if (g_n != 7) { printf("A3 run: %d requests seen, 7 expected\n", g_n); bad = 1; }
+            if (abort_n && !(g_n > b && g_log[b].rt == 0x21 && g_log[b].rq == 6 && g_log[b].len == 0 && g_log[b].dlen == 0)) { printf("A4: ABORT is not the request right after GET_STATUS\n"); bad = 1; }
+            if (a5_n && !(g_log[g_n - 1].rt == 0xA1 && g_log[g_n - 1].rq == 5)) { printf("A5: GET_STATE is not the last request\n"); bad = 1; }
+            if (g_n != 7 + tail) { printf("run: %d requests seen, %d expected\n", g_n, 7 + tail); bad = 1; }
+            if (a4_mode && res.a4_sent != (a4_abort ? 1 : 0)) { printf("a4_sent %d, expected %d\n", res.a4_sent, a4_abort); bad = 1; }
+            if (a4_mode && a4_abort && res.a5_state != a4_a5) { printf("A5 state %d, expected %d\n", res.a5_state, a4_a5); bad = 1; }
             if (res.a3_sent != 1) { printf("A3 not recorded as sent\n"); bad = 1; }
             if (g_gs_mode == 0 && !(res.a3_parsed && res.a3_status == 0 && res.a3_poll_ms == 50 && res.a3_state == 5 && res.a3_len == 6)) { printf("A3 fields wrong: parsed %d status %d poll %d state %d len %d\n", res.a3_parsed, res.a3_status, res.a3_poll_ms, res.a3_state, res.a3_len); bad = 1; }
             if (g_gs_mode == 1 && !(res.a3_parsed && res.a3_status == 0x0B && res.a3_state == 10)) { printf("A3 error status not recorded\n"); bad = 1; }
@@ -169,6 +194,7 @@ int main(int argc, char **argv) {
             if (g_gs_mode == 5 && (res.a3_parsed || res.a3_len != 3)) { printf("A3 short answer not recorded as unparsed 3 bytes\n"); bad = 1; }
             if (g_gs_mode == 4 && res.a3_len != HV_USB_ESTALL) { printf("A3 STALL not recorded\n"); bad = 1; }
         } else if (res.a3_sent) { printf("A3 was sent although its conditions were not met\n"); bad = 1; }
+        if (a4_mode && a3_gs == 1 && !a4_abort && count(0x21, 6)) { printf("ABORT sent although A3 was not clean\n"); bad = 1; }
     }
     if (!strcmp(g_sc, "not-idle") && (dn != 0 || count(0xA1, 5) != 1)) { printf("data sent although the device was not in dfuIDLE\n"); bad = 1; }
     if ((!strcmp(g_sc, "stall-dnload") || !strcmp(g_sc, "silent-dnload")) && (dn != 1 || count(0xA1, 5) != 1)) { printf("after the failed DNLOAD another request was sent\n"); bad = 1; }

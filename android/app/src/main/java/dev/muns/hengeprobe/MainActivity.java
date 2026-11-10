@@ -167,6 +167,18 @@ public class MainActivity extends Activity {
                 .show());
         root.addView(a3Button);
 
+        final Button a4Button = new Button(this);
+        a4Button.setText("DFU 시험 A4: A0~A3 재현 + ABORT 1회 + GET_STATE 1회 (실제 ROM으로 전송)");
+        a4Button.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("실제 ROM에 ABORT를 보냅니다")
+                .setMessage("A0~A3(리셋, 구성, GET_STATE, 0으로 채운 16바이트 DNLOAD, GET_STATE, GET_STATUS 1회)를 앞선 시험과 똑같이 재현합니다. "
+                        + "GET_STATUS가 오류 없음(bStatus 0)과 상태 5를 돌려줄 때만 DFU ABORT를 정확히 1회 보내고, 이어서 GET_STATE를 1회 보낸 뒤 아무것도 보내지 않습니다. "
+                        + "CLR_STATUS·재시도·두 번째 ABORT·길이 0 DNLOAD·두 번째 블록·Apple 서명 요청·IPSW 다운로드·복원은 하지 않습니다. 실행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true, 4))
+                .show());
+        root.addView(a4Button);
+
         final Button selftestButton = new Button(this);
         selftestButton.setText("복원 도구 자체 시험 (앱 안에서 적재·스레드·loopback, 잘못된 IPSW 3종)");
         selftestButton.setOnClickListener(v -> runRestoreSelftest());
@@ -661,11 +673,16 @@ public class MainActivity extends Activity {
 
     /** dnload=true (needs installer): --dnload-probe, stage A0-A2 of the DFU download test (host/dnload_probe.h), run by the same program as irecv. */
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload) {
-        runVmrun(installer, irecvIn, dnload, false);
+        runVmrun(installer, irecvIn, dnload, 2);
     }
 
     /** a3=true (with dnload): --dnload-probe-a3, A0-A2 and then one GET_STATUS. */
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final boolean a3) {
+        runVmrun(installer, irecvIn, dnload, a3 ? 3 : 2);
+    }
+
+    /** stage (with dnload): 2 = --dnload-probe (A0-A2), 3 = --dnload-probe-a3 (+ one GET_STATUS), 4 = --dnload-probe-a4 (+ one ABORT and one GET_STATE). */
+    private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -707,7 +724,7 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add(dnload ? (a3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer) cmd.add(dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;

@@ -14,6 +14,7 @@ typedef struct {
     FILE *out;
     int sent;
     double t0;
+    int limit;
 } Ctx;
 
 static double now_ms(void) { /* monotonic, with sub-millisecond resolution */
@@ -38,7 +39,7 @@ static void hex(FILE *o, const uint8_t *d, int n) {
 
 /* One control request, logged with everything it carried. Refuses (-100) past the request limit or the total time limit. */
 static int ctrl(Ctx *c, const char *tag, uint8_t rt, uint8_t rq, uint16_t val, uint16_t idx, void *data, uint16_t len) {
-    if (c->sent >= HV_DNLOAD_MAX_REQUESTS || now_ms() - c->t0 > TOTAL_MS) {
+    if (c->sent >= c->limit || now_ms() - c->t0 > TOTAL_MS) {
         fprintf(c->out, "dnload probe: %s refused (request or time limit)\n", tag);
         return -100;
     }
@@ -67,8 +68,8 @@ static int get_state(Ctx *c, const char *tag, int *state) {
 int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_status, HvDnloadResult *resp) {
     HvDnloadResult res;
     memset(&res, 0, sizeof res);
-    res.a0_state = res.a2_state = -1;
-    Ctx c = {usb, out, 0, now_ms()};
+    res.a0_state = res.a2_state = res.a5_state = -1;
+    Ctx c = {usb, out, 0, now_ms(), with_status >= HV_DNLOAD_A4 ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS};
     int rv = 0;
     int64_t s = hv_usb_wait_online(usb, wait_ms);
     if (s < 0) {
@@ -76,7 +77,7 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
         if (resp) *resp = res;
         return -1;
     }
-    fprintf(out, "dnload probe: guest online (session %lld). Stage %s only; the sequence stops at the first anything-unexpected.\n", (long long)s, with_status ? "A0-A3" : "A0-A2");
+    fprintf(out, "dnload probe: guest online (session %lld). Stage %s only; the sequence stops at the first anything-unexpected.\n", (long long)s, with_status >= HV_DNLOAD_A4 ? "A0-A5 (A4 = one ABORT, A5 = one GET_STATE)" : with_status ? "A0-A3" : "A0-A2");
 
     /* setup */
     int r = hv_usb_reset(usb, TIMEOUT_MS);
@@ -130,11 +131,26 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
         }
     }
 
+    /* A4/A5: one ABORT and one GET_STATE, only after a clean A3 (bStatus 0 and bState 5), nothing after them */
+    if (with_status >= HV_DNLOAD_A4 && res.stopped_at == 0) {
+        if (!(res.a3_parsed && res.a3_status == 0 && res.a3_state == 5)) {
+            fprintf(out, "dnload probe: [A4] ABORT not sent: A3 did not report bStatus 0 with bState 5 (stop)\n");
+            res.stopped_at = 6;
+            goto done;
+        }
+        res.a4_sent = 1;
+        r = ctrl(&c, "A4", 0x21, 6, 0, 0, NULL, 0);
+        res.a4_result = r;
+        if (r < 0) { fprintf(out, "dnload probe: [A4] the ABORT failed; no GET_STATE is sent after it (stop)\n"); res.stopped_at = 6; goto done; }
+        r = get_state(&c, "A5", &res.a5_state);
+        if (r != 1) { res.stopped_at = 6; goto done; }
+    }
+
 done:
     res.requests = c.sent;
     fprintf(out, "dnload probe: ---- result ----\n");
-    fprintf(out, "dnload probe: control requests sent: %d (limit %d); stopped at: %s\n", res.requests, HV_DNLOAD_MAX_REQUESTS,
-            res.stopped_at == 0 ? (with_status ? "no stop, A0-A3 all answered" : "no stop, A0-A2 all answered") : res.stopped_at == 1 ? "setup" : res.stopped_at == 2 ? "A0" : res.stopped_at == 3 ? "A1" : res.stopped_at == 4 ? "A2" : "A3");
+    fprintf(out, "dnload probe: control requests sent: %d (limit %d); stopped at: %s\n", res.requests, c.limit,
+            res.stopped_at == 0 ? (with_status >= HV_DNLOAD_A4 ? "no stop, A0-A5 all answered" : with_status ? "no stop, A0-A3 all answered" : "no stop, A0-A2 all answered") : res.stopped_at == 1 ? "setup" : res.stopped_at == 2 ? "A0" : res.stopped_at == 3 ? "A1" : res.stopped_at == 4 ? "A2" : res.stopped_at == 5 ? "A3" : "A4/A5");
     if (res.a0_state >= 0) fprintf(out, "dnload probe: A0 state %d (%s)\n", res.a0_state, hv_dfu_state_name(res.a0_state));
     if (res.a1_result > 0) fprintf(out, "dnload probe: A1 DNLOAD: the device answered the request (%d bytes were sent; the count is the request's wLength, not one the device reported)\n", res.a1_result);
     if (res.a2_state >= 0) {
@@ -156,6 +172,19 @@ done:
             fprintf(out, "dnload probe: reading: these are the values GET_STATUS returned, nothing more. bState after GET_STATUS can differ from what GET_STATE showed because GET_STATUS can advance the state; no second GET_STATUS is sent, whatever it says. Whether state 5 is normal for this ROM, or the ROM accepted the 16 bytes, is not answered by this.\n");
         }
         fprintf(out, "dnload probe: A3 is the last request: no second GET_STATUS, no ABORT, no CLR_STATUS, no zero-length DNLOAD, no second block was sent.\n");
+    }
+    if (res.a4_sent) {
+        fprintf(out, "dnload probe: A4 DFU ABORT: transfer returned %d%s\n", res.a4_result, res.a4_result < 0 ? " (failed; no GET_STATE was sent after it)" : " (the device answered the request)");
+        if (res.a5_state >= 0) {
+            fprintf(out, "dnload probe: A5 GET_STATE after ABORT: %d (%s)\n", res.a5_state, hv_dfu_state_name(res.a5_state));
+            switch (res.a5_state) {
+            case 2: fprintf(out, "dnload probe: reading: back in dfuIDLE after ABORT: the device left the download state when asked to.\n"); break;
+            case 5: fprintf(out, "dnload probe: reading: still dfuDNLOAD-IDLE after ABORT: the ABORT did not change the state (ignored, or not processed yet).\n"); break;
+            case 10: fprintf(out, "dnload probe: reading: dfuERROR after ABORT. GET_STATUS and CLR_STATUS (neither is sent) would be the next questions.\n"); break;
+            default: fprintf(out, "dnload probe: reading: unexpected state; recorded, not interpreted.\n"); break;
+            }
+        }
+        fprintf(out, "dnload probe: A4/A5 are the last requests: no CLR_STATUS, no second ABORT, no retry, no further GET_STATUS, no DNLOAD was sent.\n");
     }
     fprintf(out, "dnload probe: nothing further is sent. (CPU state: see the vmrun lines; it is context only.)\n");
     rv = res.stopped_at;

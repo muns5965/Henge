@@ -709,15 +709,19 @@ public class MainActivity extends Activity {
         final String libDir = getApplicationInfo().nativeLibraryDir;
         new Thread(() -> {
             StringBuilder acc = new StringBuilder();
+            acc.append("확인 중입니다… 단계마다 이 화면에 결과가 추가됩니다(최대 1~2분).\n");
+            show(acc.toString());
             File exe = new File(libDir, "libcurltool.so");
             if (!exe.exists()) acc.append("libcurltool.so가 이 APK에 없습니다.\n");
             else {
                 acc.append("1) CA 저장소\n").append(runTool(exe, "--ca"));
+                show(acc.toString() + "\n(접속 확인 중…)\n");
                 String[] urls = apple ? new String[] {"https://gs.apple.com/TSS/controller?action=2"}
                                       : new String[] {"https://example.com/", "https://www.apple.com/"};
                 for (String u : urls) {
                     String o = runTool(exe, u, "--discard");
                     acc.append("\n2) ").append(u).append('\n').append(o);
+                    show(acc.toString());
                     java.util.regex.Matcher m = java.util.regex.Pattern.compile("RC=(\\d+) HTTP=(\\d+) BYTES=(\\d+) ERR=(.*)").matcher(o);
                     boolean tlsDone = o.contains("TLS_VERIFIED=1");
                     if (m.find()) {
@@ -744,11 +748,19 @@ public class MainActivity extends Activity {
             for (String a : args) cmd.add(a);
             Process p = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true).start();
             StringBuilder o = new StringBuilder();
+            final boolean[] killed = {false};
+            Thread dog = new Thread(() -> { // the read below blocks until the tool exits, so the time limit has to live elsewhere
+                try { Thread.sleep(60000); killed[0] = true; p.destroyForcibly(); } catch (InterruptedException ignored) { }
+            });
+            dog.setDaemon(true);
+            dog.start();
             try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
                 String line;
                 while ((line = br.readLine()) != null) o.append("   ").append(line).append('\n');
             }
-            if (!p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) { p.destroyForcibly(); o.append("   (120초 안에 끝나지 않아 종료)\n"); }
+            dog.interrupt();
+            p.waitFor();
+            if (killed[0]) o.append("   (60초 안에 끝나지 않아 종료)\n");
             return o.toString();
         } catch (Exception e) {
             return "   실행 오류: " + e + "\n";

@@ -30,6 +30,7 @@ on:
       - tools/vmrun-irecv-build.sh
       - tools/vmrun-tss-build.sh
       - tools/restore-selftest-build.sh
+      - tools/vmrun-preflight-build.sh
       - third_party/idevicerestore/**
       - third_party/usbmuxd/**
       - third_party/libusbmuxd/**
@@ -103,6 +104,9 @@ jobs:
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-selftest-build.sh build-restore \
             && cp build-restore/restore_selftest android/app/src/main/jniLibs/arm64-v8a/librestoreselftest.so || echo "::warning::the restore self-test did not build; the APK goes without that button's program"
+          # vmrun with the real restore tool in it (the "복원 도구 장치 감지" button, --restore-preflight): needs the restore stack just built. Its own program; optional.
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-preflight-build.sh build-engine build-restore \
+            && cp build-engine/vmrun_preflight android/app/src/main/jniLibs/arm64-v8a/libvmrunpreflight.so || echo "::warning::vmrun with the restore tool did not build; the APK goes without that button's program"
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake

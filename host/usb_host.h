@@ -33,6 +33,9 @@ typedef struct {
 } HvCtrlRecord;
 int hv_libusb_ctrl_count(void);
 int hv_libusb_data_transfer_count(void); /* bulk/interrupt/isochronous transfers submitted through the API so far (firmware goes out this way; control requests are counted above) */
+int hv_libusb_open_handles(void);          /* device handles opened and not yet closed */
+int hv_libusb_handles_opened_total(void);  /* handles opened so far */
+int hv_libusb_hotplug_live(void);          /* hotplug callbacks registered and not yet deregistered (the restore tool's device-event subscription) */
 int hv_libusb_ctrl_get(int k, HvCtrlRecord *out); /* 1 if entry k is still held */
 
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */

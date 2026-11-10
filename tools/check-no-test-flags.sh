@@ -4,6 +4,7 @@
 #   HV_RZ_ALLOW_HTTP_TEST   same for host/remote_zip.c                          (tools/remote-zip-test.sh only; the object check is skipped: the shipped
 #                           builds do not contain remote_zip.c yet, the source scan below still covers them)
 #   HV_DL_ALLOW_HTTP_TEST   same for host/ipsw_dl.c; HV_DL_TEST: the test arguments of tests/ipsw_dl_tool.c (tools/ipswdl-test.sh only)
+#   HV_PREFLIGHT_NEGATIVE_CONTROL  drops FLAG_NOACTION from host/restore_preflight.c   (tools/preflight-test.sh only)
 #   HV_ALLOW_CA_ENV         lets HV_EXTRA_ANCHOR / HV_CA_PATH widen trust      (the test builds of the HTTP client only)
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
@@ -14,10 +15,10 @@ CC=${CC:-cc}; W=${1:-build-flagcheck}; mkdir -p "$W"
 fail=0
 bad() { echo "FAIL $*"; fail=1; }
 # files that build what ships (the test scripts tatsu-test.sh, curl-test.sh, download-test.sh and the engine workflow's test steps are the places allowed to use them)
-for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/ipswdl-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh \
+for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/ipswdl-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh tools/vmrun-preflight-build.sh \
          android/app/src/main/cpp/CMakeLists.txt android/app/build.gradle .github/workflows/android-apk.yml .github/workflows/build-henge.yml ios/project.yml Makefile; do
   [ -f "$f" ] || continue
-  if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST\|HV_DL_ALLOW_HTTP_TEST\|HV_DL_TEST" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only switch (HV_TSS_/HV_RZ_/HV_DL_ALLOW_HTTP_TEST, HV_DL_TEST)"; fi
+  if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST\|HV_DL_ALLOW_HTTP_TEST\|HV_DL_TEST\|HV_PREFLIGHT_NEGATIVE_CONTROL" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only switch (HV_TSS_/HV_RZ_/HV_DL_ALLOW_HTTP_TEST, HV_DL_TEST)"; fi
   # the workflow comment that says "No -DHV_ALLOW_CA_ENV here" is prose; a real setting is -DHV_ALLOW_CA_ENV or CURLTOOL_CFLAGS=...HV_ALLOW_CA_ENV
   if grep -n "\-DHV_ALLOW_CA_ENV\|CURLTOOL_CFLAGS=[^ ]*HV_ALLOW_CA_ENV" "$f" | grep -v 'No -DHV_ALLOW_CA_ENV' > /dev/null; then bad "$f sets HV_ALLOW_CA_ENV"; fi
 done

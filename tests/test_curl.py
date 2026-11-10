@@ -228,6 +228,33 @@ check("a timeout that is not reached changes nothing", r["RC"] == "0" and r["out
 r = run([f"http://127.0.0.1:{SILENT_PORT}/x", "--timeout-ms", "1000"]); t = tm(r)
 check("accepts the connection but never reads: the request is small, so it goes out, and waiting for the reply ends at the limit", r["RC"] == "28", (r["RC"], t))
 
+# --- deny mode: refused before any lookup or connection (negative test: a counting server proves that nothing arrived) ---
+def counting_server():
+    import socket
+    ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); ls.bind(("127.0.0.1", 0)); ls.listen(50)
+    cnt = {"n": 0}
+    def loop():
+        while True:
+            c, _ = ls.accept(); cnt["n"] += 1
+            try: c.recv(65536); c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            except Exception: pass
+            c.close()
+    threading.Thread(target=loop, daemon=True).start()
+    return ls.getsockname()[1], cnt
+CPORT, CCNT = counting_server()
+r = run([f"http://127.0.0.1:{CPORT}/x"])
+check("(control) the counting server sees a normal request, and the tool reports ATTEMPTS=1 DENIED=0", r["RC"] == "0" and CCNT["n"] == 1 and "ATTEMPTS=1 DENIED=0" in r["stderr"], (r["RC"], CCNT, r["stderr"][-200:]))
+CCNT["n"] = 0
+r = run([f"http://127.0.0.1:{CPORT}/x", "--deny", "--also", f"http://127.0.0.1:{CPORT}/y", "--also", "https://updates.cdn-apple.com/x"]); t = tm(r)
+check("deny mode: the request is refused (CURLE_COULDNT_CONNECT), the text says why", r["RC"] == "7" and "refused by the host program" in r["ERR"], (r["RC"], r["ERR"]))
+check("  the counting server saw no connection at all (not even a connect)", CCNT["n"] == 0, CCNT)
+check("  all three transfers on the handle were refused and counted (ATTEMPTS=3 DENIED=3), including a name that would need DNS", "FINAL ATTEMPTS=3 DENIED=3" in r["stderr"] and "REQ 2 RC=7" in r["stderr"] and "REQ 3 RC=7" in r["stderr"], r["stderr"][-400:])
+check("  no descriptor was opened", t["FDS_AFTER"] == t["FDS_BEFORE"], t)
+good_d = mkcert("deny", "localhost")
+srv_d, D_PORT = serve(None, tls=good_d)
+r = run([f"https://localhost:{D_PORT}/hello", "--deny"])
+check("deny mode with an https URL: refused before TLS (no certificate step, TLS_VERIFIED=0)", r["RC"] == "7" and "TLS_VERIFIED=0" in r["stderr"], (r["RC"], r["stderr"][-300:]))
+
 # --- big downloads: streamed, exact, bounded memory; cut off midway ---
 N = 64 * 1024 * 1024
 small = run_big([B + "/gen?n=1048576", "--discard"])   # same fork from the same parent: its peak RSS is the baseline (a child's ru_maxrss includes the pre-exec copy of the test process)

@@ -771,6 +771,11 @@ void libusb_free_config_descriptor(struct libusb_config_descriptor *c) {
     free(c);
 }
 
+static int g_handles_open, g_handles_total, g_hotplug_live;
+int hv_libusb_open_handles(void) { return __atomic_load_n(&g_handles_open, __ATOMIC_SEQ_CST); }
+int hv_libusb_handles_opened_total(void) { return __atomic_load_n(&g_handles_total, __ATOMIC_SEQ_CST); }
+int hv_libusb_hotplug_live(void) { return __atomic_load_n(&g_hotplug_live, __ATOMIC_SEQ_CST); }
+
 int libusb_open(libusb_device *d, libusb_device_handle **h) {
     if (d->gone) return LIBUSB_ERROR_NO_DEVICE;
     libusb_device_handle *x = calloc(1, sizeof *x);
@@ -778,11 +783,14 @@ int libusb_open(libusb_device *d, libusb_device_handle **h) {
     x->dev = libusb_ref_device(d);
     x->config = d->configs[0] && d->config_len[0] >= 6 ? d->configs[0][5] : 1;
     *h = x;
+    __atomic_add_fetch(&g_handles_open, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&g_handles_total, 1, __ATOMIC_SEQ_CST);
     return 0;
 }
 
 void libusb_close(libusb_device_handle *h) {
     if (!h) return;
+    __atomic_sub_fetch(&g_handles_open, 1, __ATOMIC_SEQ_CST);
     dev_unref(h->dev);
     free(h);
 }
@@ -849,6 +857,7 @@ int libusb_hotplug_register_callback(libusb_context *ctx, int events, int flags,
     h->handle = g_hotplug_next++;
     h->next = g_hotplug;
     g_hotplug = h;
+    __atomic_add_fetch(&g_hotplug_live, 1, __ATOMIC_SEQ_CST);
     struct libusb_device *now = g_dev;
     if (now) now->refs++;
     pthread_mutex_unlock(&g_mu);
@@ -867,6 +876,7 @@ void libusb_hotplug_deregister_callback(libusb_context *ctx, libusb_hotplug_call
             Hotplug *h = *p;
             *p = h->next;
             free(h);
+            __atomic_sub_fetch(&g_hotplug_live, 1, __ATOMIC_SEQ_CST);
             break;
         }
     pthread_mutex_unlock(&g_mu);

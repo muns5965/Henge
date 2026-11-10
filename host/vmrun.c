@@ -20,6 +20,9 @@
 #ifdef HV_TSS_PROBE
 #include "tss_probe.h"
 #endif
+#ifdef HV_RESTORE_PREFLIGHT
+#include "restore_preflight.h"
+#endif
 #include "vmapple.h"
 
 static int exited;
@@ -121,6 +124,7 @@ int main(int argc, char **argv) {
     double seconds = 30;
     const char *snap = NULL;
     int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0, tss_probe = 0;
+    const char *pf_ipsw = NULL, *pf_work = ".";
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -146,10 +150,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--dnload-probe")) dnload_probe = 1; /* stage A0-A2 of the DFU download test (see host/dnload_probe.h); a vmrun built with HV_IRECV_PROBE */
         else if (!strcmp(a, "--tss-probe")) tss_probe = 1; /* needs a vmrun built with HV_TSS_PROBE: ONE request to Apple's TSS server, see host/tss_probe.h */
         else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
+        else if (!strcmp(a, "--restore-preflight") && more) pf_ipsw = argv[++i]; /* needs a vmrun built with HV_RESTORE_PREFLIGHT: the real restore tool up to its no-action stop (host/restore_preflight.h); asks Apple nothing */
+        else if (!strcmp(a, "--workdir") && more) pf_work = argv[++i];
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--restore-preflight IPSW [--workdir DIR]] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -170,6 +176,16 @@ int main(int argc, char **argv) {
         setenv("HV_VUSB_LOG", "1", 1);
 #else
         fprintf(stderr, "vmrun: this build has no dnload probe in it (--dnload-probe unavailable)\n");
+        return 2;
+#endif
+    }
+    if (pf_ipsw) {
+#ifdef HV_RESTORE_PREFLIGHT
+        if (usb_probe || irecv_probe || dnload_probe || tss_probe) { fprintf(stderr, "vmrun: --restore-preflight cannot be combined with the USB probes\n"); return 2; }
+        if (!cfg.installer) { fprintf(stderr, "vmrun: --restore-preflight needs --installer (the DFU boot)\n"); return 2; }
+        if (seconds < 150) seconds = 150; /* up to 60 s for the guest to come on the bus, then the tool (cap 120 s) */
+#else
+        fprintf(stderr, "vmrun: this build has no restore tool in it (--restore-preflight unavailable)\n");
         return 2;
 #endif
     }
@@ -210,7 +226,7 @@ int main(int argc, char **argv) {
     }
     char ecid_txt[24];
     printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB (0 = the VM's default), ecid %s, seed %llx, aux_offset %llu, installer %d, psci_log %d, seconds %.0f\n",
-           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, tss_probe ? "(hidden)" : (snprintf(ecid_txt, sizeof ecid_txt, "%llx", (unsigned long long)cfg.ecid), ecid_txt),
+           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (tss_probe || pf_ipsw) ? "(hidden)" : (snprintf(ecid_txt, sizeof ecid_txt, "%llx", (unsigned long long)cfg.ecid), ecid_txt),
            (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, psci_log, seconds);
     char err[512] = "";
     double t0 = now();
@@ -224,6 +240,13 @@ int main(int argc, char **argv) {
         HvVmapple *bd2 = hv_vm_board();
         if (bd2 && bd2->vusb) hv_tss_probe_start(bd2->vusb, cfg.ecid);
         else fprintf(stderr, "vmrun: no USB port in this boot mode; --tss-probe has nothing to talk to\n");
+    }
+#endif
+#ifdef HV_RESTORE_PREFLIGHT
+    if (pf_ipsw) {
+        HvVmapple *bdp = hv_vm_board();
+        if (bdp && bdp->vusb) hv_restore_preflight_start(bdp->vusb, pf_ipsw, pf_work, cfg.ecid);
+        else fprintf(stderr, "vmrun: no USB port in this boot mode; --restore-preflight has nothing to talk to\n");
     }
 #endif
 #ifdef HV_IRECV_PROBE
@@ -247,6 +270,9 @@ int main(int argc, char **argv) {
     while (!EXITED() && now() - t1 < seconds
 #ifdef HV_TSS_PROBE
            && !(tss_probe && hv_tss_probe_finished())
+#endif
+#ifdef HV_RESTORE_PREFLIGHT
+           && !(pf_ipsw && hv_restore_preflight_finished())
 #endif
            ) {
         usleep(10000);

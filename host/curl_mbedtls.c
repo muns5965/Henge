@@ -76,6 +76,16 @@ void hv_curl_cancel(CURL *c) { if (c) __atomic_store_n(&((Easy *)c)->cancel, 1, 
 void hv_curl_cancel_reset(CURL *c) { if (c) __atomic_store_n(&((Easy *)c)->cancel, 0, __ATOMIC_SEQ_CST); }
 void hv_curl_set_cancel_flag(volatile int *flag) { g_cancel_flag = flag; }
 
+/* Deny mode (a program that must not reach any server, such as the restore preflight): every transfer started through this client is refused at the top of
+   curl_easy_perform, before any name lookup, socket or TLS step, and counted. It covers this client only: another library or a direct socket call in the same
+   process is not stopped by it. */
+static volatile int g_deny;
+static volatile int g_attempts, g_denied;
+void hv_curl_deny_network(int on) { __atomic_store_n(&g_deny, on ? 1 : 0, __ATOMIC_SEQ_CST); }
+int hv_curl_deny_active(void) { return __atomic_load_n(&g_deny, __ATOMIC_SEQ_CST); }
+int hv_curl_attempt_count(void) { return __atomic_load_n(&g_attempts, __ATOMIC_SEQ_CST); }   /* curl_easy_perform calls so far */
+int hv_curl_denied_count(void) { return __atomic_load_n(&g_denied, __ATOMIC_SEQ_CST); }       /* of those, refused by deny mode */
+
 /* Is the running transfer to be stopped? Sets e->stop (first reason wins). Cheap: called before every wait and every body piece. */
 static int stop_check(Easy *e) {
     if (!e) return 0;
@@ -923,6 +933,12 @@ static CURLcode perform_hops(Easy *e) {
    libcurl would give (28 timed out, 42 aborted) whatever the half-finished read or TLS step reported. */
 CURLcode curl_easy_perform(CURL *c) {
     Easy *e = (Easy *)c;
+    __atomic_add_fetch(&g_attempts, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&g_deny, __ATOMIC_SEQ_CST)) {
+        __atomic_add_fetch(&g_denied, 1, __ATOMIC_SEQ_CST);
+        seterr(e, "Network access refused by the host program (deny mode); nothing was looked up, connected or sent");
+        return CURLE_COULDNT_CONNECT;
+    }
     e->stop = 0;
     e->dl_now = e->dl_expected = 0;
     e->last_tick_ns = now_ns();

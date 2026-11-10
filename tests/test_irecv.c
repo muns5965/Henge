@@ -30,6 +30,7 @@ static int g_cfg, g_stall_setcfg;
 static uint64_t g_dev_ecid;
 static int g_setcfg_seen, g_setcfg_value;
 static const char *g_sc;
+static void (*g_hook_serial)(void);   /* tests/test_preflight.c: called (on the ROM thread) when the serial-number string is requested */
 static int g_getstate_seen;   /* DFU GET_STATE requests the ROM has answered: the 1st is before the library, the 2nd after it closed its handle */
 
 /* Runs on its own thread once the probe has closed the library's handle (the 2nd GET_STATE), so the probe's stages are over and only its final wait is left. */
@@ -82,7 +83,7 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
             const char *str = NULL;
             if (i == 2) str = "Apple Inc.";
             else if (i == 3) str = "Apple Mobile Device (DFU Mode)";
-            else if (i == 4) { snprintf(tmp, sizeof tmp, "SDOM:01 CPID:FE00 CPRV:00 CPFM:03 SCEP:01 BDID:20 ECID:%016" PRIX64 " IBFL:3C SRTG:[iBoot-10151.140.19]", g_dev_ecid); str = tmp; }
+            else if (i == 4) { if (g_hook_serial) g_hook_serial(); snprintf(tmp, sizeof tmp, "SDOM:01 CPID:FE00 CPRV:00 CPFM:03 SCEP:01 BDID:20 ECID:%016" PRIX64 " IBFL:3C SRTG:[iBoot-10151.140.19]", g_dev_ecid); str = tmp; }
             else if (i == 5) str = "DFU";
             else if (i == 1) { snprintf(tmp, sizeof tmp, "CPID:FE00 NONC:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff SNON:00112233445566778899aabbccddeeff00112233"); str = tmp; }
             if (str) n = utf16(buf, str);
@@ -119,8 +120,46 @@ static void *rom(void *arg) {
     return NULL;
 }
 
+/* The event-sequence verdict (hv_irecv_events_verdict) on injected sequences, no probe and no bus: normal ones pass, every abnormal one must fail. */
+static int run_verdict_tests(void) {
+    const uint64_t E = 0x2d2a8d94f32ba4d2ull;
+    enum { A = HV_IREC_EV_ADD, R = HV_IREC_EV_REMOVE };
+    struct { const char *name; int ev[8]; int n; int dropped; int want; int bad_ecid_at; int bad_mode_at; } t[] = {
+        {"ADD", {A}, 1, 0, 1, -1, -1},
+        {"ADD REMOVE ADD", {A, R, A}, 3, 0, 1, -1, -1},
+        {"ADD REMOVE ADD REMOVE ADD", {A, R, A, R, A}, 5, 0, 1, -1, -1},
+        {"(none)", {0}, 0, 0, 0, -1, -1},
+        {"ADD ADD", {A, A}, 2, 0, 0, -1, -1},
+        {"ADD ADD REMOVE", {A, A, R}, 3, 0, 0, -1, -1},
+        {"REMOVE ADD", {R, A}, 2, 0, 0, -1, -1},
+        {"ADD REMOVE REMOVE", {A, R, R}, 3, 0, 0, -1, -1},
+        {"ADD REMOVE (device gone)", {A, R}, 2, 0, 0, -1, -1},
+        {"ADD ADD REMOVE REMOVE ADD (counts fit, order does not)", {A, A, R, R, A}, 5, 0, 0, -1, -1},
+        {"ADD REMOVE ADD, one event not recorded", {A, R, A}, 3, 1, 0, -1, -1},
+        {"ADD with another ECID", {A}, 1, 0, 0, 0, -1},
+        {"ADD REMOVE ADD, the second ADD with another ECID", {A, R, A}, 3, 0, 0, 2, -1},
+        {"ADD in a mode that is not DFU/WTF", {A}, 1, 0, 0, -1, 0},
+    };
+    int fails = 0;
+    for (unsigned k = 0; k < sizeof t / sizeof t[0]; k++) {
+        HvIrecvEv ev[8];
+        for (int i = 0; i < t[k].n; i++) {
+            ev[i].type = t[k].ev[i], ev[i].mode = 0x1227, ev[i].have_ecid = 1, ev[i].ecid = E, ev[i].ms = i * 10;
+            if (i == t[k].bad_ecid_at) ev[i].ecid = 0x1111;
+            if (i == t[k].bad_mode_at) ev[i].mode = 0x1281 + 0x100;
+        }
+        char note[200];
+        int got = hv_irecv_events_verdict(ev, t[k].n, t[k].dropped, E, note, sizeof note);
+        int ok = got == t[k].want;
+        printf("%s verdict %-62s -> %s (%s)\n", ok ? "PASS" : "FAIL", t[k].name, got ? "ok" : "FAILED", note);
+        if (!ok) fails++;
+    }
+    return fails;
+}
+
 int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "ok";
+    if (!strcmp(sc, "verdict")) return run_verdict_tests();
     g_sc = sc;
     uint64_t ecid = 0x2d2a8d94f32ba4d2ull;
     g_dev_ecid = !strcmp(sc, "wrong-ecid") ? 0x1111222233334444ull : ecid;

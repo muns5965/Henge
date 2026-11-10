@@ -87,7 +87,7 @@ static const char *req_name(const HvCtrlRecord *r) {
 }
 
 /* ---- device events: what idevicerestore listens to (irecv_device_event_subscribe) to learn the mode and to wait for the device to come back ---- */
-typedef struct { int type; int mode; int have_ecid; uint64_t ecid; int ms; } Ev;
+typedef HvIrecvEv Ev;
 #define EV_MAX 32
 static Ev g_ev[EV_MAX];
 static int g_nev, g_ev_dropped;
@@ -119,6 +119,30 @@ static int ev_count(void) {
     int n = g_nev;
     pthread_mutex_unlock(&g_ev_mu);
     return n;
+}
+
+static int dfu_family_mode(int m) {
+    return m == IRECV_K_DFU_MODE || m == IRECV_K_WTF_MODE || m == IRECV_K_PORT_DFU_MODE || (m >= 0x1280 && m <= 0x1283);
+}
+
+int hv_irecv_events_verdict(const HvIrecvEv *ev, int n, int dropped, uint64_t ecid, char *note, int cap) {
+    if (dropped) { snprintf(note, cap, "%d event(s) were not recorded", dropped); return 0; }
+    if (n == 0) { snprintf(note, cap, "no event arrived"); return 0; }
+    for (int i = 0; i < n; i++) {
+        int want = (i % 2 == 0) ? HV_IREC_EV_ADD : HV_IREC_EV_REMOVE;
+        if (ev[i].type != want) {
+            snprintf(note, cap, "event #%d is a %s where the bus model expects %s (ADD and REMOVE must alternate, starting with ADD)", i,
+                     ev[i].type == HV_IREC_EV_ADD ? "ADD" : "REMOVE", want == HV_IREC_EV_ADD ? "an ADD" : "a REMOVE");
+            return 0;
+        }
+        if (ev[i].type == HV_IREC_EV_ADD) {
+            if (!ev[i].have_ecid || ev[i].ecid != ecid) { snprintf(note, cap, "event #%d: ADD carries another ECID than requested", i); return 0; }
+            if (!dfu_family_mode(ev[i].mode)) { snprintf(note, cap, "event #%d: ADD with mode 0x%04x, which libirecovery does not call DFU/WTF", i, (unsigned)ev[i].mode); return 0; }
+        }
+    }
+    if (ev[n - 1].type != HV_IREC_EV_ADD) { snprintf(note, cap, "the last event is a REMOVE: the device left and did not come back"); return 0; }
+    snprintf(note, cap, "%d event(s): ADD%s; every ADD carries the requested ECID and a DFU-family mode; the device is present at the end", n, n > 1 ? " and REMOVE alternate" : "");
+    return 1;
 }
 
 int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) {
@@ -225,8 +249,19 @@ int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) 
     usleep(100000);
     read_state(usb, out, "after the library closed its handle", &cfg_after, &state_after);
 
-    /* Stage 0 verdict: let late events (the open's bus reset) arrive, then stop listening. */
-    usleep(1000000);
+    /* Stage 0 verdict: let late events (the open's bus reset) arrive: observation ends when no event has come for QUIET_MS, but never later than the overall cap.
+       (With the device staying attached that is all this decides; a reconnect after a transfer must instead wait for its new ADD.) */
+    {
+        const int QUIET_MS = 1000, CAP_MS = 8000;
+        for (;;) {
+            int now = ms_since(&g_ev_t0), last = 0;
+            pthread_mutex_lock(&g_ev_mu);
+            if (g_nev > 0) last = g_ev[g_nev - 1].ms;
+            pthread_mutex_unlock(&g_ev_mu);
+            if (now >= CAP_MS || now - last >= QUIET_MS) break;
+            usleep(50000);
+        }
+    }
     if (sub == IRECV_E_SUCCESS && ectx) irecv_device_event_unsubscribe(ectx);
     Ev evs[EV_MAX];
     int nev, dropped;
@@ -234,24 +269,16 @@ int hv_irecv_probe_run(HvVirtioUsb *usb, uint64_t ecid, FILE *out, int wait_ms) 
     nev = g_nev, dropped = g_ev_dropped;
     memcpy(evs, g_ev, sizeof evs);
     pthread_mutex_unlock(&g_ev_mu);
-    int adds = 0, removes = 0, bad_ecid = 0, bad_mode = 0;
-    for (int i = 0; i < nev; i++) {
+    for (int i = 0; i < nev; i++)
         fprintf(out, "irecv probe: event #%d at +%d ms: %s, mode value 0x%04x, ECID %s0x%016" PRIx64 "\n", i, evs[i].ms, evs[i].type == IRECV_DEVICE_ADD ? "ADD" : "REMOVE",
                 (unsigned)evs[i].mode, evs[i].have_ecid ? "" : "(absent) ", evs[i].ecid);
-        if (evs[i].type == IRECV_DEVICE_ADD) {
-            adds++;
-            if (!evs[i].have_ecid || evs[i].ecid != ecid) bad_ecid++;
-            if (evs[i].mode != IRECV_K_DFU_MODE && evs[i].mode != IRECV_K_WTF_MODE && evs[i].mode != IRECV_K_PORT_DFU_MODE && !(evs[i].mode >= 0x1280 && evs[i].mode <= 0x1283)) bad_mode++;
-        } else {
-            removes++;
-        }
+    if (sub != IRECV_E_SUCCESS) {
+        stage(&st[S_EVENTS], "events", ST_FAILED, "irecv_device_event_subscribe -> %d (%s)", (int)sub, irecv_err(sub));
+    } else {
+        char vnote[200];
+        int vok = hv_irecv_events_verdict(evs, nev, dropped, ecid, vnote, sizeof vnote);
+        stage(&st[S_EVENTS], "events", vok ? ST_OK : ST_FAILED, "%s", vnote);
     }
-    if (sub != IRECV_E_SUCCESS) stage(&st[S_EVENTS], "events", ST_FAILED, "irecv_device_event_subscribe -> %d (%s)", (int)sub, irecv_err(sub));
-    else if (adds == 0) stage(&st[S_EVENTS], "events", ST_FAILED, "no ADD event arrived (%d REMOVE)", removes);
-    else if (bad_ecid || bad_mode) stage(&st[S_EVENTS], "events", ST_FAILED, "%d ADD event(s) with another ECID than requested, %d with a mode libirecovery does not call DFU/WTF", bad_ecid, bad_mode);
-    else if (evs[nev - 1].type != IRECV_DEVICE_ADD) stage(&st[S_EVENTS], "events", ST_FAILED, "the last event is a REMOVE: the device left and did not come back (%d ADD, %d REMOVE)", adds, removes);
-    else if (adds != removes + 1 || dropped) stage(&st[S_EVENTS], "events", ST_FAILED, "ADD/REMOVE do not pair up (%d ADD, %d REMOVE, %d event(s) not recorded)", adds, removes, dropped);
-    else stage(&st[S_EVENTS], "events", ST_OK, "%d ADD, %d REMOVE; the first ADD at +%d ms carries the requested ECID and a DFU-family mode; the device is present at the end", adds, removes, evs[0].ms);
 
     /* Boundary: everything that went through the libusb API since before the subscription. Nothing may be a DFU download/upload/detach/abort/clear-status, a vendor
        request, or a bulk/interrupt transfer (firmware goes out as data). Reads (descriptors, configuration, GET_STATE, GET_STATUS) and SET_CONFIGURATION are allowed. */

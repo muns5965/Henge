@@ -3,3 +3,9 @@ build-flagcheck/
 build-ipswdl/
 build-irecv/
 build-dnl/
+build-curl69/
+build-pf/
+build-pf.log
+build-pf.time
+build-pf.build.log
+build-eng69/

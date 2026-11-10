@@ -34,6 +34,8 @@ on:
       - tools/check-no-test-flags.sh
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
+      - tools/preflight-test.sh
+      - tools/vmrun-preflight-build.sh
       - tools/vmrun-irecv-build.sh
       - tools/vmrun-tss-build.sh
       - tools/tss-probe-test.sh
@@ -193,6 +195,8 @@ jobs:
           tools/restore-selftest-build.sh build-rs
       - name: Run the restore self-test on three bad IPSW inputs (must fail cleanly; usbmuxd must listen; no real network, no real device)
         run: tools/restore-selftest.sh build-rs/restore_selftest build-rs/work
+      - name: Test the restore preflight (real restore tool stopped by FLAG_NOACTION against a stand-in ROM and a fake IPSW; deny-mode, boundary and ECID-redaction checks; negative control)
+        run: tools/preflight-test.sh build-rs
 
   android-ndk:
     runs-on: ubuntu-24.04

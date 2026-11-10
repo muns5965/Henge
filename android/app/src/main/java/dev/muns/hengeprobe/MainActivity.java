@@ -253,6 +253,17 @@ public class MainActivity extends Activity {
         dlNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(dlNote);
 
+        final Button pfButton = new Button(this);
+        pfButton.setText("복원 도구 장치 감지 (실제 복원 도구 시작만, Apple 요청 없음)");
+        pfButton.setOnClickListener(v -> { preflightMode = true; runVmrun(true, false, false, 2); });
+        root.addView(pfButton);
+        final TextView pfNote = new TextView(this);
+        pfNote.setText("받아 둔 IPSW를 열고 가상 Mac(DFU)을 실제 복원 도구(idevicerestore)로 감지·식별한 뒤, 복원 도구 자체의 '실행 안 함' 지점에서 멈춥니다. "
+                + "Apple 서명 요청·이미지 전송·루트 파일시스템 추출·디스크 쓰기는 하지 않고, 네트워크 요청은 연결 전에 모두 거부합니다(그 거부는 이 프로그램의 HTTP 클라이언트에만 적용). "
+                + "결과는 '복원 성공'이 아니라 preflight_completed 입니다. ECID는 표시하지 않습니다. 약 1~2분.");
+        pfNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(pfNote);
+
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");
         toggle.setOnClickListener(v -> {
@@ -739,6 +750,8 @@ public class MainActivity extends Activity {
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean tss = tssMode;
         tssMode = false;
+        final boolean pf = preflightMode;
+        preflightMode = false;
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -755,8 +768,10 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
-                if (!exe.exists()) acc.append(tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                File exe = new File(libDir, pf ? "libvmrunpreflight.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                final File pfIpsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw");
+                if (!exe.exists()) acc.append(pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                else if (pf && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
                 else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
                     acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
                     base.mkdirs();
@@ -780,7 +795,8 @@ public class MainActivity extends Activity {
                     cmd.add("--make-blank");
                     cmd.add("--recreate-blank");
                     cmd.add("--psci-log");
-                    if (installer) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
+                    if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
@@ -788,7 +804,7 @@ public class MainActivity extends Activity {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
                         switch (er.status) {
                             case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
-                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || pf ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
                             default:
                                 acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
                                    .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
@@ -803,7 +819,7 @@ public class MainActivity extends Activity {
                     File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
                     cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
                     java.util.List<String> shown = new java.util.ArrayList<>(cmd);
-                    if (tss) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
+                    if (tss || pf) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
                     acc.append("명령: ").append(android.text.TextUtils.join(" ", shown)).append('\n');
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
@@ -825,6 +841,7 @@ public class MainActivity extends Activity {
                     reader.start();
                     double secs = 30;
                     try { if (cfg.containsKey("seconds")) secs = Double.parseDouble(cfg.get("seconds")); } catch (NumberFormatException ignored) { }
+                    if (pf && secs < 150) secs = 150;
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
                     if (!done) p.destroyForcibly();
                     reader.join(2000);
@@ -833,7 +850,7 @@ public class MainActivity extends Activity {
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer && !dnload && !tss) { // the dnload probe does not read the DFU string, so there is nothing to compare
+                    if (installer && !dnload && !tss && !pf) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));
@@ -849,6 +866,11 @@ public class MainActivity extends Activity {
                         StringBuilder sum = new StringBuilder();
                         for (String ln : text.toString().split("\n")) if (ln.startsWith("dnload probe:")) sum.append(ln).append('\n');
                         acc.append(sum.length() > 0 ? "\n— 요약 (dnload probe 줄 전체) —\n" + sum : "\n— dnload probe 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
+                    }
+                    if (pf) {
+                        StringBuilder sum = new StringBuilder();
+                        for (String ln : text.toString().split("\n")) if (ln.startsWith("restore preflight")) sum.append(ln).append('\n');
+                        acc.append(sum.length() > 0 ? "\n— 요약 (restore preflight 줄 전체) —\n" + sum : "\n— restore preflight 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
                     }
                     if (irecv) {
                         String all = text.toString();
@@ -985,6 +1007,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean tssMode;
+    private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 
     /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */
     private void confirmTssProbe() {

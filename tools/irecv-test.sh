@@ -16,10 +16,10 @@ for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/sr
 done
 $CC $FL tests/test_irecv.c $objs -lpthread -o "$OUT/test_irecv" 2> "$OUT/link.log" || { echo "FAILED  link"; head -30 "$OUT/link.log"; exit 1; }
 rc=0
-for sc in ok configured stall-setcfg wrong-ecid no-device reattach gone inject-dnload inject-bulk; do
+for sc in verdict ok configured stall-setcfg wrong-ecid no-device reattach gone inject-dnload inject-bulk; do
   echo "=== scenario $sc"
   HV_LIBUSB_LOG=1 timeout 60 "$OUT/test_irecv" $sc > "$OUT/$sc.out" 2> "$OUT/$sc.err"; r=$?
-  grep -E "^(irecv probe|scenario)" "$OUT/$sc.out" | cut -c1-260
+  grep -E "^(irecv probe|scenario|PASS|FAIL)" "$OUT/$sc.out" | cut -c1-260
   if [ $r != 0 ]; then echo "SCENARIO $sc FAILED (exit $r)"; tail -20 "$OUT/$sc.err"; rc=1; else echo "PASS $sc"; fi
   # what the result table must say (the exit status alone cannot tell which stage failed)
   case $sc in

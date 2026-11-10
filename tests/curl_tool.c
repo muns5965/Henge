@@ -9,6 +9,9 @@
 #include <unistd.h>
 #include "curl/curl.h"
 int hv_curl_ca_count(const char **where);
+void hv_curl_deny_network(int on);
+int hv_curl_attempt_count(void);
+int hv_curl_denied_count(void);
 int hv_curl_ca_unparsed(void);
 int hv_curl_tls_completed(void);
 const char *hv_curl_tls_diag(void);
@@ -43,6 +46,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--follow")) follow = 1;
         else if (!strcmp(argv[i], "--headers")) show_headers = 1;
         else if (!strcmp(argv[i], "--discard")) discard = 1;
+        else if (!strcmp(argv[i], "--deny")) hv_curl_deny_network(1);
         else if (!strcmp(argv[i], "--also") && i + 1 < argc && nalso < 16) also[nalso++] = argv[++i];
         else if (!strcmp(argv[i], "--abort-after") && i + 1 < argc) abort_after = (size_t)atol(argv[++i]);
         else if (!strcmp(argv[i], "--timeout-ms") && i + 1 < argc) timeout_ms = atol(argv[++i]);
@@ -86,6 +90,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "TLS_VERIFIED=%d\n", hv_curl_tls_completed());
     if (hv_curl_tls_diag()[0]) fprintf(stderr, "TLS_DIAG:\n%s", hv_curl_tls_diag());
     fprintf(stderr, "REQ 1 DIAG_BYTES=%zu\n", strlen(hv_curl_tls_diag()));
+    fprintf(stderr, "ATTEMPTS=%d DENIED=%d\n", hv_curl_attempt_count(), hv_curl_denied_count());
     fprintf(stderr, "RC=%d HTTP=%ld BYTES=%zu ERR=%s\n", (int)rc, code, bytes, err);
     /* more requests on the same handle: shows that per-request state (diagnostics, response code) does not leak between them */
     for (int i = 0; i < nalso; i++) {
@@ -96,6 +101,7 @@ int main(int argc, char **argv) {
         curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
         fprintf(stderr, "REQ %d RC=%d HTTP=%ld TLS_VERIFIED=%d DIAG_BYTES=%zu ERR=%s\n", i + 2, (int)rc, code, hv_curl_tls_completed(), strlen(hv_curl_tls_diag()), err);
     }
+    fprintf(stderr, "FINAL ATTEMPTS=%d DENIED=%d\n", hv_curl_attempt_count(), hv_curl_denied_count());
     curl_easy_cleanup(c);
     curl_slist_free_all(h);
     return (int)rc;

@@ -1,0 +1,7 @@
+Apple Root CA (the 2006 RSA root; serial 02; expires 2035-02-09; self-signed with SHA-1).
+It is the root of the chain Apple's TSS server (gs.apple.com) presents: gs.apple.com <- Apple Server Authentication CA <- Apple Root CA.
+Public stores (Android, Linux) do not carry it, so host/curl_mbedtls.c adds it as a trust anchor for that one host only.
+SHA-256 of the DER form, as Apple publishes it ("List of available root certificates", support.apple.com, entry "Apple Root CA"):
+  B0B1730ECBC7FF4505142C49F1295E6EDA6BCAED7E2C68C5BE91B5A11001F024
+The PEM was taken from the server's chain and accepted only because that fingerprint matches Apple's published value.
+tools/check-apple-ca.sh re-checks the fingerprint at every build and that host/apple_root_ca.h is generated from this file.

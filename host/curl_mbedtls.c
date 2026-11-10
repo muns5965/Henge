@@ -8,6 +8,9 @@
    - A redirect from https to plain http is refused. Redirects are followed only with CURLOPT_FOLLOWLOCATION, at most 10.
    - Trusted CAs come from the first of these that yields certificates: $HV_CA_PATH, the Android system stores
      (/apex/com.android.conscrypt/cacerts, /system/etc/security/cacerts) and /etc/ssl/certs. Loaded once per process.
+   - Extra trust anchors are per host, never global: Apple's TSS server (gs.apple.com) chains to Apple Root CA, which public stores lack, so that
+     one certificate (third_party/apple_ca, SHA-256 checked at build and again at run time) is added to the system store for connections to exactly that
+     host name. Every other host, including after a redirect, gets the system store only. Chain and host name are verified as for any host.
    Synchronous like curl_easy_perform; the body is streamed to the write callback. Not implemented: proxies, cookies, HTTP/2,
    compressed transfer, keep-alive (every request is "Connection: close"). */
 #include <errno.h>
@@ -30,7 +33,9 @@
 #include "mbedtls/error.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
+#include "mbedtls/sha256.h"
 #include "psa/crypto.h"
+#include "apple_root_ca.h"
 
 #define CONNECT_TIMEOUT_MS 30000
 #define IO_TIMEOUT_S 60
@@ -120,6 +125,8 @@ typedef struct {
     mbedtls_ssl_config conf;
     mbedtls_ctr_drbg_context drbg;
     mbedtls_entropy_context ent;
+    mbedtls_x509_crt plus; /* system CAs + the extra anchor of this host, when it has one */
+    int has_plus;
     char err[CURL_ERROR_SIZE];
 } Conn;
 
@@ -163,6 +170,7 @@ static int conn_read(Conn *c, void *p, size_t n) {
 }
 
 static void conn_close(Conn *c) {
+    if (c->has_plus) mbedtls_x509_crt_free(&c->plus), c->has_plus = 0;
     if (c->tls) {
         mbedtls_ssl_close_notify(&c->ssl);
         mbedtls_ssl_free(&c->ssl);
@@ -172,6 +180,80 @@ static void conn_close(Conn *c) {
     }
     if (c->fd >= 0) close(c->fd);
     c->fd = -1;
+}
+
+/* ---- per-host extra trust anchors ---- */
+typedef struct { const char *host; char *pem_owned; const char *pem; const char *sha256; } Anchor;
+
+static void hex(const unsigned char *d, size_t n, char *out) {
+    for (size_t i = 0; i < n; i++) sprintf(out + 2 * i, "%02x", d[i]);
+}
+
+/* 1 = this host has an anchor (filled in), 0 = none, -1 = the anchor is configured but unusable (fail closed). */
+static int find_anchor(const char *host, Anchor *a, char *err) {
+    memset(a, 0, sizeof *a);
+    if (!strcasecmp(host, "gs.apple.com")) {
+        a->host = "gs.apple.com", a->pem = apple_root_ca_pem, a->sha256 = APPLE_ROOT_CA_SHA256;
+        return 1;
+    }
+#ifdef HV_ALLOW_CA_ENV /* tests: HV_EXTRA_ANCHOR="host|pem-file|sha256-hex" (the hash may be empty for "no pin") */
+    const char *e = getenv("HV_EXTRA_ANCHOR");
+    if (e && *e) {
+        char spec[1024];
+        snprintf(spec, sizeof spec, "%s", e);
+        char *bar1 = strchr(spec, '|'), *bar2 = bar1 ? strchr(bar1 + 1, '|') : NULL;
+        if (!bar2) { snprintf(err, CURL_ERROR_SIZE, "bad HV_EXTRA_ANCHOR"); return -1; }
+        *bar1 = *bar2 = 0;
+        if (strcasecmp(host, spec)) return 0;
+        FILE *f = fopen(bar1 + 1, "rb");
+        if (!f) { snprintf(err, CURL_ERROR_SIZE, "cannot read the extra anchor file"); return -1; }
+        char *buf = malloc(65536);
+        size_t n = buf ? fread(buf, 1, 65535, f) : 0;
+        fclose(f);
+        if (!buf || !n) { free(buf); return -1; }
+        buf[n] = 0;
+        static __thread char pin[80];
+        snprintf(pin, sizeof pin, "%s", bar2 + 1);
+        a->host = host, a->pem_owned = buf, a->pem = buf, a->sha256 = pin[0] ? pin : NULL;
+        return 1;
+    }
+#else
+    (void)err;
+#endif
+    return 0;
+}
+
+/* The system store plus the host's anchor, after checking the anchor's SHA-256. Fail closed on any problem. */
+static int build_plus(Conn *c, const Anchor *a) {
+    mbedtls_x509_crt extra;
+    mbedtls_x509_crt_init(&extra);
+    mbedtls_x509_crt_init(&c->plus);
+    c->has_plus = 1;
+    int rc = -1;
+    if (mbedtls_x509_crt_parse(&extra, (const unsigned char *)a->pem, strlen(a->pem) + 1) != 0 || !extra.raw.p || extra.next) {
+        snprintf(c->err, sizeof c->err, "the extra trust anchor for %.80s could not be parsed; not connecting", a->host);
+        goto out;
+    }
+    if (a->sha256) {
+        unsigned char h[32];
+        char hx[65];
+        if (mbedtls_sha256(extra.raw.p, extra.raw.len, h, 0) != 0) goto out;
+        hex(h, 32, hx);
+        if (strcasecmp(hx, a->sha256)) {
+            snprintf(c->err, sizeof c->err, "the extra trust anchor for %.80s does not match its pinned SHA-256; not connecting", a->host);
+            goto out;
+        }
+    }
+    for (const mbedtls_x509_crt *p = &ca_chain; p && p->raw.p; p = p->next)
+        if (mbedtls_x509_crt_parse_der(&c->plus, p->raw.p, p->raw.len) != 0) goto copyfail;
+    if (mbedtls_x509_crt_parse_der(&c->plus, extra.raw.p, extra.raw.len) != 0) goto copyfail;
+    rc = 0;
+    goto out;
+copyfail:
+    snprintf(c->err, sizeof c->err, "could not assemble the trust store for %.80s; not connecting", a->host);
+out:
+    mbedtls_x509_crt_free(&extra);
+    return rc;
 }
 
 /* Called by mbedtls for every certificate of the chain while it verifies it (leaf first). It only records; the verdict is untouched. */
@@ -227,6 +309,17 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         close(fd), c->fd = -1;
         return CURLE_SSL_CACERT_BADFILE;
     }
+    const mbedtls_x509_crt *roots = &ca_chain;
+    Anchor an;
+    int fa = find_anchor(host, &an, c->err);
+    if (fa < 0 || (fa == 1 && build_plus(c, &an) != 0)) {
+        if (!c->err[0]) snprintf(c->err, sizeof c->err, "the extra trust anchor for %.80s is unusable; not connecting", host);
+        free(an.pem_owned);
+        conn_close(c);
+        return CURLE_SSL_CACERT_BADFILE;
+    }
+    free(an.pem_owned);
+    if (fa == 1) roots = &c->plus;
     tls_done = 0;
     tls_diag[0] = 0;
     chain_len = 0;
@@ -239,7 +332,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
     if (ret == 0) ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (ret == 0) {
         mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED); /* the policy: always */
-        mbedtls_ssl_conf_ca_chain(&c->conf, &ca_chain, NULL);
+        mbedtls_ssl_conf_ca_chain(&c->conf, (mbedtls_x509_crt *)roots, NULL);
         mbedtls_ssl_conf_verify(&c->conf, record_cert, NULL);
         mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
         ret = mbedtls_ssl_setup(&c->ssl, &c->conf);

@@ -41,6 +41,7 @@ class H(http.server.BaseHTTPRequestHandler):
         elif p == "/rel/a": self.send(302, b"", [("Location", "b")])
         elif p == "/rel/b": self.send(200, b"rel-b")
         elif p == "/loop": self.send(302, b"", [("Location", "/loop")])
+        elif p == "/to-ip": self.send(302, b"", [("Location", "https://127.0.0.1:%d/hello" % self.server.server_address[1])])
         elif p == "/to-http": self.send(302, b"", [("Location", "http://127.0.0.1:%d/hello" % HTTP_PORT)])
         elif p == "/404": self.send(404, b"nope")
         elif p == "/short":  # promises more than it sends
@@ -67,10 +68,10 @@ def do_get(self):
     return orig_get(self)
 H.do_GET = do_get
 
-def mkcert(name, cn_san):
+def mkcert(name, cn_san, extra_san=''):
     key, crt = f"{work}/{name}.key", f"{work}/{name}.crt"
     cfg = f"{work}/{name}.cnf"
-    open(cfg, "w").write(f"[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN={cn_san}\n[v3]\nsubjectAltName=DNS:{cn_san}\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
+    open(cfg, "w").write(f"[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN={cn_san}\n[v3]\nsubjectAltName=DNS:{cn_san}{extra_san}\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
     subprocess.check_call(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "2", "-config", cfg], stderr=subprocess.DEVNULL)
     return key, crt
 
@@ -136,9 +137,30 @@ r = run([f"https://127.0.0.1:{S_PORT}/hello"], {"HV_CA_PATH": cadir}); check("ht
 r = run([f"https://localhost:{W_PORT}/hello"], {"HV_CA_PATH": f"{work}/otherca"}); check("https refuses wrong host name even though the CA is trusted", r["RC"] == "60", r)
 r = run([S + "/to-http", "--follow"], {"HV_CA_PATH": cadir}); check("https->http redirect refused", r["RC"] == "1", r)
 
+# --- per-host extra trust anchors (the mechanism that lets gs.apple.com chain to Apple Root CA) ---
+dual = mkcert("dual", "localhost", ",IP:127.0.0.1")
+srv_d, D_PORT = serve(None, tls=dual)
+der = ssl.PEM_cert_to_DER_cert(open(dual[1]).read())
+pin = hashlib.sha256(der).hexdigest()
+D = f"https://localhost:{D_PORT}"
+base = {"HV_CA_PATH": f"{work}/otherca"}   # a store that does not trust the server
+r = run([D + "/hello"], base); check("control: without an extra anchor the server is untrusted", r["RC"] == "60", r)
+r = run([D + "/hello"], dict(base, HV_EXTRA_ANCHOR=f"localhost|{dual[1]}|{pin}")); check("extra anchor with the right SHA-256 makes the host verify", r["RC"] == "0" and r["out"] == b"hello world", r)
+r = run([D + "/hello"], dict(base, HV_EXTRA_ANCHOR=f"localhost|{dual[1]}|{'0' * 64}")); check("extra anchor with a wrong SHA-256 is refused (fail closed)", r["RC"] == "77" and "pinned SHA-256" in r["ERR"], r)
+r = run([D + "/hello"], dict(base, HV_EXTRA_ANCHOR=f"other.example|{dual[1]}|{pin}")); check("an anchor for another host does not apply", r["RC"] == "60", r)
+r = run([D + "/hello"], dict(base, HV_EXTRA_ANCHOR=f"LOCALHOST|{dual[1]}|{pin}")); check("host match ignores case", r["RC"] == "0", r)
+r = run([f"https://127.0.0.1:{D_PORT}/hello"], dict(base, HV_EXTRA_ANCHOR=f"127.0.0.1|{dual[1]}|{pin}")); check("control: the certificate also covers 127.0.0.1 when that host is anchored", r["RC"] == "0", r)
+r = run([D + "/to-ip", "--follow"], dict(base, HV_EXTRA_ANCHOR=f"localhost|{dual[1]}|{pin}")); check("redirect to another host: its trust is chosen again, so it is refused", r["RC"] == "60", r)
+r = run([D + "/to-ip", "--follow"], dict(base, HV_EXTRA_ANCHOR=f"localhost|{os.devnull}|")); check("unreadable/empty anchor file fails closed", r["RC"] == "77", r)
+
 # --- real network, informational: skipped when unreachable ---
 r = run(["--ca"]); print("INFO system CA:", r["stderr"].strip())
 if r["code"] == 0:
+    g = run(["https://gs.apple.com/TSS/controller?action=2", "--discard"], timeout=90)
+    if g.get("RC") in ("6", "7", "28", None):
+        print("SKIP gs.apple.com (no network):", g.get("ERR"))
+    else:
+        check("gs.apple.com verifies with the system store + the pinned Apple Root CA", "TLS_VERIFIED=1" in g["stderr"], g["stderr"][:300])
     n = run(["https://example.com/"], timeout=90)
     if n.get("RC") in ("6", "7", "28", "56", None):
         print("SKIP public https (no network):", n.get("ERR"))

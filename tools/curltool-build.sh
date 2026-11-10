@@ -6,6 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 O=${1:?output dir}; mkdir -p "$O/obj"
 TP=third_party
+tools/check-apple-ca.sh
 CC=${CC:-cc}
 n=0
 for f in $TP/mbedtls/library/*.c; do
@@ -16,7 +17,7 @@ for f in $TP/mbedtls/library/*.c; do
   fi
 done
 wait
-$CC -O2 -Wall -Wno-format-truncation ${CURLTOOL_CFLAGS:-} -I$TP/curl_include -I$TP/mbedtls/include -c host/curl_mbedtls.c -o "$O/curl_mbedtls.o"
+$CC -O2 -Wall -Wno-format-truncation ${CURLTOOL_CFLAGS:-} -Ihost -I$TP/curl_include -I$TP/mbedtls/include -c host/curl_mbedtls.c -o "$O/curl_mbedtls.o"
 $CC -O2 -Wall -I$TP/curl_include -c tests/curl_tool.c -o "$O/curl_tool.o"
 $CC -o "$O/curl_tool" "$O/curl_tool.o" "$O/curl_mbedtls.o" $O/obj/*.o ${CURLTOOL_LIBS--lpthread}
 echo "linked  $O/curl_tool"

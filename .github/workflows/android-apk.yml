@@ -23,6 +23,7 @@ on:
       - tools/engine-build.sh
       - tools/devices-build.sh
       - tools/curltool-build.sh
+      - tools/check-apple-ca.sh
       - third_party/mbedtls/**
       - .github/workflows/android-apk.yml
 

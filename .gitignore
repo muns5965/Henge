@@ -9,3 +9,5 @@ build-pf.log
 build-pf.time
 build-pf.build.log
 build-eng69/
+build-tssstage/
+build-tssctl/

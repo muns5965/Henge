@@ -15,6 +15,7 @@
    Synchronous like curl_easy_perform; the body is streamed to the write callback. Not implemented: proxies, cookies, HTTP/2,
    compressed transfer, keep-alive (every request is "Connection: close"). */
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
@@ -42,6 +43,7 @@
 #define IO_TIMEOUT_S 60
 #define MAX_REDIRECTS 10
 #define MAX_HEADER_BYTES 65536
+#define MAX_HEADERS_TOTAL (4 * MAX_HEADER_BYTES)   /* status line + headers + trailers of one response */
 
 typedef struct {
     char *url, *useragent;
@@ -84,6 +86,12 @@ static volatile int g_deny;
 static volatile int g_attempts, g_denied;
 /* host/net_guard.c sets this: asked with the host name and the address about to be connected, before every connect(); 0 = allowed. NULL = no policy. */
 int (*hv_curl_connect_guard)(const char *host, const struct sockaddr *a, socklen_t len) = NULL;
+
+#include "curl_last.h"
+static __thread HvCurlLast g_last;
+static __thread long long g_body_cap;
+void hv_curl_last(HvCurlLast *out) { *out = g_last; }
+void hv_curl_set_body_cap(long long bytes) { g_body_cap = bytes > 0 ? bytes : 0; }
 
 void hv_curl_deny_network(int on) { __atomic_store_n(&g_deny, on ? 1 : 0, __ATOMIC_SEQ_CST); }
 int hv_curl_deny_active(void) { return __atomic_load_n(&g_deny, __ATOMIC_SEQ_CST); }
@@ -362,8 +370,9 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         return stop_check(e) ? CURLE_ABORTED_BY_CALLBACK : CURLE_COULDNT_RESOLVE_HOST;
     }
     if (stop_check(e)) { freeaddrinfo(res); return CURLE_ABORTED_BY_CALLBACK; }
-    int fd = -1;
+    int fd = -1, naddr = 0, ndenied = 0;
     for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        naddr++;
         int s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
         if (s < 0) continue;
         struct timeval tv = {IO_TIMEOUT_S, 0};
@@ -371,7 +380,8 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         /* connect with a timeout: non-blocking, wait, check */
         fcntl_nonblock(s, 1);
-        if (hv_curl_connect_guard && hv_curl_connect_guard(host, a->ai_addr, a->ai_addrlen) != 0) { close(s); continue; }   /* host/net_guard.c */
+        if (hv_curl_connect_guard && hv_curl_connect_guard(host, a->ai_addr, a->ai_addrlen) != 0) { close(s); ndenied++; g_last.addrs_denied++; continue; }   /* host/net_guard.c */
+        g_last.addrs_tried++;
         int r = connect(s, a->ai_addr, a->ai_addrlen);
         if (r < 0 && errno == EINPROGRESS) {
             if (wait_fd(e, s, POLLOUT, e && e->connect_timeout_ms > 0 ? e->connect_timeout_ms : CONNECT_TIMEOUT_MS) == 1) {
@@ -385,11 +395,19 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         if (r == 0) fd = s; else close(s);
     }
     freeaddrinfo(res);
+    if (fd < 0 && !stop_check(e) && ndenied > 0 && ndenied == naddr) {
+        /* every address was refused by the policy: nothing was connected. CURLE_UNSUPPORTED_PROTOCOL is the one code libtatsu does not retry; g_last.policy_denied
+           (cleared again by curl_easy_perform unless this is the final result) is what says it was the policy and not a real unsupported protocol. */
+        snprintf(c->err, sizeof c->err, "connection to %s:%s refused by the host program's network policy", host, port);
+        g_last.policy_denied = 1;
+        return CURLE_UNSUPPORTED_PROTOCOL;
+    }
     if (fd < 0) {
         snprintf(c->err, sizeof c->err, "could not connect to %s:%s", host, port);
         return stop_check(e) ? CURLE_ABORTED_BY_CALLBACK : CURLE_COULDNT_CONNECT;
     }
     c->fd = fd;
+    g_last.connected = 1;
     if (!https) return CURLE_OK;
     if (!load_cas()) {
         snprintf(c->err, sizeof c->err, "no trusted CA certificates could be loaded; not connecting without checking the server");
@@ -456,6 +474,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         return CURLE_SSL_CONNECT_ERROR;
     }
     tls_done = 1;
+    g_last.tls_done = 1;
     tls_diag[0] = 0, chain_len = 0; /* verified: the chain dump is for failures only */
     return CURLE_OK;
 }
@@ -638,6 +657,7 @@ static int buf_add(Buf *b, const void *d, size_t n) {
         char *np = realloc(b->p, nc);
         if (!np) return -1;
         b->p = np, b->cap = nc;
+        if (nc > g_last.max_buf) g_last.max_buf = nc;
     }
     memcpy(b->p + b->len, d, n);
     b->len += n;
@@ -651,15 +671,19 @@ typedef struct {
     long long dl;
     long long expected;
     CURLcode abort_code;
+    size_t hdr_bytes;   /* status line, headers and trailers so far (MAX_HEADERS_TOTAL) */
 } Xfer;
 
 /* Hands body bytes to the write callback and the progress callback. 0 ok, -1 stop (abort_code set). */
 static int deliver(Xfer *x, const char *p, size_t n) {
     Easy *e = x->e;
     if (n) {
+        /* the cap is on the decoded body and is checked BEFORE the bytes reach the write callback (libtatsu grows a buffer there) */
+        if (g_body_cap && x->dl + (long long)n > g_body_cap) { x->abort_code = CURLE_FILESIZE_EXCEEDED; g_last.too_large = 1; return -1; }
         size_t w = e->write_cb ? e->write_cb((char *)p, 1, n, e->write_data) : fwrite(p, 1, n, e->write_data ? (FILE *)e->write_data : stdout);
         if (w != n) { x->abort_code = CURLE_WRITE_ERROR; return -1; }
         x->dl += (long long)n;
+        g_last.body_to_cb += (long long)n;
         e->dl_now = x->dl, e->dl_expected = x->expected;
     }
     if (stop_check(e)) { x->abort_code = e->stop == 1 ? CURLE_OPERATION_TIMEDOUT : CURLE_ABORTED_BY_CALLBACK; return -1; } /* data arriving fast never reaches a wait, so check here too */
@@ -711,6 +735,16 @@ static int rd_line(Conn *c, Rd *r, Buf *line) {
     return ch == -1 && !any ? -1 : -2;
 }
 
+/* A header-section line: like rd_line, and the section as a whole is limited too (-3 = too much). */
+static int rd_hline(Xfer *x, Rd *r, Buf *line) {
+    int k = rd_line(x->c, r, line);
+    if (k == 0) {
+        x->hdr_bytes += line->len + 2;
+        if (x->hdr_bytes > MAX_HEADERS_TOTAL) { g_last.too_large = 1; return -3; }
+    }
+    return k;
+}
+
 /* Reads exactly the body (n bytes if n >= 0, else until close) and passes it on. */
 static CURLcode body_sized(Xfer *x, Rd *r, long long n) {
     char tmp[16384];
@@ -746,9 +780,12 @@ static CURLcode body_chunked(Xfer *x, Rd *r) {
         if (end == line.p) { rc = CURLE_RECV_ERROR; break; }
         if (sz == 0) {
             /* trailers up to the blank line */
-            while (rd_line(x->c, r, &line) == 0 && line.len) {}
+            while (rd_hline(x, r, &line) == 0 && line.len) {}
+            if (x->hdr_bytes > MAX_HEADERS_TOTAL) rc = CURLE_FILESIZE_EXCEEDED;
             break;
         }
+        if (sz > (unsigned long long)LLONG_MAX / 2) { rc = CURLE_RECV_ERROR; break; }
+        if (g_body_cap && (long long)sz > g_body_cap - x->dl) { g_last.too_large = 1; rc = CURLE_FILESIZE_EXCEEDED; break; }   /* declared chunk already over the cap */
         rc = body_sized(x, r, (long long)sz);
         if (rc) break;
         if (rd_line(x->c, r, &line)) { rc = CURLE_RECV_ERROR; break; } /* CRLF after the chunk */
@@ -819,6 +856,7 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
         return CURLE_SEND_ERROR;
     }
     free(req.p);
+    g_last.request_sent = 1;
 
     Rd *rd = calloc(1, sizeof *rd);
     Buf line = {0};
@@ -829,15 +867,19 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
 
     /* status line, skipping 1xx interim responses */
     for (;;) {
-        int lr = rd_line(&c, rd, &line);
+        int lr = rd_hline(&x, rd, &line);
+        if (lr == -3) { rc = CURLE_FILESIZE_EXCEEDED; seterr(e, "response headers from %s are too large", u->host); goto out; }
         if (lr) { rc = lr == -1 ? CURLE_GOT_NOTHING : (io_error_is_timeout() ? CURLE_OPERATION_TIMEDOUT : CURLE_RECV_ERROR); goto out; }
         if (strncmp(line.p, "HTTP/1.", 7) != 0) { rc = CURLE_RECV_ERROR; seterr(e, "not an HTTP response from %s", u->host); goto out; }
         status = atoi(line.p + 8);
         if (status < 100 || status > 999) { rc = CURLE_RECV_ERROR; goto out; }
         if (status >= 200 || status == 101) break;
-        while (rd_line(&c, rd, &line) == 0 && line.len) {} /* headers of the interim response */
+        int ir;
+        while ((ir = rd_hline(&x, rd, &line)) == 0 && line.len) {} /* headers of the interim response */
+        if (ir == -3) { rc = CURLE_FILESIZE_EXCEEDED; seterr(e, "response headers from %s are too large", u->host); goto out; }
     }
     e->response_code = status;
+    g_last.http_status = status;
 
     /* headers: pass each to the header callback in curl's shape, keep the few we act on */
     long long clen = -1;
@@ -849,7 +891,8 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
         e->header_cb(sl, 1, (size_t)n, e->header_data);
     }
     for (;;) {
-        int lr = rd_line(&c, rd, &line);
+        int lr = rd_hline(&x, rd, &line);
+        if (lr == -3) { rc = CURLE_FILESIZE_EXCEEDED; seterr(e, "response headers from %s are too large", u->host); free(loc); goto out; }
         if (lr) { rc = CURLE_RECV_ERROR; free(loc); goto out; }
         if (line.len == 0) break;
         if (e->header_cb) {
@@ -879,12 +922,16 @@ static CURLcode do_request(Easy *e, const Url *u, int post, char *location, size
 
     x.expected = chunked ? -1 : clen;
     e->content_length = x.expected;
+    if (!chunked && g_body_cap && clen > g_body_cap) {   /* declared too large: refuse before reading a body byte */
+        g_last.too_large = 1; rc = CURLE_FILESIZE_EXCEEDED; seterr(e, "response body from %s is larger than the allowed %lld bytes", u->host, g_body_cap); goto out;
+    }
     int nobody = status == 204 || status == 304 || (status >= 100 && status < 200);
     if (nobody) rc = CURLE_OK;
     else if (chunked) rc = body_chunked(&x, rd);
     else rc = body_sized(&x, rd, clen >= 0 ? clen : -1);
     *dl_total += x.dl;
-    if (rc == CURLE_RECV_ERROR) seterr(e, "connection to %s lost during the transfer", u->host);
+    if (rc == CURLE_FILESIZE_EXCEEDED) seterr(e, "response body from %s is larger than the allowed %lld bytes", u->host, g_body_cap);
+    else if (rc == CURLE_RECV_ERROR) seterr(e, "connection to %s lost during the transfer", u->host);
     else if (rc == CURLE_OPERATION_TIMEDOUT) seterr(e, "timed out reading from %s", u->host);
 out:
     if (rc && !(e->errorbuffer && e->errorbuffer[0])) {
@@ -940,6 +987,7 @@ static CURLcode perform_hops(Easy *e) {
 CURLcode curl_easy_perform(CURL *c) {
     Easy *e = (Easy *)c;
     __atomic_add_fetch(&g_attempts, 1, __ATOMIC_SEQ_CST);
+    memset(&g_last, 0, sizeof g_last);   /* the record describes this request only */
     if (__atomic_load_n(&g_deny, __ATOMIC_SEQ_CST)) {
         __atomic_add_fetch(&g_denied, 1, __ATOMIC_SEQ_CST);
         seterr(e, "Network access refused by the host program (deny mode); nothing was looked up, connected or sent");
@@ -963,5 +1011,6 @@ CURLcode curl_easy_perform(CURL *c) {
         seterr(e, "Operation was aborted by a callback");
     }
     e->deadline_ns = 0;
+    if (rc != CURLE_UNSUPPORTED_PROTOCOL) g_last.policy_denied = 0;   /* only the final result counts: a later hop or address that was not refused clears it */
     return rc;
 }

@@ -26,6 +26,7 @@ on:
       - tools/curl-test.sh
       - tools/curltool-build.sh
       - tools/tatsu-test.sh
+      - tools/tss-stage-test.sh
       - tools/tss-dryrun-test.sh
       - tools/remote-zip-test.sh
       - tools/bmprobe-build.sh
@@ -204,6 +205,8 @@ jobs:
         run: tools/netguard-test.sh build-rs
       - name: "Test the FDR proxy and the URLAsset step against a fake device, and the restore session rules (policy in force before the tool starts, kept while a thread runs)"
         run: tools/fdr-session-test.sh build-rs
+      - name: "Test stop B: per-request TSS failure classification, policy refusal passed on without retry, 1 MiB body cap, test-only loopback, fake TSS server (loopback only, no Apple request)"
+        run: tools/tss-stage-test.sh build-tssstage
       - name: "Test the install-disk policy (128 GiB sparse macos_disk.img, kept, never resized, reset only on the exact text, temporary directory)"
         run: tools/disk-policy-test.sh build-diskpolicy
 

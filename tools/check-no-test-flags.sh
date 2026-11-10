@@ -51,5 +51,12 @@ strings "$W/dl_test.o" | grep -q "127.0.0.1" || bad "control: the test flavour o
 # the test flavour must differ, or the check above proves nothing
 $CC $FL -DHV_TSS_HTTPS_ONLY -DHV_TSS_ALLOW_HTTP_TEST -c $TP/libtatsu/src/tss.c -o "$W/tss_test.o"
 strings "$W/tss_test.o" | grep -q "127.0.0.1" || bad "control: the test flavour does not contain the loopback allowance (check is vacuous)"
+# the test-only loopback allowance in the connection policy: absent from the shipped object, present in the test flavour (control), never set by a shipped build script
+$CC -O1 -w -std=gnu11 -D_GNU_SOURCE -Ihost -I$TP/libimobiledevice-glue/include -c host/net_guard.c -o "$W/ng_ship.o"
+if nm "$W/ng_ship.o" | grep -q "hv_net_guard_test_allow_loopback" || strings "$W/ng_ship.o" | grep -q "test loopback"; then bad "shipped net_guard.o contains the test loopback allowance"; fi
+$CC -O1 -w -std=gnu11 -D_GNU_SOURCE -DHV_NET_TEST_LOOPBACK -Ihost -I$TP/libimobiledevice-glue/include -c host/net_guard.c -o "$W/ng_test.o"
+nm "$W/ng_test.o" | grep -q "hv_net_guard_test_allow_loopback" || bad "control: the test flavour of net_guard.o lacks the loopback allowance (check is vacuous)"
+if grep -rln "HV_NET_TEST_LOOPBACK" android CMakeLists.txt tools/restore-android-check.sh tools/restore-selftest-build.sh 2>/dev/null | grep . > /dev/null; then bad "a shipped build file mentions HV_NET_TEST_LOOPBACK"; fi
+if grep -rn "hv_net_guard_test_allow_loopback" host devices core android/app/src --include=*.c --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/net_guard\.c:" > /dev/null; then bad "app code calls the test loopback function"; fi
 [ $fail = 0 ] && echo "OK  shipped build: no test switches, https-only libtatsu"
 exit $fail

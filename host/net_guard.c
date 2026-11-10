@@ -33,6 +33,12 @@ static char g_log[MAXL][96];
 static int g_nlog;
 static int g_active;
 static int g_engine;   /* engine threads inside hv_net_guard_engine_enter/leave */
+#ifdef HV_NET_TEST_LOOPBACK
+/* TEST BUILDS ONLY (never compiled into the app; tools/check-no-test-flags.sh checks the shipped objects): one exact 127.0.0.1:port for the HTTP purpose, so a
+   fake TSS server on this machine can be reached. Every other loopback port, other private addresses, and every other purpose stay refused. */
+static uint16_t g_test_lo_port;
+void hv_net_guard_test_allow_loopback(uint16_t port) { pthread_mutex_lock(&g_mu); g_test_lo_port = port; pthread_mutex_unlock(&g_mu); }
+#endif
 
 static void note_denied(const char *ip, unsigned port, const char *why) {
     if (g_nlog == MAXL) { memmove(g_log[0], g_log[1], sizeof g_log[0] * (MAXL - 1)); g_nlog--; }
@@ -110,6 +116,10 @@ int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *na
         const char *cls = classify(a, ip, sizeof ip, &port);
         for (int i = 0; i < g_nlocal && verdict == HV_NET_DENY && local_ok; i++)
             if (g_local[i].port == port && !strcmp(g_local[i].ip, ip)) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "registered local endpoint"); }
+#ifdef HV_NET_TEST_LOOPBACK
+        if (verdict == HV_NET_DENY && purpose == HV_NET_P_HTTP && g_test_lo_port && port == g_test_lo_port && a->sa_family == AF_INET &&
+            ntohl(((const struct sockaddr_in *)a)->sin_addr.s_addr) == 0x7F000001u) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "test loopback endpoint"); }
+#endif
         if (verdict == HV_NET_DENY) {
             if (cls) snprintf(reason, sizeof reason, "%s address", cls);
             else if (!name) snprintf(reason, sizeof reason, "public address without an approved name");
@@ -176,6 +186,9 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
 void hv_net_guard_reset(void) {
     pthread_mutex_lock(&g_mu);
     g_nlocal = g_nunix = g_nhost = g_nlog = 0;
+#ifdef HV_NET_TEST_LOOPBACK
+    g_test_lo_port = 0;
+#endif
     memset(&g_st, 0, sizeof g_st);
     pthread_mutex_unlock(&g_mu);
 }

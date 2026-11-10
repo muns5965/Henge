@@ -53,4 +53,8 @@ void hv_net_guard_stats(HvNetStats *s);
 /* The last refused attempts, newest last, as "ip:port reason" text, one per line (at most 8). */
 size_t hv_net_guard_denied_log(char *out, size_t cap);
 
+#ifdef HV_NET_TEST_LOOPBACK
+void hv_net_guard_test_allow_loopback(uint16_t port);   /* test builds only: exactly 127.0.0.1:port, HTTP purpose */
+#endif
+
 #endif

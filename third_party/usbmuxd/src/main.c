@@ -59,6 +59,11 @@ static const char *lockfile = DEFAULT_LOCKFILE;
 
 // Global state used in other files
 int should_exit;
+/* Henge: usbmuxd runs as a thread of the app. usbmuxd_request_stop() asks main_loop to return (it wakes within HV_STOP_POLL_MS); usbmuxd_stopped is 1 once
+   the shutdown at the end of main() has finished. */
+volatile int usbmuxd_stopped = 0;
+#define HV_STOP_POLL_MS 200
+void usbmuxd_request_stop(void) { should_exit = 1; }
 int should_discover;
 int use_logfile = 0;
 int no_preflight = 0;
@@ -333,6 +338,8 @@ static int main_loop(int listenfd)
 		usbmuxd_log(LL_FLOOD, "Device timeout is %d ms", dto);
 		if(dto < to)
 			to = dto;
+		if(to < 0 || to > HV_STOP_POLL_MS)
+			to = HV_STOP_POLL_MS; /* Henge: so a stop request is noticed */
 
 		fdlist_reset(&pollfds);
 		fdlist_add(&pollfds, FD_LISTEN, listenfd, POLLIN);
@@ -915,7 +922,9 @@ int main(int argc, char *argv[])
 	usb_shutdown();
 	device_shutdown();
 	client_shutdown();
+	close(listenfd); /* Henge: the listener was never closed, so its port and descriptor outlived the thread */
 	usbmuxd_log(LL_NOTICE, "Shutdown complete");
+	usbmuxd_stopped = 1;
 
 terminate:
 	log_disable_syslog();

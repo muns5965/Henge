@@ -26,6 +26,8 @@ done
 for f in host/install.c host/ipsw_dl.c host/tss_probe.c; do
   [ -f "$f" ] && grep -q "FLAG_STOP_BEFORE_ROOTFS" "$f" && bad "$f sets the stop-A test flag"
 done
+# the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
+if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do
   grep -q "HV_TSS_HTTPS_ONLY" "$f" || bad "$f builds libtatsu without HV_TSS_HTTPS_ONLY"
 done

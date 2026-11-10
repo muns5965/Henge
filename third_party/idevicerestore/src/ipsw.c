@@ -309,6 +309,7 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 	struct stat fst;
 	if (stat(ipsw, &fst) != 0) {
 		logger(LL_ERROR, "ipsw_open %s: %s\n", ipsw, strerror(errno));
+		free(archive); /* Henge: was leaked */
 		return NULL;
 	}
 	if (S_ISDIR(fst.st_mode)) {
@@ -320,6 +321,9 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 			free(archive);
 			return NULL;
 		}
+		/* Henge: the archive was opened only to see that it opens; every user re-opens it by path. It was never closed, which kept one file descriptor
+		   open per ipsw_open for the life of the process. */
+		zip_close(zip);
 		archive->zip = 1;
 	}
 	archive->path = strdup(ipsw);

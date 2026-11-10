@@ -362,6 +362,8 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 
 int build_identity_check_components_in_ipsw(plist_t build_identity, ipsw_archive_t ipsw);
 
+extern int hv_no_ticket_files;
+
 int idevicerestore_start(struct idevicerestore_client_t* client)
 {
 	int tss_enabled = 0;
@@ -1382,7 +1384,11 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			char *bin = NULL;
 			uint32_t blen = 0;
 			plist_to_bin(client->tss, &bin, &blen);
-			if (bin) {
+			if (bin && hv_no_ticket_files) {
+				/* Henge: a signing ticket is never written to a file by this app */
+				logger(LL_INFO, "SHSH not saved (ticket files are disabled)\n");
+				free(bin);
+			} else if (bin) {
 				char zfn[1024];
 				if (client->cache_dir) {
 					strcpy(zfn, client->cache_dir);
@@ -1631,6 +1637,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 void (*hv_stop_a_hook)(const struct hv_stop_a_info *info) = NULL;
 #endif
 
+/* Henge: 1 = FLAG_SHSHONLY must not write the ticket to a file (this app keeps no ticket on disk). Set by the host before the tool starts. */
+int hv_no_ticket_files = 0;
+
 struct idevicerestore_client_t* idevicerestore_client_new(void)
 {
 	struct idevicerestore_client_t* client = (struct idevicerestore_client_t*) malloc(sizeof(struct idevicerestore_client_t));
@@ -1651,6 +1660,10 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 		return;
 	}
 
+	/* Henge: the USB handles of the DFU/recovery clients were closed only on the success paths of idevicerestore_start; every error return left them open.
+	   Both calls are safe when the pointer is already NULL. */
+	dfu_client_free(client);
+	recovery_client_free(client);
 	if (client->irecv_e_ctx) {
 		irecv_device_event_unsubscribe(client->irecv_e_ctx);
 	}

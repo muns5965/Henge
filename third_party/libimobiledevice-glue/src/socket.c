@@ -385,6 +385,8 @@ int socket_create_unix(const char *filename)
 	return sock;
 }
 
+limd_glue_connect_guard_fn limd_glue_connect_guard = NULL;
+
 int socket_connect_unix(const char *filename)
 {
 	struct sockaddr_un name;
@@ -435,6 +437,11 @@ int socket_connect_unix(const char *filename)
 	fcntl(sfd, F_SETFL, flags | O_NONBLOCK);
 
 	do {
+		if (limd_glue_connect_guard && limd_glue_connect_guard((struct sockaddr*)&name, sizeof(name)) != 0) {
+			socket_close(sfd);
+			errno = EACCES;
+			return -1;
+		}
 		if (connect(sfd, (struct sockaddr*)&name, sizeof(name)) != -1) {
 			break;
 		}
@@ -1111,6 +1118,11 @@ int socket_connect_addr(struct sockaddr* addr, uint16_t port)
 #endif
 
 	do {
+		if (limd_glue_connect_guard && limd_glue_connect_guard(addr, addrlen) != 0) {
+			socket_close(sfd);
+			errno = EACCES;
+			return -1;
+		}
 		if (connect(sfd, addr, addrlen) != -1) {
 			break;
 		}
@@ -1240,6 +1252,12 @@ int socket_connect(const char *addr, uint16_t port)
 		fcntl(sfd, F_SETFL, flags | O_NONBLOCK);
 #endif
 
+		if (limd_glue_connect_guard && limd_glue_connect_guard(rp->ai_addr, rp->ai_addrlen) != 0) {
+			socket_close(sfd);
+			sfd = -1;
+			errno = EACCES;
+			continue;
+		}
 		if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1) {
 			break;
 		}

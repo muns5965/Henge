@@ -49,6 +49,12 @@ extern "C" {
 
 #ifndef _WIN32
 LIMD_GLUE_API int socket_create_unix(const char *filename);
+/* Henge: a policy hook. When set, every connect() this library makes is first offered to it with the address that is about to be used (after name
+   resolution, so a name cannot resolve to one address for the check and another for the connection). Return 0 to allow; anything else refuses the
+   connection (errno = EACCES, the call returns -1). NULL (the default) changes nothing. */
+typedef int (*limd_glue_connect_guard_fn)(const struct sockaddr *addr, socklen_t addrlen);
+LIMD_GLUE_API extern limd_glue_connect_guard_fn limd_glue_connect_guard;
+
 LIMD_GLUE_API int socket_connect_unix(const char *filename);
 #endif
 LIMD_GLUE_API int socket_create(const char *addr, uint16_t port);

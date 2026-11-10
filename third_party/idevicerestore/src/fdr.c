@@ -533,6 +533,13 @@ static int fdr_handle_proxy_cmd(fdr_client_t fdr)
 	/* Now try to handle actual messages */
 	/* Connect: 0 3 hostlen <host> <port> */
 	if (buf[0] == 0 && buf[1] == 3) {
+		/* Henge: the host name length (buf[2]) and the port must fit inside what was received. Without this check a short or inconsistent packet made the
+		   code read the port from, and terminate the name at, an arbitrary place. */
+		if (bytes < 6 || (uint32_t)buf[2] + 5u != bytes) {
+			logger(LL_ERROR, "FDR %p malformed proxy connect request (%u bytes, name length %u)\n", fdr, bytes, (unsigned)(unsigned char)buf[2]);
+			free(buf);
+			return 0;
+		}
 		uint16_t *p = (uint16_t *)&buf[bytes - 2];
 		port = be16toh(*p);
 		buf[bytes - 2] = '\0';

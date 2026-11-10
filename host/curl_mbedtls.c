@@ -56,6 +56,7 @@ typedef struct {
     struct curl_slist *headers;
     char *errorbuffer;
     long response_code;
+    long max_redir;   /* CURLOPT_MAXREDIRS; 0 = MAX_REDIRECTS */
     long timeout_ms, connect_timeout_ms;   /* CURLOPT_TIMEOUT[_MS]: the whole transfer, redirects included; CURLOPT_CONNECTTIMEOUT[_MS] */
     volatile int cancel;                   /* hv_curl_cancel(): set from any thread, sticky until hv_curl_cancel_reset() */
     int stop;                              /* why the running transfer is being stopped: 0 no, 1 deadline, 2 cancel, 3 a progress callback said stop */
@@ -81,6 +82,9 @@ void hv_curl_set_cancel_flag(volatile int *flag) { g_cancel_flag = flag; }
    process is not stopped by it. */
 static volatile int g_deny;
 static volatile int g_attempts, g_denied;
+/* host/net_guard.c sets this: asked with the host name and the address about to be connected, before every connect(); 0 = allowed. NULL = no policy. */
+int (*hv_curl_connect_guard)(const char *host, const struct sockaddr *a, socklen_t len) = NULL;
+
 void hv_curl_deny_network(int on) { __atomic_store_n(&g_deny, on ? 1 : 0, __ATOMIC_SEQ_CST); }
 int hv_curl_deny_active(void) { return __atomic_load_n(&g_deny, __ATOMIC_SEQ_CST); }
 int hv_curl_attempt_count(void) { return __atomic_load_n(&g_attempts, __ATOMIC_SEQ_CST); }   /* curl_easy_perform calls so far */
@@ -367,6 +371,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         /* connect with a timeout: non-blocking, wait, check */
         fcntl_nonblock(s, 1);
+        if (hv_curl_connect_guard && hv_curl_connect_guard(host, a->ai_addr, a->ai_addrlen) != 0) { close(s); continue; }   /* host/net_guard.c */
         int r = connect(s, a->ai_addr, a->ai_addrlen);
         if (r < 0 && errno == EINPROGRESS) {
             if (wait_fd(e, s, POLLOUT, e && e->connect_timeout_ms > 0 ? e->connect_timeout_ms : CONNECT_TIMEOUT_MS) == 1) {
@@ -494,6 +499,7 @@ CURLcode curl_easy_setopt(CURL *c, CURLoption opt, ...) {
     case CURLOPT_PROGRESSFUNCTION: e->progress = va_arg(ap, curl_progress_callback); break;
     case CURLOPT_XFERINFODATA: e->xferinfo_data = va_arg(ap, void *); break;
     case CURLOPT_NOPROGRESS: e->noprogress = (int)va_arg(ap, long); break;
+    case CURLOPT_MAXREDIRS: e->max_redir = va_arg(ap, long); break;
     case CURLOPT_TIMEOUT: e->timeout_ms = va_arg(ap, long) * 1000L; break;
     case CURLOPT_TIMEOUT_MS: e->timeout_ms = va_arg(ap, long); break;
     case CURLOPT_CONNECTTIMEOUT: e->connect_timeout_ms = va_arg(ap, long) * 1000L; break;
@@ -918,7 +924,7 @@ static CURLcode perform_hops(Easy *e) {
         CURLcode rc = do_request(e, &u, post, next, sizeof next, &redirect, &total);
         if (rc) return rc;
         if (!redirect) return CURLE_OK;
-        if (hop >= MAX_REDIRECTS) { seterr(e, "more than %d redirects", MAX_REDIRECTS); return CURLE_TOO_MANY_REDIRECTS; }
+        if (hop >= (e->max_redir > 0 && e->max_redir < MAX_REDIRECTS ? (int)e->max_redir : MAX_REDIRECTS)) { seterr(e, "more than %d redirects", MAX_REDIRECTS); return CURLE_TOO_MANY_REDIRECTS; }
         Url nu;
         if (parse_url(next, &nu) == 0 && u.https && !nu.https) {
             seterr(e, "refusing a redirect from https to plain http");

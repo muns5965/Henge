@@ -31,6 +31,7 @@ static uint64_t g_dev_ecid;
 static int g_setcfg_seen, g_setcfg_value;
 static const char *g_sc;
 static void (*g_hook_serial)(void);   /* tests/test_preflight.c: called (on the ROM thread) when the serial-number string is requested */
+static int g_stall_desc;   /* tests/test_reconnect.c: STALL every GET_DESCRIPTOR (an enumeration that fails) */
 static int g_getstate_seen;   /* DFU GET_STATE requests the ROM has answered: the 1st is before the library, the 2nd after it closed its handle */
 
 /* Runs on its own thread once the probe has closed the library's handle (the 2nd GET_STATE), so the probe's stages are over and only its final wait is left. */
@@ -70,6 +71,7 @@ static void reply(uint8_t type, const void *d, uint32_t n) { hv_vusb_put_respons
 static void handle_setup(const uint8_t *s, uint32_t len) {
     if (len < 8) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
     uint8_t rt = s[0], rq = s[1];
+    if (g_stall_desc && rt == 0x80 && rq == 6) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
     uint16_t val = (uint16_t)(s[2] | s[3] << 8), idx = (uint16_t)(s[4] | s[5] << 8), wlen = (uint16_t)(s[6] | s[7] << 8);
     (void)idx;
     uint8_t buf[256];

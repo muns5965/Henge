@@ -1,6 +1,7 @@
 /* Build 69-a: the real restore tool's start-up on the virtual Mac, stopped by its own FLAG_NOACTION. See restore_preflight.h for what runs and what is excluded. */
 #define _GNU_SOURCE 1
 #include "restore_preflight.h"
+#include "net_guard.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -134,11 +135,16 @@ static void tree_walk(const char *dir, const char *rel, Tree *t) {
 
 /* ---- the private usbmuxd, as host/install.c starts it ---- */
 static char g_mux[64], g_cache[1024];
+static volatile int g_mux_exited;
+static int g_still;   /* the restore thread did not return: the guard stays installed for it */
+extern void usbmuxd_request_stop(void);   /* third_party/usbmuxd/src/main.c (Henge): main_loop returns within ~200 ms */
+extern int hv_no_ticket_files;            /* third_party/idevicerestore/src/idevicerestore.c (Henge) */
 static void *mux_thread(void *arg) {
     (void)arg;
     pthread_setname_np(pthread_self(), "hv-usbmuxd");
     char *argv[] = {"usbmuxd", "-f", "-p", "-P", "NONE", "-S", g_mux, "-C", g_cache, NULL};
     usbmuxd_main(9, argv);
+    g_mux_exited = 1;
     return NULL;
 }
 
@@ -230,6 +236,7 @@ static int mux_listening(void) {
 
 int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, FILE *out, int cap_ms, int stage) {
     g_nrows = g_failed = g_findings = 0;
+    g_still = 0;
     g_calls = 0, g_max_step = -1, g_last_step = -1, g_last_p = -1, g_rc = 12345, g_done = 0;
     memset((void *)&g_sa, 0, sizeof g_sa);
     if (!usb) { fprintf(out, "restore preflight: no USB port\n"); return -1; }
@@ -240,6 +247,13 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     if (hv_curl_deny_active()) row("deny_mode", "ok", "the curl stand-in refuses every request before any lookup, connection or TLS (scope: that client only; the loopback usbmuxd socket is not counted)");
     else row("deny_mode", "FAILED", "deny mode did not turn on; nothing else is started");
     if (g_failed) goto report;
+    /* the connection guard: default deny for every connect() the tool's libraries make (FDR proxy, libusbmuxd, curl stand-in, URLAsset); only the private usbmuxd
+       listener is registered below. A signing ticket is never written to a file. */
+    hv_net_guard_reset();
+    hv_net_guard_install();
+    hv_no_ticket_files = 1;
+    row("net_guard", hv_net_guard_active() ? "ok" : "FAILED", "default-deny connection policy installed (glue sockets, curl stand-in, URLAsset); allow list: the private usbmuxd listener only; ticket files disabled");
+    g_mux_exited = 0;
 
     if (hv_usb_wait_online(usb, 60000) < 0) { row("guest_on_bus", "FAILED", "the guest did not come on the USB bus within 60 s; the tool was not started"); goto report; }
     FdSnap fd0; ThSnap th0;
@@ -250,10 +264,10 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     snprintf(g_cache, sizeof g_cache, "%s", workdir);
     snprintf(g_mux, sizeof g_mux, "127.0.0.1:%d", 27100 + (int)(getpid() % 800));
     setenv("USBMUXD_SOCKET_ADDRESS", g_mux, 1);
+    hv_net_guard_allow_local("127.0.0.1", (uint16_t)atoi(strrchr(g_mux, ':') + 1));
     hv_libusb_shim_attach(usb);
     pthread_t tm, tr;
     if (pthread_create(&tm, NULL, mux_thread, NULL) != 0) { row("init", "FAILED", "usbmuxd thread did not start"); goto report; }
-    pthread_detach(tm);
     usleep(300000);
     /* the baseline of the tool's own subscription and handles is taken with usbmuxd already up: it registers its own hotplug callback and keeps it for good */
     static Tree tree0, tree1;
@@ -297,6 +311,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     int timed_out = !g_done;
     if (timed_out) { global_quit_flag = 1; for (int i = 0; i < 150 && !g_done; i++) usleep(20000); }
     int still_running = !g_done;   /* the quit flag did not end it either */
+    g_still = still_running;
     if (g_done) pthread_join(tr, NULL);
     double took = now_ms() - t0;
 
@@ -310,6 +325,12 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     /* 3. what crossed the boundary */
     int att = hv_curl_attempt_count() - att0, den = hv_curl_denied_count() - den0;
     row("network_requests", att == 0 ? "ok" : "FAILED", "curl stand-in: %d attempt(s), %d refused by deny mode (scope: the curl client only; the loopback usbmuxd socket and other libraries are not counted)", att, den);
+    {
+        HvNetStats ns; hv_net_guard_stats(&ns);
+        char dl[400]; hv_net_guard_denied_log(dl, sizeof dl);
+        for (char *c = dl; *c; c++) if (*c == '\n') *c = ';';
+        row("connections", ns.denied == 0 && ns.url_attempts == 0 ? "ok" : "FAILED", "connection guard: %d attempt(s) at the socket level, %d allowed (the registered private usbmuxd listener), %d refused; URLAsset requests %d (%d refused)%s%s (covers the glue sockets, the curl stand-in and the URLAsset step; a direct connect() elsewhere in the process is not covered)", ns.attempts, ns.allowed, ns.denied, ns.url_attempts, ns.url_denied, dl[0] ? " -- refused: " : "", dl);
+    }
     row("tss_requests", att == 0 ? "ok" : "FAILED", "0 -- derived: every signing request goes through the curl stand-in and it saw %d attempt(s); there is no separate counter in the signing library", att);
     {
         int c1 = hv_libusb_ctrl_count(), d1 = hv_libusb_data_transfer_count();
@@ -370,17 +391,18 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     idevicerestore_client_free(g_client);
     g_client = NULL;
     usleep(500000); /* the event thread of the tool needs a moment to wind down */
+    /* the private usbmuxd: ask it to stop, wait for the thread, check that its listener is gone */
+    usbmuxd_request_stop();
+    for (int i = 0; i < 100 && !g_mux_exited; i++) usleep(50000);
+    int mux_stopped = g_mux_exited;
+    if (mux_stopped) pthread_join(tm, NULL);
     FdSnap fd1; ThSnap th1;
     fd_snap(&fd1); th_snap(&th1);
     int hd1 = hv_libusb_open_handles(), hp1 = hv_libusb_hotplug_live(), ho1 = hv_libusb_handles_opened_total();
     row("usb_handles", hd1 == hd0 ? "ok" : "FAILED", "device handles open: %d before, %d after (%d opened during the run) -- observed at the libusb stand-in", hd0, hd1, ho1 - ho0);
-    row("event_subscription", hp1 == hp0 ? "ok" : "FAILED", "hotplug callbacks registered: %d before the tool started (the private usbmuxd holds its own and keeps it), %d after the tool freed its client -- observed at the libusb stand-in", hp0, hp1);
+    row("event_subscription", hp1 <= hp0 ? "ok" : "FAILED", "hotplug callbacks registered: %d before the tool started (that count includes the private usbmuxd's own), %d after the tool freed its client and usbmuxd stopped -- observed at the libusb stand-in", hp0, hp1);
     int ipsw_fds_after = fd_count_target(&fd1, real);
-    if (ipsw_fds_after > ipsw_fds_open) row("ipsw_fd", "FAILED", "file descriptors on the IPSW: %d while open, %d after the client was freed: it grew -- by /proc/self/fd", ipsw_fds_open, ipsw_fds_after);
-    else if (ipsw_fds_after > 0) {
-        g_findings++;
-        row("ipsw_fd", "leaked", "file descriptors on the IPSW: %d while open, %d after the client was freed -- by /proc/self/fd. This is the vendored tool's own leak (ipsw_open calls zip_open and never zip_close; ipsw_close frees only the path), one descriptor per opened IPSW, reclaimed by the OS at process exit; not changed here (vendored source)", ipsw_fds_open, ipsw_fds_after);
-    } else row("ipsw_fd", ipsw_fds_open > 0 ? "ok" : "info", "file descriptors on the IPSW: %d while open, %d after the client was freed -- by /proc/self/fd%s", ipsw_fds_open, ipsw_fds_after, ipsw_fds_open > 0 ? "" : " (none was visible while open, so this says nothing about release)");
+    row("ipsw_fd", ipsw_fds_after == 0 ? "ok" : "FAILED", "file descriptors on the IPSW: %d while the archive was open, %d after the client was freed -- by /proc/self/fd (the vendored ipsw_open used to keep one open for good; it now closes the probe handle)", ipsw_fds_open, ipsw_fds_after);
     int mux_up = mux_listening();
     {
         int nthr = th1.n - th0.n, mux_new = th_count(&th1, "hv-usbmuxd") - th_count(&th0, "hv-usbmuxd");
@@ -389,8 +411,8 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
         int other = nthr - mux_new;
         row("threads", other <= 0 ? "ok" : "info", "%d before, %d after; +%d is the usbmuxd thread, %d other(s) not explained by it. After: %s", th0.n, th1.n, mux_new, other < 0 ? 0 : other, names);
     }
-    row("usbmuxd", "info", "the usbmuxd thread NEVER exits (usbmuxd_main has no stop) and its loopback socket %s: left running by design, so \"all resources released\" is NOT claimed. At process exit the OS reclaims it; that is not the library's own clean-up", mux_up ? "still listens" : "no longer answers");
-    row("fds", "info", "open descriptors %d before, %d after (sockets %d->%d, pipes %d->%d, anon_inode %d->%d, files %d->%d); the difference is the usbmuxd listener and its poll set, not attributed further", fd0.n, fd1.n,
+    row("usbmuxd", mux_stopped && !mux_up ? "ok" : "FAILED", "stop requested after the client was freed: the thread %s and its loopback socket %s", mux_stopped ? "returned and was joined" : "did NOT return within 5 s", mux_up ? "STILL LISTENS" : "no longer answers");
+    row("fds", fd1.n <= fd0.n ? "ok" : "info", "open descriptors %d before, %d after (sockets %d->%d, pipes %d->%d, anon_inode %d->%d, files %d->%d); the difference is the usbmuxd listener and its poll set, not attributed further", fd0.n, fd1.n,
         fd_count_kind(&fd0, "socket"), fd_count_kind(&fd1, "socket"), fd_count_kind(&fd0, "pipe"), fd_count_kind(&fd1, "pipe"), fd_count_kind(&fd0, "anon_inode"), fd_count_kind(&fd1, "anon_inode"), fd_count_kind(&fd0, "file"), fd_count_kind(&fd1, "file"));
     row("process", !timed_out ? "ok" : "FAILED", "the restore thread %s within %d ms", timed_out ? "did NOT finish" : "finished", cap_ms);
     {
@@ -408,6 +430,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     }
 
 report:
+    if (!g_still) hv_net_guard_uninstall();
     if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction, no disk write\n");
     else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction, no disk write\n");
     for (int i = 0; i < g_nrows; i++) fprintf(out, "restore preflight: %-20s %-9s %s\n", g_rows[i].name, g_rows[i].status, g_rows[i].detail);

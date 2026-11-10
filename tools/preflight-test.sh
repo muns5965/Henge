@@ -52,7 +52,7 @@ run() { # name binary scenario ipsw want... (patterns that must appear in the ou
   return $r
 }
 run progress test_pf progress fake.ipsw "^PASS progress verdict DETECT" "^PASS progress verdict \\(stop A\\) PREPARE 0.0" || rc=1
-run ok test_pf ok fake.ipsw "ipsw_open +ok" "init +ok" "progress +ok" "network_requests +ok" "data_transfers +ok" "stopped=noaction +inferred" "usb_handles +ok" "event_subscription +ok" "ipsw_fd +leaked" "1 while open, 1 after" "RESULT: preflight_completed stopped=noaction" "usbmuxd +info" || rc=1
+run ok test_pf ok fake.ipsw "ipsw_open +ok" "init +ok" "progress +ok" "network_requests +ok" "data_transfers +ok" "stopped=noaction +inferred" "usb_handles +ok" "event_subscription +ok" "net_guard +ok" "connections +ok" "ipsw_fd +ok" "RESULT: preflight_completed stopped=noaction" "usbmuxd +ok.*returned and was joined" || rc=1
 run no-ipsw test_pf no-ipsw fake.ipsw "ipsw_open +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run curl test_pf curl fake.ipsw "network_requests +FAILED" "([1-9][0-9]*) attempt\\(s\\), \\1 refused" "server saw 0 connection" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run dnload test_pf dnload fake.ipsw "data_transfers +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
@@ -60,7 +60,7 @@ run negative test_pf_neg ok fake.ipsw "init +FAILED" "stopped=noaction +FAILED" 
 run hang test_pf hang fake.ipsw "init +FAILED" "TIMEOUT" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 # stop A
 run a-stored test_pf a-ok a_stored.ipsw "init +ok" "progress +ok" "stopped=before_rootfs +direct" "identity +ok.*Customer Erase Install" "macos_variant +info +present" "components +ok" "rootfs_entry +ok.*method stored.*seekable.*agrees" \
-  "extraction_rule +info.*extract no" "local_writes +info.*0 new file" "network_requests +ok" "data_transfers +ok" "ipsw_fd +leaked" "RESULT: preflight_completed stopped=before_rootfs \\(observed\\)" || rc=1
+  "extraction_rule +info.*extract no" "local_writes +info.*0 new file" "network_requests +ok" "connections +ok" "data_transfers +ok" "ipsw_fd +ok" "usbmuxd +ok" "threads +ok" "RESULT: preflight_completed stopped=before_rootfs \\(observed\\)" || rc=1
 run a-deflated test_pf a-ok a_deflated.ipsw "stopped=before_rootfs +direct" "rootfs_entry +ok.*method deflate.*NOT seekable.*agrees" "extraction_rule +info.*extract YES.*This run extracted nothing" "local_writes +info.*0 new file" "RESULT: preflight_completed stopped=before_rootfs" || rc=1
 run a-missing test_pf a-bad-component a_missing.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "identity +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run a-wrongmodel test_pf a-bad-identity a_wrongmodel.ipsw "init +FAILED" "stopped=before_rootfs +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }

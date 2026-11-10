@@ -1220,9 +1220,18 @@ typedef struct {
 	char* content;
 } query_response;
 
+/* Henge: policy for the URLAsset request, whose address the DEVICE chooses. hv_urlasset_guard (set by the host) is asked with the URL before anything is
+   opened: 0 = allowed. NULL keeps the original behaviour. The body of a URLAsset response is capped (hv_urlasset_cap, 0 = no cap) and redirects limited. */
+int (*hv_urlasset_guard)(const char *url) = NULL;
+size_t hv_urlasset_max_body = 32u << 20;
+static size_t g_body_cap = 0;
+
 static size_t _curl_write_callback(char* data, size_t size, size_t nmemb, query_response* response)
 {
 	size_t total = size * nmemb;
+	if (g_body_cap && response->length + total > g_body_cap) {
+		return 0; /* aborts the transfer */
+	}
 	if (total != 0) {
 		response->content = realloc(response->content, response->length + total + 1);
 		memcpy(response->content + response->length, data, total);
@@ -1285,6 +1294,24 @@ int restore_send_url_asset(struct idevicerestore_client_t* client, plist_t messa
 		logger(LL_ERROR, "%s: Unable to extract RequestURL from Arguments\n", __func__);
 		return -1;
 	}
+	if (hv_urlasset_guard && hv_urlasset_guard(request_url) != 0) {
+		/* Henge: refused by policy. The device gets what a failed download looks like (status 0, empty body); nothing was opened. */
+		logger(LL_ERROR, "%s: URLAsset request refused by policy\n", __func__);
+		plist_t refused = plist_new_dict();
+		plist_dict_set_item(refused, "ResponseBody", plist_new_data("", 0));
+		plist_dict_set_item(refused, "ResponseBodyDone", plist_new_bool(1));
+		plist_dict_set_item(refused, "ResponseHeaders", plist_new_dict());
+		plist_dict_set_item(refused, "ResponseStatus", plist_new_uint(0));
+		restore_service_client_t rsvc = _restore_get_service_client_for_data_request(client, message);
+		if (!rsvc) {
+			plist_free(refused);
+			return -1;
+		}
+		_restore_service_send(rsvc, refused, PLIST_FORMAT_BINARY);
+		_restore_service_free(rsvc);
+		plist_free(refused);
+		return 0;
+	}
 	logger(LL_INFO, "Requesting URLAsset from %s\n", request_url);
 
 	char curl_error_message[CURL_ERROR_SIZE];
@@ -1313,8 +1340,12 @@ int restore_send_url_asset(struct idevicerestore_client_t* client, plist_t messa
 		curl_easy_setopt(handle, CURLOPT_VERBOSE, 1L);
 	}
 	curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1);
+	curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L); /* Henge */
+	curl_easy_setopt(handle, CURLOPT_TIMEOUT, 120L);
 	curl_easy_setopt(handle, CURLOPT_URL, request_url);
+	g_body_cap = hv_urlasset_guard ? hv_urlasset_max_body : 0;
 	curl_easy_perform(handle);
+	g_body_cap = 0;
 
 	long http_response = 0;
 	curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_response);

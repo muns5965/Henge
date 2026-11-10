@@ -64,7 +64,11 @@ static int load_cas(void) {
     if (!ca_state) {
         mbedtls_x509_crt_init(&ca_chain);
         psa_crypto_init();
+#ifdef HV_ALLOW_CA_ENV /* tests only: it widens or narrows trust, so release builds do not read it */
         const char *env = getenv("HV_CA_PATH");
+#else
+        const char *env = NULL;
+#endif
         /* An explicit $HV_CA_PATH is the only store used: if it yields nothing the request fails rather than widening trust. */
         const char *sys[] = {"/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts", "/etc/ssl/certs", NULL};
         const char *only[] = {env, NULL};

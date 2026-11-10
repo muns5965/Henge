@@ -128,6 +128,16 @@ public class MainActivity extends Activity {
         installerButton.setOnClickListener(v -> runVmrun(true));
         root.addView(installerButton);
 
+        final Button tlsButton = new Button(this);
+        tlsButton.setText("HTTPS·CA 저장소 확인 (공개 사이트)");
+        tlsButton.setOnClickListener(v -> runTlsCheck(false));
+        root.addView(tlsButton);
+
+        final Button appleButton = new Button(this);
+        appleButton.setText("Apple 서명 서버 TLS 확인 (GET 한 번)");
+        appleButton.setOnClickListener(v -> runTlsCheck(true));
+        root.addView(appleButton);
+
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
         toggle.setOnClickListener(v -> {
@@ -574,37 +584,6 @@ public class MainActivity extends Activity {
         runVmrun(false);
     }
 
-    /** The test VM's ECID: made once (random, 2^40 <= ecid < 2^62, like the iOS app), kept in the VM folder and reused on every run.
-     *  An unreadable or malformed file is reported and left alone, never replaced silently. Returns the value, or null with the reason in acc. */
-    private Long vmEcid(File dir, StringBuilder acc) {
-        File f = new File(dir, "vm_ecid.txt");
-        try {
-            if (f.exists()) {
-                String t = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
-                if (t.startsWith("ecid=0x") && t.length() > 7 && t.length() <= 23) {
-                    long v = Long.parseUnsignedLong(t.substring(7), 16);
-                    if (v >= (1L << 40) && v < (1L << 62)) return v;
-                }
-                acc.append("VM의 ECID 파일이 손상되어 있어 바꾸지 않고 멈춥니다: ").append(f).append(" (내용 확인 후 직접 지우면 새로 만듭니다)\n");
-                return null;
-            }
-            java.security.SecureRandom rnd = new java.security.SecureRandom();
-            long v;
-            do { v = rnd.nextLong() & ((1L << 62) - 1); } while (v < (1L << 40));
-            File tmp = new File(dir, "vm_ecid.txt.tmp");
-            try (java.io.FileOutputStream o = new java.io.FileOutputStream(tmp)) {
-                o.write(String.format("ecid=0x%x\n", v).getBytes(StandardCharsets.UTF_8));
-                o.getFD().sync();
-            }
-            java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            acc.append("이 VM의 ECID를 새로 만들어 저장했습니다.\n");
-            return v;
-        } catch (Exception e) {
-            acc.append("ECID를 읽거나 저장하지 못했습니다: ").append(e).append('\n');
-            return null;
-        }
-    }
-
     /** installer=true boots the ROM in DFU (installer) mode. Both modes use new blank disk/aux files each time and log PSCI calls. */
     private void runVmrun(final boolean installer) {
         if (running) return;
@@ -652,8 +631,16 @@ public class MainActivity extends Activity {
                     acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
                     if (installer && !cfg.containsKey("ecid")) {
-                        vmEcid = vmEcid(priv, acc);
-                        if (vmEcid == null) { show(acc.toString()); running = false; setButtons(true); return; }
+                        VmEcid.Result er = VmEcid.loadOrCreate(priv);
+                        switch (er.status) {
+                            case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음: ").append(String.format("0x%x", er.value)).append('\n'); break;
+                            default:
+                                acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
+                                   .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
+                                show(acc.toString()); running = false; setButtons(true); return;
+                        }
+                        vmEcid = er.value;
                         cfg.put("ecid", String.format("0x%x", vmEcid));
                     }
                     String[][] map = {{"ecid", "--ecid"}, {"seed", "--seed"}, {"ram_mb", "--ram-mb"}, {"cpus", "--cpus"},
@@ -711,6 +698,59 @@ public class MainActivity extends Activity {
             running = false;
             setButtons(true);
         }).start();
+    }
+
+    /** Runs libcurltool.so (host/curl_mbedtls.c, the client that will serve the restore tools) against real servers and reports the
+     *  three layers apart: CA store, TLS/certificate check, HTTP status. apple=true asks gs.apple.com once with a plain GET (no signing request). */
+    private void runTlsCheck(final boolean apple) {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        final String libDir = getApplicationInfo().nativeLibraryDir;
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder();
+            File exe = new File(libDir, "libcurltool.so");
+            if (!exe.exists()) acc.append("libcurltool.so가 이 APK에 없습니다.\n");
+            else {
+                acc.append("1) CA 저장소\n").append(runTool(exe, "--ca"));
+                String[] urls = apple ? new String[] {"https://gs.apple.com/TSS/controller?action=2"}
+                                      : new String[] {"https://example.com/", "https://www.apple.com/"};
+                for (String u : urls) {
+                    String o = runTool(exe, u, "--discard");
+                    acc.append("\n2) ").append(u).append('\n').append(o);
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("RC=(\\d+) HTTP=(\\d+) BYTES=(\\d+) ERR=(.*)").matcher(o);
+                    if (m.find()) {
+                        int rc = Integer.parseInt(m.group(1));
+                        String tls = rc == 0 || rc == 56 || rc == 23 || rc == 52 ? "TLS/인증서 검증 통과"
+                                : rc == 60 ? "인증서 검증 실패(거부됨)" : rc == 35 ? "TLS 핸드셰이크 실패" : rc == 77 ? "신뢰할 CA를 불러오지 못해 연결 안 함"
+                                : rc == 6 || rc == 7 || rc == 28 ? "네트워크 연결 단계 실패(TLS 판정 불가)" : "기타 오류 " + rc;
+                        acc.append("   → TLS: ").append(tls).append(" / HTTP: ").append(rc == 0 ? m.group(2) : "(응답 없음)").append('\n');
+                    }
+                }
+                acc.append("\nHTTP 4xx/5xx여도 TLS가 통과면 연결·인증서 쪽은 정상입니다. 이 시험은 복원이나 서명 요청 성공이 아닙니다.\n");
+            }
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    private String runTool(File exe, String... args) {
+        try {
+            java.util.List<String> cmd = new java.util.ArrayList<>();
+            cmd.add(exe.getAbsolutePath());
+            for (String a : args) cmd.add(a);
+            Process p = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true).start();
+            StringBuilder o = new StringBuilder();
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                String line;
+                while ((line = br.readLine()) != null) o.append("   ").append(line).append('\n');
+            }
+            if (!p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) { p.destroyForcibly(); o.append("   (120초 안에 끝나지 않아 종료)\n"); }
+            return o.toString();
+        } catch (Exception e) {
+            return "   실행 오류: " + e + "\n";
+        }
     }
 
     private void copyResult() {

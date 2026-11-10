@@ -24,6 +24,8 @@ on:
       - tools/devices-build.sh
       - tools/restore-android-check.sh
       - tools/curl-test.sh
+      - tools/curltool-build.sh
+      - android/app/src/main/java/**
       - devices/**
       - third_party/**
       - .github/workflows/android-engine.yml
@@ -90,6 +92,12 @@ jobs:
             echo "=== romextract was not built"; rc4=1
           fi
           [ $rc = 0 ] && [ $rc2 = 0 ] && [ $rc3 = 0 ] && [ $rc4 = 0 ]
+
+      - name: Test the per-VM ECID store (plain java, no framework)
+        run: |
+          mkdir -p build-java
+          javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
+          java -cp build-java dev.muns.hengeprobe.VmEcidTest
 
       - name: Test the HTTP/TLS client that replaces libcurl on Android (local servers; public check skipped without network)
         run: tools/curl-test.sh build-curltest

@@ -1,4 +1,4 @@
-/* Test driver for host/curl_mbedtls.c: curl_tool URL [--post DATA] [--follow] [--headers] [--abort-after N] [--ca]
+/* Test driver for host/curl_mbedtls.c: curl_tool URL [--post DATA] [--follow] [--headers] [--abort-after N] [--discard] [--ca]
    Prints the body on stdout; a summary line "RC=<code> HTTP=<status> BYTES=<n> ERR=<message>" on stderr. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,12 +6,12 @@
 #include "curl/curl.h"
 int hv_curl_ca_count(const char **where);
 static size_t bytes, abort_after = 0;
-static int show_headers;
+static int show_headers, discard;
 static size_t wcb(char *p, size_t s, size_t n, void *u) {
     (void)u;
     bytes += s * n;
     if (abort_after && bytes >= abort_after) return 0;
-    fwrite(p, s, n, stdout);
+    if (!discard) fwrite(p, s, n, stdout);
     return s * n;
 }
 static size_t hcb(char *p, size_t s, size_t n, void *u) { (void)u; if (show_headers) fprintf(stderr, "H: %.*s", (int)(s * n), p); return s * n; }
@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--post") && i + 1 < argc) post = argv[++i];
         else if (!strcmp(argv[i], "--follow")) follow = 1;
         else if (!strcmp(argv[i], "--headers")) show_headers = 1;
+        else if (!strcmp(argv[i], "--discard")) discard = 1;
         else if (!strcmp(argv[i], "--abort-after") && i + 1 < argc) abort_after = (size_t)atol(argv[++i]);
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);

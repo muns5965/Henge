@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Only to download the AVPBooter ROM piece from Apple (one HTTP Range request), as Henge on iOS does. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Only to tell Wi-Fi from mobile data before the IPSW download asks for confirmation (a normal permission, no prompt). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application
         android:label="Henge JIT Probe"
         android:allowBackup="false"

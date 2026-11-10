@@ -24,6 +24,7 @@ on:
       - tools/devices-build.sh
       - tools/curltool-build.sh
       - tools/bmprobe-build.sh
+      - tools/ipswdl-build.sh
       - tools/check-apple-ca.sh
       - third_party/mbedtls/**
       - tools/vmrun-irecv-build.sh
@@ -95,6 +96,9 @@ jobs:
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/bmprobe-build.sh build-bmprobe \
             && cp build-bmprobe/bm_probe android/app/src/main/jniLibs/arm64-v8a/libbmprobe.so || echo "::warning::the BuildManifest probe did not build; the APK goes without that button's program"
+          # IPSW downloader (the "IPSW 부분 다운로드" buttons): its own program, shipped configuration (no test switch; --stop-after required in this stage). Optional like the other probes.
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/ipswdl-build.sh build-ipswdl \
+            && cp build-ipswdl/ipsw_dl android/app/src/main/jniLibs/arm64-v8a/libipswdl.so || echo "::warning::the IPSW downloader did not build; the APK goes without that button's program"
           # The whole restore stack with its self-test (the "restore tool self-test" button). Its own program; a failure leaves the APK without that button's program.
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-selftest-build.sh build-restore \

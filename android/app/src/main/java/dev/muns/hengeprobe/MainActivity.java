@@ -6,8 +6,12 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Typeface;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.StatFs;
 import android.system.Os;
 import android.system.OsConstants;
 import android.util.TypedValue;
@@ -62,6 +66,8 @@ public class MainActivity extends Activity {
     private File crashFile;
     private File progressFile;
     private volatile boolean running;
+    private volatile IpswDownload ipswDl;
+    private Button dlStopButton;
     private ScrollView pageScroll;
 
     @Override
@@ -219,6 +225,30 @@ public class MainActivity extends Activity {
                 + "누르면 먼저 확인 창이 나옵니다. 받은 서명 값은 저장·표시하지 않습니다. 복원·IPSW 전체 다운로드·펌웨어 전송은 하지 않습니다.");
         tssNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(tssNote);
+
+        final Button dlButton = new Button(this);
+        dlButton.setText("IPSW 부분 다운로드 (처음 256 MiB, Apple CDN)");
+        dlButton.setOnClickListener(v -> confirmIpswDownload());
+        root.addView(dlButton);
+        dlStopButton = new Button(this);
+        dlStopButton.setText("다운로드 중단 (나중에 이어받기 가능)");
+        dlStopButton.setEnabled(false);
+        dlStopButton.setOnClickListener(v -> { IpswDownload d = ipswDl; if (d != null) { d.cancel(); Toast.makeText(this, "중단 요청함", Toast.LENGTH_SHORT).show(); } });
+        root.addView(dlStopButton);
+        final Button dlStatusButton = new Button(this);
+        dlStatusButton.setText("IPSW 다운로드 상태 보기");
+        dlStatusButton.setOnClickListener(v -> showIpswStatus());
+        root.addView(dlStatusButton);
+        final Button dlDeleteButton = new Button(this);
+        dlDeleteButton.setText("IPSW 부분 다운로드 삭제");
+        dlDeleteButton.setOnClickListener(v -> confirmIpswDelete());
+        root.addView(dlDeleteButton);
+        final TextView dlNote = new TextView(this);
+        dlNote.setText("macOS 15.6.1 IPSW(16,814,137,790바이트, 약 15.66 GiB)를 앱 내부 저장소에 이어받기 방식으로 받는 기능의 첫 시험입니다. 이 빌드는 처음 256 MiB까지만 받고 멈춥니다. "
+                + "다시 누르면 받은 곳에서 이어받습니다(Range·강한 ETag·If-Range). 전체를 받고 SHA-256이 맞을 때만 최종 파일로 확정합니다. 누르면 먼저 확인 창이 나옵니다. "
+                + "서명(TSS)·복원·VM 실행은 하지 않습니다.");
+        dlNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(dlNote);
 
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (JIT·메모리·엔진·대용량)");
@@ -966,6 +996,129 @@ public class MainActivity extends Activity {
                 + "결과가 '서명 발급'이어도 복원 성공을 뜻하지 않습니다(복원에는 요청이 더 필요합니다).\n\n"
                 + "IPSW 전체 다운로드, 펌웨어 전송, 복원은 하지 않습니다.")
             .setPositiveButton("전송", (d, w) -> { tssMode = true; runVmrun(true, false, false, 2); })
+            .setNegativeButton("취소", null)
+            .show();
+    }
+
+    // ---- IPSW download (first stage: up to 256 MiB per run; the work is done by libipswdl.so, see IpswDownload) ----
+    private static final long DL_STEP_BYTES = 256L << 20;
+
+    private File ipswDir() {
+        File d = new File(getFilesDir(), "vm");
+        d.mkdirs();
+        return d;
+    }
+
+    /** WIFI = unmetered Wi-Fi; CELLULAR; OTHER = something else or metered; NONE; UNKNOWN = could not be determined. */
+    private String networkKind() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network n = cm.getActiveNetwork();
+            NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
+            if (c == null) return "NONE";
+            if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) return "WIFI";
+            if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "CELLULAR";
+            return "OTHER";
+        } catch (Throwable t) {
+            return "UNKNOWN";
+        }
+    }
+
+    private static String gib(long b) {
+        return String.format(java.util.Locale.US, "%.2f GiB", b / 1073741824.0);
+    }
+
+    private void confirmIpswDownload() {
+        if (running) return;
+        File exe = new File(getApplicationInfo().nativeLibraryDir, "libipswdl.so");
+        if (!exe.exists()) { show("libipswdl.so가 이 APK에 없습니다(빌드 실패). 아무것도 받지 않았습니다.\n"); return; }
+        long free;
+        try { free = new StatFs(ipswDir().getAbsolutePath()).getAvailableBytes(); } catch (Throwable t) { free = -1; }
+        String net = networkKind();
+        boolean wifi = net.equals("WIFI");
+        String netText = wifi ? "Wi-Fi(종량제 아님)입니다."
+                : net.equals("CELLULAR") ? "모바일 데이터입니다. 이번 실행은 최대 256 MiB의 데이터를 씁니다."
+                : net.equals("NONE") ? "연결된 네트워크가 없습니다. 연결 후 다시 누르세요."
+                : "Wi-Fi(종량제 아님)로 확인되지 않았습니다(" + net + "). 데이터 요금이 날 수 있습니다.";
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+            .setTitle("IPSW를 처음 256 MiB까지 받습니다")
+            .setMessage("대상: macOS Sequoia 15.6.1 (24G90) IPSW, 전체 16,814,137,790바이트(약 15.66 GiB)\n\n"
+                + "이번 동작: 받은 곳에서 이어받아 256 MiB 지점까지만 받고 멈춥니다. 전체 다운로드는 이 빌드에 없습니다.\n\n"
+                + "나가는 요청: Apple CDN(updates.cdn-apple.com, HTTPS·인증서 검증)에 Range 요청 1건. 이 폰의 IP 주소가 서버에 보입니다. ECID·서명 정보는 보내지 않습니다.\n\n"
+                + "저장 위치: 앱 내부 저장소(files/vm). 사용 가능: " + (free < 0 ? "확인 못 함" : gib(free)) + "\n"
+                + "네트워크: " + netText + "\n\n"
+                + "무결성: 전체를 다 받기 전에는 SHA-256 검증이 없어 부분 파일은 검증되지 않습니다. 기대 SHA-256은 ipsw.me 한 곳에서만 확인한 값입니다.\n\n"
+                + "서명(TSS)·복원·VM 실행은 하지 않습니다.")
+            .setNegativeButton("취소", null);
+        if (net.equals("NONE")) { b.show(); return; }
+        b.setPositiveButton(wifi ? "받기 시작" : "그래도 받기", (d, w) -> runIpswDownload(exe));
+        b.show();
+    }
+
+    private void runIpswDownload(final File exe) {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        runOnUiThread(() -> dlStopButton.setEnabled(true));
+        new Thread(() -> {
+            final IpswDownload d = new IpswDownload(exe, ipswDir());
+            ipswDl = d;
+            final StringBuilder log = new StringBuilder();
+            final String head = "IPSW 부분 다운로드 중 (256 MiB 지점까지)…\n";
+            show(head);
+            final long[] last = {System.currentTimeMillis(), -1};
+            IpswDownload.Result r = d.run(DL_STEP_BYTES, new IpswDownload.Listener() {
+                @Override public void onProgress(long done, long total) {
+                    long now = System.currentTimeMillis();
+                    String speed = "";
+                    if (last[1] >= 0 && now > last[0]) speed = String.format(java.util.Locale.US, "  (%.1f MB/s)", (done - last[1]) / 1048576.0 / ((now - last[0]) / 1000.0));
+                    last[0] = now; last[1] = done;
+                    show(head + String.format(java.util.Locale.US, "받은 양: %.1f MiB / 전체 %.0f MiB (%.2f%%)%s\n", done / 1048576.0, total / 1048576.0, 100.0 * done / total, speed) + log);
+                }
+                @Override public void onLine(String line) { if (!line.startsWith("dl: PROGRESS")) log.append("   ").append(line).append('\n'); }
+            });
+            String verdict;
+            switch (r.code) {
+                case 7: verdict = "정상: 256 MiB 지점에서 멈췄습니다. 다시 누르면 이어받습니다(이 빌드는 256 MiB 단위)."; break;
+                case 0: verdict = "완료: 전체를 받았고 SHA-256이 기대값과 일치해 최종 파일로 확정했습니다."; break;
+                case 5: verdict = "중단됨(네트워크·시간 초과·저장 오류·사용자 중단): 받은 부분은 일관된 상태로 남아 있습니다. 다시 누르면 이어받습니다."; break;
+                case 4: verdict = "서버 응답을 신뢰할 수 없어 멈췄습니다(범위·크기·ETag 불일치 또는 오류 코드). 받은 부분은 지우지 않았습니다. 아래 사유를 확인하세요."; break;
+                case 3: verdict = "디스크의 부분 파일/메타데이터가 서로 맞지 않아 자동 이어받기를 하지 않았습니다. 아무것도 보내지 않았습니다. '부분 다운로드 삭제' 후 처음부터 받을 수 있습니다."; break;
+                case 6: verdict = "전체를 받았지만 SHA-256이 기대값과 다릅니다. 최종 파일로 확정하지 않았고 부분 파일은 남겼습니다."; break;
+                case 2: verdict = "시작하지 않았습니다(공간 부족, 다른 다운로드 실행 중, 인자 오류 등). 아무것도 보내지 않았습니다."; break;
+                default: verdict = "프로그램을 실행하지 못했거나 결과를 알 수 없습니다."; break;
+            }
+            show("IPSW 부분 다운로드 결과: 코드 " + r.code + "\n" + verdict + "\n사유: " + r.text + "\n\n" + log);
+            ipswDl = null;
+            running = false;
+            setButtons(true);
+            runOnUiThread(() -> dlStopButton.setEnabled(false));
+        }).start();
+    }
+
+    private void showIpswStatus() {
+        if (running) return;
+        File exe = new File(getApplicationInfo().nativeLibraryDir, "libipswdl.so");
+        if (!exe.exists()) { show("libipswdl.so가 이 APK에 없습니다.\n"); return; }
+        new Thread(() -> {
+            IpswDownload.Result r = new IpswDownload(exe, ipswDir()).status();
+            long free;
+            try { free = new StatFs(ipswDir().getAbsolutePath()).getAvailableBytes(); } catch (Throwable t) { free = -1; }
+            show("IPSW 다운로드 상태\n" + r.detail + "\n(final=최종 파일 크기, part=받는 중인 파일, committed=확정 바이트, 없으면 -1)\n사용 가능한 공간: " + (free < 0 ? "확인 못 함" : gib(free)) + "\n");
+        }).start();
+    }
+
+    private void confirmIpswDelete() {
+        if (running) return;
+        File exe = new File(getApplicationInfo().nativeLibraryDir, "libipswdl.so");
+        if (!exe.exists()) { show("libipswdl.so가 이 APK에 없습니다.\n"); return; }
+        new AlertDialog.Builder(this)
+            .setTitle("부분 다운로드를 삭제합니다")
+            .setMessage("받던 파일(.part)과 이어받기 정보(.meta)를 지웁니다. 지운 뒤에는 처음부터 다시 받아야 합니다. 이미 확정된 최종 IPSW 파일은 이 버튼으로 지워지지 않습니다.")
+            .setPositiveButton("삭제", (d, w) -> new Thread(() -> {
+                IpswDownload.Result r = new IpswDownload(exe, ipswDir()).deletePartial();
+                show("부분 다운로드 삭제: 코드 " + r.code + "\n" + r.text + "\n");
+            }).start())
             .setNegativeButton("취소", null)
             .show();
     }

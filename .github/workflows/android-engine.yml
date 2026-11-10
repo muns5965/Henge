@@ -29,6 +29,8 @@ on:
       - tools/tss-dryrun-test.sh
       - tools/remote-zip-test.sh
       - tools/bmprobe-build.sh
+      - tools/ipswdl-build.sh
+      - tools/ipswdl-test.sh
       - tools/check-no-test-flags.sh
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
@@ -152,6 +154,9 @@ jobs:
       - name: Remote ZIP64 partial reader (BuildManifest.plist) against local Range servers (a 5 GiB virtual archive; nothing leaves the runner)
         run: CC=clang tools/remote-zip-test.sh build-rz
 
+      - name: IPSW downloader (resume, Range/ETag/If-Range, metadata recovery, SHA-256, free space, lock, cancel, >4 GiB offsets) against local Range servers; nothing leaves the runner
+        run: CC=clang tools/ipswdl-test.sh build-ipswdl
+
       - name: BuildManifest probe builds and scans a local manifest for the virtual machine's chip/board (no network)
         run: |
           CC=clang tools/bmprobe-build.sh build-bmp
@@ -216,6 +221,8 @@ jobs:
         run: |
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-tss-build.sh build-android
+      - name: Build the IPSW downloader for Android (link only; shipped configuration)
+        run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/ipswdl-build.sh build-android-dl
       - name: Build the whole restore stack for Android (integrated link of idevicerestore + usbmuxd + libirecovery + libtatsu + libzip + self-test)
         run: |
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null

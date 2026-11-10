@@ -112,6 +112,9 @@ jobs:
           curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           unzip -q ndk.zip -d "$HOME"
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Build the HTTP/TLS test tool for Android (the copy the APK ships)
+        run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/curltool-build.sh build-android-curltool
+
       - name: Build the engine core and link test_mmu for Android
         run: |
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-android

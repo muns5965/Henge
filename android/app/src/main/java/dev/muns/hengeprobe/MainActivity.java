@@ -719,11 +719,13 @@ public class MainActivity extends Activity {
                     String o = runTool(exe, u, "--discard");
                     acc.append("\n2) ").append(u).append('\n').append(o);
                     java.util.regex.Matcher m = java.util.regex.Pattern.compile("RC=(\\d+) HTTP=(\\d+) BYTES=(\\d+) ERR=(.*)").matcher(o);
+                    boolean tlsDone = o.contains("TLS_VERIFIED=1");
                     if (m.find()) {
                         int rc = Integer.parseInt(m.group(1));
                         String tls = rc == 0 || rc == 56 || rc == 23 || rc == 52 ? "TLS/인증서 검증 통과"
                                 : rc == 60 ? "인증서 검증 실패(거부됨)" : rc == 35 ? "TLS 핸드셰이크 실패" : rc == 77 ? "신뢰할 CA를 불러오지 못해 연결 안 함"
                                 : rc == 6 || rc == 7 || rc == 28 ? "네트워크 연결 단계 실패(TLS 판정 불가)" : "기타 오류 " + rc;
+                        if (tlsDone) tls = "TLS 핸드셰이크 완료 + 인증서·호스트 검증 통과" + (rc == 0 ? "" : " (이후 전송 오류 " + rc + ")");
                         acc.append("   → TLS: ").append(tls).append(" / HTTP: ").append(rc == 0 ? m.group(2) : "(응답 없음)").append('\n');
                     }
                 }

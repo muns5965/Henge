@@ -5,6 +5,8 @@
 #include <string.h>
 #include "curl/curl.h"
 int hv_curl_ca_count(const char **where);
+int hv_curl_ca_unparsed(void);
+int hv_curl_tls_completed(void);
 static size_t bytes, abort_after = 0;
 static int show_headers, discard;
 static size_t wcb(char *p, size_t s, size_t n, void *u) {
@@ -17,7 +19,7 @@ static size_t wcb(char *p, size_t s, size_t n, void *u) {
 static size_t hcb(char *p, size_t s, size_t n, void *u) { (void)u; if (show_headers) fprintf(stderr, "H: %.*s", (int)(s * n), p); return s * n; }
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
-    if (!strcmp(argv[1], "--ca")) { const char *w = ""; int n = hv_curl_ca_count(&w); fprintf(stderr, "CA=%d FROM=%s\n", n, w); return n ? 0 : 1; }
+    if (!strcmp(argv[1], "--ca")) { const char *w = ""; int n = hv_curl_ca_count(&w); fprintf(stderr, "CA=%d FROM=%s UNPARSED_FILES=%d\n", n, w, hv_curl_ca_unparsed()); return n ? 0 : 1; }
     char err[CURL_ERROR_SIZE] = "";
     int follow = 0;
     const char *post = NULL;
@@ -42,6 +44,7 @@ int main(int argc, char **argv) {
     CURLcode rc = curl_easy_perform(c);
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    fprintf(stderr, "TLS_VERIFIED=%d\n", hv_curl_tls_completed());
     fprintf(stderr, "RC=%d HTTP=%ld BYTES=%zu ERR=%s\n", (int)rc, code, bytes, err);
     curl_easy_cleanup(c);
     curl_slist_free_all(h);

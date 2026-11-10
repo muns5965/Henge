@@ -56,7 +56,8 @@ typedef struct {
 static pthread_mutex_t ca_mu = PTHREAD_MUTEX_INITIALIZER;
 static mbedtls_x509_crt ca_chain;
 static int ca_state; /* 0 not tried, 1 loaded, -1 none */
-static int ca_count;
+static int ca_count, ca_failed;
+static __thread int tls_done; /* the last request on this thread finished its TLS handshake with a verified certificate */
 static char ca_where[256];
 
 static int load_cas(void) {
@@ -75,10 +76,10 @@ static int load_cas(void) {
         const char **dirs = env && env[0] ? only : sys;
         for (int i = 0; dirs[i] && ca_state == 0; i++) {
             mbedtls_x509_crt_init(&ca_chain);
-            mbedtls_x509_crt_parse_path(&ca_chain, dirs[i]); /* returns the number of files it could not parse; what parsed stays */
+            int bad = mbedtls_x509_crt_parse_path(&ca_chain, dirs[i]); /* the number of files it could not parse (or a negative error); what parsed stays */
             int n = 0;
             for (const mbedtls_x509_crt *c = &ca_chain; c && c->raw.p; c = c->next) n++;
-            if (n > 0) { ca_state = 1; ca_count = n; snprintf(ca_where, sizeof ca_where, "%s", dirs[i]); }
+            if (n > 0) { ca_state = 1; ca_count = n; ca_failed = bad; snprintf(ca_where, sizeof ca_where, "%s", dirs[i]); }
             else mbedtls_x509_crt_free(&ca_chain);
         }
         if (ca_state == 0) ca_state = -1;
@@ -94,6 +95,12 @@ int hv_curl_ca_count(const char **where) {
     if (where) *where = ca_where;
     return ca_state == 1 ? ca_count : 0;
 }
+
+/* Files in the CA directory that could not be parsed (negative: the directory read itself failed). */
+int hv_curl_ca_unparsed(void) { load_cas(); return ca_state == 1 ? ca_failed : 0; }
+
+/* 1 if the last request on this thread completed a TLS handshake whose certificate chain and host name were verified. */
+int hv_curl_tls_completed(void) { return tls_done; }
 
 static int fcntl_nonblock(int fd, int on) {
     int f = fcntl(fd, F_GETFL, 0);
@@ -204,6 +211,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         close(fd), c->fd = -1;
         return CURLE_SSL_CACERT_BADFILE;
     }
+    tls_done = 0;
     c->tls = 1;
     mbedtls_ssl_init(&c->ssl);
     mbedtls_ssl_config_init(&c->conf);
@@ -237,6 +245,7 @@ static CURLcode conn_open(Conn *c, int https, const char *host, const char *port
         conn_close(c);
         return CURLE_SSL_CONNECT_ERROR;
     }
+    tls_done = 1;
     return CURLE_OK;
 }
 

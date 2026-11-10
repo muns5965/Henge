@@ -18,5 +18,5 @@ done
 wait
 $CC -O2 -Wall -Wno-format-truncation ${CURLTOOL_CFLAGS:-} -I$TP/curl_include -I$TP/mbedtls/include -c host/curl_mbedtls.c -o "$O/curl_mbedtls.o"
 $CC -O2 -Wall -I$TP/curl_include -c tests/curl_tool.c -o "$O/curl_tool.o"
-$CC -o "$O/curl_tool" "$O/curl_tool.o" "$O/curl_mbedtls.o" $O/obj/*.o ${CURLTOOL_LIBS:--lpthread}
+$CC -o "$O/curl_tool" "$O/curl_tool.o" "$O/curl_mbedtls.o" $O/obj/*.o ${CURLTOOL_LIBS--lpthread}
 echo "linked  $O/curl_tool"

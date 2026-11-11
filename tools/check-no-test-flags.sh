@@ -6,6 +6,8 @@
 #   HV_DL_ALLOW_HTTP_TEST   same for host/ipsw_dl.c; HV_DL_TEST: the test arguments of tests/ipsw_dl_tool.c (tools/ipswdl-test.sh only)
 #   HV_PREFLIGHT_NEGATIVE_CONTROL  drops FLAG_NOACTION from host/restore_preflight.c   (tools/preflight-test.sh only)
 #   HV_ALLOW_CA_ENV         lets HV_EXTRA_ANCHOR / HV_CA_PATH widen trust      (the test builds of the HTTP client only)
+#   HV_TEST_HOOKS           compiles the observation-only test hooks of host/restore_registry.c (docs/fake-device-s4-test-hook-design-2026-11-11.md §3); test builds only
+#   --wrap=thread_new / tests/fake_device/wrap_thread.c   the test-only link-time wrapper of tools/fake-restore-test.sh; never in a shipped link
 #   FLAG_STOP_BEFORE_ROOTFS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/restore_preflight.c ever sets it
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
@@ -19,7 +21,7 @@ bad() { echo "FAIL $*"; fail=1; }
 for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/ipswdl-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh tools/vmrun-preflight-build.sh \
          android/app/src/main/cpp/CMakeLists.txt android/app/build.gradle .github/workflows/android-apk.yml .github/workflows/build-henge.yml ios/project.yml Makefile; do
   [ -f "$f" ] || continue
-  if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST\|HV_DL_ALLOW_HTTP_TEST\|HV_DL_TEST\|HV_PREFLIGHT_NEGATIVE_CONTROL" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only switch (HV_TSS_/HV_RZ_/HV_DL_ALLOW_HTTP_TEST, HV_DL_TEST)"; fi
+  if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST\|HV_DL_ALLOW_HTTP_TEST\|HV_DL_TEST\|HV_PREFLIGHT_NEGATIVE_CONTROL\|HV_TEST_HOOKS\|wrap=thread_new\|wrap_thread\.c" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only switch (HV_TSS_/HV_RZ_/HV_DL_ALLOW_HTTP_TEST, HV_DL_TEST, HV_TEST_HOOKS, thread_new wrapper)"; fi
   # the workflow comment that says "No -DHV_ALLOW_CA_ENV here" is prose; a real setting is -DHV_ALLOW_CA_ENV or CURLTOOL_CFLAGS=...HV_ALLOW_CA_ENV
   if grep -n "\-DHV_ALLOW_CA_ENV\|CURLTOOL_CFLAGS=[^ ]*HV_ALLOW_CA_ENV" "$f" | grep -v 'No -DHV_ALLOW_CA_ENV' > /dev/null; then bad "$f sets HV_ALLOW_CA_ENV"; fi
 done
@@ -58,5 +60,16 @@ $CC -O1 -w -std=gnu11 -D_GNU_SOURCE -DHV_NET_TEST_LOOPBACK -Ihost -I$TP/libimobi
 nm "$W/ng_test.o" | grep -q "hv_net_guard_test_allow_loopback" || bad "control: the test flavour of net_guard.o lacks the loopback allowance (check is vacuous)"
 if grep -rln "HV_NET_TEST_LOOPBACK" android CMakeLists.txt tools/restore-android-check.sh tools/restore-selftest-build.sh 2>/dev/null | grep . > /dev/null; then bad "a shipped build file mentions HV_NET_TEST_LOOPBACK"; fi
 if grep -rn "hv_net_guard_test_allow_loopback" host devices core android/app/src --include=*.c --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/net_guard\.c:" > /dev/null; then bad "app code calls the test loopback function"; fi
+# the registry's observation-only test hooks (HV_TEST_HOOKS): absent from the shipped object, present in the test flavour (control), never called by app code
+if [ -f host/restore_registry.c ]; then
+  $CC -O1 -w -std=gnu11 -D_GNU_SOURCE -Ihost -c host/restore_registry.c -o "$W/reg_ship.o"
+  if nm "$W/reg_ship.o" | grep -q "hv_test_hook" || strings "$W/reg_ship.o" | grep -q "hv_test_hook"; then bad "shipped restore_registry.o contains the test hooks"; fi
+  $CC -O1 -w -std=gnu11 -D_GNU_SOURCE -DHV_TEST_HOOKS -Ihost -c host/restore_registry.c -o "$W/reg_test.o"
+  nm "$W/reg_test.o" | grep -q "hv_test_hook" || bad "control: the test flavour of restore_registry.o lacks the hooks (check is vacuous)"
+  if grep -rn "hv_test_hook" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/restore_registry\.[ch]:" > /dev/null; then bad "app code refers to the registry test hooks"; fi
+else
+  echo "note: host/restore_registry.c not present; the HV_TEST_HOOKS object check is skipped"
+fi
+if grep -rln "HV_TEST_HOOKS" android CMakeLists.txt tools/restore-android-check.sh tools/restore-selftest-build.sh 2>/dev/null | grep . > /dev/null; then bad "a shipped build file mentions HV_TEST_HOOKS"; fi
 [ $fail = 0 ] && echo "OK  shipped build: no test switches, https-only libtatsu"
 exit $fail

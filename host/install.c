@@ -87,10 +87,24 @@ static int hv_install_stop_mux(void) {
 }
 #endif
 
-static void *restore_thread(void *arg) {
-    (void)arg;
 #ifdef __ANDROID__
-    hv_restore_session_claim();   /* this thread decides how the session ends (C13) */
+/* the publication callback: the progress callback with the final step. Runs only through hv_restore_session_publish (outside every lock). */
+static void publish_final(void *p) {
+    int ok = (int)(intptr_t)p;
+    if (g_progress) g_progress(ok ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
+}
+#endif
+
+static void *restore_thread(void *arg) {
+#ifdef __ANDROID__
+    /* take over the session from the starting thread (C13): the token was issued to this thread's creator and passed as the argument */
+    if (hv_restore_session_claim((uint64_t)(uintptr_t)arg) != 0) {
+        fprintf(stderr, "install: this thread could not take over the session; nothing was run\n");
+        ST(g_result, -1);   /* the session stays with its owner and refuses a new start (not quiescent for lack of an owner who can end it) */
+        return NULL;
+    }
+#else
+    (void)arg;
 #endif
     struct idevicerestore_client_t *c = idevicerestore_client_new();
     if (!c) {
@@ -129,28 +143,28 @@ static void *restore_thread(void *arg) {
        the engine's return value, the cleanup (tasks, client, private usbmuxd) and the session end (policy removal). Nothing is released after a failed close:
        the client is deliberately leaked and the policy and usbmuxd stay, because a task may still use them (the use-after-free the T5 baseline reproduced). */
     int closed = hv_restore_session_close() == 0;
-    int cleanup_failed = 0;
+    int cleanup_mask = 0;
     if (closed && hv_restore_session_release_permitted()) {
         idevicerestore_client_free(c);
         if (!hv_install_stop_mux()) {
-            cleanup_failed = 1;
+            cleanup_mask |= HV_REG_CL_HOST_THREAD;
             fprintf(stderr, "install: the private usbmuxd did not stop; no new restore can start until the app restarts\n");
         }
     } else if (closed) {
-        cleanup_failed = 1;   /* a cleanup failure was already recorded: nothing is released */
+        cleanup_mask |= HV_REG_CL_OTHER;   /* release was not permitted: a cleanup failure was already recorded, nothing is released */
     } else {
         fprintf(stderr, "install: the session did not quiesce -- nothing released, policy kept\n");
     }
     int may_publish = 0;
-    int rep = hv_restore_session_finalize(r, cleanup_failed, &may_publish);
+    int rep = hv_restore_session_finalize(r, cleanup_mask, &may_publish);
     fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
     r = rep == HV_REG_R_SUCCESS ? 0 : -1;
     /* Publishing: only the caller that received the right publishes, outside every lock; the session leaves CLOSED only after the publication returned (C15 (e)).
        Called from inside the callback, start/cancel/release_idle are refused (the result is still 1 / PUBLISHING). A callback that never returns keeps the session
        CLOSED and refuses the next start -- the safe way to fail; the host sets no time limit on a callback. */
-    if (may_publish && g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
-    if (may_publish) hv_restore_session_publish_done();
-    if (rep != 0 && hv_restore_session_release_idle() != 0) fprintf(stderr, "install: the session stays closed (cleanup failure or not quiescent); no new restore can start until the app restarts\n");
+    if (may_publish) hv_restore_session_publish(publish_final, (void *)(intptr_t)(r == 0));
+    if (rep != 0 && hv_restore_session_release_idle() != 0)
+        fprintf(stderr, "install: the session stays closed (cleanup failure, reasons 0x%x; or not quiescent); no new restore can start until the app restarts\n", hv_reg_cleanup_history());
     ST(g_result, r == 0 ? 0 : -1);   /* published last: a start that sees it also sees the finished session */
     return NULL;
 #else
@@ -209,7 +223,8 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     }
     ST(g_mux_alive, 1);
     usleep(300000);
-    if (pthread_create(&t, NULL, restore_thread, NULL) != 0) {
+    uint64_t tok = hv_restore_session_approve_successor();   /* the restore thread takes over the session with this; a failed creation never uses it (abort_start drops it) */
+    if (tok == 0 || pthread_create(&t, NULL, restore_thread, (void *)(uintptr_t)tok) != 0) {
         /* usbmuxd IS running: it has to be stopped and joined before the session may end; if it does not stop, the session is not quiescent and stays */
         fprintf(stderr, "install: not started -- the restore thread could not be created\n");
         if (hv_install_stop_mux()) {

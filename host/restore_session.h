@@ -30,15 +30,19 @@ int hv_restore_session_quiescence_failed(void);
 int hv_restore_session_abort_start(void);   /* start failed before anything ran: ACTIVE -> IDLE and the policy removed (0), or -1 = stays */
 int hv_restore_session_fail(int why);       /* declare QUIESCENCE_FAILED (why = HvRegQfReason) for a host-owned resource that did not stop */
 int hv_restore_session_cancel(void);        /* 1 = cancel started now, 0 = already started, -1 = refused */
-/* Ending a generation, in this order, all by the OWNER thread (the one that called claim(); C13). claim() is called once by the thread that will decide how the session ends.
-   finalize   closes (CLOSED, or QUIESCENCE_FAILED), removes the policy unless a cleanup failure is already known, and decides the final result in one registry critical
-              section (cleanup result included). Returns an HvRegReport, or HV_REG_R_NONE (0) when nothing could be decided (the engine is still inside run(), wrong thread).
-              *may_publish is 1 for exactly one call per generation: only that caller publishes (callback, result variable) -- OUTSIDE every lock.
-   publish_done  after the publication returned. release_idle  CLOSED -> IDLE, only after publish_done and only without a cleanup failure (C15 (e): nothing of this
-              generation touches global state once the next session may begin). Neither is possible from inside the callback: it still runs while PUBLISHING. */
-int hv_restore_session_claim(void);
-int hv_restore_session_finalize(int restore_rc, int extra_cleanup_failed, int *may_publish);
-int hv_restore_session_publish_done(void);
+/* Ownership (C13) and ending a generation. begin() makes its caller the OWNER. A restore thread takes over ONCE: the owner calls approve_successor() before creating
+   the thread and hands the token to it; the thread calls claim(token). Only the owner may close, finalize, publish, release_idle or end; cancel() may come from any
+   thread. Every state-changing call refuses when made from inside the publication callback.
+   abort_start   start failed before the hand-over: the owner (no transfer yet) returns the session to IDLE (registry abandon decides; on refusal the owner keeps it).
+   finalize      closes (CLOSED, or QUIESCENCE_FAILED), removes the policy unless a host-owned thread is still alive (cleanup_mask HV_REG_CL_HOST_THREAD), and decides the final
+                 result in one registry critical section (cleanup included). Returns an HvRegReport, or HV_REG_R_NONE (0) when nothing could be decided (the engine is still
+                 inside run(), wrong thread). *may_publish is 1 for exactly one call per generation.
+   publish       runs fn(arg) -- the callback, result variables -- outside every lock, with the one-time right from finalize; then PUBLISHING -> PUBLISHED.
+   release_idle  CLOSED -> IDLE only after publish, with nothing unresolved and no confirmed cleanup failure (C15 (e)(f)). Not possible from inside the callback. */
+uint64_t hv_restore_session_approve_successor(void);
+int hv_restore_session_claim(uint64_t token);
+int hv_restore_session_finalize(int restore_rc, int cleanup_mask, int *may_publish);
+int hv_restore_session_publish(void (*fn)(void *), void *arg);
 int hv_restore_session_release_idle(void);
 
 #endif

@@ -82,6 +82,15 @@ int hv_reg_conn_count(void);
 int hv_reg_release_permitted(uint64_t gen);
 void hv_reg_objects_pending(uint64_t gen);    /* the caller created session objects that must be released before IDLE */
 void hv_reg_objects_released(uint64_t gen);
+/* cleanup failure reasons: OR-accumulated bits. HISTORY (every reason seen this generation) is diagnosis only; CURRENT is what is still unresolved. */
+#define HV_REG_CL_HOST_THREAD 1   /* a host-owned thread (the private usbmuxd) did not stop */
+#define HV_REG_CL_POLICY 2        /* the connection policy could not be removed */
+#define HV_REG_CL_OBJECT 4        /* a session object is not released */
+#define HV_REG_CL_OTHER 8
+void hv_reg_cleanup_mark(uint64_t gen, int mask);      /* CLOSED only. history |= mask, current |= mask */
+void hv_reg_cleanup_resolve(uint64_t gen, int mask);   /* current &= ~mask (history keeps it); a CONFIRMED CLEANUP_FAILED result still blocks IDLE */
+int hv_reg_cleanup_history(void);
+int hv_reg_cleanup_current(void);
 void hv_reg_cleanup_failed(uint64_t gen);     /* watchdog: the cleanup deadline passed (only meaningful in CLOSED). Sticky; no forced release (C19) */
 int hv_reg_cleanup_failed_flag(void);
 int hv_reg_can_finish(uint64_t gen);          /* 1 if finish_session() would succeed now */
@@ -94,7 +103,7 @@ int hv_reg_finish_session(uint64_t gen);      /* CLOSED -> IDLE when C15 (a)(b)(
    (callbacks, result variables), then calls publish_done; release_idle moves CLOSED -> IDLE only for PUBLISHED and only when no cleanup failure is recorded.
    QUIESCENCE_FAILED also finalizes (result SESSION_NOT_QUIESCENT) and publishes, but release_idle is refused there. */
 typedef enum { HV_REG_PUB_NONE = 0, HV_REG_PUB_PUBLISHING, HV_REG_PUB_PUBLISHED } HvRegPubState;
-int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int extra_cleanup_failed, HvRegReport *out, int *may_publish);   /* 0, or -1 (stale / not CLOSED or QUIESCENCE_FAILED) */
+int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int cleanup_mask, HvRegReport *out, int *may_publish);   /* 0, or -1 (stale / not CLOSED or QUIESCENCE_FAILED) */
 int hv_reg_publish_done(uint64_t gen);        /* PUBLISHING -> PUBLISHED; 0 / -1 */
 int hv_reg_release_idle(uint64_t gen);        /* CLOSED + PUBLISHED + no cleanup failure/pending object -> IDLE; 0 / -1 */
 HvRegPubState hv_reg_pub_state(void);

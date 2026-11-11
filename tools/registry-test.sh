@@ -6,7 +6,7 @@ OUT=${1:?build dir}; SAN=${2:-none}; CC=${CC:-cc}
 case $SAN in asan) SF="-fsanitize=address -fno-omit-frame-pointer";; tsan) SF="-fsanitize=thread";; *) SF="";; esac
 mkdir -p "$OUT"; rc=0
 for flavor in plain hooks; do
-  D=""; CASES="qf normal errors storm cancel phase conn conn_dup conn_full finalize finalize_qf cancel_note watchdog"
+  D=""; CASES="qf normal errors storm cancel phase conn conn_dup conn_full finalize finalize_qf cancel_note cleanup_bits watchdog"
   [ $flavor = hooks ] && { D="-DHV_TEST_HOOKS"; CASES="$CASES hooks"; }
   $CC -std=gnu11 -D_GNU_SOURCE -O1 -g -Wall -Wextra $SF $D -Ihost tests/test_registry.c host/restore_registry.c -lpthread -o "$OUT/test_registry_$flavor" || { echo "FAILED build $flavor"; exit 1; }
   for c in $CASES; do

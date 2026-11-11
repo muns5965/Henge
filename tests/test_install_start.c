@@ -97,6 +97,7 @@ int main(int argc, char **argv) {
         CHECK(hv_reg_report_final() == HV_REG_R_CLEANUP_FAILED && hv_reg_state() == HV_REG_CLOSED, "reported as CLEANUP_FAILED once (engine closed cleanly, the cleanup did not); the session stays CLOSED, not IDLE");
         CHECK(hv_install_start((HvVirtioUsb *)dummy_usb, "x", "/tmp", 1, cb, NULL) == -1, "the next start is refused");
         CHECK(hv_net_guard_hooks_intact(), "policy kept");
+        CHECK(hv_reg_cleanup_history() == HV_REG_CL_HOST_THREAD, "the reason is recorded: a host-owned thread is alive (not a generic cleanup failure)");
         mux_release = 1;
     } else if (!strcmp(c, "cancel")) {
         engine_mode = 1;

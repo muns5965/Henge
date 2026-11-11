@@ -17,27 +17,44 @@ static uint64_t g_gen_v;   /* generation of the session begun here; 0 = none. Se
 #define g_gen __atomic_load_n(&g_gen_v, __ATOMIC_SEQ_CST)
 #define SET_GEN(x) __atomic_store_n(&g_gen_v, (x), __ATOMIC_SEQ_CST)
 
-/* The session's OWNER: the thread that decides how this generation ends (C13: only the engine thread decides CLOSED; the watchdog only declares QUIESCENCE_FAILED).
-   Recorded by claim() and kept until the generation ends (release_idle / end), independent of whether run() is currently executing: "is the engine inside run()"
-   is net_guard's count, "who may close" is this. Both are read and written under g_own_mu. */
+/* LOCK ORDER (one rule, no exceptions): g_own_mu  ->  the registry's mutex. The registry never takes g_own_mu. Only claim(), close()'s close_begin step and
+   abort_start() hold g_own_mu while calling the registry, and only for short state operations (no callback, no network call, no waiting: C12). Everything else
+   releases g_own_mu before calling the registry.
+
+   OWNER: the thread that decides how this generation ends (C13). begin() records its caller as the owner, so a session never has "no owner". Ownership moves
+   ONCE, to the restore thread, by claim(token): approve_successor() (owner only) issues the token before the thread is created; claim() verifies token, generation
+   and the registry state ACTIVE, swaps the owner and consumes the token in ONE g_own_mu critical section. close()'s close_begin step runs under the same g_own_mu
+   together with its owner check, so "transfer authorized" and "close started" cannot both happen: whichever takes g_own_mu first wins, and the other sees the result
+   (a close by the old owner after the swap is refused as not-owner; a claim after close_begin sees CLOSING and is refused). The token proves a right to ask, not the
+   identity of the caller: the threat model is a wrong code path, not malicious code. "Is the engine inside run()" is net_guard's count, not part of ownership. */
 static pthread_mutex_t g_own_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_owner;
 static int g_owner_set;
-static uint64_t g_owner_gen;
+static uint64_t g_owner_gen, g_token, g_token_seq;
+static int g_transferred, g_pub_right;
+static __thread int t_in_publish;   /* this thread is inside the publication callback: every state-changing public API refuses (checked FIRST in each) */
 
-static int owner_ok(void) {   /* 1 if the calling thread may decide the end of the current generation. No owner claimed = the legacy single-thread callers */
+static int owner_locked(void) { return g_owner_set && g_owner_gen == g_gen && pthread_equal(g_owner, pthread_self()); }
+static int owner_ok(void) { pthread_mutex_lock(&g_own_mu); int ok = owner_locked(); pthread_mutex_unlock(&g_own_mu); return ok; }
+static void owner_reset_locked(void) { g_owner_set = 0; g_token = 0; g_transferred = 0; g_pub_right = 0; }
+
+uint64_t hv_restore_session_approve_successor(void) {
+    if (t_in_publish) return 0;
+    uint64_t t = 0;
     pthread_mutex_lock(&g_own_mu);
-    int ok = !g_owner_set || (g_owner_gen == g_gen && pthread_equal(g_owner, pthread_self()));
+    if (g_gen != 0 && owner_locked() && !g_transferred) { t = (g_gen << 20) ^ (++g_token_seq * 0x9E3779B97F4A7C15ULL); if (t == 0) t = 1; g_token = t; }
     pthread_mutex_unlock(&g_own_mu);
-    return ok;
+    return t;
 }
-static void owner_clear(void) { pthread_mutex_lock(&g_own_mu); g_owner_set = 0; pthread_mutex_unlock(&g_own_mu); }
 
-int hv_restore_session_claim(void) {
-    if (g_gen == 0) return -1;
+int hv_restore_session_claim(uint64_t token) {
+    if (t_in_publish || g_gen == 0 || token == 0) return -1;
+    int r = -1;
     pthread_mutex_lock(&g_own_mu);
-    int r = g_owner_set ? -1 : 0;
-    if (r == 0) { g_owner = pthread_self(); g_owner_gen = g_gen; g_owner_set = 1; }
+    if (g_token == token && !g_transferred && g_owner_gen == g_gen && hv_reg_state() == HV_REG_ACTIVE) {   /* own -> registry, state read only */
+        g_owner = pthread_self(); g_transferred = 1; g_token = 0;   /* swap and consume: one critical section, never two owners, never none */
+        r = 0;
+    }
     pthread_mutex_unlock(&g_own_mu);
     return r;
 }
@@ -45,6 +62,7 @@ int hv_restore_session_claim(void) {
 void hv_restore_session_set_close_timeout_ms(int ms) { g_close_ms = ms > 0 ? ms : 15000; }
 
 int hv_restore_session_begin(void) {
+    if (t_in_publish) return -1;
     /* a session that was begun and not ended is NOT replaced (design C15: IDLE only after a clean close); this refuses where it used to reset silently */
     if (g_gen != 0) return -1;
     /* resetting the lists under a running engine thread would change the rules it is subject to; an earlier run that did not end is finished first */
@@ -55,7 +73,11 @@ int hv_restore_session_begin(void) {
     if (!hv_net_guard_hooks_intact()) return -1;
     uint64_t g = hv_reg_begin();
     if (g == 0) return -1;
+    pthread_mutex_lock(&g_own_mu);
     SET_GEN(g);
+    owner_reset_locked();
+    g_owner = pthread_self(); g_owner_gen = g; g_owner_set = 1;   /* the starting thread owns the generation until it hands over (or ends it) */
+    pthread_mutex_unlock(&g_own_mu);
     return 0;
 }
 
@@ -78,38 +100,45 @@ int hv_restore_session_run_client(struct idevicerestore_client_t *c, int *rc) {
 }
 
 int hv_restore_session_close(void) {
-    if (g_gen == 0) return 0;
-    if (!owner_ok()) return -1;   /* only the owner thread decides CLOSED (C13) */
+    if (t_in_publish || g_gen == 0) return t_in_publish ? -1 : 0;
+    /* C13: the right to decide CLOSED belongs to the owner, which calls this AFTER the tool returned. While an engine thread is still registered (net_guard's own
+       count -- the single record of "the engine is running") nothing is decided and nothing changes. The owner check and close_begin are one g_own_mu section. */
+    pthread_mutex_lock(&g_own_mu);
     uint64_t g = g_gen;
-    if (hv_reg_state() == HV_REG_CLOSED) return 0;
-    /* C13: the right to decide CLOSED belongs to the engine thread, which calls this AFTER the tool returned. While an engine thread is still registered
-       (net_guard's own count -- the single record of "the engine is running"; the registry does not keep a second one) nothing is decided and nothing changes. */
-    if (hv_net_guard_engine_count() > 0) return -1;
-    if (hv_reg_close_begin(g) != 0) return -1;
-    return hv_reg_wait_and_close(g, hv_reg_mono_ns() + g_close_ms * 1000000LL) == 0 ? 0 : -1;   /* QUIESCENCE_FAILED: nothing is released, the policy stays */
+    int ok = owner_locked() && hv_net_guard_engine_count() == 0;
+    int already = ok && hv_reg_state() == HV_REG_CLOSED;
+    int began = ok && !already && hv_reg_close_begin(g) == 0;
+    pthread_mutex_unlock(&g_own_mu);
+    if (already) return 0;
+    if (!began) return -1;
+    return hv_reg_wait_and_close(g, hv_reg_mono_ns() + g_close_ms * 1000000LL) == 0 ? 0 : -1;   /* waits OUTSIDE g_own_mu; QUIESCENCE_FAILED: nothing is released, the policy stays */
 }
 
 int hv_restore_session_end(void) {
+    if (t_in_publish) return -1;
     if (g_gen == 0) return hv_net_guard_uninstall();   /* no session was begun here (legacy callers) */
     if (!owner_ok()) return -1;
     uint64_t g = g_gen;
     if (hv_restore_session_close() != 0) return -1;
     if (hv_net_guard_uninstall() != 0) return -1;   /* an engine thread is still registered: retry later */
     if (hv_reg_finish_session(g) != 0) return -1;   /* cleanup failure or objects not released: stays CLOSED */
-    owner_clear();
-    SET_GEN(0);
+    pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); pthread_mutex_unlock(&g_own_mu);
     return 0;
 }
 
 int hv_restore_session_abort_start(void) {
-    /* start failed before any task could have used the session: back to IDLE through the registry's own rule (ACTIVE, nothing registered, no failure) */
-    if (g_gen == 0) return 0;
-    pthread_mutex_lock(&g_own_mu); int owned = g_owner_set; pthread_mutex_unlock(&g_own_mu);
-    if (owned) return -1;   /* the start-failure path exists only for a session nobody has claimed */
-    if (hv_net_guard_engine_count() > 0 || hv_reg_abandon(g_gen) != 0) return -1;
-    if (hv_net_guard_uninstall() != 0) return -1;   /* cannot happen with no engine thread; if it does the session stays and begin stays refused */
-    SET_GEN(0);
-    return 0;
+    /* start failed before the restore thread took over: the starting thread (still the owner, no transfer) returns the session to IDLE. The registry's abandon (ACTIVE,
+       nothing registered, no failure) decides; only after it succeeded are token and ownership dropped. If it refuses, the owner keeps the session. */
+    if (t_in_publish || g_gen == 0) return t_in_publish ? -1 : 0;
+    int r = -1;
+    pthread_mutex_lock(&g_own_mu);
+    if (owner_locked() && !g_transferred && hv_net_guard_engine_count() == 0 && hv_reg_abandon(g_gen) == 0) {
+        hv_net_guard_uninstall();   /* cannot fail with no engine thread registered */
+        owner_reset_locked(); SET_GEN(0);
+        r = 0;
+    }
+    pthread_mutex_unlock(&g_own_mu);
+    return r;
 }
 
 int hv_restore_session_fail(int why) {   /* a resource the host owns (the private usbmuxd) did not stop: the session is not quiescent; nothing is released */
@@ -120,14 +149,15 @@ int hv_restore_session_fail(int why) {   /* a resource the host owns (the privat
 int hv_restore_session_cancel(void) {
     /* Host-only path: no cancel task exists, so only the HISTORY is recorded (accepted before the restore returned, once per session) and the terminate flag set.
        Nothing is counted, so a request can never block the close; whether the work actually stopped is the registered tasks' business (I3~I6, not approved). */
-    if (g_gen == 0) return -1;
+    if (t_in_publish || g_gen == 0) return -1;   /* from inside the publication callback: refused; from any OTHER thread (the UI) it is the normal path */
     int r = hv_reg_cancel_note(g_gen);
     if (r == 1) hv_reg_request_terminate(g_gen);
     return r;   /* 1 accepted now, 0 already accepted, -1 refused (no session, closed, or the completion came first) */
 }
 
-int hv_restore_session_finalize(int restore_rc, int extra_cleanup_failed, int *may_publish) {
+int hv_restore_session_finalize(int restore_rc, int cleanup_mask, int *may_publish) {
     if (may_publish) *may_publish = 0;
+    if (t_in_publish) return g_gen != 0 && owner_ok() ? (int)hv_reg_report_final() : (int)HV_REG_R_NONE;   /* from inside the callback: the recorded result, read only; never a second right */
     if (g_gen == 0 || !owner_ok()) return (int)HV_REG_R_NONE;
     uint64_t g = g_gen;
     int qf = 0;
@@ -136,20 +166,44 @@ int hv_restore_session_finalize(int restore_rc, int extra_cleanup_failed, int *m
         qf = 1;
     }
     if (!qf) {
-        if (extra_cleanup_failed) hv_reg_cleanup_failed(g);   /* a host-owned resource is still alive: the policy stays too */
-        else if (hv_net_guard_uninstall() != 0) hv_reg_cleanup_failed(g);   /* the policy could not be removed */
+        if (cleanup_mask & HV_REG_CL_HOST_THREAD) { /* a host-owned thread is alive: the policy stays too, and nothing it depends on is released */ }
+        else if (hv_net_guard_uninstall() != 0) cleanup_mask |= HV_REG_CL_POLICY;   /* the policy could not be removed */
     }
+    int mp = 0;
     HvRegReport rep = HV_REG_R_NONE;
-    if (hv_reg_finalize(g, restore_rc == 0 ? HV_REG_RESTORE_OK : HV_REG_RESTORE_FAILED, 0, &rep, may_publish) != 0) return (int)HV_REG_R_NONE;
-    return (int)rep;   /* the caller publishes it OUTSIDE every lock when *may_publish, then calls publish_done and release_idle */
+    if (hv_reg_finalize(g, restore_rc == 0 ? HV_REG_RESTORE_OK : HV_REG_RESTORE_FAILED, cleanup_mask, &rep, &mp) != 0) return (int)HV_REG_R_NONE;
+    if (mp) { pthread_mutex_lock(&g_own_mu); g_pub_right = 1; pthread_mutex_unlock(&g_own_mu); }   /* the one right to publish, kept by the session */
+    if (may_publish) *may_publish = mp;
+    return (int)rep;
 }
-int hv_restore_session_publish_done(void) { return g_gen != 0 && owner_ok() && hv_reg_publish_done(g_gen) == 0 ? 0 : -1; }
+
+int hv_restore_session_publish(void (*fn)(void *), void *arg) {
+    /* The ONLY path that runs the callback and marks the generation PUBLISHED. It needs the one-time right that finalize issued (consumed here), the owner, and
+       a thread that is not already inside a publication. in_publish is set around the callback and cleared right after it returned; no public function can clear
+       it, so a callback cannot end the publication early. A callback that never returns leaves the generation PUBLISHING: the next start is refused. */
+    if (t_in_publish || g_gen == 0) return -1;
+    pthread_mutex_lock(&g_own_mu);
+    int ok = owner_locked() && g_pub_right;
+    if (ok) g_pub_right = 0;
+    pthread_mutex_unlock(&g_own_mu);
+    if (!ok) return -1;
+    t_in_publish = 1;
+    if (fn) fn(arg);
+    t_in_publish = 0;
+    return hv_reg_publish_done(g_gen) == 0 ? 0 : -1;
+}
+
 int hv_restore_session_release_idle(void) {
-    if (g_gen == 0 || !owner_ok()) return -1;
-    if (hv_reg_release_idle(g_gen) != 0) return -1;   /* not PUBLISHED, or a cleanup failure / pending object */
-    owner_clear();
-    SET_GEN(0);
-    return 0;
+    if (t_in_publish || g_gen == 0) return -1;
+    int r = -1;
+    pthread_mutex_lock(&g_own_mu);
+    int ok = owner_locked();
+    pthread_mutex_unlock(&g_own_mu);
+    if (ok && hv_reg_release_idle(g_gen) == 0) {   /* PUBLISHED, nothing unresolved now, no confirmed CLEANUP_FAILED */
+        pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); pthread_mutex_unlock(&g_own_mu);
+        r = 0;
+    }
+    return r;
 }
 
 int hv_restore_session_release_permitted(void) { return g_gen != 0 && hv_reg_release_permitted(g_gen) == 1; }   /* C18: ask before client_free/end */

@@ -191,6 +191,25 @@ static int c_cancel_note(void) {
     CHECK(rep == HV_REG_R_SUCCESS, "accepted, but the restore succeeded: SUCCESS (the history is kept, the result follows the restore)");
     return nfail;
 }
+static int c_cleanup_bits(void) {
+    uint64_t g = fresh(); HvRegReport rep; int mp;
+    hv_reg_close_begin(g); hv_reg_wait_and_close(g, in_ms(100));
+    hv_reg_cleanup_mark(g, HV_REG_CL_HOST_THREAD);
+    hv_reg_cleanup_mark(g, HV_REG_CL_POLICY);
+    CHECK(hv_reg_cleanup_history() == (HV_REG_CL_HOST_THREAD | HV_REG_CL_POLICY) && hv_reg_cleanup_current() == (HV_REG_CL_HOST_THREAD | HV_REG_CL_POLICY), "reasons accumulate by OR, history and current alike");
+    hv_reg_cleanup_resolve(g, HV_REG_CL_POLICY);
+    CHECK(hv_reg_cleanup_current() == HV_REG_CL_HOST_THREAD && hv_reg_cleanup_history() == 3, "resolving one clears only its CURRENT bit; the history keeps both");
+    CHECK(hv_reg_can_finish(g) == 0, "something unresolved: no IDLE (legacy path included)");
+    hv_reg_cleanup_resolve(g, HV_REG_CL_HOST_THREAD);
+    CHECK(hv_reg_can_finish(g) == 1, "nothing unresolved and no confirmed failure yet: finish allowed (history alone never blocks)");
+    hv_reg_cleanup_mark(g, HV_REG_CL_OTHER);
+    hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp);
+    CHECK(rep == HV_REG_R_CLEANUP_FAILED, "a reason unresolved at finalize: CLEANUP_FAILED confirmed");
+    hv_reg_publish_done(g); hv_reg_cleanup_resolve(g, HV_REG_CL_OTHER);
+    CHECK(hv_reg_cleanup_current() == 0 && hv_reg_release_idle(g) == -1 && hv_reg_finish_session(g) == -1, "recovered after the confirmation: still no IDLE (the result is final)");
+    g = 0;
+    return nfail;
+}
 static int c_watchdog(void) {   /* QF is not undone by a completing task; CLOSED first means the watchdog changes nothing */
     uint64_t g = fresh();
     hv_reg_try_register(g, HV_REG_K_ASYNC);
@@ -237,6 +256,7 @@ int main(int argc, char **argv) {
     if (!strcmp(c, "finalize")) return c_finalize();
     if (!strcmp(c, "finalize_qf")) return c_finalize_qf();
     if (!strcmp(c, "cancel_note")) return c_cancel_note();
+    if (!strcmp(c, "cleanup_bits")) return c_cleanup_bits();
     if (!strcmp(c, "watchdog")) return c_watchdog();
 #ifdef HV_TEST_HOOKS
     if (!strcmp(c, "hooks")) return c_hooks();

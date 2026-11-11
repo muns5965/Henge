@@ -26,7 +26,7 @@ static struct {
     HvRegCancelState cs;
     int cancel_retry_left, cancel_rejected_closed;
     ConnItem conns[MAX_CONN];
-    int objects_pending, objects_released, cleanup_failed, release_granted;
+    int objects_pending, objects_released, cleanup_hist, cleanup_cur, release_granted;   /* hist: every reason seen this generation (diagnosis only); cur: what is still unresolved */
     HvRegReport report_final, report_interim;
     int stale;
     HvRegPubState pub;
@@ -93,7 +93,7 @@ uint64_t hv_reg_begin(void) {
     memset(R.conns, 0, sizeof R.conns);
     R.hard_failures = 0; R.hard_reason = HV_REG_QF_NONE; R.qf = HV_REG_QF_NONE; R.err_have = 0; R.err_count = 0; R.err_src = HV_REG_E_NONE; R.err_code = 0;
     R.cs = HV_REG_CS_NONE; R.cancel_retry_left = CANCEL_RETRIES; R.cancel_rejected_closed = 0;
-    R.objects_pending = R.objects_released = R.cleanup_failed = R.release_granted = 0;
+    R.objects_pending = R.objects_released = R.cleanup_hist = R.cleanup_cur = R.release_granted = 0;
     R.report_final = R.report_interim = HV_REG_R_NONE;
     R.pub = HV_REG_PUB_NONE; R.cancel_noted = R.restore_returned = R.cancel_late = 0;
     R.phase = HV_REG_PHASE_RUN; R.deadline_ns = 0; R.terminate = 0;
@@ -346,7 +346,7 @@ int hv_reg_release_permitted(uint64_t gen) {
     lock();
     int r = -1;
     if (!stale_locked(gen)) {
-        if (R.state == HV_REG_CLOSED) { if (R.cleanup_failed && !R.release_granted) r = 0; else { R.release_granted = 1; r = 1; } }   /* a granted release is never taken back */
+        if (R.state == HV_REG_CLOSED) { if (R.cleanup_cur && !R.release_granted) r = 0; else { R.release_granted = 1; r = 1; } }   /* a granted release is never taken back */
         else r = 0;   /* ACTIVE, CLOSING, QUIESCENCE_FAILED: not permitted */
     }
     unlock();
@@ -354,9 +354,15 @@ int hv_reg_release_permitted(uint64_t gen) {
 }
 void hv_reg_objects_pending(uint64_t gen) { lock(); if (!stale_locked(gen)) { R.objects_pending = 1; R.objects_released = 0; changed(); } unlock(); }
 void hv_reg_objects_released(uint64_t gen) { lock(); if (!stale_locked(gen)) { R.objects_released = 1; changed(); } unlock(); }
-void hv_reg_cleanup_failed(uint64_t gen) { lock(); if (!stale_locked(gen) && R.state == HV_REG_CLOSED) { R.cleanup_failed = 1; changed(); } unlock(); }
-int hv_reg_cleanup_failed_flag(void) { lock(); int f = R.cleanup_failed; unlock(); return f; }
-static int can_finish_locked(void) { return R.state == HV_REG_CLOSED && !R.cleanup_failed && (!R.objects_pending || R.objects_released); }
+void hv_reg_cleanup_mark(uint64_t gen, int mask) { lock(); if (!stale_locked(gen) && R.state == HV_REG_CLOSED) { R.cleanup_hist |= mask; R.cleanup_cur |= mask; changed(); } unlock(); }   /* OR: never overwrites an earlier reason */
+void hv_reg_cleanup_resolve(uint64_t gen, int mask) { lock(); if (!stale_locked(gen)) { R.cleanup_cur &= ~mask; changed(); } unlock(); }   /* the history keeps the bit */
+void hv_reg_cleanup_failed(uint64_t gen) { hv_reg_cleanup_mark(gen, HV_REG_CL_OTHER); }
+int hv_reg_cleanup_failed_flag(void) { lock(); int f = R.cleanup_hist != 0; unlock(); return f; }
+int hv_reg_cleanup_history(void) { lock(); int f = R.cleanup_hist; unlock(); return f; }
+int hv_reg_cleanup_current(void) { lock(); int f = R.cleanup_cur | ((R.objects_pending && !R.objects_released) ? HV_REG_CL_OBJECT : 0); unlock(); return f; }
+/* IDLE needs: nothing unresolved NOW, no cleanup failure CONFIRMED as the generation's result (a late recovery never turns it into a clean generation), and the
+   objects released. The history bits are diagnosis only. */
+static int can_finish_locked(void) { return R.state == HV_REG_CLOSED && R.cleanup_cur == 0 && (!R.objects_pending || R.objects_released) && R.report_final != HV_REG_R_CLEANUP_FAILED; }
 int hv_reg_can_finish(uint64_t gen) { lock(); int r = !stale_locked(gen) && can_finish_locked(); unlock(); return r; }
 int hv_reg_finish_session(uint64_t gen) {
     lock();
@@ -377,16 +383,16 @@ uint64_t hv_reg_wait_change(uint64_t gen, uint64_t seen, int64_t deadline_ns) {
 uint64_t hv_reg_seq(void) { lock(); uint64_t s = R.seq; unlock(); return s; }
 
 /* ---- finalize / publish / release ---- */
-int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int extra_cleanup_failed, HvRegReport *out, int *may_publish) {
+int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int cleanup_mask, HvRegReport *out, int *may_publish) {
     lock();
     int r = -1;
     if (may_publish) *may_publish = 0;
     if (!stale_locked(gen) && (R.state == HV_REG_CLOSED || R.state == HV_REG_QUIESCENCE_FAILED)) {
         if (R.report_final == HV_REG_R_NONE) {
             int qf = R.state == HV_REG_QUIESCENCE_FAILED;
-            if (!qf && extra_cleanup_failed) { R.cleanup_failed = 1; changed(); }
-            int cf = !qf && (R.cleanup_failed || (R.objects_pending && !R.objects_released));   /* decided HERE, with the closing state, not by a later separate check */
-            if (!qf && cf && !R.cleanup_failed) R.cleanup_failed = 1;
+            if (!qf && cleanup_mask) { R.cleanup_hist |= cleanup_mask; R.cleanup_cur |= cleanup_mask; changed(); }
+            if (!qf && R.objects_pending && !R.objects_released) R.cleanup_hist |= HV_REG_CL_OBJECT;
+            int cf = !qf && (R.cleanup_cur || (R.objects_pending && !R.objects_released));   /* decided HERE, with the closing state, not by a later separate check */
             HvRegRestoreOutcome ro = restore;
             if (ro != HV_REG_RESTORE_OK && R.cancel_noted) ro = HV_REG_RESTORE_USER_CANCEL;   /* the history decides, not the caller */
             R.report_final = hv_reg_compose(ro, cf ? HV_REG_CLEANUP_FAILED : HV_REG_CLEANUP_DONE, qf);

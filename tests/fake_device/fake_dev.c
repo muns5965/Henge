@@ -1,0 +1,189 @@
+/* Fake usbmuxd + fake restored (S1). See fake_dev.h. Protocol facts: libusbmuxd packet = {length, version, message(8 = plist), tag} native-endian + XML plist;
+   restored = 4-byte big-endian length + plist. Written from the vendored sources (libusbmuxd.c, libimobiledevice/src/restore.c); nothing here talks to a real device. */
+#define _GNU_SOURCE 1
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include "fake_dev.h"
+
+static const FakeScenario *g_scn;
+static FakeStats g_st;
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+#define BUMP(f) do { pthread_mutex_lock(&g_mu); g_st.f++; pthread_mutex_unlock(&g_mu); } while (0)
+
+void fake_stats(FakeStats *s) { pthread_mutex_lock(&g_mu); *s = g_st; pthread_mutex_unlock(&g_mu); }
+
+static int rd(int fd, void *b, size_t n) {
+    size_t g = 0;
+    while (g < n) { ssize_t r = recv(fd, (char *)b + g, n - g, 0); if (r <= 0) return -1; g += (size_t)r; }
+    return 0;
+}
+static int wr(int fd, const void *b, size_t n) {
+    size_t g = 0;
+    while (g < n) { ssize_t r = send(fd, (const char *)b + g, n - g, MSG_NOSIGNAL); if (r <= 0) return -1; g += (size_t)r; }
+    return 0;
+}
+
+/* ---- restored framing ---- */
+static int rs_send(int fd, plist_t p) {
+    char *bin = NULL; uint32_t len = 0;
+    plist_to_bin(p, &bin, &len);
+    uint32_t be = htonl(len);
+    int r = wr(fd, &be, 4) == 0 && wr(fd, bin, len) == 0 ? 0 : -1;
+    free(bin);
+    return r;
+}
+static plist_t rs_recv(int fd) {
+    uint32_t be;
+    if (rd(fd, &be, 4)) return NULL;
+    uint32_t len = ntohl(be);
+    if (len == 0 || len > (1u << 24)) return NULL;
+    char *b = malloc(len);
+    if (!b || rd(fd, b, len)) { free(b); return NULL; }
+    plist_t p = NULL;
+    plist_from_memory(b, len, &p, NULL);
+    free(b);
+    return p;
+}
+static char *dict_str(plist_t d, const char *k) {
+    plist_t n = plist_dict_get_item(d, k);
+    char *s = NULL;
+    if (n && plist_get_node_type(n) == PLIST_STRING) plist_get_string_val(n, &s);
+    return s;
+}
+
+static void *restored_conn(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    for (;;) {
+        plist_t req = rs_recv(fd);
+        if (!req) break;
+        char *r = dict_str(req, "Request");
+        plist_free(req);
+        if (!r) continue;   /* e.g. ReceivedFinalStatusMsg (MsgType): no reply */
+        if (!strcmp(r, "QueryType")) {
+            plist_t d = plist_new_dict();
+            plist_dict_set_item(d, "Type", plist_new_string("com.apple.mobile.restored"));
+            plist_dict_set_item(d, "RestoreProtocolVersion", plist_new_uint(15));
+            rs_send(fd, d); plist_free(d);
+        } else if (!strcmp(r, "QueryValue")) {
+            plist_t d = plist_new_dict();
+            plist_t hw = plist_new_dict();
+            plist_dict_set_item(hw, "UniqueChipID", plist_new_uint(FAKE_ECID));
+            plist_dict_set_item(hw, "ChipID", plist_new_uint(0x8103));
+            plist_dict_set_item(hw, "BoardID", plist_new_uint(0x22));
+            plist_dict_set_item(hw, "ProductionMode", plist_new_bool(0));
+            plist_dict_set_item(d, "HardwareInfo", hw);   /* SavedDebugInfo is deliberately absent */
+            rs_send(fd, d); plist_free(d);
+        } else if (!strcmp(r, "Goodbye")) {
+            BUMP(goodbye);
+            plist_t d = plist_new_dict();
+            plist_dict_set_item(d, "Result", plist_new_string("Success"));
+            rs_send(fd, d); plist_free(d);
+        } else if (!strcmp(r, "StartRestore")) {
+            BUMP(start_restore);
+            for (int i = 0; g_scn && i < g_scn->nmsgs; i++) rs_send(fd, g_scn->msgs[i]);
+            if (g_scn && g_scn->end == FAKE_END_CLOSE) { free(r); break; }
+        }
+        free(r);
+    }
+    close(fd);
+    return NULL;
+}
+
+/* ---- usbmuxd framing ---- */
+static void mux_reply(int fd, uint32_t version, uint32_t tag, plist_t p) {
+    char *xml = NULL; uint32_t len = 0;
+    plist_to_xml(p, &xml, &len);
+    uint32_t h[4] = {16 + len, version, 8, tag};
+    wr(fd, h, 16); wr(fd, xml, len);
+    free(xml);
+}
+static void mux_result(int fd, uint32_t version, uint32_t tag, uint64_t n) {
+    plist_t d = plist_new_dict();
+    plist_dict_set_item(d, "MessageType", plist_new_string("Result"));
+    plist_dict_set_item(d, "Number", plist_new_uint(n));
+    mux_reply(fd, version, tag, d);
+    plist_free(d);
+}
+
+static void *mux_conn(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    for (;;) {
+        uint32_t h[4];
+        if (rd(fd, h, 16) || h[0] < 16 || h[0] > (1u << 20)) break;
+        uint32_t plen = h[0] - 16;
+        char *body = malloc(plen + 1);
+        if (!body || rd(fd, body, plen)) { free(body); break; }
+        plist_t req = NULL;
+        if (h[2] == 8) plist_from_memory(body, plen, &req, NULL);
+        free(body);
+        char *mt = req ? dict_str(req, "MessageType") : NULL;
+        if (!mt) { mux_result(fd, h[1], h[3], 1); plist_free(req); continue; }
+        if (!strcmp(mt, "ListDevices")) {
+            BUMP(list_devices);
+            plist_t d = plist_new_dict(), arr = plist_new_array(), e = plist_new_dict(), pr = plist_new_dict();
+            plist_dict_set_item(pr, "DeviceID", plist_new_uint(FAKE_DEVICE_ID));
+            plist_dict_set_item(pr, "ProductID", plist_new_uint(0x1281));
+            plist_dict_set_item(pr, "SerialNumber", plist_new_string(FAKE_UDID));
+            plist_dict_set_item(pr, "ConnectionType", plist_new_string("USB"));
+            plist_dict_set_item(e, "DeviceID", plist_new_uint(FAKE_DEVICE_ID));
+            plist_dict_set_item(e, "MessageType", plist_new_string("Attached"));
+            plist_dict_set_item(e, "Properties", pr);
+            plist_array_append_item(arr, e);
+            plist_dict_set_item(d, "DeviceList", arr);
+            mux_reply(fd, h[1], h[3], d);
+            plist_free(d);
+        } else if (!strcmp(mt, "Connect")) {
+            uint64_t pn = 0;
+            plist_t n = plist_dict_get_item(req, "PortNumber");
+            if (n) plist_get_uint_val(n, &pn);
+            uint16_t port = ntohs((uint16_t)pn);
+            if (port == 62078) {
+                BUMP(connect_restored);
+                mux_result(fd, h[1], h[3], 0);
+                free(mt); plist_free(req);
+                return restored_conn((void *)(intptr_t)fd);   /* the tunnel: raw restored traffic from here on */
+            }
+            pthread_mutex_lock(&g_mu); g_st.connect_other++; g_st.last_other_port = port; pthread_mutex_unlock(&g_mu);
+            mux_result(fd, h[1], h[3], 3);   /* RESULT_CONNREFUSED */
+        } else {
+            mux_result(fd, h[1], h[3], 1);
+        }
+        free(mt); plist_free(req);
+    }
+    close(fd);
+    return NULL;
+}
+
+static int g_ls = -1;
+static void *mux_accept(void *arg) {
+    (void)arg;
+    for (;;) {
+        int c = accept(g_ls, NULL, NULL);
+        if (c < 0) break;
+        BUMP(accepted);
+        pthread_t t;
+        if (pthread_create(&t, NULL, mux_conn, (void *)(intptr_t)c) == 0) pthread_detach(t); else close(c);
+    }
+    return NULL;
+}
+
+int fake_mux_start(const FakeScenario *scn) {
+    g_scn = scn;
+    g_ls = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    setsockopt(g_ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = {.sin_family = AF_INET};
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* loopback only, port chosen by the kernel */
+    if (bind(g_ls, (struct sockaddr *)&a, sizeof a) || listen(g_ls, 8)) return -1;
+    socklen_t l = sizeof a;
+    getsockname(g_ls, (struct sockaddr *)&a, &l);
+    pthread_t t;
+    if (pthread_create(&t, NULL, mux_accept, NULL)) return -1;
+    pthread_detach(t);
+    return ntohs(a.sin_port);
+}

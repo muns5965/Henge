@@ -3,6 +3,8 @@
 
 #include "net_guard.h"
 #include "restore_registry.h"
+#include "hv_life.h"
+#include <sys/socket.h>
 
 #include <pthread.h>
 
@@ -37,6 +39,15 @@ static unsigned g_run_deny_owner_state, g_run_deny_engine;   /* observation only
 static __thread int t_in_publish;   /* this thread is inside the publication callback: every state-changing public API refuses (checked FIRST in each) */
 
 static int owner_locked(void) { return g_owner_set && g_owner_gen == g_gen && pthread_equal(g_owner, pthread_self()); }
+
+/* ---- vendored-side interface (third_party/libimobiledevice/src/hv_life.h): thin wrappers over the registry; the generation is captured at registration -------- */
+static int life_try_register(int kind, uint64_t *gen) { uint64_t g = g_gen; if (!g || hv_reg_try_register(g, (HvRegKind)kind) != 0) return -1; if (gen) *gen = g; return 0; }
+static void life_complete(uint64_t g, int kind, int64_t f) { hv_reg_complete(g, (HvRegKind)kind, f); }
+static void life_unreg_failed(uint64_t g, int kind, int64_t f) { hv_reg_unregister_failed(g, (HvRegKind)kind, f); }
+static int life_terminate(void) { return hv_reg_terminate_requested(); }
+static int life_conn_register(int fd, uint64_t *gen) { uint64_t g = g_gen; if (!g || hv_reg_conn_register(g, fd) != 0) return -1; if (gen) *gen = g; return 0; }
+static int life_conn_unregister_wait(uint64_t g, int fd) { return hv_reg_conn_unregister_wait(g, fd, hv_reg_mono_ns() + (int64_t)g_close_ms * 1000000LL); }
+static const HvLifeOps g_life_ops = { life_try_register, life_complete, life_unreg_failed, life_terminate, life_conn_register, life_conn_unregister_wait };
 static int owner_ok(void) { pthread_mutex_lock(&g_own_mu); int ok = owner_locked(); pthread_mutex_unlock(&g_own_mu); return ok; }
 static void owner_reset_locked(void) { g_owner_set = 0; g_token = 0; g_transferred = 0; g_pub_right = 0; }
 
@@ -80,6 +91,7 @@ int hv_restore_session_begin(void) {
     owner_reset_locked();
     g_owner = pthread_self(); g_owner_gen = g; g_owner_set = 1;   /* the starting thread owns the generation until it hands over (or ends it) */
     pthread_mutex_unlock(&g_own_mu);
+    hv_life_install(&g_life_ops);   /* vendored tasks and connections register from now on; removed only when the session returns to IDLE (end) */
     return 0;
 }
 
@@ -132,7 +144,7 @@ int hv_restore_session_end(void) {
     if (hv_restore_session_close() != 0) return -1;
     if (hv_net_guard_uninstall() != 0) return -1;   /* an engine thread is still registered: retry later */
     if (hv_reg_finish_session(g) != 0) return -1;   /* cleanup failure or objects not released: stays CLOSED */
-    pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); pthread_mutex_unlock(&g_own_mu);
+    pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); hv_life_install(NULL); pthread_mutex_unlock(&g_own_mu);
     return 0;
 }
 
@@ -146,7 +158,7 @@ int hv_restore_session_abort_start(void) {
         /* uninstall fails only while an engine thread is registered; run() enters under this same lock, so after the count check above it cannot. The check is a
            defensive assertion: abandon already made the registry IDLE and that is not undone, so reaching the failure branch is a contract violation, not a path. */
         if (hv_net_guard_uninstall() != 0) { g_abort_uninstall_failed++; }
-        owner_reset_locked(); SET_GEN(0);
+        owner_reset_locked(); SET_GEN(0); hv_life_install(NULL);
         r = 0;
     }
     pthread_mutex_unlock(&g_own_mu);
@@ -163,7 +175,15 @@ int hv_restore_session_cancel(void) {
        Nothing is counted, so a request can never block the close; whether the work actually stopped is the registered tasks' business (I3~I6, not approved). */
     if (t_in_publish || g_gen == 0) return -1;   /* from inside the publication callback: refused; from any OTHER thread (the UI) it is the normal path */
     int r = hv_reg_cancel_note(g_gen);
-    if (r == 1) hv_reg_request_terminate(g_gen);
+    if (r == 1) {
+        uint64_t g = g_gen;
+        hv_reg_request_terminate(g);
+        /* C14: wake every blocked recv/send on a registered connection. References are held while shutdown() runs, so the owner cannot close an fd (and have the
+           number reused) under us; nothing is called with the registry lock held. A connection that is inside connect() is not registered yet and is not reached. */
+        int fds[64]; int n = hv_reg_conn_acquire(g, fds, 64);
+        for (int i = 0; i < n; i++) shutdown(fds[i], SHUT_RDWR);
+        hv_reg_conn_release(g, fds, n);
+    }
     return r;   /* 1 accepted now, 0 already accepted, -1 refused (no session, closed, or the completion came first) */
 }
 
@@ -212,7 +232,7 @@ int hv_restore_session_release_idle(void) {
     int ok = owner_locked();
     pthread_mutex_unlock(&g_own_mu);
     if (ok && hv_reg_release_idle(g_gen) == 0) {   /* PUBLISHED, nothing unresolved now, no confirmed CLEANUP_FAILED */
-        pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); pthread_mutex_unlock(&g_own_mu);
+        pthread_mutex_lock(&g_own_mu); owner_reset_locked(); SET_GEN(0); hv_life_install(NULL); pthread_mutex_unlock(&g_own_mu);
         r = 0;
     }
     return r;

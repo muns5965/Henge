@@ -3,11 +3,15 @@
 #include "restore_session.h"
 #include "restore_registry.h"
 #include "net_guard.h"
+#include "hv_life.h"
+#include <sys/socket.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
+static int lr_state;
+static void *life_recv(void *a) { char b[4]; __atomic_store_n(&lr_state, 1, __ATOMIC_SEQ_CST); recv((int)(long)a, b, 4, 0); __atomic_store_n(&lr_state, 2, __ATOMIC_SEQ_CST); return NULL; }
 static int nfail;
 #define CHECK(c, msg) do { int ok_ = !!(c); printf("%s %s\n", ok_ ? "PASS" : "FAIL", msg); if (!ok_) nfail++; } while (0)
 
@@ -110,6 +114,37 @@ int main(int argc, char **argv) {
         CHECK(hv_restore_session_end() == 0 && hv_reg_state() == HV_REG_IDLE, "end: policy removed, registry IDLE");
         CHECK(hv_restore_session_begin() == 0, "the next session can begin");
         CHECK(hv_restore_session_end() == 0, "and end");
+    } else if (!strcmp(c, "life")) {   /* the vendored-side interface (hv_life.h) is bound to the registry for exactly one session */
+        uint64_t tg = 99, cg = 99; int fdp[2];
+        CHECK(hv_life_task_begin(HV_LIFE_K_ASYNC, &tg) == 0 && tg == 0 && hv_life_conn_add(-5, &cg) == 0 && hv_life_conn_remove(0, -5) == 0 && hv_life_terminate_requested() == 0, "no session: every helper allows and does nothing");
+        CHECK(hv_restore_session_begin() == 0, "begin");
+        CHECK(hv_life_task_begin(HV_LIFE_K_ASYNC, &tg) == 0 && tg == hv_reg_generation() && hv_reg_active(HV_REG_K_ASYNC) == 1, "a task registers through the interface");
+        hv_life_task_end(tg, HV_LIFE_K_ASYNC, 0);
+        CHECK(hv_reg_active(HV_REG_K_ASYNC) == 0, "its completion is counted");
+        CHECK(hv_life_task_begin(HV_LIFE_K_PROXY_CONN, &tg) == 0, "register");
+        hv_life_task_create_failed(tg, HV_LIFE_K_PROXY_CONN, 5);
+        CHECK(hv_reg_active(HV_REG_K_PROXY_CONN) == 0, "a failed thread creation releases the registration");
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fdp) == 0 && hv_life_conn_add(fdp[0], &cg) == 0 && hv_reg_conn_count() == 1, "a connection registers");
+        CHECK(hv_life_conn_remove(cg, fdp[0]) == 0 && hv_reg_conn_count() == 0, "unregister: no reference is out, close is allowed");
+        CHECK(hv_restore_session_cancel() == 1 && hv_life_terminate_requested() == 1, "cancel is accepted and the terminate flag is visible through the interface");
+        close(fdp[0]); close(fdp[1]);
+        hv_restore_session_close();
+        hv_restore_session_end();
+    } else if (!strcmp(c, "life_cancel")) {   /* cancel wakes a blocked recv on a registered connection; unregister waits for the cancel's reference */
+        int sp[2]; uint64_t cg;
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "pair");
+        hv_restore_session_begin();
+        CHECK(hv_life_conn_add(sp[0], &cg) == 0, "register");
+        pthread_t t; pthread_create(&t, NULL, life_recv, (void *)(long)sp[0]);
+        usleep(200000);
+        CHECK(LDV(lr_state) == 1, "the receiver is blocked before the cancel");
+        CHECK(hv_restore_session_cancel() == 1, "cancel");
+        pthread_join(t, NULL);
+        CHECK(LDV(lr_state) == 2, "the blocked recv returned after cancel (shutdown)");
+        CHECK(hv_life_conn_remove(cg, sp[0]) == 0, "the owner may close after the references came back");
+        close(sp[0]); close(sp[1]);
+        hv_restore_session_close(); hv_restore_session_end();
+        CHECK(hv_life_task_begin(HV_LIFE_K_ASYNC, &cg) == 0 && cg == 0, "after end the interface is detached again");
     } else if (!strcmp(c, "stuck")) {
         hv_restore_session_begin(); gen = hv_reg_generation();
         hv_reg_try_register(gen, HV_REG_K_PROXY_CONN);   /* never completes */

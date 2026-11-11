@@ -32,7 +32,21 @@ static HvInstallProgress g_progress;
 static void *g_progress_user;
 static char g_ipsw[1024], g_cache[1024], g_mux[64];
 static uint64_t g_ecid;
-static volatile int g_result = 1; /* 1 running, 0 done, < 0 failed */
+static int g_result = 1; /* 1 running, 0 done, < 0 failed; read and written only through LD/ST (the UI thread polls it, the restore thread sets it) */
+#define LD(v) __atomic_load_n(&(v), __ATOMIC_SEQ_CST)
+#define ST(v, x) __atomic_store_n(&(v), (x), __ATOMIC_SEQ_CST)
+
+#ifdef __ANDROID__
+#include <time.h>
+#include "restore_registry.h"
+extern void usbmuxd_request_stop(void);   /* third_party/usbmuxd/src/main.c (Henge) */
+extern volatile int usbmuxd_stopped;
+static pthread_t g_mux_th;
+static int g_mux_alive;     /* a private usbmuxd thread was started and is not joined: no new start until the process restarts */
+static int g_user_cancel;
+/* PROVISIONAL, not measured on a device: how long the private usbmuxd gets to stop (its main loop wakes within ~200 ms). */
+static int g_mux_stop_ms = 5000;
+#endif
 
 static void *mux_thread(void *arg) {
     (void)arg;
@@ -54,11 +68,31 @@ static void progress(int step, double p, void *user) {
     if (g_progress) g_progress(step, p, g_progress_user);
 }
 
+#ifdef __ANDROID__
+/* Ask the private usbmuxd to stop and wait for its thread (bounded). 1 = stopped and joined. On failure the thread stays (g_mux_alive) and the session is
+   declared not quiescent: the thread still owns sockets and the USB shim. */
+static int hv_install_stop_mux(void) {
+    if (!LD(g_mux_alive)) return 1;
+    usbmuxd_request_stop();
+    struct timespec dl;
+    clock_gettime(CLOCK_MONOTONIC, &dl);
+    int64_t end_ns = (int64_t)dl.tv_sec * 1000000000LL + dl.tv_nsec + (int64_t)g_mux_stop_ms * 1000000LL;
+    for (;;) {
+        if (usbmuxd_stopped) { pthread_join(g_mux_th, NULL); ST(g_mux_alive, 0); return 1; }
+        clock_gettime(CLOCK_MONOTONIC, &dl);
+        if ((int64_t)dl.tv_sec * 1000000000LL + dl.tv_nsec >= end_ns) break;
+        usleep(10000);
+    }
+    hv_restore_session_fail(HV_REG_QF_ENGINE_NOT_EXITED);   /* closest reason: a thread of the restore did not exit */
+    return 0;
+}
+#endif
+
 static void *restore_thread(void *arg) {
     (void)arg;
     struct idevicerestore_client_t *c = idevicerestore_client_new();
     if (!c) {
-        g_result = -1;
+        ST(g_result, -1);
         return NULL;
     }
     int flags = FLAG_ERASE;
@@ -89,20 +123,32 @@ static void *restore_thread(void *arg) {
 #endif
     fprintf(stderr, "install: restore finished: %d\n", r);
 #ifdef __ANDROID__
-    /* C18: close the session first, then ask whether releasing is allowed. When the session did not quiesce, the client is deliberately leaked and the policy
-       stays in force -- freeing it under a task that may still use it is the use-after-free the fake-device baseline (T5) reproduced. */
-    if (hv_restore_session_close() != 0 || !hv_restore_session_release_permitted()) {
-        fprintf(stderr, "install: the session did not quiesce -- nothing released, policy kept\n");
-        r = -1;
-    } else {
+    /* C18/C9: close the session first (CLOSED or QUIESCENCE_FAILED), then release what the session allows, then ONE final result composed from three things:
+       the engine's return value, the cleanup (tasks, client, private usbmuxd) and the session end (policy removal). Nothing is released after a failed close:
+       the client is deliberately leaked and the policy and usbmuxd stay, because a task may still use them (the use-after-free the T5 baseline reproduced). */
+    int closed = hv_restore_session_close() == 0;
+    int cleanup_failed = 0;
+    if (closed && hv_restore_session_release_permitted()) {
         idevicerestore_client_free(c);
-        if (hv_restore_session_end() != 0) fprintf(stderr, "install: session end refused (policy stays)\n");
+        if (!hv_install_stop_mux()) {
+            cleanup_failed = 1;
+            fprintf(stderr, "install: the private usbmuxd did not stop; no new restore can start until the app restarts\n");
+        }
+    } else if (closed) {
+        cleanup_failed = 1;   /* a cleanup failure was already recorded: nothing is released */
+    } else {
+        fprintf(stderr, "install: the session did not quiesce -- nothing released, policy kept\n");
     }
+    int rep = hv_restore_session_finish(r, LD(g_user_cancel), cleanup_failed);
+    fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
+    r = rep == HV_REG_R_SUCCESS ? 0 : -1;
 #else
     idevicerestore_client_free(c);
 #endif
-    g_result = r == 0 ? 0 : -1;
+    /* the last callback first, the result last: once the result is published a new start may overwrite the callback pointers, so nothing of this thread
+       touches them afterwards */
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
+    ST(g_result, r == 0 ? 0 : -1);
     return NULL;
 }
 
@@ -111,13 +157,15 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     if (!usb) return -1;
 #ifdef __ANDROID__
     /* One restore at a time: a second start would run two restore threads over the same files and the same usbmuxd port. */
-    static volatile int started;
-    if (started && g_result == 1) {
+    static int started;
+    if (LD(started) && LD(g_result) == 1) {
         fprintf(stderr, "install: a restore is already running\n");
         return -1;
     }
-    started = 1;
-    g_result = 1;
+    if (LD(g_mux_alive)) {
+        fprintf(stderr, "install: refused -- the private usbmuxd of an earlier run did not stop; restart the app\n");
+        return -1;
+    }
 #endif
     snprintf(g_ipsw, sizeof g_ipsw, "%s", ipsw);
     snprintf(g_cache, sizeof g_cache, "%s", workdir);
@@ -128,9 +176,13 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
 #ifdef __ANDROID__
     if (hv_restore_session_begin() != 0) {
         fprintf(stderr, "install: not started -- the connection policy could not be put in force (a previous run may still be ending)\n");
-        g_result = -1;
         return -1;
     }
+    /* begin() is only reachable from IDLE, i.e. after the previous session closed cleanly, so no task of the earlier run can still read these flags */
+    ST(global_quit_flag, 0);
+    ST(g_user_cancel, 0);
+    ST(started, 1);
+    ST(g_result, 1);
     hv_restore_session_allow_usbmuxd((uint16_t)port);
 #endif
     g_ecid = ecid;
@@ -138,19 +190,50 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     g_progress_user = user;
     hv_libusb_shim_attach(usb);
     pthread_t t;
+#ifdef __ANDROID__
+    usbmuxd_stopped = 0;
+    if (pthread_create(&g_mux_th, NULL, mux_thread, NULL) != 0) {   /* nothing is running yet: back to IDLE */
+        fprintf(stderr, "install: not started -- the usbmuxd thread could not be created\n");
+        if (hv_restore_session_abort_start() != 0) fprintf(stderr, "install: the session could not be ended; no new restore can start until the app restarts\n");
+        ST(started, 0);
+        ST(g_result, -1);
+        return -1;
+    }
+    ST(g_mux_alive, 1);
+    usleep(300000);
+    if (pthread_create(&t, NULL, restore_thread, NULL) != 0) {
+        /* usbmuxd IS running: it has to be stopped and joined before the session may end; if it does not stop, the session is not quiescent and stays */
+        fprintf(stderr, "install: not started -- the restore thread could not be created\n");
+        if (hv_install_stop_mux()) {
+            if (hv_restore_session_abort_start() != 0) fprintf(stderr, "install: the session could not be ended; no new restore can start until the app restarts\n");
+        } else {
+            fprintf(stderr, "install: the private usbmuxd did not stop; session kept, policy kept\n");
+        }
+        ST(started, 0);
+        ST(g_result, -1);
+        return -1;
+    }
+    pthread_detach(t);
+    return 0;
+#else
     if (pthread_create(&t, NULL, mux_thread, NULL) != 0) return -1;
     pthread_detach(t);
     usleep(300000);
     if (pthread_create(&t, NULL, restore_thread, NULL) != 0) return -1;
     pthread_detach(t);
     return 0;
+#endif
 }
 
-int hv_install_result(void) { return g_result; }
+int hv_install_result(void) { return LD(g_result); }
 
 void hv_install_cancel(void) {
 #ifdef __ANDROID__
-    hv_restore_session_request_cancel();
-    global_quit_flag = 1;   /* the same flag idevicerestore's own signal handler sets */
+    /* Accepted once per session (C17). It sets the session's terminate flag and the tool's quit flag; it does NOT wait for anything to stop -- the result
+       arrives through the callback like any other. The flag is cleared again only at the next begin, which exists only after a clean close. */
+    if (hv_restore_session_cancel() == 1) {
+        ST(g_user_cancel, 1);
+        ST(global_quit_flag, 1);   /* the same flag idevicerestore's own signal handler sets */
+    }
 #endif
 }

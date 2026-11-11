@@ -16,7 +16,7 @@ typedef enum { HV_REG_CS_NONE = 0, HV_REG_CS_RESERVED, HV_REG_CS_RUNNING, HV_REG
 /* where the first error came from */
 typedef enum { HV_REG_E_NONE = 0, HV_REG_E_LOOP, HV_REG_E_ASYNC, HV_REG_E_PROXY, HV_REG_E_CREATE, HV_REG_E_CANCEL, HV_REG_E_WATCH } HvRegErrSource;
 /* why QUIESCENCE_FAILED was declared (4.2) */
-typedef enum { HV_REG_QF_NONE = 0, HV_REG_QF_TASKS_NOT_QUIESCENT, HV_REG_QF_ENGINE_NOT_EXITED, HV_REG_QF_CONN_REF_NOT_RETURNED } HvRegQfReason;
+typedef enum { HV_REG_QF_NONE = 0, HV_REG_QF_TASKS_NOT_QUIESCENT, HV_REG_QF_ENGINE_NOT_EXITED, HV_REG_QF_CONN_REF_NOT_RETURNED, HV_REG_QF_CONN_TABLE } HvRegQfReason;
 /* application report kinds (4.7) */
 typedef enum { HV_REG_R_NONE = 0, HV_REG_R_SUCCESS, HV_REG_R_RESTORE_FAILED, HV_REG_R_ABORTED_BY_USER, HV_REG_R_CLEANUP_DELAYED, HV_REG_R_CLEANUP_FAILED, HV_REG_R_SESSION_NOT_QUIESCENT } HvRegReport;
 typedef enum { HV_REG_RESTORE_OK = 0, HV_REG_RESTORE_FAILED, HV_REG_RESTORE_USER_CANCEL, HV_REG_RESTORE_UNFINISHED } HvRegRestoreOutcome;
@@ -68,7 +68,7 @@ HvRegCancelState hv_reg_cancel_state(void);
 int hv_reg_cancel_rejected_after_closed(void);
 
 /* ---- connection table (C14): reference-counted so a cancel can shutdown() without racing the owner's close() ------------------------------------------ */
-int hv_reg_conn_register(uint64_t gen, int fd);                      /* ACTIVE|CLOSING. 0 / -1 */
+int hv_reg_conn_register(uint64_t gen, int fd);                      /* ACTIVE|CLOSING. 0 / -1; -1 (duplicate fd, full table) is also a recorded hard failure: do not use the connection */
 int hv_reg_conn_acquire(uint64_t gen, int *fds, int max);            /* takes a reference on every registered fd and lists them; call hv_reg_conn_release with the same list */
 void hv_reg_conn_release(uint64_t gen, const int *fds, int n);
 /* Owner side: unregister, then wait (until the deadline) for the references to come back. 0 = the caller may close(fd). -1 = a reference did not come back: the caller

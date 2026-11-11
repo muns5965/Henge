@@ -27,5 +27,11 @@ int hv_restore_session_close(void);                       /* CLOSING -> CLOSED (
 int hv_restore_session_release_permitted(void);          /* 1 only when idevicerestore_client_free() may be called now */
 void hv_restore_session_request_cancel(void);            /* lock-free terminate flag for the registered tasks */
 int hv_restore_session_quiescence_failed(void);
+int hv_restore_session_abort_start(void);   /* start failed before anything ran: ACTIVE -> IDLE and the policy removed (0), or -1 = stays */
+int hv_restore_session_fail(int why);       /* declare QUIESCENCE_FAILED (why = HvRegQfReason) for a host-owned resource that did not stop */
+int hv_restore_session_cancel(void);        /* 1 = cancel started now, 0 = already started, -1 = refused */
+/* The one place a final result is composed: close (C13), cleanup result, compose (4.7), report once per generation. Returns an HvRegReport value, or
+   HV_REG_R_NONE (0) when nothing could be decided (the engine thread is still registered). extra_cleanup_failed: the caller's own cleanup failed. */
+int hv_restore_session_finish(int restore_rc, int user_cancel, int extra_cleanup_failed);
 
 #endif

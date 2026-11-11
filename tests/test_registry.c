@@ -139,6 +139,20 @@ static int c_conn(void) {
     pthread_join(th, NULL);
     return nfail;
 }
+static int c_conn_limits(void) {
+    uint64_t g = fresh();
+    CHECK(hv_reg_conn_register(g, 7) == 0 && hv_reg_conn_register(g, 7) == -1, "the same fd twice: the second is rejected (a closed-and-reused number was never unregistered)");
+    CHECK(hv_reg_close_begin(g) == 0 && hv_reg_wait_and_close(g, in_ms(80)) == 1 && hv_reg_qf_reason() == HV_REG_QF_CONN_TABLE, "that is a recorded hard failure: the session cannot close cleanly");
+    return nfail;
+}
+static int c_conn_full(void) {
+    uint64_t g = fresh(); int ok = 0;
+    for (int fd = 100; fd < 132; fd++) ok += hv_reg_conn_register(g, fd) == 0;
+    CHECK(ok == 32, "32 connections fit");
+    CHECK(hv_reg_conn_register(g, 200) == -1, "the 33rd is rejected (the caller must not use it)");
+    CHECK(hv_reg_close_begin(g) == 0 && hv_reg_wait_and_close(g, in_ms(80)) == 1 && hv_reg_qf_reason() == HV_REG_QF_CONN_TABLE, "unmanaged connections never end as a clean close");
+    return nfail;
+}
 static int c_watchdog(void) {   /* QF is not undone by a completing task; CLOSED first means the watchdog changes nothing */
     uint64_t g = fresh();
     hv_reg_try_register(g, HV_REG_K_ASYNC);
@@ -180,6 +194,8 @@ int main(int argc, char **argv) {
     if (!strcmp(c, "cancel")) return c_cancel();
     if (!strcmp(c, "phase")) return c_phase();
     if (!strcmp(c, "conn")) return c_conn();
+    if (!strcmp(c, "conn_dup")) return c_conn_limits();
+    if (!strcmp(c, "conn_full")) return c_conn_full();
     if (!strcmp(c, "watchdog")) return c_watchdog();
 #ifdef HV_TEST_HOOKS
     if (!strcmp(c, "hooks")) return c_hooks();

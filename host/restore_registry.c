@@ -288,10 +288,19 @@ int hv_reg_cancel_rejected_after_closed(void) { lock(); int n = R.cancel_rejecte
 
 /* ---- connection table ---- */
 int hv_reg_conn_register(uint64_t gen, int fd) {
+    /* -1: the caller must NOT use this connection for the proxy (nobody could shut it down at cancel time). A duplicate fd means an earlier owner closed
+       without unregistering (the number was reused) and a full table means connections would go unmanaged: both are recorded as hard failures, so the
+       session cannot end as cleanly closed (C13 (b)). */
     lock();
     int r = -1;
     if (!stale_locked(gen) && (R.state == HV_REG_ACTIVE || R.state == HV_REG_CLOSING)) {
-        for (int i = 0; i < MAX_CONN; i++) if (!R.conns[i].used) { R.conns[i] = (ConnItem){.fd = fd, .refs = 0, .registered = 1, .used = 1}; r = 0; break; }
+        int dup = 0, slot = -1;
+        for (int i = 0; i < MAX_CONN; i++) {
+            if (R.conns[i].used && R.conns[i].fd == fd) dup = 1;
+            if (!R.conns[i].used && slot < 0) slot = i;
+        }
+        if (dup || slot < 0) { R.hard_failures++; if (R.hard_reason == HV_REG_QF_NONE) R.hard_reason = HV_REG_QF_CONN_TABLE; changed(); }
+        else { R.conns[slot] = (ConnItem){.fd = fd, .refs = 0, .registered = 1, .used = 1}; r = 0; }
     }
     unlock();
     return r;

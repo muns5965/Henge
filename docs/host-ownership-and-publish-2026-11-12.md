@@ -40,3 +40,8 @@ A confirmed CLEANUP_FAILED never returns to IDLE until app restart, even if reso
 - Note: end()/abort_start() answer 0 when the generation is already gone (no-op), so tests tell the winner by whether the claim happened.
 - hv_reg_cleanup_resolve() has no host call site yet (nothing resolves cleanup bits today), so "resolve only after real release" is a rule for the I3~I6 callers, not yet exercised.
 - Not rerun: registry ASan/TSan (registry code unchanged this round). ASan leaks / TSan races in urlasset_tests are vendored restore.c, as before.
+
+## Addendum 2: I3~I6 start baseline
+- Start baseline for I3~I6: `23d146a` (host state-transition contracts verified on Linux with fake devices; NOT a safety confirmation of the vendored restore functions, T5/T12/T13 still reproduce).
+- Entry conditions, source correspondence and open points: `docs/i3-i6-entry-analysis-2026-11-12.md`. All entry conditions are "확인 대기" (not verified). I3~I6 vendored changes require separate approval; I10 deferred; Android device run unverified.
+- `abort_start()` invariant (uninstall cannot fail): relies on (a) `run()` being the only engine-registration path and (b) `run()` and `abort_start()` sharing `g_own_mu`; re-verify whenever I3~I6 change engine registration or ownership paths.

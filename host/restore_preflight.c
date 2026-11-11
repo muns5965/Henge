@@ -233,12 +233,18 @@ static void row_cleanup(const char *name, const char *status, const char *fmt, .
 /* ---- the restore thread ---- */
 static struct idevicerestore_client_t *g_client;
 static volatile int g_rc = 12345, g_done;
+static volatile int g_claimed, g_end_rc = -1;
+static uint64_t g_tok;
 static void *restore_thread(void *arg) {
-    (void)arg;
     int rc = 12345;
-    /* the only way into the tool: refused unless the connection policy is in force, and the policy cannot be removed while this runs */
-    if (hv_restore_session_run_client(g_client, &rc) != 0) rc = 12346;
-    g_rc = rc;
+    /* ownership: the session was begun by the main thread, which handed the right to end it to this thread (claim); only the owner may enter the tool */
+    if (hv_restore_session_claim((uint64_t)(uintptr_t)arg) == 0) {
+        g_claimed = 1;
+        /* the only way into the tool: refused unless the connection policy is in force, and the policy cannot be removed while this runs */
+        if (hv_restore_session_run_client(g_client, &rc) != 0) rc = 12346;
+        g_rc = rc;
+        g_end_rc = hv_restore_session_end();   /* the owner ends it after the tool returned; refused = the policy stays */
+    } else g_rc = 12347;
     g_done = 1;
     return NULL;
 }
@@ -329,7 +335,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     row("ipsw_open", ipsw_opened ? "ok" : "FAILED", "idevicerestore_set_ipsw opened the archive: %s (file descriptors on it while open: %d) -- observed directly", ipsw_opened ? "yes" : "no", ipsw_fds_open);
 
     double t0 = now_ms();
-    if (pthread_create(&tr, NULL, restore_thread, NULL) != 0) { row("init", "FAILED", "restore thread did not start"); goto report; }
+    if (pthread_create(&tr, NULL, restore_thread, (void *)(uintptr_t)(g_tok = hv_restore_session_approve_successor())) != 0) { row("init", "FAILED", "restore thread did not start"); goto report; }
     while (!g_done && now_ms() - t0 < cap_ms) usleep(20000);
     int timed_out = !g_done;
     if (timed_out) { global_quit_flag = 1; for (int i = 0; i < 150 && !g_done; i++) usleep(20000); }
@@ -493,7 +499,10 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
 
 report:
     /* the policy is removed only when no engine thread is left; a thread that did not return keeps being refused */
-    if (sess == 0 && hv_restore_session_end() != 0) g_still = 1;
+    if (sess == 0) {
+        if (g_claimed) { if (!g_done || g_end_rc != 0) g_still = 1; }   /* the restore thread owns the session: it ended it, or it has not returned */
+        else if (hv_restore_session_end() != 0) g_still = 1;
+    }
     if (stage == HV_PF_STOP_A) fprintf(out, "restore preflight: stop A -- the restore tool runs with FLAG_ERASE and the stop before the root filesystem step; no signing request, no image transfer, no rootfs extraction started (the run stops before that step); no write to the restore target disk (observed as: no bulk USB transfer to the virtual Mac)\n");
     else fprintf(out, "restore preflight: IPSW is opened and the restore tool runs with FLAG_ERASE|FLAG_NOACTION; no signing request, no image transfer, no rootfs extraction started (the run stops before that step); no write to the restore target disk (observed as: no bulk USB transfer to the virtual Mac)\n");
     for (int i = 0; i < g_nrows; i++) fprintf(out, "restore preflight: %-20s %-9s %s\n", g_rows[i].name, g_rows[i].status, g_rows[i].detail);

@@ -16,6 +16,9 @@ struct idevicerestore_client_t;
    tools/check-no-test-flags.sh requires that idevicerestore_start is called from host/restore_session.c only. */
 int hv_restore_session_begin(void);
 void hv_restore_session_allow_usbmuxd(uint16_t port);
+unsigned hv_restore_session_run_denied_owner_state(void);   /* observation only */
+unsigned hv_restore_session_run_denied_engine(void);
+unsigned hv_restore_session_abort_uninstall_failures(void);
 int hv_restore_session_run(int (*fn)(void *), void *arg, int *rc);   /* generic; the tests use it */
 int hv_restore_session_run_client(struct idevicerestore_client_t *c, int *rc);
 int hv_restore_session_end(void);

@@ -32,6 +32,8 @@ static pthread_t g_owner;
 static int g_owner_set;
 static uint64_t g_owner_gen, g_token, g_token_seq;
 static int g_transferred, g_pub_right;
+static unsigned g_abort_uninstall_failed;
+static unsigned g_run_deny_owner_state, g_run_deny_engine;   /* observation only: why run() refused */
 static __thread int t_in_publish;   /* this thread is inside the publication callback: every state-changing public API refuses (checked FIRST in each) */
 
 static int owner_locked(void) { return g_owner_set && g_owner_gen == g_gen && pthread_equal(g_owner, pthread_self()); }
@@ -84,7 +86,15 @@ int hv_restore_session_begin(void) {
 void hv_restore_session_allow_usbmuxd(uint16_t port) { hv_net_guard_allow_local("127.0.0.1", port); }
 
 int hv_restore_session_run(int (*fn)(void *), void *arg, int *rc) {
-    if (!fn || g_gen == 0 || hv_reg_state() != HV_REG_ACTIVE || hv_net_guard_engine_enter() != 0) return -1;
+    if (!fn || g_gen == 0) return -1;
+    /* Entry is ONE g_own_mu section: owner AND ACTIVE AND the engine registration. abort_start() takes the same lock, so either the engine is already counted (abort
+       refuses) or the abort came first (this refuses). The engine itself runs outside the lock. g_own_mu -> net_guard mutex is a new edge; net_guard never takes g_own_mu. */
+    pthread_mutex_lock(&g_own_mu);
+    int allowed = owner_locked() && hv_reg_state() == HV_REG_ACTIVE;
+    if (!allowed) { __atomic_add_fetch(&g_run_deny_owner_state, 1, __ATOMIC_RELAXED); }
+    else if (hv_net_guard_engine_enter() != 0) { allowed = 0; __atomic_add_fetch(&g_run_deny_engine, 1, __ATOMIC_RELAXED); }
+    pthread_mutex_unlock(&g_own_mu);
+    if (!allowed) return -1;
     int r = fn(arg);
     hv_reg_restore_returned(g_gen);   /* from here a cancel request is refused: the completion came first */
     hv_net_guard_engine_leave();
@@ -133,7 +143,9 @@ int hv_restore_session_abort_start(void) {
     int r = -1;
     pthread_mutex_lock(&g_own_mu);
     if (owner_locked() && !g_transferred && hv_net_guard_engine_count() == 0 && hv_reg_abandon(g_gen) == 0) {
-        hv_net_guard_uninstall();   /* cannot fail with no engine thread registered */
+        /* uninstall fails only while an engine thread is registered; run() enters under this same lock, so after the count check above it cannot. The check is a
+           defensive assertion: abandon already made the registry IDLE and that is not undone, so reaching the failure branch is a contract violation, not a path. */
+        if (hv_net_guard_uninstall() != 0) { g_abort_uninstall_failed++; }
         owner_reset_locked(); SET_GEN(0);
         r = 0;
     }
@@ -210,3 +222,8 @@ int hv_restore_session_release_permitted(void) { return g_gen != 0 && hv_reg_rel
 void hv_restore_session_request_cancel(void) { if (g_gen) hv_reg_request_terminate(g_gen); }
 int hv_restore_session_quiescence_failed(void) { return hv_reg_state() == HV_REG_QUIESCENCE_FAILED; }
 int hv_restore_session_engine_threads(void) { return hv_net_guard_engine_count(); }
+
+/* observation only (tests): counters of refused run() entries and of the "cannot happen" uninstall failure in abort_start() */
+unsigned hv_restore_session_run_denied_owner_state(void) { return __atomic_load_n(&g_run_deny_owner_state, __ATOMIC_RELAXED); }
+unsigned hv_restore_session_run_denied_engine(void) { return __atomic_load_n(&g_run_deny_engine, __ATOMIC_RELAXED); }
+unsigned hv_restore_session_abort_uninstall_failures(void) { return g_abort_uninstall_failed; }

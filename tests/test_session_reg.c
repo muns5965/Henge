@@ -16,8 +16,35 @@ static int engine(void *a) { (void)a; return 7; }
 static int eng_in, eng_go;
 #define LDV(v) __atomic_load_n(&(v), __ATOMIC_SEQ_CST)
 #define STV(v, x) __atomic_store_n(&(v), (x), __ATOMIC_SEQ_CST)
-static int eng_fn(void *a) { (void)a; STV(eng_in, 1); while (!LDV(eng_go)) usleep(1000); return 0; }
-static void *eng_thread(void *a) { (void)a; int rc; hv_restore_session_run(eng_fn, NULL, &rc); return NULL; }
+static volatile int b_claim = -1;
+static int b_close_in, b_fin_in, b_mp_in, b_final_in, b_state_in, b_fin1, b_mp1, b_pub1, b_rel_early, b_state_early, b_fin2, b_mp2, b_pub_a, b_pub_b, b_rel_ok, b_state_idle;
+static int b_cancel_a, b_cancel_b, b_fin3, b_cancel_late, b_fin4;
+static int busy_fn(void *a) {   /* runs inside the engine, in the owner thread */
+    (void)a; b_close_in = hv_restore_session_close(); b_mp_in = 0; b_fin_in = hv_restore_session_finalize(0, 0, &b_mp_in);
+    b_final_in = hv_reg_report_final(); b_state_in = hv_reg_state();
+    STV(eng_in, 1); while (!LDV(eng_go)) usleep(1000); return 0;
+}
+static void *busy_thread(void *a) {
+    int rc, mp;
+    STV(b_claim, hv_restore_session_claim((uint64_t)(uintptr_t)a));
+    if (LDV(b_claim) != 0) { STV(eng_in, 1); return NULL; }
+    hv_restore_session_run(busy_fn, NULL, &rc);
+    b_fin1 = hv_restore_session_finalize(0, 0, &mp); b_mp1 = mp; b_pub1 = hv_reg_pub_state();
+    b_rel_early = hv_restore_session_release_idle(); b_state_early = hv_reg_state();
+    b_fin2 = hv_restore_session_finalize(0, 0, &mp); b_mp2 = mp;
+    b_pub_a = hv_restore_session_publish(NULL, NULL); b_pub_b = hv_restore_session_publish(NULL, NULL);
+    b_rel_ok = hv_restore_session_release_idle(); b_state_idle = hv_reg_state();
+    hv_restore_session_begin();
+    b_cancel_a = hv_restore_session_cancel(); b_cancel_b = hv_restore_session_cancel();
+    b_fin3 = hv_restore_session_finalize(1, 0, &mp);
+    hv_restore_session_publish(NULL, NULL); hv_restore_session_release_idle();
+    hv_restore_session_begin();
+    int rc2; hv_restore_session_run(engine, NULL, &rc2);
+    b_cancel_late = hv_restore_session_cancel();
+    b_fin4 = hv_restore_session_finalize(1, 0, &mp);
+    hv_restore_session_publish(NULL, NULL); hv_restore_session_release_idle();
+    return NULL;
+}
 static int hang_go, hang_in, xfer_go;
 static volatile int stranger_close, stranger_fin, stranger_rel, stranger_end, stranger_pub;
 static uint64_t xfer_arg;
@@ -52,6 +79,19 @@ static void *owner_hang_thread(void *a) {
 }
 static void *task(void *a) { usleep((int)(long)a * 1000); hv_reg_complete(gen, HV_REG_K_ASYNC, 0); return NULL; }
 
+static volatile int ar_claimed, ar_ran, ar_end, ar_go;
+static uint64_t ar_tok;
+static void *ar_thread(void *a) {
+    (void)a; int rc; STV(ar_claimed, 0); STV(ar_ran, 0); STV(ar_end, -9);
+    while (!LDV(ar_go)) ;   /* both sides start together */
+    if (hv_restore_session_claim(ar_tok) != 0) return NULL;
+    STV(ar_claimed, 1);
+    STV(ar_ran, hv_restore_session_run(engine, NULL, &rc) == 0);
+    STV(ar_end, hv_restore_session_end());
+    return NULL;
+}
+static void *pr_stranger(void *a) { int *o = a; o[0] = hv_restore_session_publish(NULL, NULL); o[1] = hv_restore_session_release_idle(); int mp; o[2] = hv_restore_session_finalize(0, 0, &mp); o[3] = mp; return NULL; }
+
 int main(int argc, char **argv) {
     const char *c = argc > 1 ? argv[1] : "";
     hv_restore_session_set_close_timeout_ms(300);
@@ -79,28 +119,65 @@ int main(int argc, char **argv) {
         CHECK(hv_restore_session_begin() == -1, "begin refused");
         hv_reg_complete(gen, HV_REG_K_PROXY_CONN, 0);
         CHECK(hv_restore_session_end() == -1 && hv_restore_session_quiescence_failed(), "a late completion does not lift the terminal state");
-    } else if (!strcmp(c, "busy")) {   /* C13: the owner decides after the engine returned; an engine still inside run() blocks it */
+    } else if (!strcmp(c, "busy")) {   /* C13: the owner decides after the engine returned; an engine still inside run() blocks it. The engine thread is the owner (claim) */
         hv_restore_session_begin();
-        pthread_t t; pthread_create(&t, NULL, eng_thread, NULL);
+        uint64_t tok = hv_restore_session_approve_successor();
+        pthread_t t; pthread_create(&t, NULL, busy_thread, (void *)(uintptr_t)tok);
         while (!LDV(eng_in)) usleep(1000);
-        int mp = 0;
-        CHECK(hv_restore_session_close() == -1 && hv_reg_state() == HV_REG_ACTIVE, "the owner, but the engine is inside run(): close refused, state unchanged");
-        CHECK(hv_restore_session_finalize(0, 0, &mp) == (int)HV_REG_R_NONE && mp == 0 && hv_reg_report_final() == HV_REG_R_NONE, "finalize decides and publishes nothing then");
+        CHECK(LDV(b_claim) == 0, "the restore thread claimed the right to end the session before it entered the engine");
+        CHECK(hv_restore_session_close() == -1 && hv_restore_session_finalize(0, 0, &(int){0}) == (int)HV_REG_R_NONE && hv_reg_state() == HV_REG_ACTIVE, "another thread (the old owner) while the engine runs: close and finalize refused, state unchanged");
         STV(eng_go, 1); pthread_join(t, NULL);
-        CHECK(hv_restore_session_finalize(0, 0, &mp) == (int)HV_REG_R_SUCCESS && mp == 1 && hv_reg_pub_state() == HV_REG_PUB_PUBLISHING, "after it returned: SUCCESS, the right to publish is issued");
-        CHECK(hv_restore_session_release_idle() == -1 && hv_reg_state() == HV_REG_CLOSED, "release_idle before publish: refused");
-        CHECK(hv_restore_session_finalize(0, 0, &mp) == (int)HV_REG_R_SUCCESS && mp == 0, "a second finalize returns the recorded result and NO new right to publish");
-        CHECK(hv_restore_session_publish(NULL, NULL) == 0 && hv_restore_session_publish(NULL, NULL) == -1, "publish once; a second publish is refused (the right is consumed)");
-        CHECK(hv_restore_session_release_idle() == 0 && hv_reg_state() == HV_REG_IDLE, "release_idle after publish: IDLE");
+        CHECK(b_close_in == -1 && b_fin_in == (int)HV_REG_R_NONE && b_mp_in == 0 && b_final_in == HV_REG_R_NONE && b_state_in == HV_REG_ACTIVE, "the owner, but the engine is inside run(): close refused, state unchanged, finalize decides and publishes nothing");
+        CHECK(b_fin1 == (int)HV_REG_R_SUCCESS && b_mp1 == 1 && b_pub1 == HV_REG_PUB_PUBLISHING, "after it returned: SUCCESS, the right to publish is issued");
+        CHECK(b_rel_early == -1 && b_state_early == HV_REG_CLOSED, "release_idle before publish: refused");
+        CHECK(b_fin2 == (int)HV_REG_R_SUCCESS && b_mp2 == 0, "a second finalize returns the recorded result and NO new right to publish");
+        CHECK(b_pub_a == 0 && b_pub_b == -1, "publish once; a second publish is refused (the right is consumed)");
+        CHECK(b_rel_ok == 0 && b_state_idle == HV_REG_IDLE, "release_idle after publish: IDLE");
+        CHECK(b_cancel_a == 1 && b_cancel_b == 0, "cancel: accepted once, then 'already'");
+        CHECK(b_fin3 == (int)HV_REG_R_ABORTED_BY_USER, "a failing engine after an accepted cancel: ABORTED_BY_USER (history decides)");
+        CHECK(b_cancel_late == -1, "cancel after the engine returned: refused (completion first)");
+        CHECK(b_fin4 == (int)HV_REG_R_RESTORE_FAILED, "...so a failure is RESTORE_FAILED, not a user cancel");
+    } else if (!strcmp(c, "abort_race")) {   /* abort_start() against claim()+run(): one g_own_mu serializes them; after abandon succeeded uninstall can never fail */
+        int abort_won = 0, claim_won = 0, bad = 0;
+        for (int i = 0; i < 400; i++) {
+            if (hv_restore_session_begin() != 0) { bad++; break; }
+            ar_tok = hv_restore_session_approve_successor();
+            STV(ar_go, 0); pthread_t t; pthread_create(&t, NULL, ar_thread, NULL);
+            STV(ar_go, 1);
+            if (i % 4) { for (volatile int k = 0; k < (i % 16) * 400; k++) ; }
+            int ab = hv_restore_session_abort_start();
+            pthread_join(t, NULL);
+            /* abort_start() also answers 0 when the generation is already gone (the claimed thread finished first), so the winner is told by whether the claim happened */
+            if (!LDV(ar_claimed)) {
+                abort_won++;
+                if (ab != 0) bad++;
+                if (LDV(ar_claimed) || hv_reg_state() != HV_REG_IDLE || hv_net_guard_active() || hv_net_guard_engine_count() != 0) { bad++; if (bad < 4) printf("INFO abort-won round %d: claimed %d state %d active %d eng %d\n", i, LDV(ar_claimed), (int)hv_reg_state(), hv_net_guard_active(), hv_net_guard_engine_count()); }   /* abandoned: nothing left, no policy, no engine */
+            } else {
+                claim_won++;
+                if (!LDV(ar_claimed) || !LDV(ar_ran) || LDV(ar_end) != 0 || hv_reg_state() != HV_REG_IDLE || hv_net_guard_active()) { bad++; if (bad < 4) printf("INFO round %d: claimed %d ran %d end %d state %d active %d\n", i, LDV(ar_claimed), LDV(ar_ran), LDV(ar_end), (int)hv_reg_state(), hv_net_guard_active()); }   /* the claim came first: the thread ran and ended it */
+            }
+        }
+        CHECK(bad == 0, "400 rounds abort_start vs claim+run: exactly one wins, never a leftover policy, engine or non-IDLE state ");
+        printf("INFO abort won %d, claim won %d\n", abort_won, claim_won);
+        CHECK(hv_restore_session_abort_uninstall_failures() == 0, "the 'cannot happen' uninstall failure in abort_start was never reached");
+        CHECK(abort_won > 0 && claim_won > 0, "both orders happened");
+    } else if (!strcmp(c, "pubrights")) {   /* the publish right: one per generation, held by the owner; nobody else, nothing early, nothing twice */
         hv_restore_session_begin();
-        CHECK(hv_restore_session_cancel() == 1 && hv_restore_session_cancel() == 0, "cancel: accepted once, then 'already'");
-        CHECK(hv_restore_session_finalize(1, 0, &mp) == (int)HV_REG_R_ABORTED_BY_USER, "a failing engine after an accepted cancel: ABORTED_BY_USER (history decides)");
-        hv_restore_session_publish(NULL, NULL); hv_restore_session_release_idle();
+        int o[4] = {0}; pthread_t t; int mp;
+        pthread_create(&t, NULL, pr_stranger, o); pthread_join(t, NULL);
+        CHECK(o[0] == -1 && o[1] == -1 && o[2] == (int)HV_REG_R_NONE && o[3] == 0, "before finalize: another thread can neither publish, release nor finalize (no right issued)");
+        CHECK(hv_restore_session_publish(NULL, NULL) == -1, "the owner cannot publish before finalize either");
+        CHECK(hv_restore_session_finalize(0, 0, &mp) == (int)HV_REG_R_SUCCESS && mp == 1, "finalize issues the right once");
+        CHECK(hv_restore_session_finalize(0, 0, &mp) == (int)HV_REG_R_SUCCESS && mp == 0, "a second finalize issues none");
+        pthread_create(&t, NULL, pr_stranger, o); pthread_join(t, NULL);
+        CHECK(o[0] == -1 && o[1] == -1 && hv_reg_pub_state() == HV_REG_PUB_PUBLISHING, "the right exists: another thread still cannot publish or release, the state is unchanged");
+        CHECK(hv_restore_session_release_idle() == -1, "release before publish: refused");
+        CHECK(hv_restore_session_publish(NULL, NULL) == 0 && hv_reg_pub_state() == HV_REG_PUB_PUBLISHED, "the owner publishes");
+        CHECK(hv_restore_session_publish(NULL, NULL) == -1, "a second publish is refused");
+        CHECK(hv_restore_session_release_idle() == 0 && hv_reg_state() == HV_REG_IDLE, "release_idle: IDLE");
         hv_restore_session_begin();
-        int rc2; hv_restore_session_run(engine, NULL, &rc2);
-        CHECK(hv_restore_session_cancel() == -1, "cancel after the engine returned: refused (completion first)");
-        CHECK(hv_restore_session_finalize(1, 0, &mp) == (int)HV_REG_R_RESTORE_FAILED, "...so a failure is RESTORE_FAILED, not a user cancel");
-        hv_restore_session_publish(NULL, NULL); hv_restore_session_release_idle();
+        CHECK(hv_restore_session_publish(NULL, NULL) == -1, "a new generation starts without any right (the old one did not carry over)");
+        hv_restore_session_finalize(0, 0, &mp); hv_restore_session_publish(NULL, NULL); hv_restore_session_release_idle();
     } else if (!strcmp(c, "owner")) {
         hv_restore_session_begin();
         pthread_t t; pthread_create(&t, NULL, stranger, NULL); pthread_join(t, NULL);

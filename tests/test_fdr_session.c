@@ -226,10 +226,20 @@ struct blk { int rd; };
 static int fn_block(void *a) { struct blk *b = a; char c; g_ran++; return read(b->rd, &c, 1) == 1 ? 9 : -9; }
 static volatile int g_race_bad;
 static int fn_check(void *a) { (void)a; if (!hv_net_guard_hooks_intact()) g_race_bad++; usleep(50); if (!hv_net_guard_hooks_intact()) g_race_bad++; return 0; }
-struct rt { int ran; };
-static void *race_thread(void *a) { struct rt *r = a; int rc; r->ran = hv_restore_session_run(fn_check, NULL, &rc) == 0; return NULL; }
-struct bt { int ret, rc; int (*fn)(void *); void *arg; };
-static void *run_thread(void *a) { struct bt *b = a; b->ret = hv_restore_session_run(b->fn, b->arg, &b->rc); return NULL; }
+struct rt { int ran, claimed, end_rc; };
+/* the contract: only the owner may enter the engine. The starting thread hands the right to the restore thread (approve_successor -> claim) before it runs. */
+static uint64_t g_tok;
+static void *race_thread(void *a) {
+    struct rt *r = a; int rc; r->end_rc = -9;
+    r->claimed = hv_restore_session_claim(g_tok) == 0;
+    if (!r->claimed) return NULL;
+    r->ran = hv_restore_session_run(fn_check, NULL, &rc) == 0;
+    r->end_rc = hv_restore_session_end();   /* the new owner ends the session */
+    return NULL;
+}
+static void *stranger_run_thread(void *a) { int rc; *(int *)a = hv_restore_session_run(fn_check, NULL, &rc); return NULL; }
+struct bt { int ret, rc, end_rc; int (*fn)(void *); void *arg; };
+static void *run_thread(void *a) { struct bt *b = a; b->ret = hv_restore_session_claim(g_tok) == 0 ? hv_restore_session_run(b->fn, b->arg, &b->rc) : -2; if (b->ret == 0) b->end_rc = hv_restore_session_end(); return NULL; }
 
 static int session_tests(void) {
     int rc = 0;
@@ -248,7 +258,7 @@ static int session_tests(void) {
     int pf[2]; pipe(pf);
     struct blk b = {pf[0]};
     struct bt t1 = {.fn = fn_block, .arg = &b};
-    pthread_t th; pthread_create(&th, NULL, run_thread, &t1);
+    t1.end_rc = -9; pthread_t th; g_tok = hv_restore_session_approve_successor(); pthread_create(&th, NULL, run_thread, &t1);
     for (int i = 0; i < 100 && hv_restore_session_engine_threads() == 0; i++) usleep(10000);
     CHECK(hv_restore_session_engine_threads() == 1, "an engine thread is running (registered)");
     CHECK(hv_restore_session_end() == -1 && hv_net_guard_hooks_intact(), "end() while it runs: refused, the policy stays");
@@ -263,23 +273,39 @@ static int session_tests(void) {
     write(pf[1], "x", 1);
     pthread_join(th, NULL);
     CHECK(t1.ret == 0 && t1.rc == 9 && hv_restore_session_engine_threads() == 0, "released: the function returned 9, the thread is unregistered");
-    CHECK(hv_restore_session_end() == 0 && !hv_net_guard_hooks_intact() && limd_glue_connect_guard == NULL, "end() after it returned: the policy is removed");
+    CHECK(t1.end_rc == 0 && !hv_net_guard_hooks_intact() && limd_glue_connect_guard == NULL, "end() by the owner (the restore thread) after it returned: the policy is removed");
     close(pf[0]); close(pf[1]);
 
-    /* a race between a starting engine thread and end(): whenever the function runs, the policy is intact */
-    int ran = 0, refused = 0;
+    /* a stranger (not the owner, never claimed) cannot enter the engine, and the refusal changes nothing */
+    {
+        CHECK(hv_restore_session_begin() == 0, "begin for the stranger test");
+        int sr = 99; unsigned d0 = hv_restore_session_run_denied_owner_state();
+        pthread_t st; pthread_create(&st, NULL, stranger_run_thread, &sr); pthread_join(st, NULL);
+        CHECK(sr == -1 && hv_restore_session_run_denied_owner_state() == d0 + 1 && hv_restore_session_engine_threads() == 0 && hv_net_guard_hooks_intact(), "run from a thread that is not the owner: refused (counted as an owner refusal), no engine registered, policy intact");
+        CHECK(hv_restore_session_end() == 0 && !hv_net_guard_hooks_intact(), "the owner ends it");
+    }
+    /* a race between a starting engine thread (claim + run + end) and the previous owner's end(): whenever the function runs, the policy is intact. Exactly one of
+       the two ends the session; both orders are exercised (ran / refused split below). */
+    int ran = 0, refused = 0, claimed_n = 0, bad_end = 0;
+    unsigned d_owner0 = hv_restore_session_run_denied_owner_state(), d_eng0 = hv_restore_session_run_denied_engine();
     for (int i = 0; i < 400; i++) {
         hv_restore_session_begin();
+        g_tok = hv_restore_session_approve_successor();
         struct rt r = {0};
         pthread_t t; pthread_create(&t, NULL, race_thread, &r);
         if (i % 2) usleep(i % 7);
-        int first = hv_restore_session_end();
+        int first = hv_restore_session_end();   /* the starting thread as owner: wins until the claim took the right */
         pthread_join(t, NULL);
-        if (first != 0) { if (hv_restore_session_end() != 0) g_race_bad += 1000; }   /* after the join it must be removable */
+        /* end() also answers 0 when the generation is already gone (the new owner finished first): a no-op, so only the new owner's result counts */
+        if (r.claimed) { if (r.end_rc != 0) { bad_end++; if (bad_end < 4) printf("INFO round %d: claimed, old end=%d new end=%d ran=%d\n", i, first, r.end_rc, r.ran); } }          /* the claim won: the old owner's end was refused, the new owner ended it */
+        else if (first != 0) { bad_end++; if (bad_end < 4) printf("INFO round %d: not claimed, old end=%d\n", i, first); }                                         /* the old owner won: its end succeeded */
         if (r.ran) ran++; else refused++;
-        if (hv_restore_session_engine_threads() != 0) g_race_bad += 1000;
+        claimed_n += r.claimed;
+        if (hv_net_guard_hooks_intact() || hv_restore_session_engine_threads() != 0) { g_race_bad += 1000; if (g_race_bad < 3000) printf("INFO round %d: leftover intact=%d eng=%d\n", i, hv_net_guard_hooks_intact(), hv_restore_session_engine_threads()); }   /* ended either way: policy gone, no thread registered */
     }
-    CHECK(g_race_bad == 0, "400 rounds of run vs end(): the policy was intact whenever the function ran (ran %d, refused %d), no thread left registered", ran, refused);
+    CHECK(g_race_bad == 0 && bad_end == 0, "400 rounds of claim+run vs the old owner's end(): the policy was intact whenever the function ran (ran %d, refused %d, claim won %d), exactly one side ended the session every time, no thread left registered", ran, refused, claimed_n);
+    printf("INFO run() refusals during the race: owner/state %u, engine registration %u\n", hv_restore_session_run_denied_owner_state() - d_owner0, hv_restore_session_run_denied_engine() - d_eng0);
+    CHECK(claimed_n > 0 && claimed_n < 400, "both orders happened (the race is real, not one-sided)");
     return 0;
 }
 

@@ -30,3 +30,13 @@ A confirmed CLEANUP_FAILED never returns to IDLE until app restart, even if reso
 - Time constants (close 15000 ms, mux stop 5000 ms) are provisional, unmeasured.
 - usbmuxd is not in the CLOSED scope; recheck against C13 when I3~I6 register it.
 - CI is build-only.
+
+## Addendum: run() entry serialized with abort_start (reviewer 907ae3ca / 761b06f8 / 9f1186ad)
+- hv_restore_session_run(): `owner AND registry ACTIVE AND hv_net_guard_engine_enter()` are ONE g_own_mu section; the engine runs outside the lock. abort_start() takes the same lock, so either the engine is already counted (abort refused) or the abort came first (run refused). New lock edge g_own_mu -> net_guard mutex; net_guard never takes g_own_mu. engine_enter is called only from run().
+- abort_start() order kept (abandon, then uninstall). uninstall fails only while an engine is registered; entry is serialized, so after the count check it cannot. The return value is checked as a defensive assertion (counter hv_restore_session_abort_uninstall_failures, must stay 0); abandon is NOT undone if it ever fired, so the invariant, not the check, is the protection.
+- Contract: only the owner (starter, or the restore thread after claim) may call run(). install.c already claimed first; restore_preflight.c now claims in its restore thread and that thread ends the session; tests were moved to the contract (claim before run) without removing the thread race.
+- Observation counters: hv_restore_session_run_denied_owner_state()/..._engine().
+- Tests added: abort_race (400 rounds abort_start vs claim+run, never a leftover policy/engine/non-IDLE), pubrights (publish right: none early, not for other threads, once, not carried to the next generation), fdr-session stranger run refused, 400-round claim+run vs old owner's end().
+- Note: end()/abort_start() answer 0 when the generation is already gone (no-op), so tests tell the winner by whether the claim happened.
+- hv_reg_cleanup_resolve() has no host call site yet (nothing resolves cleanup bits today), so "resolve only after real release" is a rule for the I3~I6 callers, not yet exercised.
+- Not rerun: registry ASan/TSan (registry code unchanged this round). ASan leaks / TSan races in urlasset_tests are vendored restore.c, as before.

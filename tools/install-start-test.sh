@@ -12,7 +12,7 @@ cc -std=gnu11 -D_GNU_SOURCE -O1 -g -w $INC -D__ANDROID__ -c tests/test_install_s
 $CC -std=gnu11 -D_GNU_SOURCE -O1 -g -w $INC -D__ANDROID__ "$OUT/is/test.o" host/install.c tests/fake_device/stubs.c "$R/lib.a" "$R/libzip-build/lib/libzip.a" \
   -Wl,--wrap=pthread_create -Wl,--wrap=usbmuxd_main -Wl,--wrap=idevicerestore_start -lz -lm -lpthread -o "$OUT/is/t" 2> "$OUT/is/link.log" || { echo "FAILED build"; head -20 "$OUT/is/link.log"; exit 1; }
 rc=0
-for c in ${CASES:-ok p1 p2 p2_stuck end_fail cancel}; do
+for c in ${CASES:-ok p1 p2 p2_stuck end_fail cancel reenter}; do
   TO=""; case $c in p2_stuck|end_fail) TO="report_thread_leaks=0";; esac   # these two leave the usbmuxd thread running ON PURPOSE (C11: a thread that did not stop is kept, not forced)
   TSAN_OPTIONS="$TO" timeout 90 "$OUT/is/t" $c > "$OUT/is/$c.out" 2> "$OUT/is/$c.err"; r=$?
   echo "$c: exit $r, $(grep -c ^PASS "$OUT/is/$c.out") pass, $(grep -c ^FAIL "$OUT/is/$c.out") fail"; grep ^FAIL "$OUT/is/$c.out"

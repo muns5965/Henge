@@ -43,7 +43,6 @@ extern void usbmuxd_request_stop(void);   /* third_party/usbmuxd/src/main.c (Hen
 extern volatile int usbmuxd_stopped;
 static pthread_t g_mux_th;
 static int g_mux_alive;     /* a private usbmuxd thread was started and is not joined: no new start until the process restarts */
-static int g_user_cancel;
 /* PROVISIONAL, not measured on a device: how long the private usbmuxd gets to stop (its main loop wakes within ~200 ms). */
 static int g_mux_stop_ms = 5000;
 #endif
@@ -90,6 +89,9 @@ static int hv_install_stop_mux(void) {
 
 static void *restore_thread(void *arg) {
     (void)arg;
+#ifdef __ANDROID__
+    hv_restore_session_claim();   /* this thread decides how the session ends (C13) */
+#endif
     struct idevicerestore_client_t *c = idevicerestore_client_new();
     if (!c) {
         ST(g_result, -1);
@@ -139,17 +141,24 @@ static void *restore_thread(void *arg) {
     } else {
         fprintf(stderr, "install: the session did not quiesce -- nothing released, policy kept\n");
     }
-    int rep = hv_restore_session_finish(r, LD(g_user_cancel), cleanup_failed);
+    int may_publish = 0;
+    int rep = hv_restore_session_finalize(r, cleanup_failed, &may_publish);
     fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
     r = rep == HV_REG_R_SUCCESS ? 0 : -1;
+    /* Publishing: only the caller that received the right publishes, outside every lock; the session leaves CLOSED only after the publication returned (C15 (e)).
+       Called from inside the callback, start/cancel/release_idle are refused (the result is still 1 / PUBLISHING). A callback that never returns keeps the session
+       CLOSED and refuses the next start -- the safe way to fail; the host sets no time limit on a callback. */
+    if (may_publish && g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
+    if (may_publish) hv_restore_session_publish_done();
+    if (rep != 0 && hv_restore_session_release_idle() != 0) fprintf(stderr, "install: the session stays closed (cleanup failure or not quiescent); no new restore can start until the app restarts\n");
+    ST(g_result, r == 0 ? 0 : -1);   /* published last: a start that sees it also sees the finished session */
+    return NULL;
 #else
     idevicerestore_client_free(c);
-#endif
-    /* the last callback first, the result last: once the result is published a new start may overwrite the callback pointers, so nothing of this thread
-       touches them afterwards */
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
     ST(g_result, r == 0 ? 0 : -1);
     return NULL;
+#endif
 }
 
 int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_t ecid, HvInstallProgress cb,
@@ -180,7 +189,6 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     }
     /* begin() is only reachable from IDLE, i.e. after the previous session closed cleanly, so no task of the earlier run can still read these flags */
     ST(global_quit_flag, 0);
-    ST(g_user_cancel, 0);
     ST(started, 1);
     ST(g_result, 1);
     hv_restore_session_allow_usbmuxd((uint16_t)port);
@@ -232,7 +240,6 @@ void hv_install_cancel(void) {
     /* Accepted once per session (C17). It sets the session's terminate flag and the tool's quit flag; it does NOT wait for anything to stop -- the result
        arrives through the callback like any other. The flag is cleared again only at the next begin, which exists only after a clean close. */
     if (hv_restore_session_cancel() == 1) {
-        ST(g_user_cancel, 1);
         ST(global_quit_flag, 1);   /* the same flag idevicerestore's own signal handler sets */
     }
 #endif

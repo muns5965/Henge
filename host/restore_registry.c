@@ -29,6 +29,8 @@ static struct {
     int objects_pending, objects_released, cleanup_failed, release_granted;
     HvRegReport report_final, report_interim;
     int stale;
+    HvRegPubState pub;
+    int cancel_noted, restore_returned, cancel_late;
     int64_t deadline_ns;
     volatile int terminate;
 } R = {.mu = PTHREAD_MUTEX_INITIALIZER};
@@ -93,6 +95,7 @@ uint64_t hv_reg_begin(void) {
     R.cs = HV_REG_CS_NONE; R.cancel_retry_left = CANCEL_RETRIES; R.cancel_rejected_closed = 0;
     R.objects_pending = R.objects_released = R.cleanup_failed = R.release_granted = 0;
     R.report_final = R.report_interim = HV_REG_R_NONE;
+    R.pub = HV_REG_PUB_NONE; R.cancel_noted = R.restore_returned = R.cancel_late = 0;
     R.phase = HV_REG_PHASE_RUN; R.deadline_ns = 0; R.terminate = 0;
     R.state = HV_REG_ACTIVE;
     uint64_t g = R.gen;
@@ -358,7 +361,7 @@ int hv_reg_can_finish(uint64_t gen) { lock(); int r = !stale_locked(gen) && can_
 int hv_reg_finish_session(uint64_t gen) {
     lock();
     int r = -1;
-    if (!stale_locked(gen) && can_finish_locked()) { R.state = HV_REG_IDLE; changed(); r = 0; }   /* C15 (a) generation, (b) no cleanup failure, (c) objects released; (d) end() returned is the caller's precondition */
+    if (!stale_locked(gen) && can_finish_locked() && R.pub != HV_REG_PUB_PUBLISHING) { R.state = HV_REG_IDLE; changed(); r = 0; }   /* C15 (a) generation, (b) no cleanup failure, (c) objects released; (d) end() returned is the caller's precondition */
     unlock();
     return r;
 }
@@ -372,6 +375,58 @@ uint64_t hv_reg_wait_change(uint64_t gen, uint64_t seen, int64_t deadline_ns) {
     return s;
 }
 uint64_t hv_reg_seq(void) { lock(); uint64_t s = R.seq; unlock(); return s; }
+
+/* ---- finalize / publish / release ---- */
+int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int extra_cleanup_failed, HvRegReport *out, int *may_publish) {
+    lock();
+    int r = -1;
+    if (may_publish) *may_publish = 0;
+    if (!stale_locked(gen) && (R.state == HV_REG_CLOSED || R.state == HV_REG_QUIESCENCE_FAILED)) {
+        if (R.report_final == HV_REG_R_NONE) {
+            int qf = R.state == HV_REG_QUIESCENCE_FAILED;
+            if (!qf && extra_cleanup_failed) { R.cleanup_failed = 1; changed(); }
+            int cf = !qf && (R.cleanup_failed || (R.objects_pending && !R.objects_released));   /* decided HERE, with the closing state, not by a later separate check */
+            if (!qf && cf && !R.cleanup_failed) R.cleanup_failed = 1;
+            HvRegRestoreOutcome ro = restore;
+            if (ro != HV_REG_RESTORE_OK && R.cancel_noted) ro = HV_REG_RESTORE_USER_CANCEL;   /* the history decides, not the caller */
+            R.report_final = hv_reg_compose(ro, cf ? HV_REG_CLEANUP_FAILED : HV_REG_CLEANUP_DONE, qf);
+            R.pub = HV_REG_PUB_PUBLISHING;
+            if (may_publish) *may_publish = 1;   /* the one and only right to publish this generation's result */
+            changed();
+        }
+        if (out) *out = R.report_final;
+        r = 0;
+    }
+    unlock();
+    return r;
+}
+int hv_reg_publish_done(uint64_t gen) {
+    lock();
+    int r = -1;
+    if (!stale_locked(gen) && R.pub == HV_REG_PUB_PUBLISHING) { R.pub = HV_REG_PUB_PUBLISHED; changed(); r = 0; }
+    unlock();
+    return r;
+}
+int hv_reg_release_idle(uint64_t gen) {
+    lock();
+    int r = -1;
+    if (!stale_locked(gen) && R.pub == HV_REG_PUB_PUBLISHED && can_finish_locked()) { R.state = HV_REG_IDLE; changed(); r = 0; }
+    unlock();
+    return r;
+}
+HvRegPubState hv_reg_pub_state(void) { lock(); HvRegPubState p = R.pub; unlock(); return p; }
+int hv_reg_cancel_note(uint64_t gen) {
+    lock();
+    int r = -1;
+    if (!stale_locked(gen)) {
+        if ((R.state == HV_REG_ACTIVE || R.state == HV_REG_CLOSING) && !R.restore_returned) { r = R.cancel_noted ? 0 : 1; R.cancel_noted = 1; changed(); }
+        else R.cancel_late++;   /* the completion (or the close) came first: refused, only counted */
+    }
+    unlock();
+    return r;
+}
+int hv_reg_cancel_requested(void) { lock(); int n = R.cancel_noted; unlock(); return n; }
+void hv_reg_restore_returned(uint64_t gen) { lock(); if (!stale_locked(gen)) { R.restore_returned = 1; changed(); } unlock(); }
 
 /* ---- final result ---- */
 HvRegReport hv_reg_compose(HvRegRestoreOutcome restore, HvRegCleanupOutcome cleanup, int quiescence_failed) {

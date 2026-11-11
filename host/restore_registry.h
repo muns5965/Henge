@@ -85,7 +85,25 @@ void hv_reg_objects_released(uint64_t gen);
 void hv_reg_cleanup_failed(uint64_t gen);     /* watchdog: the cleanup deadline passed (only meaningful in CLOSED). Sticky; no forced release (C19) */
 int hv_reg_cleanup_failed_flag(void);
 int hv_reg_can_finish(uint64_t gen);          /* 1 if finish_session() would succeed now */
-int hv_reg_finish_session(uint64_t gen);      /* CLOSED -> IDLE when C15 (a)(b)(c) hold; 0 / -1 */
+int hv_reg_finish_session(uint64_t gen);      /* CLOSED -> IDLE when C15 (a)(b)(c) hold; 0 / -1. Refused while a result is being published (PUBLISHING). Legacy path: no finalize was ever called. */
+
+/* ---- result: finalize, publish, release (C9, C15 (e)(f)) ----------------------------------------------------------------------------------------
+   finalize decides the session's final result in ONE critical section: the closing condition, the cleanup result (a recorded cleanup failure, or objects still
+   pending, count as CLEANUP_FAILED), the composition (4.7) and the once-per-generation record. The first finalize of a generation also receives the RIGHT TO PUBLISH
+   (publish state NOT_PUBLISHED -> PUBLISHING); a later call only reads the recorded result and never gets the right again. The caller publishes OUTSIDE every lock
+   (callbacks, result variables), then calls publish_done; release_idle moves CLOSED -> IDLE only for PUBLISHED and only when no cleanup failure is recorded.
+   QUIESCENCE_FAILED also finalizes (result SESSION_NOT_QUIESCENT) and publishes, but release_idle is refused there. */
+typedef enum { HV_REG_PUB_NONE = 0, HV_REG_PUB_PUBLISHING, HV_REG_PUB_PUBLISHED } HvRegPubState;
+int hv_reg_finalize(uint64_t gen, HvRegRestoreOutcome restore, int extra_cleanup_failed, HvRegReport *out, int *may_publish);   /* 0, or -1 (stale / not CLOSED or QUIESCENCE_FAILED) */
+int hv_reg_publish_done(uint64_t gen);        /* PUBLISHING -> PUBLISHED; 0 / -1 */
+int hv_reg_release_idle(uint64_t gen);        /* CLOSED + PUBLISHED + no cleanup failure/pending object -> IDLE; 0 / -1 */
+HvRegPubState hv_reg_pub_state(void);
+/* cancel history (host-only path: no cancel task exists, so nothing is counted and nothing blocks the close). requested = the request was ACCEPTED before the restore
+   result was decided; it is kept for the whole generation and is separate from the result. note: 1 first accept, 0 already accepted, -1 refused (stale, not ACTIVE/CLOSING,
+   or the restore already returned: the completion came first). */
+int hv_reg_cancel_note(uint64_t gen);
+int hv_reg_cancel_requested(void);
+void hv_reg_restore_returned(uint64_t gen);   /* the engine's run returned: later cancel requests are refused */
 int64_t hv_reg_set_deadline(uint64_t gen, int64_t ns);   /* the watchdog's current phase deadline, readable by the engine; returns the previous one */
 int64_t hv_reg_deadline(void);
 /* Blocks until the sequence number differs from `seen` (any state, phase, counter or flag change) or the deadline; returns the current sequence number. */

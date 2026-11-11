@@ -153,6 +153,44 @@ static int c_conn_full(void) {
     CHECK(hv_reg_close_begin(g) == 0 && hv_reg_wait_and_close(g, in_ms(80)) == 1 && hv_reg_qf_reason() == HV_REG_QF_CONN_TABLE, "unmanaged connections never end as a clean close");
     return nfail;
 }
+static int c_finalize(void) {
+    uint64_t g = fresh(); HvRegReport rep = HV_REG_R_NONE; int mp = -1;
+    CHECK(hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp) == -1, "finalize in ACTIVE: refused (not closed)");
+    hv_reg_close_begin(g); hv_reg_wait_and_close(g, in_ms(100));
+    CHECK(hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp) == 0 && rep == HV_REG_R_SUCCESS && mp == 1 && hv_reg_pub_state() == HV_REG_PUB_PUBLISHING, "finalize: result decided, the right to publish issued, state PUBLISHING");
+    CHECK(hv_reg_finalize(g, HV_REG_RESTORE_FAILED, 1, &rep, &mp) == 0 && rep == HV_REG_R_SUCCESS && mp == 0, "a later finalize only reads the recorded result (its different inputs change nothing), no second right");
+    CHECK(hv_reg_finish_session(g) == -1 && hv_reg_release_idle(g) == -1, "while PUBLISHING: neither finish_session nor release_idle can go IDLE");
+    CHECK(hv_reg_publish_done(g) == 0 && hv_reg_publish_done(g) == -1 && hv_reg_pub_state() == HV_REG_PUB_PUBLISHED, "publish_done once");
+    CHECK(hv_reg_release_idle(g) == 0 && hv_reg_state() == HV_REG_IDLE, "release_idle after PUBLISHED: IDLE");
+    CHECK(hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp) == -1, "finalize in IDLE: refused");
+    return nfail;
+}
+static int c_finalize_qf(void) {
+    uint64_t g = fresh(); HvRegReport rep; int mp;
+    hv_reg_try_register(g, HV_REG_K_ASYNC); hv_reg_close_begin(g); hv_reg_wait_and_close(g, in_ms(60));
+    CHECK(hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp) == 0 && rep == HV_REG_R_SESSION_NOT_QUIESCENT && mp == 1, "QUIESCENCE_FAILED: finalized as SESSION_NOT_QUIESCENT (a success input does not matter) and published");
+    hv_reg_publish_done(g);
+    CHECK(hv_reg_release_idle(g) == -1 && hv_reg_state() == HV_REG_QUIESCENCE_FAILED, "release_idle refused in the terminal state");
+    return nfail;
+}
+static int c_cancel_note(void) {
+    uint64_t g = fresh();
+    CHECK(hv_reg_cancel_note(g) == 1 && hv_reg_cancel_note(g) == 0 && hv_reg_cancel_requested() == 1, "cancel_note: accepted once, history kept; no counter is taken");
+    CHECK(hv_reg_active(HV_REG_K_CANCEL) == 0 && hv_reg_cancel_state() == HV_REG_CS_NONE, "nothing registered and the cancel-task state untouched (a host-only request)");
+    hv_reg_close_begin(g);
+    CHECK(hv_reg_wait_and_close(g, in_ms(100)) == 0, "the history does not block the close");
+    HvRegReport rep; int mp; hv_reg_finalize(g, HV_REG_RESTORE_FAILED, 0, &rep, &mp);
+    CHECK(rep == HV_REG_R_ABORTED_BY_USER, "accepted before: a failure is ABORTED_BY_USER");
+    hv_reg_publish_done(g); hv_reg_release_idle(g);
+    g = fresh(); hv_reg_restore_returned(g);
+    CHECK(hv_reg_cancel_note(g) == -1 && hv_reg_cancel_requested() == 0, "the completion first: the request is refused, no history");
+    hv_reg_close_begin(g); hv_reg_wait_and_close(g, in_ms(100)); hv_reg_finalize(g, HV_REG_RESTORE_FAILED, 0, &rep, &mp);
+    CHECK(rep == HV_REG_R_RESTORE_FAILED, "so the failure is RESTORE_FAILED");
+    hv_reg_publish_done(g); hv_reg_release_idle(g);
+    g = fresh(); hv_reg_cancel_note(g); hv_reg_close_begin(g); hv_reg_wait_and_close(g, in_ms(100)); hv_reg_finalize(g, HV_REG_RESTORE_OK, 0, &rep, &mp);
+    CHECK(rep == HV_REG_R_SUCCESS, "accepted, but the restore succeeded: SUCCESS (the history is kept, the result follows the restore)");
+    return nfail;
+}
 static int c_watchdog(void) {   /* QF is not undone by a completing task; CLOSED first means the watchdog changes nothing */
     uint64_t g = fresh();
     hv_reg_try_register(g, HV_REG_K_ASYNC);
@@ -196,6 +234,9 @@ int main(int argc, char **argv) {
     if (!strcmp(c, "conn")) return c_conn();
     if (!strcmp(c, "conn_dup")) return c_conn_limits();
     if (!strcmp(c, "conn_full")) return c_conn_full();
+    if (!strcmp(c, "finalize")) return c_finalize();
+    if (!strcmp(c, "finalize_qf")) return c_finalize_qf();
+    if (!strcmp(c, "cancel_note")) return c_cancel_note();
     if (!strcmp(c, "watchdog")) return c_watchdog();
 #ifdef HV_TEST_HOOKS
     if (!strcmp(c, "hooks")) return c_hooks();

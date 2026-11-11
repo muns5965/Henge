@@ -38,9 +38,18 @@ int __wrap_idevicerestore_start(void *c) {
     return engine_rc;
 }
 
-static int last_step;
-static void cb(int step, double p, void *u) { (void)p; (void)u; last_step = step; }
+static int last_step, cb_calls, in_cb_start = 99, in_cb_quit = -1, in_cb_state = -1, in_cb_rel = 99, cb_hang;
 static char dummy_usb[64];
+static void cb(int step, double p, void *u) {
+    (void)p; (void)u; last_step = step; cb_calls++;
+    if (cb_hang == 2) {   /* re-entry from inside the callback: every one of these must be refused */
+        in_cb_start = hv_install_start((HvVirtioUsb *)dummy_usb, "x", "/tmp", 1, NULL, NULL);
+        hv_install_cancel();
+        in_cb_quit = global_quit_flag;
+        in_cb_state = (int)hv_reg_state();
+        in_cb_rel = hv_restore_session_release_idle();
+    }
+}
 static int run_one(int *rc_start) {   /* start and wait for the result */
     last_step = 0; arm_calls = 0;
     int s = hv_install_start((HvVirtioUsb *)dummy_usb, "x.ipsw", "/tmp", 0x1F4C0DE, cb, NULL);
@@ -101,6 +110,13 @@ int main(int argc, char **argv) {
         CHECK(run_one(&s) == 0 && global_quit_flag == 0, "after a clean close the next start clears the quit flag and succeeds");
         hv_install_cancel();
         CHECK(global_quit_flag == 0, "a cancel with no session running is refused and sets nothing");
+    } else if (!strcmp(c, "reenter")) {
+        engine_rc = 0; cb_hang = 2;
+        CHECK(run_one(&s) == 0 && cb_calls == 1, "a clean run, the callback ran once");
+        CHECK(in_cb_start == -1 && in_cb_quit == 0 && in_cb_state == HV_REG_CLOSED && in_cb_rel == -1, "inside the callback: start refused, cancel refused (quit flag untouched), session still CLOSED, release_idle refused");
+        CHECK(hv_reg_state() == HV_REG_IDLE && hv_reg_pub_state() == HV_REG_PUB_PUBLISHED, "after it returned: published, IDLE");
+        cb_hang = 0;
+        CHECK(run_one(&s) == 0, "the next start works");
     } else { fprintf(stderr, "unknown case\n"); return 2; }
     return nfail;
 }

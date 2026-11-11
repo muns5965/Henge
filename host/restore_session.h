@@ -30,8 +30,15 @@ int hv_restore_session_quiescence_failed(void);
 int hv_restore_session_abort_start(void);   /* start failed before anything ran: ACTIVE -> IDLE and the policy removed (0), or -1 = stays */
 int hv_restore_session_fail(int why);       /* declare QUIESCENCE_FAILED (why = HvRegQfReason) for a host-owned resource that did not stop */
 int hv_restore_session_cancel(void);        /* 1 = cancel started now, 0 = already started, -1 = refused */
-/* The one place a final result is composed: close (C13), cleanup result, compose (4.7), report once per generation. Returns an HvRegReport value, or
-   HV_REG_R_NONE (0) when nothing could be decided (the engine thread is still registered). extra_cleanup_failed: the caller's own cleanup failed. */
-int hv_restore_session_finish(int restore_rc, int user_cancel, int extra_cleanup_failed);
+/* Ending a generation, in this order, all by the OWNER thread (the one that called claim(); C13). claim() is called once by the thread that will decide how the session ends.
+   finalize   closes (CLOSED, or QUIESCENCE_FAILED), removes the policy unless a cleanup failure is already known, and decides the final result in one registry critical
+              section (cleanup result included). Returns an HvRegReport, or HV_REG_R_NONE (0) when nothing could be decided (the engine is still inside run(), wrong thread).
+              *may_publish is 1 for exactly one call per generation: only that caller publishes (callback, result variable) -- OUTSIDE every lock.
+   publish_done  after the publication returned. release_idle  CLOSED -> IDLE, only after publish_done and only without a cleanup failure (C15 (e): nothing of this
+              generation touches global state once the next session may begin). Neither is possible from inside the callback: it still runs while PUBLISHING. */
+int hv_restore_session_claim(void);
+int hv_restore_session_finalize(int restore_rc, int extra_cleanup_failed, int *may_publish);
+int hv_restore_session_publish_done(void);
+int hv_restore_session_release_idle(void);
 
 #endif

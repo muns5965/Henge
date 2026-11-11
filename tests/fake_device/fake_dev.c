@@ -39,6 +39,25 @@ static int rs_send(int fd, plist_t p) {
     free(bin);
     return r;
 }
+/* STAGE1: one frame sent in two pieces. prefix_part 1..3 = cut inside the 4-byte length; body_part > 0 = cut inside the body (after the whole length). */
+static int rs_send_split(int fd, plist_t p, int prefix_part, int body_part, int delay_ms) {
+    char *bin = NULL; uint32_t len = 0;
+    plist_to_bin(p, &bin, &len);
+    uint32_t be = htonl(len);
+    int r;
+    if (prefix_part > 0 && prefix_part < 4) {
+        r = wr(fd, &be, (size_t)prefix_part);
+        usleep((useconds_t)delay_ms * 1000);
+        r = r == 0 && wr(fd, (char *)&be + prefix_part, (size_t)(4 - prefix_part)) == 0 && wr(fd, bin, len) == 0 ? 0 : -1;
+    } else {
+        r = wr(fd, &be, 4);
+        size_t first = body_part > 0 && (uint32_t)body_part < len ? (size_t)body_part : len;
+        r = r == 0 && wr(fd, bin, first) == 0 ? 0 : -1;
+        if (first < len) { usleep((useconds_t)delay_ms * 1000); r = r == 0 && wr(fd, bin + first, len - first) == 0 ? 0 : -1; }
+    }
+    free(bin);
+    return r;
+}
 static plist_t rs_recv(int fd) {
     uint32_t be;
     if (rd(fd, &be, 4)) return NULL;
@@ -101,7 +120,10 @@ static void *restored_conn(void *arg) {
             started = 1;
             BUMP(start_restore);
             if (g_scn && g_scn->msg_delay_ms) usleep((useconds_t)g_scn->msg_delay_ms * 1000);
-            for (int i = 0; g_scn && i < g_scn->nmsgs; i++) rs_send(fd, g_scn->msgs[i]);
+            for (int i = 0; g_scn && i < g_scn->nmsgs; i++) {
+                if (i == 0 && g_scn->split_delay_ms && (g_scn->split_prefix || g_scn->split_body)) rs_send_split(fd, g_scn->msgs[i], g_scn->split_prefix, g_scn->split_body, g_scn->split_delay_ms);
+                else rs_send(fd, g_scn->msgs[i]);
+            }
             if (g_scn && g_scn->end == FAKE_END_CLOSE) { free(r); break; }
         }
         free(r);

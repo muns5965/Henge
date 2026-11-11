@@ -28,6 +28,9 @@ typedef struct {
     int proxy_do_cmd;    /* the connection channel then asks the host to open proxy_target_port on 127.0.0.1 (command 0x105) */
     uint16_t proxy_target_port;
     plist_t late_msg;    /* T1b: sent on the restore connection after the host has said Goodbye (the host's loop has ended and it is closing the connection) */
+    int split_prefix;    /* STAGE1: >0 = the first scenario message is sent with only this many (1..3) bytes of its 4-byte length first, then split_delay_ms, then the rest */
+    int split_body;      /* STAGE1: >0 = after the whole length prefix, only this many body bytes, then split_delay_ms, then the rest */
+    int split_delay_ms;
     int proxy_close_after_ms;   /* >0: the connection channel is closed by the device this long after the proxy command was acked (T12 variant) */
 } FakeScenario;
 

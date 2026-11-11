@@ -62,7 +62,7 @@ group muxd "-DPACKAGE_NAME=\"usbmuxd\" -DPACKAGE_VERSION=\"1.1.1-henge\" -Dmain=
 group idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" $TP/idevicerestore/src/*.c
 group henge "-std=gnu11 -D_GNU_SOURCE -Icore -Ihost -Idevices" host/libusb_shim.c host/install.c
 group curl "-std=gnu11 -D_GNU_SOURCE -Ihost" host/curl_mbedtls.c host/net_guard.c
-group session "-I$ZB -I$TP/idevicerestore/src -std=gnu11 -D_GNU_SOURCE -Ihost -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" host/restore_session.c
+group session "-I$ZB -I$TP/idevicerestore/src -std=gnu11 -D_GNU_SOURCE -Ihost -DPACKAGE_NAME=\"idevicerestore\" -DPACKAGE_VERSION=\"1.0.0-henge\"" host/restore_session.c host/restore_registry.c
 
 SUMMARY="$SUMMARY
 $(printf '%-12s %s' libzip "$ZIPNOTE")"

@@ -20,5 +20,12 @@ int hv_restore_session_run(int (*fn)(void *), void *arg, int *rc);   /* generic;
 int hv_restore_session_run_client(struct idevicerestore_client_t *c, int *rc);
 int hv_restore_session_end(void);
 int hv_restore_session_engine_threads(void);
+/* Lifetime registry coupling (host/restore_registry.h, design v2.2): begin() is refused while an earlier session has not been ended cleanly; end() closes
+   the session (CLOSING, waits for registered tasks up to the close timeout, CLOSED) and returns -1 -- policy kept, nothing released -- when it cannot. */
+void hv_restore_session_set_close_timeout_ms(int ms);   /* provisional default 15000, unmeasured */
+int hv_restore_session_close(void);                       /* CLOSING -> CLOSED (0), or -1 = QUIESCENCE_FAILED / refused */
+int hv_restore_session_release_permitted(void);          /* 1 only when idevicerestore_client_free() may be called now */
+void hv_restore_session_request_cancel(void);            /* lock-free terminate flag for the registered tasks */
+int hv_restore_session_quiescence_failed(void);
 
 #endif

@@ -88,9 +88,18 @@ static void *restore_thread(void *arg) {
     r = idevicerestore_start(c);
 #endif
     fprintf(stderr, "install: restore finished: %d\n", r);
-    idevicerestore_client_free(c);
 #ifdef __ANDROID__
-    hv_restore_session_end();   /* refused (policy stays) if another engine thread is still registered */
+    /* C18: close the session first, then ask whether releasing is allowed. When the session did not quiesce, the client is deliberately leaked and the policy
+       stays in force -- freeing it under a task that may still use it is the use-after-free the fake-device baseline (T5) reproduced. */
+    if (hv_restore_session_close() != 0 || !hv_restore_session_release_permitted()) {
+        fprintf(stderr, "install: the session did not quiesce -- nothing released, policy kept\n");
+        r = -1;
+    } else {
+        idevicerestore_client_free(c);
+        if (hv_restore_session_end() != 0) fprintf(stderr, "install: session end refused (policy stays)\n");
+    }
+#else
+    idevicerestore_client_free(c);
 #endif
     g_result = r == 0 ? 0 : -1;
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
@@ -138,3 +147,10 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
 }
 
 int hv_install_result(void) { return g_result; }
+
+void hv_install_cancel(void) {
+#ifdef __ANDROID__
+    hv_restore_session_request_cancel();
+    global_quit_flag = 1;   /* the same flag idevicerestore's own signal handler sets */
+#endif
+}

@@ -18,5 +18,7 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
                      void *user);
 /* 1 while running, 0 when it succeeded, -1 when it failed. */
 int hv_install_result(void);
+/* Ask a running restore to stop (Android: terminate flag + the tool's quit flag). Returns at once; the result still arrives through the callback. */
+void hv_install_cancel(void);
 
 #endif

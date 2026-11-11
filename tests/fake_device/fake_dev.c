@@ -3,6 +3,7 @@
 #define _GNU_SOURCE 1
 #include <arpa/inet.h>
 #include <endian.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,7 @@ static char *dict_str(plist_t d, const char *k) {
 
 static void *restored_conn(void *arg) {
     int fd = (int)(intptr_t)arg;
+    int started = 0;
     for (;;) {
         plist_t req = rs_recv(fd);
         if (!req) break;
@@ -84,7 +86,19 @@ static void *restored_conn(void *arg) {
             plist_t d = plist_new_dict();
             plist_dict_set_item(d, "Result", plist_new_string("Success"));
             rs_send(fd, d); plist_free(d);
+            if (started && g_scn && g_scn->late_msg) {   /* T1b: the loop has ended and the host is closing; the device now sends an async data request */
+                for (int i = 0; i < 2; i++) {
+                    usleep(300000);
+                    errno = 0;
+                    int rc = rs_send(fd, g_scn->late_msg), e = errno;
+                    pthread_mutex_lock(&g_mu);
+                    if (i == 0) { g_st.late_rc1 = rc; g_st.late_errno1 = e; } else { g_st.late_rc2 = rc; g_st.late_errno2 = e; }
+                    g_st.late_attempts++;
+                    pthread_mutex_unlock(&g_mu);
+                }
+            }
         } else if (!strcmp(r, "StartRestore")) {
+            started = 1;
             BUMP(start_restore);
             if (g_scn && g_scn->msg_delay_ms) usleep((useconds_t)g_scn->msg_delay_ms * 1000);
             for (int i = 0; g_scn && i < g_scn->nmsgs; i++) rs_send(fd, g_scn->msgs[i]);

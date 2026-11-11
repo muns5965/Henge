@@ -3,6 +3,7 @@
    usage: test_fake_restore <case>      case = 0 (control) | a | b | c1 | c2 | c3 | d | e                       (S1, T2)
                                         | t5s_bb | t5s_fdr | t5s_fdr_nr | t5a_free | t5a_nofree          (S2, T5)
                                         | t12 | t13                                                         (S3, T12/T13)
+                                        | t1b | t3_inject                                                   (T1b, T3 baselines)
    One case per process: a per-case watchdog thread records "HANG OBSERVED" and _exit()s when the time limit (env FAKE_CASE_LIMIT_S, default 150) passes. */
 #define _GNU_SOURCE 1
 #include <pthread.h>
@@ -12,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -25,6 +27,8 @@
 #include "../third_party/idevicerestore/src/log.h"
 
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+extern volatile int hv_test_fail_next_thread_new, hv_test_thread_new_calls, hv_test_thread_new_failed;   /* tests/fake_device/wrap_thread.c */
+extern int __lsan_do_recoverable_leak_check(void) __attribute__((weak));
 static double t0;
 static const char *g_case;
 
@@ -101,7 +105,7 @@ int main(int argc, char **argv) {
     plist_t msgs[4] = {0};
     FakeScenario scn = {.msgs = msgs, .nmsgs = 0, .end = FAKE_END_HOLD};
     const char *desc = "";
-    int free_client = 0, after_s = 0, ext_port = 0;
+    int free_client = 0, after_s = 0, ext_port = 0, arm_fail = 0;
     if (!strcmp(g_case, "0"))  { msgs[0] = status(0, 0, 0); scn.nmsgs = 1; desc = "control: StatusMsg Status=0 (restore finished)"; }
     else if (!strcmp(g_case, "a"))  { msgs[0] = status(14, 1, 1); scn.nmsgs = 1; desc = "negative StatusMsg (AMRError=1), then nothing (restored stays silent)"; }
     else if (!strcmp(g_case, "b"))  { msgs[0] = status(14, 1, 1); msgs[1] = progress(); scn.nmsgs = 2; desc = "negative StatusMsg then a valid ProgressMsg (back to back)"; }
@@ -129,6 +133,17 @@ int main(int argc, char **argv) {
         if (!strcmp(g_case, "t12_close")) { scn.proxy_connect_reqs = 1; scn.proxy_do_cmd = 1; scn.proxy_close_after_ms = 1000; desc = "T12 variant: the device closes the proxy connection channel 1 s after the proxy command; restored finishes 1.5 s after StartRestore"; }
         else if (!strcmp(g_case, "t12")) { scn.proxy_connect_reqs = 1; scn.proxy_do_cmd = 1; desc = "T12: one proxy connection is open (and silent) when restored finishes"; }
         else { scn.proxy_connect_reqs = 2; scn.proxy_do_cmd = 0; desc = "T13: two connection requests back to back; restored then finishes"; }
+    }
+    /* T1b: the loop has ended; the device sends an async data request afterwards */
+    else if (!strcmp(g_case, "t1b")) {
+        msgs[0] = status(0, 0, 0); scn.nmsgs = 1; scn.late_msg = urlasset_req(); scn.data_port_mode = FAKE_DP_OPEN_SILENT; after_s = 2;
+        desc = "T1b: restore finishes normally; after the host's Goodbye the device sends an AsyncDataRequestMsg (URLAsset)";
+    }
+    /* T3: thread creation for the async handler fails (link-time wrapper, one injected failure) */
+    else if (!strcmp(g_case, "t3_inject")) {
+        msgs[0] = urlasset_req(); msgs[1] = plist_new_dict(); plist_dict_set_item(msgs[1], "MsgType", plist_new_string("FooMsg")); scn.nmsgs = 2;
+        scn.data_port_mode = FAKE_DP_OPEN_SILENT; after_s = 2; arm_fail = 1;
+        desc = "T3: thread_new for the async handler returns -1 (one injected failure); then an unknown message ends the loop";
     }
     else { printf("unknown case %s\n", g_case); return 2; }
 
@@ -158,6 +173,7 @@ int main(int argc, char **argv) {
     idevicerestore_set_ecid(c, FAKE_ECID);
     idevicerestore_set_udid(c, FAKE_UDID);
     Arg a = {c, plist_new_dict()};
+    if (arm_fail) hv_test_fail_next_thread_new = 1;
     int rc = 12345, ret = hv_restore_session_run(run_fn, &a, &rc);
     double dt = now() - t0;
     printf("RETURNED restore_device=%d at %.1fs\n", rc, dt);
@@ -173,6 +189,9 @@ int main(int argc, char **argv) {
            fs.accepted, fs.list_devices, fs.connect_restored, fs.connect_other, fs.last_other_port, fs.start_restore, fs.goodbye);
     printf("FAKE data_port_connects=%d data_port_bytes=%d proxy_ctrl=%d proxy_conn=%d proxy_cmd_acked=%d\n", fs.dp_connect, fs.dp_bytes, fs.px_ctrl, fs.px_conn, fs.px_cmd_acked);
     printf("FDS before=%d after=%d (after the extra wait)\n", fds_before, fds_after);
+    printf("THREAD_NEW calls=%d injected_failures=%d\n", hv_test_thread_new_calls, hv_test_thread_new_failed);
+    if (fs.late_attempts || !strcmp(g_case, "t1b")) printf("LATE_SEND attempts=%d first rc=%d errno=%d second rc=%d errno=%d (rc 0 = the kernel accepted the bytes; it does not mean the host read them)\n", fs.late_attempts, fs.late_rc1, fs.late_errno1, fs.late_rc2, fs.late_errno2);
+    if (getenv("FAKE_LEAKCHECK") && __lsan_do_recoverable_leak_check) { printf("LEAKCHECK running (report on stderr)\n"); fflush(stdout); __lsan_do_recoverable_leak_check(); }
     printf("ENGINE_THREADS_AFTER=%d\n", hv_restore_session_engine_threads());
     fflush(stdout);
     _exit(0);   /* the usbmuxd thread never returns on its own; the verdict is the RESULT line, not the exit status */

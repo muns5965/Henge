@@ -88,6 +88,8 @@ struct idevice_connection_private {
 	ssl_data_t ssl_data;
 	unsigned int ssl_recv_timeout;
 	idevice_error_t status;
+	uint64_t life_gen;   /* Henge I5: registration generation (0 = not registered) */
+	int life_fd;
 };
 
 struct idevice_private {

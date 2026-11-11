@@ -2,6 +2,7 @@
    restored = 4-byte big-endian length + plist. Written from the vendored sources (libusbmuxd.c, libimobiledevice/src/restore.c); nothing here talks to a real device. */
 #define _GNU_SOURCE 1
 #include <arpa/inet.h>
+#include <endian.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,6 +86,7 @@ static void *restored_conn(void *arg) {
             rs_send(fd, d); plist_free(d);
         } else if (!strcmp(r, "StartRestore")) {
             BUMP(start_restore);
+            if (g_scn && g_scn->msg_delay_ms) usleep((useconds_t)g_scn->msg_delay_ms * 1000);
             for (int i = 0; g_scn && i < g_scn->nmsgs; i++) rs_send(fd, g_scn->msgs[i]);
             if (g_scn && g_scn->end == FAKE_END_CLOSE) { free(r); break; }
         }
@@ -92,6 +94,82 @@ static void *restored_conn(void *arg) {
     }
     close(fd);
     return NULL;
+}
+
+
+/* drain a tunnel until the peer closes it; counts bytes */
+static void drain(int fd, int *counter) {
+    char b[4096];
+    for (;;) { ssize_t r = recv(fd, b, sizeof b, 0); if (r <= 0) break; if (counter) { pthread_mutex_lock(&g_mu); *counter += (int)r; pthread_mutex_unlock(&g_mu); } }
+    close(fd);
+}
+/* reverse-proxy framing (libimobiledevice reverse_proxy.c): plist = 4-byte LITTLE-endian length + binary plist */
+static int px_send_plist(int fd, plist_t p) {
+    char *bin = NULL; uint32_t len = 0;
+    plist_to_bin(p, &bin, &len);
+    uint32_t le = htole32(len);
+    int r = wr(fd, &le, 4) == 0 && wr(fd, bin, len) == 0 ? 0 : -1;
+    free(bin);
+    return r;
+}
+static plist_t px_recv_plist(int fd) {
+    uint32_t le;
+    if (rd(fd, &le, 4)) return NULL;
+    uint32_t len = le32toh(le);
+    if (len == 0 || len > (1u << 20)) return NULL;
+    char *b = malloc(len);
+    if (!b || rd(fd, b, len)) { free(b); return NULL; }
+    plist_t p = NULL;
+    plist_from_memory(b, len, &p, NULL);
+    free(b);
+    return p;
+}
+/* control channel (port 1082, control protocol 2): host sends "BeginCtrl\0" and a plist, the device answers with ConnPort, then sends commands (uint32 LE): 1 = connection request */
+static void proxy_ctrl(int fd) {
+    BUMP(px_ctrl);
+    char hello[10];
+    if (rd(fd, hello, sizeof hello) || memcmp(hello, "BeginCtrl", 9)) { close(fd); return; }
+    plist_t req = px_recv_plist(fd);
+    plist_free(req);
+    plist_t d = plist_new_dict();
+    plist_dict_set_item(d, "ConnPort", plist_new_uint(FAKE_PROXY_CONN_PORT));
+    px_send_plist(fd, d); plist_free(d);
+    usleep(100000);
+    int n = g_scn ? g_scn->proxy_connect_reqs : 0;
+    if (n > 0) {
+        uint32_t cmds[8];
+        if (n > 8) n = 8;
+        for (int i = 0; i < n; i++) cmds[i] = htole32(1);
+        wr(fd, cmds, 4 * (size_t)n);   /* one write: the requests arrive with no gap (T13) */
+    }
+    drain(fd, NULL);
+}
+/* connection channel (port 1083): "HelloConn\0" in, plist {Command:HelloConn} out; optionally a proxy command (0x105: 0, 3, hostlen, host, port BE) that the host acks and echoes */
+static void proxy_conn(int fd) {
+    BUMP(px_conn);
+    char hello[10];
+    if (rd(fd, hello, sizeof hello) || memcmp(hello, "HelloConn", 9)) { close(fd); return; }
+    plist_t d = plist_new_dict();
+    plist_dict_set_item(d, "Command", plist_new_string("HelloConn"));
+    plist_dict_set_item(d, "Identifier", plist_new_string("fake-proxy-device"));
+    px_send_plist(fd, d); plist_free(d);
+    if (g_scn && g_scn->proxy_do_cmd) {
+        usleep(50000);
+        uint16_t cmd = htole16(0x105);
+        wr(fd, &cmd, 2);
+        usleep(50000);
+        const char *host = "127.0.0.1";
+        unsigned char pl[64];
+        size_t hl = strlen(host), n = 0;
+        pl[n++] = 0; pl[n++] = 3; pl[n++] = (unsigned char)hl;
+        memcpy(pl + n, host, hl); n += hl;
+        pl[n++] = (unsigned char)(g_scn->proxy_target_port >> 8); pl[n++] = (unsigned char)(g_scn->proxy_target_port & 0xff);
+        wr(fd, pl, n);
+        uint16_t ack;
+        if (rd(fd, &ack, 2) == 0) BUMP(px_cmd_acked);
+        if (g_scn->proxy_close_after_ms > 0) { usleep((useconds_t)g_scn->proxy_close_after_ms * 1000); close(fd); return; }
+    }
+    drain(fd, NULL);
 }
 
 /* ---- usbmuxd framing ---- */
@@ -147,6 +225,18 @@ static void *mux_conn(void *arg) {
                 mux_result(fd, h[1], h[3], 0);
                 free(mt); plist_free(req);
                 return restored_conn((void *)(intptr_t)fd);   /* the tunnel: raw restored traffic from here on */
+            }
+            if (g_scn && g_scn->proxy && port == FAKE_PROXY_CTRL_PORT) { mux_result(fd, h[1], h[3], 0); free(mt); plist_free(req); proxy_ctrl(fd); return NULL; }
+            if (g_scn && g_scn->proxy && port == FAKE_PROXY_CONN_PORT) { mux_result(fd, h[1], h[3], 0); free(mt); plist_free(req); proxy_conn(fd); return NULL; }
+            if (port == FAKE_DATA_PORT && g_scn) {
+                BUMP(dp_connect);
+                int m = g_scn->data_port_mode;
+                if (m == FAKE_DP_DELAY_REFUSE || m == FAKE_DP_DELAY_OPEN) usleep((useconds_t)g_scn->data_port_delay_ms * 1000);
+                if (m == FAKE_DP_OPEN_SILENT || m == FAKE_DP_DELAY_OPEN) { mux_result(fd, h[1], h[3], 0); free(mt); plist_free(req); drain(fd, &g_st.dp_bytes); return NULL; }
+                if (m == FAKE_DP_NOREPLY) { free(mt); plist_free(req); drain(fd, &g_st.dp_bytes); return NULL; }   /* never answers the Connect */
+                mux_result(fd, h[1], h[3], 3);
+                free(mt); plist_free(req);
+                continue;
             }
             pthread_mutex_lock(&g_mu); g_st.connect_other++; g_st.last_other_port = port; pthread_mutex_unlock(&g_mu);
             mux_result(fd, h[1], h[3], 3);   /* RESULT_CONNREFUSED */

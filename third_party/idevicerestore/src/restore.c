@@ -22,6 +22,12 @@
  */
 
 #ifdef HAVE_CONFIG_H
+#include "../../libimobiledevice/src/hv_life.h"   /* Henge I3: task registration and terminate flag; no ops installed = original behaviour */
+/* Henge I3-4: flags and async_err are shared between the restore loop and the async handler thread. All accesses in this file are atomic. */
+#define HV_FLAGS_LOAD(c) __atomic_load_n(&(c)->flags, __ATOMIC_SEQ_CST)
+#define HV_FLAGS_OR(c, f) ((void)__atomic_fetch_or(&(c)->flags, (f), __ATOMIC_SEQ_CST))
+#define HV_FLAGS_CLEAR(c, f) ((void)__atomic_fetch_and(&(c)->flags, ~(f), __ATOMIC_SEQ_CST))
+#define HV_RESTORE_RECV_TIMEOUT_MS 1000   /* Henge 6-2: receive wait in the restore loop when a host session is installed (initial value, final value by measurement) */
 #include <config.h>
 #endif
 #include <limits.h>
@@ -5012,7 +5018,7 @@ logger(LL_DEBUG, "%s: type = %s\n", __func__, type);
 				}
 			} else {
 				logger(LL_INFO, "Not sending NORData... Quitting...\n");
-				client->flags |= FLAG_QUIT;
+				HV_FLAGS_OR(client, FLAG_QUIT);
 			}
 		}
 
@@ -5147,22 +5153,27 @@ logger(LL_DEBUG, "%s: type = %s\n", __func__, type);
 struct _restore_async_args {
 	struct idevicerestore_client_t* client;
 	plist_t message;
+	uint64_t gen;   /* Henge I3: registration generation (0 = not registered) */
 };
+
 
 static void* _restore_handle_async_data_request(void* args)
 {
 	struct _restore_async_args* async_args = (struct _restore_async_args*)args;
 	struct idevicerestore_client_t* client = async_args->client;
 	plist_t message = async_args->message;
+	uint64_t gen = async_args->gen;
 	free(async_args);
 
 	int err = restore_handle_data_request_msg(client, message);
 	if (err < 0) {
-		client->async_err = err;
-		client->flags |= FLAG_QUIT;
+		__atomic_store_n(&client->async_err, err, __ATOMIC_SEQ_CST);
+		HV_FLAGS_OR(client, FLAG_QUIT);
 	}
 
 	plist_free(message);
+	/* Henge I3-2: the LAST act. client and message are not touched after this; once it is counted the host may free the client. */
+	hv_life_task_end(gen, HV_LIFE_K_ASYNC, err < 0 ? err : 0);
 	return NULL;
 }
 
@@ -5728,8 +5739,14 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 
 	// this is the restore process loop, it reads each message in from
 	// restored and passes that data on to it's specific handler
-	while (!(client->flags & FLAG_QUIT)) {
-		if (err != 0 && client->flags & FLAG_IGNORE_ERRORS) {
+	while (!(HV_FLAGS_LOAD(client) & FLAG_QUIT)) {
+		/* Henge I3-3 / 6-1: the host's terminate request (cancel or close) ends the loop at the next iteration. NULL ops: never true. */
+		if (hv_life_terminate_requested()) {
+			logger(LL_WARNING, "Terminate requested by the host, leaving the restore loop\n");
+			if (err == 0) err = -1;
+			break;
+		}
+		if (err != 0 && (HV_FLAGS_LOAD(client) & FLAG_IGNORE_ERRORS)) {
 			logger(LL_WARNING, "Attempting to continue after critical error, restore might fail...\n");
 			err = 0;
 		}
@@ -5737,10 +5754,11 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		// an unrecoverable error, so we need to bail.
 		if (err < 0) {
 			logger(LL_ERROR, "Unable to successfully restore device\n");
-			client->flags |= FLAG_QUIT;
+			HV_FLAGS_OR(client, FLAG_QUIT);
 		}
 
-		restore_error = restored_receive(restore, &message);
+		/* Henge I3 6-2: with a host session the wait is short so a terminate request is seen within about a second; the original 30 s stays without one. */
+		restore_error = hv_life_installed() ? restored_receive_timeout(restore, &message, HV_RESTORE_RECV_TIMEOUT_MS) : restored_receive(restore, &message);
 #ifdef HAVE_RESTORE_E_RECEIVE_TIMEOUT
 		if (restore_error == RESTORE_E_RECEIVE_TIMEOUT) {
 			logger(LL_DEBUG, "No data to read (timeout)\n");
@@ -5781,17 +5799,30 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		else if (!strcmp(type, "AsyncDataRequestMsg")) {
 			THREAD_T t = THREAD_T_NULL;
 			struct _restore_async_args* args = (struct _restore_async_args*)malloc(sizeof(struct _restore_async_args));
-			args->client = client;
-			args->message = plist_copy(message);
-			if (thread_new(&t, _restore_handle_async_data_request, args) < 0) {
-				free(args);
-				logger(LL_ERROR, "Failed to start async data request handler thread!\n");
-				err = -1;
-				if (client->flags & FLAG_IGNORE_ERRORS) {
-					client->flags &= ~FLAG_IGNORE_ERRORS;
+			uint64_t agen = 0;
+			int started = 0;
+			/* Henge I3-1: register BEFORE the thread exists; a refusal or a creation failure releases everything including the message copy. */
+			if (args && hv_life_task_begin(HV_LIFE_K_ASYNC, &agen) == 0) {
+				args->client = client;
+				args->message = plist_copy(message);
+				args->gen = agen;
+				if (args->message && thread_new(&t, _restore_handle_async_data_request, args) >= 0) {
+					thread_detach(t);
+					started = 1;
+				} else {
+					hv_life_task_create_failed(agen, HV_LIFE_K_ASYNC, -1);
+					if (args->message) plist_free(args->message);
+					free(args);
 				}
 			} else {
-				thread_detach(t);
+				free(args);
+			}
+			if (!started) {
+				logger(LL_ERROR, "Failed to start async data request handler thread!\n");
+				err = -1;
+				if (HV_FLAGS_LOAD(client) & FLAG_IGNORE_ERRORS) {
+					HV_FLAGS_CLEAR(client, FLAG_IGNORE_ERRORS);
+				}
 			}
 		}
 
@@ -5815,7 +5846,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 				plist_dict_set_item(dict, "MsgType", plist_new_string("ReceivedFinalStatusMsg"));
 				restored_send(restore, dict);
 				plist_free(dict);
-				client->flags |= FLAG_QUIT;
+				HV_FLAGS_OR(client, FLAG_QUIT);
 			}
 		}
 
@@ -5904,8 +5935,8 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(message);
 		message = NULL;
 	}
-	if (client->async_err != 0) {
-		err = client->async_err;
+	if (__atomic_load_n(&client->async_err, __ATOMIC_SEQ_CST) != 0) {
+		err = __atomic_load_n(&client->async_err, __ATOMIC_SEQ_CST);
 	}
 
 #ifdef HAVE_REVERSE_PROXY

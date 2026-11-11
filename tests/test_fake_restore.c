@@ -4,6 +4,7 @@
                                         | t5s_bb | t5s_fdr | t5s_fdr_nr | t5a_free | t5a_nofree          (S2, T5)
                                         | t12 | t13                                                         (S3, T12/T13)
                                         | t1b | t3_inject                                                   (T1b, T3 baselines)
+                                        | t5a_host | cancel_loop                                              (I3: T5 in the host order close -> release_permitted -> client_free; terminate seen by the loop)
    One case per process: a per-case watchdog thread records "HANG OBSERVED" and _exit()s when the time limit (env FAKE_CASE_LIMIT_S, default 150) passes. */
 #define _GNU_SOURCE 1
 #include <pthread.h>
@@ -97,6 +98,7 @@ static int ext_start(void) {
 }
 
 typedef struct { struct idevicerestore_client_t *c; plist_t bi; } Arg;
+static void *cancel_thread(void *a) { usleep((useconds_t)(intptr_t)a * 1000); int r = hv_restore_session_cancel(); printf("CANCEL requested at %.1fs -> %d\n", now() - t0, r); return NULL; }
 static int run_fn(void *p) { Arg *a = p; return restore_device(a->c, a->bi); }
 
 int main(int argc, char **argv) {
@@ -105,7 +107,7 @@ int main(int argc, char **argv) {
     plist_t msgs[4] = {0};
     FakeScenario scn = {.msgs = msgs, .nmsgs = 0, .end = FAKE_END_HOLD};
     const char *desc = "";
-    int free_client = 0, after_s = 0, ext_port = 0, arm_fail = 0;
+    int free_client = 0, after_s = 0, ext_port = 0, arm_fail = 0, host_order = 0, cancel_ms = 0, no_session = 0;
     if (!strcmp(g_case, "0"))  { msgs[0] = status(0, 0, 0); scn.nmsgs = 1; desc = "control: StatusMsg Status=0 (restore finished)"; }
     else if (!strcmp(g_case, "a"))  { msgs[0] = status(14, 1, 1); scn.nmsgs = 1; desc = "negative StatusMsg (AMRError=1), then nothing (restored stays silent)"; }
     else if (!strcmp(g_case, "b"))  { msgs[0] = status(14, 1, 1); msgs[1] = progress(); scn.nmsgs = 2; desc = "negative StatusMsg then a valid ProgressMsg (back to back)"; }
@@ -118,6 +120,24 @@ int main(int argc, char **argv) {
     else if (!strcmp(g_case, "t5s_bb"))      { msgs[0] = data_req("DataRequestMsg", "BasebandUpdaterOutputData", 1); scn.nmsgs = 1; scn.data_port_mode = FAKE_DP_OPEN_SILENT; desc = "T5 sync: BasebandUpdaterOutputData, data port accepts and stays silent"; }
     else if (!strcmp(g_case, "t5s_fdr")) { msgs[0] = data_req("DataRequestMsg", "FDRTrustData", 1); msgs[1] = status(0, 0, 0); scn.nmsgs = 2; scn.data_port_mode = FAKE_DP_OPEN_SILENT; desc = "T5 sync: FDRTrustData (connect + send), data port accepts; control: restore then finishes"; }
     else if (!strcmp(g_case, "t5s_fdr_nr")) { msgs[0] = data_req("DataRequestMsg", "FDRTrustData", 1); msgs[1] = status(0, 0, 0); scn.nmsgs = 2; scn.data_port_mode = FAKE_DP_NOREPLY; desc = "T5 sync: FDRTrustData, the mux never answers the Connect to the data port"; }
+    else if (!strcmp(g_case, "t5a_host")) {   /* I3: the correct host order; the registered handler must be waited for by close() */
+        msgs[0] = urlasset_req(); msgs[1] = status(14, 1, 1); msgs[2] = plist_new_dict(); plist_dict_set_item(msgs[2], "MsgType", plist_new_string("FooMsg")); scn.nmsgs = 3;
+        scn.data_port_mode = FAKE_DP_DELAY_REFUSE; scn.data_port_delay_ms = 3000; after_s = 3; host_order = 1;
+        desc = "I3 T5 async in the host order: after restore_device returns, close() (waits for the handler), then release_permitted, then client_free";
+    }
+    else if (!strcmp(g_case, "null_a")) {   /* I3: NULL ops (no host session): same as case a; must behave exactly like the original (30 s receive wait, same result) */
+        msgs[0] = status(14, 1, 1); scn.nmsgs = 1; no_session = 1;
+        desc = "I3 NULL ops: negative StatusMsg then silence, no host session (original behaviour: restore_device returns after the 30 s receive timeout)";
+    }
+    else if (!strcmp(g_case, "null_t3")) {   /* NULL ops + one injected thread_new failure: same result and no leak as before */
+        msgs[0] = urlasset_req(); msgs[1] = plist_new_dict(); plist_dict_set_item(msgs[1], "MsgType", plist_new_string("FooMsg")); scn.nmsgs = 2;
+        scn.data_port_mode = FAKE_DP_OPEN_SILENT; after_s = 2; arm_fail = 1; no_session = 1;
+        desc = "I3 NULL ops: t3_inject without a host session";
+    }
+    else if (!strcmp(g_case, "cancel_loop")) {   /* I3 6-1: restored stays silent; the host cancels after cancel_ms */
+        msgs[0] = progress(); scn.nmsgs = 1; cancel_ms = 1500;
+        desc = "I3: restored goes silent; hv_restore_session_cancel after 1.5 s; how long until restore_device returns";
+    }
     else if (!strcmp(g_case, "t5a_free") || !strcmp(g_case, "t5a_nofree")) {
         msgs[0] = urlasset_req(); msgs[1] = status(14, 1, 1); msgs[2] = plist_new_dict(); plist_dict_set_item(msgs[2], "MsgType", plist_new_string("FooMsg")); scn.nmsgs = 3;
         scn.data_port_mode = FAKE_DP_DELAY_REFUSE; scn.data_port_delay_ms = 3000; after_s = 6;
@@ -163,8 +183,8 @@ int main(int argc, char **argv) {
 #else
     printf("BUILD HAVE_RESTORE_E_RECEIVE_TIMEOUT=undefined \n");
 #endif
-    if (hv_restore_session_begin() != 0) { printf("CASE %s: session begin refused\n", g_case); return 2; }
-    hv_restore_session_allow_usbmuxd((uint16_t)port);
+    if (!no_session && hv_restore_session_begin() != 0) { printf("CASE %s: session begin refused\n", g_case); return 2; }
+    if (!no_session) hv_restore_session_allow_usbmuxd((uint16_t)port);
     log_level = LL_DEBUG;
     if (ext_port) hv_net_guard_allow_local("127.0.0.1", (uint16_t)ext_port);   /* test-side policy entry: the "external host" the fake device names (the reverse-proxy target is checked with the DEFAULT purpose) */
     int fds_before = count_fds();
@@ -174,9 +194,17 @@ int main(int argc, char **argv) {
     idevicerestore_set_udid(c, FAKE_UDID);
     Arg a = {c, plist_new_dict()};
     if (arm_fail) hv_test_fail_next_thread_new = 1;
-    int rc = 12345, ret = hv_restore_session_run(run_fn, &a, &rc);
+    if (cancel_ms) { pthread_t ct; pthread_create(&ct, NULL, cancel_thread, (void *)(intptr_t)cancel_ms); pthread_detach(ct); }
+    int rc = 12345, ret = 0;
+    if (no_session) rc = run_fn(&a); else ret = hv_restore_session_run(run_fn, &a, &rc);
     double dt = now() - t0;
     printf("RETURNED restore_device=%d at %.1fs\n", rc, dt);
+    if (host_order) {
+        hv_restore_session_set_close_timeout_ms(8000);
+        int cr = hv_restore_session_close(), perm = hv_restore_session_release_permitted();
+        printf("HOSTORDER close=%d release_permitted=%d at %.1fs\n", cr, perm, now() - t0);
+        if (perm == 1) { idevicerestore_client_free(c); printf("CLIENT FREED (only because release was permitted)\n"); }
+    }
     if (free_client) { idevicerestore_client_free(c); printf("CLIENT FREED (as the host does after restore_device returns)\n"); }
     if (after_s) { printf("WAITING %d s for threads that outlive restore_device\n", after_s); sleep((unsigned)after_s); }
     int fds_after = count_fds();

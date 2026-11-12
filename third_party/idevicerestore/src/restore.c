@@ -5154,6 +5154,7 @@ struct _restore_async_args {
 	struct idevicerestore_client_t* client;
 	plist_t message;
 	uint64_t gen;   /* Henge I3: registration generation (0 = not registered) */
+	struct hv_async_tracker* trk; /* per-client tracker; the handler holds a reference */
 };
 
 
@@ -5163,6 +5164,7 @@ static void* _restore_handle_async_data_request(void* args)
 	struct idevicerestore_client_t* client = async_args->client;
 	plist_t message = async_args->message;
 	uint64_t gen = async_args->gen;
+	struct hv_async_tracker* trk = async_args->trk;
 	free(async_args);
 
 	int err = restore_handle_data_request_msg(client, message);
@@ -5174,6 +5176,8 @@ static void* _restore_handle_async_data_request(void* args)
 	plist_free(message);
 	/* Henge I3-2: the LAST act. client and message are not touched after this; once it is counted the host may free the client. */
 	hv_life_task_end(gen, HV_LIFE_K_ASYNC, err < 0 ? err : 0);
+	/* Henge step 3: after this the client may be released; only the (reference counted) tracker is touched. */
+	hv_async_task_done(trk);
 	return NULL;
 }
 
@@ -5806,10 +5810,17 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 				args->client = client;
 				args->message = plist_copy(message);
 				args->gen = agen;
-				if (args->message && thread_new(&t, _restore_handle_async_data_request, args) >= 0) {
+				args->trk = client->async_trk;
+				if (hv_async_task_register(args->trk) != 0) {
+					/* the client is closing: no new handler may start */
+					hv_life_task_create_failed(agen, HV_LIFE_K_ASYNC, -1);
+					if (args->message) plist_free(args->message);
+					free(args);
+				} else if (args->message && thread_new(&t, _restore_handle_async_data_request, args) >= 0) {
 					thread_detach(t);
 					started = 1;
 				} else {
+					hv_async_task_cancel_register(args->trk);
 					hv_life_task_create_failed(agen, HV_LIFE_K_ASYNC, -1);
 					if (args->message) plist_free(args->message);
 					free(args);
@@ -5935,6 +5946,8 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(message);
 		message = NULL;
 	}
+	/* Henge step 3: the loop is over; no further async handler may be registered for this client. */
+	hv_async_tracker_close(client->async_trk);
 	if (__atomic_load_n(&client->async_err, __ATOMIC_SEQ_CST) != 0) {
 		err = __atomic_load_n(&client->async_err, __ATOMIC_SEQ_CST);
 	}

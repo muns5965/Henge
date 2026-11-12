@@ -77,6 +77,11 @@ extern const uint32_t lpol_file_length;
 typedef void (*idevicerestore_progress_cb_t)(int step, double step_progress, void* userdata);
 
 struct idevicerestore_client_t* idevicerestore_client_new(void);
+/* Waits (bounded) for the client's async handler threads, then frees the client. Returns 0 when the client was freed (or is NULL),
+   -1 when handlers were still running after the deadline: NOTHING is freed and the client stays valid; the caller may retry. */
+int idevicerestore_client_release(struct idevicerestore_client_t* client);
+int idevicerestore_client_release_timeout(struct idevicerestore_client_t* client, unsigned int timeout_ms);
+/* Compatibility wrapper: the release result is only logged; hosts must use idevicerestore_client_release(). */
 void idevicerestore_client_free(struct idevicerestore_client_t* client);
 
 void idevicerestore_set_ecid(struct idevicerestore_client_t* client, uint64_t ecid);

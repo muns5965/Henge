@@ -145,8 +145,11 @@ static void *restore_thread(void *arg) {
     int closed = hv_restore_session_close() == 0;
     int cleanup_mask = 0;
     if (closed && hv_restore_session_release_permitted()) {
-        idevicerestore_client_free(c);
-        if (!hv_install_stop_mux()) {
+        if (idevicerestore_client_release(c) != 0) {
+            /* an async handler is still running: the client was NOT freed (it stays valid) and the private usbmuxd keeps running for it */
+            cleanup_mask |= HV_REG_CL_OTHER;
+            fprintf(stderr, "install: async handlers did not finish; the client is left allocated and the private usbmuxd keeps running\n");
+        } else if (!hv_install_stop_mux()) {
             cleanup_mask |= HV_REG_CL_HOST_THREAD;
             fprintf(stderr, "install: the private usbmuxd did not stop; no new restore can start until the app restarts\n");
         }
@@ -168,7 +171,10 @@ static void *restore_thread(void *arg) {
     ST(g_result, r == 0 ? 0 : -1);   /* published last: a start that sees it also sees the finished session */
     return NULL;
 #else
-    idevicerestore_client_free(c);
+    if (idevicerestore_client_release(c) != 0) {
+        fprintf(stderr, "install: async handlers did not finish; the client is left allocated\n");
+        r = -1;
+    }
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
     ST(g_result, r == 0 ? 0 : -1);
     return NULL;

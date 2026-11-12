@@ -128,7 +128,17 @@ struct idevicerestore_client_t {
 	char* filesystem;
 	int delete_fs;
 	int async_err;
+	struct hv_async_tracker* async_trk; /* per-client async handler lifetime tracker (idevicerestore.c) */
 };
+
+/* Per-client tracker of AsyncDataRequest handler threads. Registration, closing and the pending-zero check share one lock; the tracker is
+   reference counted (client + every handler) and outlives the client memory until the last handler has finished with it. */
+struct hv_async_tracker* hv_async_tracker_new(void);
+int hv_async_task_register(struct hv_async_tracker* t);   /* 0 = registered (takes a reference), -1 = closing/refused */
+void hv_async_task_done(struct hv_async_tracker* t);      /* LAST act of a handler; does not touch the client */
+void hv_async_task_cancel_register(struct hv_async_tracker* t); /* undo a registration whose thread was never started */
+void hv_async_tracker_close(struct hv_async_tracker* t);  /* refuse further registrations */
+int hv_async_tracker_wait(struct hv_async_tracker* t, unsigned int timeout_ms); /* closes, then waits for pending == 0: 0 ok, -1 timeout */
 
 extern int global_quit_flag;
 

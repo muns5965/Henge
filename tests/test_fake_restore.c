@@ -250,9 +250,9 @@ int main(int argc, char **argv) {
         hv_restore_session_set_close_timeout_ms(8000);
         int cr = hv_restore_session_close(), perm = hv_restore_session_release_permitted();
         printf("HOSTORDER close=%d release_permitted=%d at %.1fs\n", cr, perm, now() - t0);
-        if (perm == 1) { idevicerestore_client_free(c); printf("CLIENT FREED (only because release was permitted)\n"); }
+        if (perm == 1) { int rr = idevicerestore_client_release(c); printf("CLIENT RELEASE rc=%d%s\n", rr, rr == 0 ? " (freed, only because release was permitted)" : " (NOT freed)"); }
     }
-    if (free_client) { idevicerestore_client_free(c); printf("CLIENT FREED (as the host does after restore_device returns)\n"); }
+    if (free_client) { int rr = idevicerestore_client_release(c); printf("CLIENT RELEASE rc=%d%s\n", rr, rr == 0 ? " (freed, as the host does after restore_device returns)" : " (NOT freed)"); }
     if (after_s) { printf("WAITING %d s for threads that outlive restore_device\n", after_s); sleep((unsigned)after_s); }
     int fds_after = count_fds();
 

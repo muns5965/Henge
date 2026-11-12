@@ -1651,13 +1651,124 @@ struct idevicerestore_client_t* idevicerestore_client_new(void)
 	client->mode = MODE_UNKNOWN;
 	mutex_init(&client->device_event_mutex);
 	cond_init(&client->device_event_cond);
+	client->async_trk = hv_async_tracker_new();
+	if (!client->async_trk) {
+		cond_destroy(&client->device_event_cond);
+		mutex_destroy(&client->device_event_mutex);
+		free(client);
+		logger(LL_ERROR, "Out of memory\n");
+		return NULL;
+	}
 	return client;
 }
 
+struct hv_async_tracker {
+	mutex_t m;
+	cond_t c;
+	int pending;
+	int closing;
+	int refs;
+};
+
+struct hv_async_tracker* hv_async_tracker_new(void)
+{
+	struct hv_async_tracker* t = (struct hv_async_tracker*)calloc(1, sizeof(*t));
+	if (!t) return NULL;
+	mutex_init(&t->m);
+	cond_init(&t->c);
+	t->refs = 1; /* the client's reference */
+	return t;
+}
+
+static void hv_async_tracker_unref(struct hv_async_tracker* t)
+{
+	mutex_lock(&t->m);
+	int last = (--t->refs == 0);
+	mutex_unlock(&t->m);
+	if (last) {
+		cond_destroy(&t->c);
+		mutex_destroy(&t->m);
+		free(t);
+	}
+}
+
+int hv_async_task_register(struct hv_async_tracker* t)
+{
+	int rc = -1;
+	if (!t) return -1;
+	mutex_lock(&t->m);
+	if (!t->closing) {
+		t->pending++;
+		t->refs++;
+		rc = 0;
+	}
+	mutex_unlock(&t->m);
+	return rc;
+}
+
+void hv_async_task_done(struct hv_async_tracker* t)
+{
+	if (!t) return;
+	mutex_lock(&t->m);
+	t->pending--;
+	cond_signal(&t->c);
+	mutex_unlock(&t->m);
+	hv_async_tracker_unref(t); /* the handler's reference: the tracker dies with the last one, never before */
+}
+
+void hv_async_task_cancel_register(struct hv_async_tracker* t)
+{
+	hv_async_task_done(t);
+}
+
+void hv_async_tracker_close(struct hv_async_tracker* t)
+{
+	if (!t) return;
+	mutex_lock(&t->m);
+	t->closing = 1;
+	mutex_unlock(&t->m);
+}
+
+int hv_async_tracker_wait(struct hv_async_tracker* t, unsigned int timeout_ms)
+{
+	int rc = 0;
+	unsigned int slices = timeout_ms / 100 + 1;
+	if (!t) return 0;
+	mutex_lock(&t->m);
+	t->closing = 1; /* same lock as register: after this no handler can start */
+	while (t->pending > 0) {
+		if (slices-- == 0) { rc = -1; break; }
+		cond_wait_timeout(&t->c, &t->m, 100);
+	}
+	mutex_unlock(&t->m);
+	return rc;
+}
+
+#ifndef IDEVICERESTORE_RELEASE_TIMEOUT_MS
+#define IDEVICERESTORE_RELEASE_TIMEOUT_MS 30000
+#endif
+
 void idevicerestore_client_free(struct idevicerestore_client_t* client)
 {
+	if (idevicerestore_client_release(client) != 0) {
+		logger(LL_ERROR, "idevicerestore_client_free: async handlers still running, client NOT freed (use idevicerestore_client_release to observe this)\n");
+	}
+}
+
+int idevicerestore_client_release(struct idevicerestore_client_t* client)
+{
+	return idevicerestore_client_release_timeout(client, IDEVICERESTORE_RELEASE_TIMEOUT_MS);
+}
+
+int idevicerestore_client_release_timeout(struct idevicerestore_client_t* client, unsigned int timeout_ms)
+{
 	if (!client) {
-		return;
+		return 0;
+	}
+
+	/* Henge: wait for the client's async handlers BEFORE any resource they may use is released. Nothing is freed on timeout. */
+	if (hv_async_tracker_wait(client->async_trk, timeout_ms) != 0) {
+		return -1;
 	}
 
 	/* Henge: the USB handles of the DFU/recovery clients were closed only on the success paths of idevicerestore_start; every error return left them open.
@@ -1720,7 +1831,12 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 		plist_free(client->preflight_info);
 	}
 	free(client->restore_variant);
-	free(client);
+	{
+		struct hv_async_tracker* trk = client->async_trk;
+		free(client);
+		if (trk) hv_async_tracker_unref(trk);
+	}
+	return 0;
 }
 
 void idevicerestore_set_ecid(struct idevicerestore_client_t* client, uint64_t ecid)

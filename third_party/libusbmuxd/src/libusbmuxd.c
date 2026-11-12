@@ -1310,7 +1310,7 @@ retry:
 	}
 
 	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
-	if ((proto_version == 1) && (try_list_devices)) {
+	if ((proto_version == 1) && __atomic_load_n(&try_list_devices, __ATOMIC_RELAXED)) {
 		if (send_list_devices_packet(sfd, tag) > 0) {
 			plist_t list = NULL;
 			if ((usbmuxd_get_result(sfd, tag, &res, &list) == 1) && (res == 0)) {
@@ -1339,7 +1339,7 @@ retry:
 					proto_version = 0;
 				}
 				socket_close(sfd);
-				try_list_devices = 0;
+				__atomic_store_n(&try_list_devices, 0, __ATOMIC_RELAXED);   /* Henge: one-way (1 -> 0) process-wide capability flag; it publishes no other data */
 				plist_free(list);
 				goto retry;
 			}

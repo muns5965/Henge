@@ -962,14 +962,37 @@ public class MainActivity extends Activity {
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
                     pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
                     Process p = pb.start();
-                    StringBuilder text = new StringBuilder();
+                    // Output handling: the reader never stops reading (a full pipe would stall vmrun). It keeps (a) text: every line except the high-volume
+                    // trace kinds, which the summaries below scan, (b) the last 200 lines of everything for the screen, (c) the whole output in a log file
+                    // (not for the Apple-facing tss/preflight modes: nothing from those runs is stored), and updates the screen at most every 300 ms.
+                    final StringBuilder text = new StringBuilder();
+                    final java.util.ArrayDeque<String> ring = new java.util.ArrayDeque<>();
+                    final long[] counts = {0, 0}; // lines read, bytes written to the log file
+                    final boolean[] textFull = {false};
+                    final RunLog runLog = (tss || pf) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
+                    final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
+                        long lastUi = 0;
                         try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
                             String line;
                             while ((line = br.readLine()) != null) {
                                 synchronized (text) {
-                                    text.append(line).append('\n');
-                                    show(acc + text.toString());
+                                    counts[0]++;
+                                    if (runLog != null) runLog.write(line);
+                                    if (!isTraceNoise(line)) {
+                                        if (text.length() < 2_000_000) text.append(line).append('\n');
+                                        else if (!textFull[0]) { textFull[0] = true; text.append("(요약용 보관 상한 2MB에 도달: 이후 줄은 화면 최근 줄과 로그 파일에만 있습니다)\n"); }
+                                    }
+                                    ring.addLast(line);
+                                    if (ring.size() > 200) ring.removeFirst();
+                                }
+                                long now = System.currentTimeMillis();
+                                if (now - lastUi >= 300 && uiPending.compareAndSet(false, true)) {
+                                    lastUi = now;
+                                    final String snap;
+                                    synchronized (text) { snap = acc + (counts[0] > ring.size() ? "(진행 중: 전체 " + counts[0] + "줄 중 최근 " + ring.size() + "줄만 표시)\n" : "") + String.join("\n", ring) + "\n"; }
+                                    runOnUiThread(() -> { output.setText(deviceInfo() + "\n" + snap); uiPending.set(false); });
                                 }
                             }
                         } catch (IOException ignored) {
@@ -982,8 +1005,15 @@ public class MainActivity extends Activity {
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
                     if (!done) p.destroyForcibly();
                     reader.join(2000);
+                    final int bodyStart;
                     synchronized (text) {
-                        acc.append(text);
+                        if (counts[0] > 400) {
+                            acc.append("(출력 전체 ").append(counts[0]).append("줄 중 마지막 ").append(ring.size()).append("줄만 화면에 표시합니다.")
+                               .append(runLog != null && runLog.ok() ? " 전체는 로그 파일에 있습니다.)\n" : " 전체 로그 파일은 저장되지 못했습니다.)\n").append(String.join("\n", ring)).append('\n');
+                        } else {
+                            acc.append(text);
+                        }
+                        bodyStart = acc.length();
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
@@ -1021,6 +1051,12 @@ public class MainActivity extends Activity {
                         }
                     }
                     acc.append("이 출력은 게스트가 부팅했다는 증거가 아닙니다. pc/el/esr 줄과 종료 사유를 확인하세요.\n");
+                    if (runLog != null) {
+                        runLog.write("--- 종료 요약 ---");
+                        runLog.write(acc.substring(bodyStart));
+                        String where = runLog.finish(counts[0]);
+                        acc.append(where).append('\n');
+                    }
                 }
             } catch (Exception e) {
                 acc.append("실행 오류: ").append(e).append('\n');
@@ -1029,6 +1065,106 @@ public class MainActivity extends Activity {
             running = false;
             setButtons(true);
         }).start();
+    }
+
+    /** High-volume trace kinds printed by vmrun --log 3: kept out of the summary text (they still go to the log file and the last-200-lines view). */
+    private static boolean isTraceNoise(String l) {
+        return l.startsWith("mmio ") || l.startsWith("mrs ") || l.startsWith("msr ") || l.startsWith("tlbi") || l.startsWith("svc #")
+                || l.startsWith("exception type") || l.startsWith("bdif ") || l.startsWith("    x");
+    }
+
+    /**
+     * One run's full output in Download/HengeProbeLogs/vmrun_<mode>_<time>.log through MediaStore (no permission, no dependency). Written while IS_PENDING=1 and
+     * published when finished. Capped at 20 MB (a note is written at the cap; the caller keeps reading the process output). At most the 5 newest vmrun_*.log
+     * files of that folder that this app created are kept; nothing else is touched. Every failure only disables the file: the run goes on.
+     */
+    private static final class RunLog {
+        static final long CAP = 20L * 1024 * 1024;
+        static final String DIR = "Download/HengeProbeLogs/";
+        String note;
+        private final android.content.ContentResolver cr;
+        private android.net.Uri uri;
+        private java.io.OutputStream os;
+        private long bytes;
+        private boolean capped, failed;
+
+        private RunLog(android.content.ContentResolver cr) { this.cr = cr; }
+
+        boolean ok() { return uri != null && !failed; }
+
+        static RunLog open(Context c, String mode, String header) {
+            RunLog r = new RunLog(c.getContentResolver());
+            try {
+                r.rotate();
+            } catch (Exception e) {
+                r.note = "이전 로그 정리 실패(시험은 계속): " + e;
+            }
+            try {
+                String name = "vmrun_" + mode + "_" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date()) + ".log";
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, DIR);
+                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                r.uri = r.cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (r.uri == null) throw new IOException("insert returned null");
+                r.os = new java.io.BufferedOutputStream(r.cr.openOutputStream(r.uri), 65536);
+                r.write(header);
+                r.note = (r.note == null ? "" : r.note + "\n") + "전체 로그 저장 위치: " + DIR + name + " (끝나면 표시됩니다)";
+            } catch (Exception e) {
+                r.failed = true;
+                r.note = (r.note == null ? "" : r.note + "\n") + "로그 파일을 만들지 못했습니다(시험은 계속, 화면에는 최근 200줄): " + e;
+            }
+            return r;
+        }
+
+        /** Keep the 4 newest vmrun_*.log of this app in DIR, so that with the new one there are 5. Pending (unfinished) ones count and go the same way. */
+        private void rotate() {
+            android.os.Bundle q = new android.os.Bundle();
+            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "relative_path=? AND _display_name LIKE ?");
+            q.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[]{DIR, "vmrun_%.log"});
+            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "date_added DESC, _id DESC");
+            if (Build.VERSION.SDK_INT >= 31) q.putInt(android.provider.MediaStore.QUERY_ARG_MATCH_PENDING, android.provider.MediaStore.MATCH_INCLUDE);
+            java.util.List<android.net.Uri> old = new java.util.ArrayList<>();
+            try (android.database.Cursor cur = cr.query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, new String[]{android.provider.MediaStore.MediaColumns._ID}, q, null)) {
+                int i = 0;
+                while (cur != null && cur.moveToNext()) {
+                    if (++i > 4) old.add(android.content.ContentUris.withAppendedId(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cur.getLong(0)));
+                }
+            }
+            for (android.net.Uri u : old) cr.delete(u, null, null);
+        }
+
+        void write(String line) {
+            if (os == null || failed) return;
+            try {
+                if (capped) return;
+                byte[] b = (line + "\n").getBytes(StandardCharsets.UTF_8);
+                if (bytes + b.length > CAP) {
+                    capped = true;
+                    os.write("[로그 상한 20MB에 도달: 이후 줄은 이 파일에 기록하지 않았습니다]\n".getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                os.write(b);
+                bytes += b.length;
+            } catch (IOException e) {
+                failed = true;
+            }
+        }
+
+        /** Closes and publishes the file; returns one line saying where it is (or why not). */
+        String finish(long lines) {
+            if (uri == null) return "전체 로그 파일: 저장되지 않음";
+            try {
+                if (os != null) os.close();
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                cr.update(uri, cv, null, null);
+            } catch (Exception e) {
+                return "전체 로그 파일 마무리 실패: " + e;
+            }
+            return "전체 로그 파일: " + DIR + " 안의 vmrun_*.log (" + lines + "줄, " + bytes + "바이트" + (capped ? ", 20MB 상한에서 잘림" : "") + (failed ? ", 기록 중 오류로 일부만 저장" : "") + ")";
+        }
     }
 
     /** Runs librestoreselftest.so (tests/test_restore_stack.c: the whole restore stack started the way the app starts it) three times, each with an IPSW that

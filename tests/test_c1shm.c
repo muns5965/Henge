@@ -145,11 +145,6 @@ static void test_threads(void) {
 }
 
 /* ---------------- processes: a locker killed at random moments ---------------- */
-#if defined(__SANITIZE_THREAD__)
-/* ThreadSanitizer does not know robust mutexes: after pthread_mutex_consistent it still believes the dead owner holds the lock and reports the next unlock. The recovery is
-   covered by the plain and the AddressSanitizer runs. */
-static void test_dead_owner(void) { group("shm: dead-owner recovery (skipped under ThreadSanitizer, which does not model robust mutexes)"); }
-#else
 static void test_dead_owner(void) {
     group("shm: a process killed while it publishes (the lock is recovered, the picture is never half written)");
     HvShm *a = NULL; char *p = shm_path("dead.shm");
@@ -181,8 +176,6 @@ static void test_dead_owner(void) {
     uint64_t seen = 0; uint32_t w, h; CHECK(hv_shm_read_frame(a, &seen, buf, sizeof buf, &w, &h) == 1 && w == 2, "and so does reading");
     hv_shm_close(a);
 }
-
-#endif
 
 /* ---------------- the runner as a real process ---------------- */
 typedef struct { pid_t pid; int in, out; } Proc;
@@ -354,7 +347,6 @@ static void test_runner_touch_loop(void) {
     hv_shm_close(s);
 }
 
-#if !defined(__SANITIZE_THREAD__)
 static void test_app_dies(void) {
     group("runner: the app dies while pushing commands (the runner goes on and stops cleanly)");
     char out[2048]; char *p = shm_path("appdie.shm");
@@ -375,7 +367,6 @@ static void test_app_dies(void) {
     printf("   (locks recovered: %u)\n", b.recovered);
     hv_shm_close(s);
 }
-#endif
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: test_c1shm RUNNER\n"); return 2; }
@@ -386,9 +377,7 @@ int main(int argc, char **argv) {
     test_basic();
     test_dead_owner();        /* forks: before any thread exists */
     test_runner_life(); test_runner_stops(); test_runner_killed(); test_runner_touch_loop();
-#if !defined(__SANITIZE_THREAD__)
-    test_app_dies();          /* the runner recovers a dead owner's lock: ThreadSanitizer does not model robust mutexes (see test_dead_owner) */
-#endif
+    test_app_dies();
     test_threads();
     char cmd[300]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir); if (system(cmd)) {}
     printf("c1shm: %d check(s), %d failed\n", g_checks, g_fail);

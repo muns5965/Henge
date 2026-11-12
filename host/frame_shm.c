@@ -3,7 +3,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -17,7 +18,7 @@
 
 typedef struct {
     uint32_t magic, version;        /* magic is written last by the creator (release) and read first by the opener (acquire) */
-    pthread_mutex_t mu;             /* process-shared, robust: guards everything below except the three atomics */
+    uint32_t lock;                  /* 0 = free, else the pid of the holder: guards everything below except the atomics (see lock() below) */
     /* atomics, read and written without the lock */
     uint32_t state, runner_pid, app_closed;
     uint64_t heartbeat;
@@ -61,11 +62,6 @@ int hv_shm_create(const char *path, HvShm **out) {
     if (!s) { int e = errno; close(fd); unlink(path); errno = e; return -1; }
     Hdr *h = s->h;
     memset(h, 0, sizeof *h);
-    pthread_mutexattr_t a;
-    pthread_mutexattr_init(&a);
-    int ok = pthread_mutexattr_setpshared(&a, PTHREAD_PROCESS_SHARED) == 0 && pthread_mutexattr_setrobust(&a, PTHREAD_MUTEX_ROBUST) == 0 && pthread_mutex_init(&h->mu, &a) == 0;
-    pthread_mutexattr_destroy(&a);
-    if (!ok) { munmap(s->h, s->len); close(fd); free(s); unlink(path); errno = EINVAL; return -1; }
     h->version = SHM_VERSION;
     __atomic_store_n(&h->state, (uint32_t)HV_SHM_STARTING, __ATOMIC_RELEASE);
     __atomic_store_n(&h->runner_pid, (uint32_t)getpid(), __ATOMIC_RELEASE);
@@ -96,24 +92,35 @@ void hv_shm_close(HvShm *s) {
     free(s);
 }
 
-/* 0 locked. -1 not locked (timeout or a broken mutex). A dead owner's lock is recovered: the picture is dropped, the count goes up. */
+/* The lock is a word in the file: 0 = free, otherwise the holder's pid (acquire by compare-and-swap, release by a store). It is not a pthread mutex because Android's libc has no
+   robust mutexes (pthread_mutexattr_setrobust does not exist there), and a lock that a killed process still "holds" would freeze the other side for good.
+   Waiting is a short sleep loop (holders keep it for about a millisecond). If the holder's pid no longer exists (kill(pid, 0) says ESRCH), the waiter takes the lock over with one
+   compare-and-swap (so only one waiter can), counts it, and drops the picture, which may be half written. A holder that is alive but slow is never taken over: the waiter gives up
+   after HV_SHM_LOCK_MS and reports failure. (A holder that died but was not yet reaped by its parent still has a pid; its parent reaps it at once in both uses, so that is brief.)
+   0 locked. -1 not locked (timeout). */
+static double mono(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 static int lock(HvShm *s) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += HV_SHM_LOCK_MS / 1000;
-    ts.tv_nsec += (long)(HV_SHM_LOCK_MS % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    int r = pthread_mutex_timedlock(&s->h->mu, &ts);
-    if (r == 0) return 0;
-    if (r == EOWNERDEAD) {
-        pthread_mutex_consistent(&s->h->mu);
-        s->h->recovered++;
-        s->h->width = s->h->height = 0;   /* the picture may be half written */
-        return 0;
+    uint32_t me = (uint32_t)getpid();
+    uint32_t *w = &s->h->lock;
+    double deadline = 0;
+    for (unsigned spin = 0;; spin++) {
+        uint32_t owner = 0;
+        if (__atomic_compare_exchange_n(w, &owner, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
+        if (owner && owner != me && kill((pid_t)owner, 0) != 0 && errno == ESRCH) {
+            if (__atomic_compare_exchange_n(w, &owner, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                s->h->recovered++;
+                s->h->width = s->h->height = 0;   /* the picture may be half written */
+                return 0;
+            }
+            continue;
+        }
+        if (!deadline) deadline = mono() + HV_SHM_LOCK_MS / 1000.0;
+        else if (mono() >= deadline) return -1;
+        if (spin < 20) sched_yield();
+        else { struct timespec ts = {0, 100 * 1000}; nanosleep(&ts, NULL); }
     }
-    return -1;
 }
-static void unlock(HvShm *s) { pthread_mutex_unlock(&s->h->mu); }
+static void unlock(HvShm *s) { __atomic_store_n(&s->h->lock, 0u, __ATOMIC_RELEASE); }
 
 int hv_shm_publish(HvShm *s, const uint8_t *bgra, uint32_t width, uint32_t height, uint32_t stride) {
     if (lock(s) != 0) return -1;

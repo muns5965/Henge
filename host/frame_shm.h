@@ -2,16 +2,16 @@
 #define HENGEVM_FRAME_SHM_H
 /* C1-1: what the app process and the runner process share. One file, mapped by both (MAP_SHARED), in the app's own folder:
      a header (page-aligned, 16 KB), then the newest picture.
-   It carries four things, and everything in it is guarded by ONE process-shared, robust mutex:
+   It carries four things, and everything in it is guarded by ONE lock, a word in the file that holds the holder's pid (see lock() in frame_shm.c):
      frame      the runner publishes a picture (BGRA, tightly packed); the app copies it out into memory of its own and draws from the copy
      commands   the app pushes input (key / mouse move / button / wheel / hwheel) into a ring; the runner pops them and hands them to the machine
      pointer    where the guest says its pointer is (valid = 0 until it says): the app's touch loop reads it as its feedback
      state      the runner's life: starting, running, stopping, stopped, plus a heartbeat the app can watch
    THE CONTRACT
-     1. The mutex is the only synchronisation. The picture is copied IN and OUT under it (a copy of ~4 MB takes a millisecond or two); nobody keeps a pointer into the
+     1. The lock is the only synchronisation. The picture is copied IN and OUT under it (a copy of ~4 MB takes a millisecond or two); nobody keeps a pointer into the
         mapping after unlocking. There is no lock-free reading of pixels, on purpose: a sequence number checked around a plain copy would still be a data race on the pixels.
-     2. If a process dies while holding the mutex, the next locker gets EOWNERDEAD, makes the mutex consistent, counts it (`recovered`), and DROPS the picture
-        (width = 0: "no frame") because it may be half written. The command ring cannot be half written (indices move last) but a command being pushed may be lost.
+     2. If a process dies while holding the lock (its pid is gone), the next locker takes it over, counts it (`recovered`), and DROPS the picture
+        (width = 0: "no frame") because it may be half written. A holder that is alive is never taken over. The command ring cannot be half written (indices move last) but a command being pushed may be lost.
      3. A lock that cannot be taken within HV_SHM_LOCK_MS gives up (returns an error, nothing was touched): neither side can be frozen by the other.
      4. The guest's own framebuffer is NOT in this file and never leaves the runner: the runner copies it with host/display_buf.h first (that module's contract holds
         there), then publishes the copy here. The mapped picture is a copy of a copy.
@@ -19,7 +19,8 @@
         is dropped and counted (a touch screen can wait, a runner that stalls must not make the app block).
      6. Who writes what: the runner creates the file (hv_shm_create), writes frames, pointer, state and heartbeat, and only pops commands. The app opens it (hv_shm_open),
         only reads frames, pointer and state, and only pushes commands and sets `app_closed`.
-   Process-shared robust mutexes need Android API 29 or newer (this app builds for API 30) and POSIX.1-2008 on Linux. */
+   Why not a pthread mutex: Android's libc has no robust mutexes, and a mutex held by a killed process would block the other side for good. The word lock works the same on Android
+   and Linux and needs nothing but atomics, kill(pid, 0) and a sleep. */
 #include <stddef.h>
 #include <stdint.h>
 

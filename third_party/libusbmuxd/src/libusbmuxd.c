@@ -722,16 +722,32 @@ static void get_prog_name()
 #endif
 }
 
+#ifndef WIN32
+#include <pthread.h>
+static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
+static void init_identity(void)
+{
+	get_bundle_id();
+	get_prog_name();
+}
+#endif
+
 static plist_t create_plist_message(const char* message_type)
 {
 	char client_version[128];
 	snprintf(client_version, 128, PACKAGE_NAME " %s", libusbmuxd_version());
+#ifdef WIN32
 	if (!bundle_id) {
 		get_bundle_id();
 	}
 	if (!prog_name) {
 		get_prog_name();
 	}
+#else
+	/* Henge: both strings are filled once and never changed or freed afterwards; the unguarded "if (!x) get_x()" let two threads allocate and overwrite each other
+	   (data race on the pointers, a leaked strdup). A failed lookup is not retried any more: the field is simply left out of the message, as before. */
+	pthread_once(&identity_once, init_identity);
+#endif
 	plist_t plist = plist_new_dict();
 	if (bundle_id) {
 		plist_dict_set_item(plist, "BundleID", plist_new_string(bundle_id));

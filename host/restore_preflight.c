@@ -435,6 +435,9 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
                                            : g_release_rc == -2 ? "NOT done: the session did not close or release was not permitted, the client is left allocated and the session is not ended"
                                            : "NOT done: the release was not attempted");
         g_still = 1;
+        /* the client (and maybe an async handler) is still alive and may use the private usbmuxd: do NOT stop it, and build no clean-up rows on a half-alive tool. The rows that
+           are missing below are missing on purpose (resources deliberately kept), not clean. */
+        goto report;
     }
     usleep(500000); /* the event thread of the tool needs a moment to wind down */
     /* the private usbmuxd: ask it to stop, wait for the thread, check that its listener is gone */

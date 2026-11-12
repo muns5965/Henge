@@ -23,11 +23,13 @@
 
 extern int hv_no_ticket_files;   /* third_party/idevicerestore/src/idevicerestore.c */
 int hv_curl_attempt_count(void);
+const char *tss_last_diag(void);
 
 /* ---- what the restore thread reports (host/install.c) ---- */
 static volatile int g_rec_done, g_rec_engine_rc = -12345, g_rec_closed, g_rec_cleanup = -1, g_rec_report = -1;
 static char g_url[256];
-static int g_port, g_tickets_on, g_hooked;
+static int g_port, g_tickets_on, g_hooked, g_bypass;
+void hv_g1_set_log_bypass(int on) { g_bypass = on; }
 void hv_g1_set_server(const char *url, int port) { snprintf(g_url, sizeof g_url, "%s", url ? url : ""); g_port = port; }
 void hv_g1_test_allow_tickets(int on) { g_tickets_on = on; }
 
@@ -48,11 +50,11 @@ void hv_g1_record(int engine_rc, int closed, int cleanup_mask, int final_report)
 
 /* ---- the tool's log: a whitelist ----
    Only these lines (by their beginning) are printed. Everything else is counted and dropped: the tool's log holds the device nonce (a hex dump) and, in a real run,
-   the ECID, and a redaction of what we know to look for is not enough. HV_G1_SHOW_LOG=1 prints everything (a developer's switch of this test build, never default). */
+   the ECID, and a redaction of what we know to look for is not enough. The test program can switch the filter off for its control (hv_g1_set_log_bypass); the table then fails its tool_log row. */
 static const char *const k_ok[] = {"Found device in DFU mode", "Identified device as", "Device Product", "Extracting BuildManifest", "IPSW Product", "Device supports Image4",
                                    "Variant:", "This restore will erase", "Performing macOS restore", "Checking IPSW for required", "All required components",
                                    "Received SHSH blobs", "SHSH not saved", NULL};
-static volatile int g_lines_shown, g_lines_withheld, g_lines_sensitive;
+static volatile int g_lines_shown, g_lines_withheld, g_lines_sensitive, g_shown_sensitive, g_bypassed_lines;
 static int looks_sensitive(const char *l) {
     if (!strncmp(l, "ECID", 4) || !strncmp(l, "Nonce", 5) || !strncmp(l, "ApNonce", 7) || !strncasecmp(l, "SepNonce", 8) || !strncasecmp(l, "Ticket", 6)) return 1;
     int run = 0;   /* a hex dump: "00 11 22 ..." (the tool's own format) or a long run of hex digits */
@@ -68,9 +70,10 @@ static void log_print(enum loglevel level, const char *fmt, va_list ap) {
     char line[1024];
     vsnprintf(line, sizeof line, fmt, ap);
     (void)level;
-    if (getenv("HV_G1_SHOW_LOG")) { fputs(line, stdout); return; }
+    if (g_bypass) { fputs(line, stdout); __atomic_add_fetch(&g_bypassed_lines, 1, __ATOMIC_SEQ_CST); return; }   /* a control of the test program, never a default */
     for (int i = 0; k_ok[i]; i++)
         if (!strncmp(line, k_ok[i], strlen(k_ok[i])) && !looks_sensitive(line)) { fputs(line, stdout); __atomic_add_fetch(&g_lines_shown, 1, __ATOMIC_SEQ_CST); return; }
+    /* (a line that matches the whitelist but looks sensitive is withheld above; g_shown_sensitive counts the unlikely case that one is shown anyway) */
     __atomic_add_fetch(&g_lines_withheld, 1, __ATOMIC_SEQ_CST);
     if (looks_sensitive(line)) __atomic_add_fetch(&g_lines_sensitive, 1, __ATOMIC_SEQ_CST);
 }
@@ -200,6 +203,26 @@ int hv_g1_wait(int cap_ms) {
     return g_waited;
 }
 
+/* ---- libtatsu's diagnosis of the last request, parsed and rebuilt from numbers and a short class name (the raw string is never printed) ---- */
+typedef struct { int kind, attempts, http, status, curl; char cls[28]; } Diag;
+static int cls_ok(const char *c) { size_t n = strlen(c); if (!n || n >= 26) return 0; for (; *c; c++) if (!((*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_')) return 0; return 1; }
+static int parse_diag(const char *d, Diag *o) {
+    memset(o, 0, sizeof *o);
+    o->attempts = o->http = o->status = o->curl = -1;
+    if (!d[0]) { o->kind = HV_G1D_EMPTY; return 1; }
+    int a, h, v, cc, n;
+    char cl[40];
+    /* sscanf's count does not say that the literal text after the last conversion matched: each pattern ends in %n, which stays 0 unless the whole pattern matched, and the rest of the string must be exhausted */
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / TRANSPORT: curl %d %39s / MESSAGE_RAW: suppressed%n", &a, &cc, cl, &n) == 3 && n > 0 && !d[n] && cls_ok(cl)) { o->kind = HV_G1D_TRANSPORT; o->attempts = a; o->curl = cc; snprintf(o->cls, sizeof o->cls, "%s", cl); return 1; }
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / HTTP: %d / TSS_STATUS: 0 / MESSAGE_CLASS: SUCCESS / MESSAGE_RAW: suppressed%n", &a, &h, &n) == 2 && n > 0 && !d[n]) { o->kind = HV_G1D_SUCCESS; o->attempts = a; o->http = h; o->status = 0; snprintf(o->cls, sizeof o->cls, "SUCCESS"); return 1; }
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / HTTP: %d / NOT_A_TSS_REPLY / MESSAGE_RAW: suppressed%n", &a, &h, &n) == 2 && n > 0 && !d[n]) { o->kind = HV_G1D_NOT_REPLY; o->attempts = a; o->http = h; return 1; }
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / SUCCESS_BUT_NOT_A_PLIST / MESSAGE_RAW: suppressed%n", &a, &n) == 1 && n > 0 && !d[n]) { o->kind = HV_G1D_NOT_PLIST; o->attempts = a; return 1; }
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / HTTP: %d / TSS_STATUS: %d / MESSAGE_CLASS: %39s / MESSAGE_RAW: suppressed%n", &a, &h, &v, cl, &n) == 4 && n > 0 && !d[n] && cls_ok(cl)) { o->kind = HV_G1D_STATUS; o->attempts = a; o->http = h; o->status = v; snprintf(o->cls, sizeof o->cls, "%s", cl); return 1; }
+    n = 0; if (sscanf(d, "TSS_ATTEMPTS: %d / HTTP: %d / TSS_STATUS: OTHER / MESSAGE_CLASS: %39s / MESSAGE_RAW: suppressed%n", &a, &h, cl, &n) == 3 && n > 0 && !d[n] && cls_ok(cl)) { o->kind = HV_G1D_STATUS; o->attempts = a; o->http = h; o->status = -2; snprintf(o->cls, sizeof o->cls, "%s", cl); return 1; }
+    return 0;   /* an unknown format is a failure, and is not printed */
+}
+static const char *diag_name(int k) { static const char *n[] = {"unchecked", "success", "status", "not_a_tss_reply", "transport", "empty", "success_but_not_a_plist"}; return k >= 0 && k <= 6 ? n[k] : "?"; }
+
 /* ---- the table ---- */
 static int g_failed;
 static void row(FILE *out, const char *name, int ok, const char *fmt, ...) {
@@ -227,6 +250,13 @@ int hv_g1_finish(FILE *out, const char *workdir, const HvG1Expect *x) {
     row(out, "usbmuxd", !mux_listening(g_mux_port), "the private usbmuxd's loopback socket %s", mux_listening(g_mux_port) ? "STILL LISTENS" : "no longer answers");
     int att = hv_curl_attempt_count() - g_att0;
     row(out, "tss_requests", att >= x->tss_min && att <= x->tss_max, "the curl client made %d request attempt(s) (expected %d to %d; retries count); the signing URL was the forced test URL", att, x->tss_min, x->tss_max);
+    {
+        Diag dg;
+        int parsed = parse_diag(tss_last_diag(), &dg);   /* read once, after the restore thread ended: nothing can overwrite it (it only describes the LAST request) */
+        int ok = parsed && (x->diag_kind == HV_G1D_UNCHECKED || (dg.kind == x->diag_kind && (x->diag_val < 0 || (dg.kind == HV_G1D_STATUS ? dg.status : dg.curl) == x->diag_val)));
+        row(out, "tss_diag", ok, "libtatsu's diagnosis of the last request: %s; kind=%s attempts=%d http=%d tss_status=%d curl_code=%d class=%s; expected kind=%s value=%d%s (it describes the last request only; the earlier ones are covered by the server's request count and the tool's return)",
+            parsed ? "parsed" : "UNKNOWN FORMAT (not printed)", parsed ? diag_name(dg.kind) : "?", dg.attempts, dg.http, dg.status, dg.curl, dg.cls[0] ? dg.cls : "-", diag_name(x->diag_kind), x->diag_val, x->diag_kind == HV_G1D_UNCHECKED ? " (observation only)" : "");
+    }
     HvNetStats ns; hv_net_guard_stats(&ns);
     int den = ns.denied - g_ns0.denied, allowed = ns.allowed - g_ns0.allowed;
     row(out, "connections", den >= x->denied_min && den <= x->denied_max && ns.url_attempts == 0, "connection guard: %d attempt(s), %d allowed (the private usbmuxd listener and the one approved test-server port), %d refused (expected %d to %d), URLAsset %d; a refusal that is not the scenario means the tool went somewhere it must not (a direct connect() elsewhere in the process is not covered)", ns.attempts - g_ns0.attempts, allowed, den, x->denied_min, x->denied_max, ns.url_attempts);
@@ -260,8 +290,9 @@ int hv_g1_finish(FILE *out, const char *workdir, const HvG1Expect *x) {
         row(out, "ticket_files", tick == 0, "%d new or changed entr%s whose name looks like a signing ticket (shsh / ticket / img4); ticket files are disabled by the session (hv_no_ticket_files)", tick, tick == 1 ? "y" : "ies");
     }
     {
-        int shown = __atomic_load_n(&g_lines_shown, __ATOMIC_SEQ_CST), wh = __atomic_load_n(&g_lines_withheld, __ATOMIC_SEQ_CST), se = __atomic_load_n(&g_lines_sensitive, __ATOMIC_SEQ_CST);
-        row(out, "tool_log", 1, "the tool's log is filtered: %d line(s) shown (known-harmless beginnings only), %d withheld, %d of those looked like an ECID, a nonce or a ticket (a count, never the text)", shown, wh, se);
+        int shown = __atomic_load_n(&g_lines_shown, __ATOMIC_SEQ_CST), wh = __atomic_load_n(&g_lines_withheld, __ATOMIC_SEQ_CST), se = __atomic_load_n(&g_lines_sensitive, __ATOMIC_SEQ_CST), by = __atomic_load_n(&g_bypassed_lines, __ATOMIC_SEQ_CST), ss = __atomic_load_n(&g_shown_sensitive, __ATOMIC_SEQ_CST);
+        row(out, "tool_log", !g_bypass && !ss && by == 0, "%s: %d line(s) shown (known-harmless beginnings only, %d of them looked sensitive), %d withheld (%d of those looked like an ECID, a nonce or a ticket: blocked, which is the filter working; a count, never the text), %d printed unfiltered",
+            g_bypass ? "the filter was SWITCHED OFF (a control; never allowed in a real G1 run)" : "the tool's log is filtered", shown, ss, wh, se, by);
     }
     {
         ThSnap t1;
@@ -272,7 +303,7 @@ int hv_g1_finish(FILE *out, const char *workdir, const HvG1Expect *x) {
             if (th_count(&t1, t1.name[i]) > th_count(&g_th0, t1.name[i]) && !strstr(grown, t1.name[i])) { grew++; strncat(grown, t1.name[i], sizeof grown - strlen(grown) - 2); strncat(grown, " ", sizeof grown - strlen(grown) - 1); }
         row(out, "threads", t1.n >= 0 && g_th0.n >= 0 && !grew && t1.n < MAXTH && g_th0.n < MAXTH, "%d before the run (guest on the bus), %d after; %s%s", g_th0.n, t1.n, grew ? "MORE threads than before for: " : "no name has more threads than before", grown);
     }
-    if (g_failed == 0) fprintf(out, "install g1 RESULT: g1_passed (engine return %d as expected, session report %d, %d request attempt(s), %d refused connection(s) as expected, 0 failed row(s)). This is NOT a restore.\n", g_rec_engine_rc, g_rec_report, att, den);
+    if (g_failed == 0) fprintf(out, "install g1 RESULT: g1_passed (engine return %d as expected, session report %d, %d request attempt(s), %d refused connection(s) as expected, 0 failed row(s)). Scope: synthetic replies, only the work directory was watched for writes, no disk or aux took part. This is NOT a restore.\n", g_rec_engine_rc, g_rec_report, att, den);
     else fprintf(out, "install g1 RESULT: FAILED (%d row(s)). Not a restore.\n", g_failed);
     return g_failed;
 }

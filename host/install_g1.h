@@ -28,14 +28,18 @@ int hv_g1_extra_flags(struct idevicerestore_client_t *c);
 /* host/install.c, G1 build: what the restore thread saw, recorded before it publishes the result. */
 void hv_g1_record(int engine_rc, int closed, int cleanup_mask, int final_report);
 
+/* What libtatsu's own diagnosis (tss_last_diag, the HTTPS-only build: a fixed vocabulary, never the server's text) must say about the LAST request of the run. */
+enum { HV_G1D_UNCHECKED = 0, HV_G1D_SUCCESS, HV_G1D_STATUS, HV_G1D_NOT_REPLY, HV_G1D_TRANSPORT, HV_G1D_EMPTY, HV_G1D_NOT_PLIST };
 typedef struct {
     int engine_zero;      /* 1: the tool must return 0 (all three requests answered); 0: it must return non-zero */
     int tss_min, tss_max; /* the number of requests the curl client made (attempts, retries included) */
     int denied_min, denied_max; /* connections the policy refused (0 for every normal scenario; >0 only where a refusal IS the scenario) */
+    int diag_kind, diag_val;    /* HV_G1D_*; diag_val: the TSS status (HV_G1D_STATUS) or the curl code (HV_G1D_TRANSPORT), -1 = any. HV_G1D_UNCHECKED only prints what was seen */
 } HvG1Expect;
 
 /* Options of the test program (defaults: the port is approved, ticket files stay disabled). */
 void hv_g1_set_server(const char *url, int port);   /* the forced signing URL ("https://127.0.0.1:port/path") and the port to approve (0: approve nothing) */
+void hv_g1_set_log_bypass(int on);                  /* control: the tool's log is printed unfiltered (synthetic data only); the table then FAILS its tool_log row, by design */
 void hv_g1_test_allow_tickets(int on);              /* control: lets the tool write its ticket file (hv_no_ticket_files = 0) so the verdict must catch a real write */
 
 /* Before the run: the work directory snapshot, the thread snapshot, the counters; the log filter on. 0, or -1 with the reason printed. */

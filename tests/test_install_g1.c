@@ -17,6 +17,7 @@
      c-tickets        ok, with ticket files enabled: the tool writes its ticket file
      c-dnload         ok, and a DFU DNLOAD reaches the device while the tool runs
      c-injfile        ok, and a file named like a ticket appears in the work directory
+     c-showlog        ok, with the tool's log filter switched off: the tool_log row must FAIL and the synthetic nonce must show
    Without a "c-" prefix an exit status other than 0 means the scenario's expectation was not met. */
 #define main irecv_main
 #include "test_irecv.c"
@@ -62,18 +63,19 @@ int main(int argc, char **argv) {
     const char *kind = !strncmp(sc, "c-", 2) ? sc + 2 : sc;
     char url[200];
     const char *path = "/ok";
-    HvG1Expect x = {1, 3, 3, 0, 0};
+    HvG1Expect x = {1, 3, 3, 0, 0, HV_G1D_SUCCESS, -1};
     int approve = port;
-    if (!strcmp(kind, "refuse1")) { path = "/refuse"; x = (HvG1Expect){0, 1, 1, 0, 0}; }
-    else if (!strcmp(kind, "refuse2")) { path = "/refuse2"; x = (HvG1Expect){0, 2, 2, 0, 0}; }
-    else if (!strcmp(kind, "bad")) { path = "/bad"; x = (HvG1Expect){0, 1, 2, 0, 0}; tss_set_max_attempts(2); }
-    else if (!strcmp(kind, "connfail")) { path = "/ok"; x = (HvG1Expect){0, 1, 2, 0, 0}; tss_set_max_attempts(2); }
-    else if (!strcmp(kind, "timeout")) { path = "/slow"; x = (HvG1Expect){0, 1, 2, 0, 0}; tss_set_max_attempts(2); tss_set_timeouts(2, 3); }
-    else if (!strcmp(kind, "badcert")) { path = "/ok"; x = (HvG1Expect){0, 1, 1, 0, 0}; }
-    else if (!strcmp(kind, "redirect")) { path = "/redirect"; x = (HvG1Expect){0, 1, 2, 0, 0}; tss_set_max_attempts(2); }
-    else if (!strcmp(kind, "noallow")) { path = "/ok"; approve = 0; x = (HvG1Expect){0, 1, 1, 1, 1}; }
-    else if (!strcmp(kind, "external")) { approve = port; x = (HvG1Expect){0, 1, 1, 1, 1}; }
+    if (!strcmp(kind, "refuse1")) { path = "/refuse"; x = (HvG1Expect){0, 1, 1, 0, 0, HV_G1D_STATUS, 8}; }
+    else if (!strcmp(kind, "refuse2")) { path = "/refuse2"; x = (HvG1Expect){0, 2, 2, 0, 0, HV_G1D_STATUS, 8}; }
+    else if (!strcmp(kind, "bad")) { path = "/bad"; x = (HvG1Expect){0, 1, 2, 0, 0, HV_G1D_NOT_REPLY, -1}; tss_set_max_attempts(2); }
+    else if (!strcmp(kind, "connfail")) { path = "/ok"; x = (HvG1Expect){0, 1, 2, 0, 0, HV_G1D_TRANSPORT, 7}; tss_set_max_attempts(2); }
+    else if (!strcmp(kind, "timeout")) { path = "/slow"; x = (HvG1Expect){0, 1, 2, 0, 0, HV_G1D_TRANSPORT, 28}; tss_set_max_attempts(2); tss_set_timeouts(2, 3); }
+    else if (!strcmp(kind, "badcert")) { path = "/ok"; x = (HvG1Expect){0, 1, 1, 0, 0, HV_G1D_TRANSPORT, 60}; }
+    else if (!strcmp(kind, "redirect")) { path = "/redirect"; x = (HvG1Expect){0, 1, 2, 0, 0, HV_G1D_NOT_REPLY, -1}; tss_set_max_attempts(2); }
+    else if (!strcmp(kind, "noallow")) { path = "/ok"; approve = 0; x = (HvG1Expect){0, 1, 1, 1, 1, HV_G1D_TRANSPORT, 1}; }
+    else if (!strcmp(kind, "external")) { approve = port; x = (HvG1Expect){0, 1, 1, 1, 1, HV_G1D_TRANSPORT, 1}; }
     else if (!strcmp(kind, "noallow-asok")) { approve = 0; }   /* c-noallow-asok: expectations stay those of "ok" */
+    else if (!strcmp(kind, "showlog")) { hv_g1_set_log_bypass(1); }
     else if (!strcmp(kind, "tickets") || !strcmp(kind, "dnload") || !strcmp(kind, "injfile") || !strcmp(kind, "ok")) {}
     else { fprintf(stderr, "unknown scenario %s\n", sc); return 2; }
     if (!strcmp(kind, "external")) snprintf(url, sizeof url, "https://192.0.2.1:443/ok");   /* TEST-NET-1: a bare public address; the policy refuses it before any packet */

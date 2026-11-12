@@ -66,29 +66,29 @@ run() { # name scenario port ca [want patterns...]  (a "c-" scenario must exit 1
 CASES=${CASES:-ok refuse1 refuse2 bad connfail timeout badcert redirect external noallow c-noallow-asok c-tickets c-dnload c-injfile c-showlog}
 for c in $CASES; do
   case $c in
-    ok)       run ok ok $PORT cadir "RESULT: g1_passed" "engine_rc +ok" "tss_requests +ok.*made 3 request" "connections +ok" "device_requests +ok" "local_writes +ok" "ticket_files +ok" "session +ok.*final report 1"
+    ok)       run ok ok $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=success attempts=1 http=200 tss_status=0" "engine_rc +ok" "tss_requests +ok.*made 3 request" "connections +ok" "device_requests +ok" "local_writes +ok" "ticket_files +ok" "session +ok.*final report 1"
               [ "$(reqs /ok)" = 3 ] || { echo "ok: the server saw $(reqs /ok) request(s), expected 3"; rc=1; } ;;
-    refuse1)  run refuse1 refuse1 $PORT cadir "RESULT: g1_passed" "engine_rc +ok" "tss_requests +ok.*made 1 request" "session +ok.*final report 2"
+    refuse1)  run refuse1 refuse1 $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=status.*tss_status=8" "engine_rc +ok" "tss_requests +ok.*made 1 request" "session +ok.*final report 2"
               [ "$(reqs /refuse)" = 1 ] || { echo "refuse1: the server saw $(reqs /refuse) request(s), expected 1"; rc=1; } ;;
-    refuse2)  run refuse2 refuse2 $PORT cadir "RESULT: g1_passed" "tss_requests +ok.*made 2 request"
+    refuse2)  run refuse2 refuse2 $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=status.*tss_status=8" "tss_requests +ok.*made 2 request"
               [ "$(reqs /refuse2)" = 2 ] || { echo "refuse2: the server saw $(reqs /refuse2) request(s), expected 2"; rc=1; } ;;
-    bad)      run bad bad $PORT cadir "RESULT: g1_passed" "engine_rc +ok" ;;
-    connfail) run connfail connfail $CLOSED cadir "RESULT: g1_passed" "engine_rc +ok"
+    bad)      run bad bad $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=not_a_tss_reply" "engine_rc +ok" ;;
+    connfail) run connfail connfail $CLOSED cadir "RESULT: g1_passed" "tss_diag +ok.*kind=transport.*curl_code=7 class=CONNECT" "engine_rc +ok"
               [ "$(total_reqs)" = 0 ] || { echo "connfail: the server saw requests"; rc=1; } ;;
-    timeout)  run timeout timeout $PORT cadir "RESULT: g1_passed" "engine_rc +ok" ;;
-    badcert)  run badcert badcert $PORT cadir_other "RESULT: g1_passed" "tss_requests +ok.*made 1 request"
+    timeout)  run timeout timeout $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=transport.*curl_code=28 class=TIMEOUT" "engine_rc +ok" ;;
+    badcert)  run badcert badcert $PORT cadir_other "RESULT: g1_passed" "tss_diag +ok.*kind=transport.*curl_code=60" "tss_requests +ok.*made 1 request"
               [ "$(total_reqs)" = 0 ] || { echo "badcert: the server saw a request over an untrusted certificate"; rc=1; } ;;
-    redirect) run redirect redirect $PORT cadir "RESULT: g1_passed" "engine_rc +ok"
+    redirect) run redirect redirect $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=not_a_tss_reply attempts=2 http=302" "engine_rc +ok"
               [ "$(reqs /ok)" = 0 ] || { echo "redirect: the redirect target was requested"; rc=1; } ;;
-    external) run external external $PORT cadir "RESULT: g1_passed" "connections +ok.*1 refused \\(expected 1 to 1\\)"
+    external) run external external $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*class=POLICY_REFUSED" "connections +ok.*1 refused \\(expected 1 to 1\\)"
               [ "$(total_reqs)" = 0 ] || { echo "external: the server saw requests"; rc=1; } ;;
-    noallow)  run noallow noallow $PORT cadir "RESULT: g1_passed" "connections +ok.*1 refused \\(expected 1 to 1\\)"
+    noallow)  run noallow noallow $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*class=POLICY_REFUSED" "connections +ok.*1 refused \\(expected 1 to 1\\)"
               [ "$(total_reqs)" = 0 ] || { echo "noallow: the server saw requests although the port was not approved"; rc=1; } ;;
-    c-noallow-asok) run c-noallow-asok c-noallow-asok $PORT cadir "RESULT: FAILED" "engine_rc +FAILED" "connections +FAILED" "tss_requests +FAILED" ;;
+    c-noallow-asok) run c-noallow-asok c-noallow-asok $PORT cadir "RESULT: FAILED" "tss_diag +FAILED" "engine_rc +FAILED" "connections +FAILED" "tss_requests +FAILED" ;;
     c-tickets) run c-tickets c-tickets $PORT cadir "RESULT: FAILED" "ticket_files +FAILED" "local_writes +FAILED.*shsh" ;;
     c-dnload) run c-dnload c-dnload $PORT cadir "RESULT: FAILED" "device_requests +FAILED" ;;
     c-injfile) run c-injfile c-injfile $PORT cadir "RESULT: FAILED" "ticket_files +FAILED" "local_writes +FAILED.*stray.shsh" ;;
-    c-showlog) HV_G1_SHOW_LOG=1 run c-showlog ok $PORT cadir "RESULT: g1_passed"
+    c-showlog) run c-showlog c-showlog $PORT cadir "RESULT: FAILED" "tool_log +FAILED.*SWITCHED OFF"
               grep -qi "00 11 22 33 44 55" "$G/c-showlog.out" || { echo "c-showlog: the unfiltered log does not show the nonce, so the filter check proves nothing"; rc=1; } ;;
   esac
 done

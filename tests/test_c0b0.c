@@ -11,6 +11,7 @@
 
 #include "../host/display_buf.h"
 #include "../host/key_map.h"
+#include "../host/render_gate.h"
 #include "../host/touch_input.h"
 
 static int g_fail, g_checks;
@@ -500,10 +501,119 @@ static void test_touch_loop(void) {
     }
 }
 
+/* ======================= C0 fix: the render gate ======================= */
+
+static void test_gate_states(void) {
+    group("render gate: states");
+    HvGate g; hv_gate_init(&g);
+    CHECK(hv_gate_state(&g) == HV_GATE_IDLE, "starts idle");
+    CHECK(hv_gate_enter(&g) == 0, "no entry before start");
+    CHECK(hv_gate_try_destroy(&g) == -1, "nothing to free while idle");
+    CHECK(hv_gate_begin_close(&g) == HV_GATE_IDLE, "closing an idle gate changes nothing");
+    CHECK(hv_gate_begin_start(&g) == 1, "first start");
+    CHECK(hv_gate_begin_start(&g) == -1, "a second start while the first is building is refused");
+    CHECK(hv_gate_enter(&g) == 0, "no entry while starting");
+    CHECK(hv_gate_try_destroy(&g) == -1, "nothing to free while starting");
+    hv_gate_start_failed(&g);
+    CHECK(hv_gate_state(&g) == HV_GATE_IDLE && hv_gate_begin_start(&g) == 1, "a failed start returns to idle and can be tried again");
+    hv_gate_open(&g);
+    CHECK(hv_gate_begin_start(&g) == 0, "start on an open gate: already running");
+    CHECK(hv_gate_enter(&g) == 1 && hv_gate_enter(&g) == 1 && hv_gate_active(&g) == 2, "two users inside");
+    CHECK(hv_gate_begin_close(&g) == HV_GATE_CLOSING && hv_gate_begin_close(&g) == HV_GATE_CLOSING, "close (twice is fine)");
+    CHECK(hv_gate_enter(&g) == 0, "no new user once closing");
+    CHECK(hv_gate_try_destroy(&g) == 0, "users inside: the right to free is not given");
+    CHECK(hv_gate_begin_start(&g) == -1, "no restart while closing");
+    hv_gate_leave(&g);
+    CHECK(hv_gate_try_destroy(&g) == 0, "one user still inside");
+    hv_gate_leave(&g);
+    CHECK(hv_gate_try_destroy(&g) == 1 && hv_gate_state(&g) == HV_GATE_RELEASING, "nobody inside: the right is given, once");
+    CHECK(hv_gate_try_destroy(&g) == -1, "a second caller does not get it");
+    CHECK(hv_gate_begin_start(&g) == -1, "no restart until the release is reported (the state alone does not mean the memory is gone)");
+    CHECK(hv_gate_enter(&g) == 0, "no entry while releasing");
+    hv_gate_released(&g);
+    CHECK(hv_gate_state(&g) == HV_GATE_IDLE && hv_gate_begin_start(&g) == 1, "after released() a new start is possible");
+    hv_gate_open(&g);
+    CHECK(hv_gate_try_destroy(&g) == 1, "an open gate with nobody inside: closed and given in one step");
+    hv_gate_released(&g); hv_gate_released(&g);
+    CHECK(hv_gate_state(&g) == HV_GATE_IDLE, "a second released() changes nothing");
+    hv_gate_leave(&g);
+    CHECK(hv_gate_active(&g) == 0, "a stray leave does not go below zero");
+    hv_gate_fini(&g);
+}
+
+typedef struct { HvGate g; volatile int *res; atomic_int go, won; } Duel;
+static void *duel_thread(void *a) {
+    Duel *d = a;
+    while (!atomic_load(&d->go)) { }
+    if (hv_gate_try_destroy(&d->g) == 1) atomic_fetch_add(&d->won, 1);
+    return NULL;
+}
+static void test_gate_duel(void) {
+    group("render gate: two destroyers, one right");
+    int bad = 0, none = 0;
+    for (int round = 0; round < 300; round++) {
+        Duel d; memset(&d, 0, sizeof d); hv_gate_init(&d.g);
+        hv_gate_begin_start(&d.g); hv_gate_open(&d.g);
+        pthread_t t[3];
+        for (int i = 0; i < 3; i++) pthread_create(&t[i], NULL, duel_thread, &d);
+        atomic_store(&d.go, 1);
+        for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+        int w = atomic_load(&d.won);
+        if (w != 1) { if (w == 0) none++; bad++; }
+        hv_gate_fini(&d.g);
+    }
+    CHECK(bad == 0, "exactly one of three concurrent destroyers got the right, in 300 rounds (%d rounds wrong, %d with none)", bad, none);
+}
+
+typedef struct { HvGate g; int *res; int n; atomic_int stop; atomic_long used, refused; } Race;
+static void *race_user(void *a) {
+    Race *r = a;
+    int refused_in_a_row = 0;
+    while (refused_in_a_row < 50 && !atomic_load(&r->stop)) {   /* stop: the main thread is done waiting (a broken gate must fail the test, not hang it) */
+        if (hv_gate_enter(&r->g)) {
+            refused_in_a_row = 0;
+            long sum = 0; for (int i = 0; i < r->n; i++) sum += r->res[i];   /* the resource: freed only when nobody is inside */
+            (void)sum;
+            atomic_fetch_add(&r->used, 1);
+            hv_gate_leave(&r->g);
+        } else { refused_in_a_row++; atomic_fetch_add(&r->refused, 1); usleep(20); }
+    }
+    return NULL;
+}
+static void test_gate_race(void) {
+    group("render gate: users race the release (a use after free is caught by ASan)");
+    int freed_rounds = 0;
+    for (int round = 0; round < 40; round++) {
+        Race r; memset(&r, 0, sizeof r); hv_gate_init(&r.g);
+        CHECK(hv_gate_begin_start(&r.g) == 1, "start %d", round);
+        r.n = 4096; r.res = malloc(r.n * sizeof(int)); for (int i = 0; i < r.n; i++) r.res[i] = i;
+        hv_gate_open(&r.g);
+        pthread_t u[4];
+        for (int i = 0; i < 4; i++) pthread_create(&u[i], NULL, race_user, &r);
+        usleep(500 + round * 100);
+        int got = 0, tries = 0;
+        while (!got && tries < 100000) { got = hv_gate_try_destroy(&r.g) == 1; if (!got) usleep(10); tries++; }
+        CHECK(got, "the destroyer got the right after the users left (round %d)", round);
+        if (got) { free(r.res); r.res = NULL; freed_rounds++; hv_gate_released(&r.g); }
+        atomic_store(&r.stop, 1);
+        for (int i = 0; i < 4; i++) pthread_join(u[i], NULL);
+        if (!got) { free(r.res); r.res = NULL; hv_gate_begin_close(&r.g); }
+        if (!got) { hv_gate_fini(&r.g); break; }   /* the gate is broken: stop the rounds, the failure is already counted */
+        CHECK(hv_gate_state(&r.g) == HV_GATE_IDLE && hv_gate_active(&r.g) == 0, "idle and empty after round %d", round);
+        CHECK(atomic_load(&r.used) > 0 || round < 3, "the users did work (round %d)", round);
+        /* a new instance can start in the same gate */
+        CHECK(hv_gate_begin_start(&r.g) == 1, "restart after the release (round %d)", round);
+        hv_gate_start_failed(&r.g);
+        hv_gate_fini(&r.g);
+    }
+    CHECK(freed_rounds == 40, "40 rounds freed");
+}
+
 int main(void) {
     test_convert(); test_buffer_basic(); test_rejects(); test_pull(); test_close_waits(); test_free_after_close(); test_pattern();
     test_keymap();
     test_touch_basic(); test_touch_drag_scroll(); test_touch_loop();
+    test_gate_states(); test_gate_duel(); test_gate_race();
     printf("c0b0: %d check(s), %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

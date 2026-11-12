@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")/.."
 OUT=${1:?build dir}; CC=${CC:-cc}
 mkdir -p "$OUT"
-SRC="tests/test_c0b0.c host/display_buf.c host/key_map.c host/touch_input.c"
+SRC="tests/test_c0b0.c host/display_buf.c host/key_map.c host/touch_input.c host/render_gate.c"
 rc=0
 for mode in plain asan tsan; do
   case $mode in

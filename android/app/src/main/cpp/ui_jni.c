@@ -4,7 +4,11 @@
    (hv_vm_*) is NOT linked and is not touched.
 
    Threads: the render thread calls nativeRender and nativeTick; the UI thread calls nativeTouch, nativeKey, nativeSetView and the surface calls. One mutex (g_mu) guards the touch
-   state and the simulated guest; one (g_win_mu) guards the window pointer, so a surface that goes away waits for a picture being drawn. */
+   state and the simulated guest; one (g_win_mu) guards the window pointer, so a surface that goes away waits for a picture being drawn.
+
+   LIFETIME of the buffer and the source picture (g_buf, g_src): host/render_gate.h. nativeRender uses them only between hv_gate_enter and hv_gate_leave; nativeDestroy frees them only
+   when hv_gate_try_destroy gave it the right (nobody inside, new entries refused, one owner), and reports hv_gate_released when they are gone; nativeStart builds a new instance only
+   when the gate is idle. The window pointer (g_win_mu) is a separate matter and is not covered by the gate. Lock order: g_mu is never held while taking g_win_mu or the gate's mutex. */
 #include <jni.h>
 
 #include <android/log.h>
@@ -17,6 +21,7 @@
 
 #include "display_buf.h"
 #include "key_map.h"
+#include "render_gate.h"
 #include "touch_input.h"
 
 #define TAG "henge-ui"
@@ -24,6 +29,9 @@
 #define FRAME_H 720
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER, g_win_mu = PTHREAD_MUTEX_INITIALIZER;
+static HvGate g_gate;
+static pthread_once_t g_gate_once = PTHREAD_ONCE_INIT;
+static void gate_init_once(void) { hv_gate_init(&g_gate); }
 static HvDispBuf *g_buf;
 static ANativeWindow *g_win;
 static int g_win_w, g_win_h;
@@ -47,41 +55,65 @@ static void sink_hwheel(int n) { g_guest.hwheel += n; }
 static void sink_key(uint16_t code, int down) { (void)down; g_guest.keys++; g_guest.last_key = code; }
 
 static int fetch_synthetic(void *ctx, const uint8_t **px, uint32_t *w, uint32_t *h, uint32_t *stride) {
-    (void)ctx;
-    *px = g_src; *w = FRAME_W; *h = FRAME_H; *stride = FRAME_W * 4;
+    *px = ctx; *w = FRAME_W; *h = FRAME_H; *stride = FRAME_W * 4;
     return 0;
 }
 
+/* 0: built and open. 1: already running. -1: building failed. -2: the previous instance is still closing or being freed (not yet released): nothing was built. */
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
+    pthread_once(&g_gate_once, gate_init_once);
+    int st = hv_gate_begin_start(&g_gate);
+    if (st == 0) return 1;
+    if (st < 0) return -2;
+    HvDispBuf *b = hv_dispbuf_create();
+    uint8_t *src = malloc((size_t)FRAME_W * FRAME_H * 4);
+    if (!b || !src) {
+        if (b) hv_dispbuf_destroy(b);
+        free(src);
+        hv_gate_start_failed(&g_gate);
+        return -1;
+    }
     pthread_mutex_lock(&g_mu);
-    if (g_buf) { pthread_mutex_unlock(&g_mu); return 1; }
-    g_buf = hv_dispbuf_create();
-    g_src = malloc((size_t)FRAME_W * FRAME_H * 4);
+    g_buf = b; g_src = src;
     memset(&g_guest, 0, sizeof g_guest);
     g_guest.x = FRAME_W / 2; g_guest.y = FRAME_H / 2;
     g_frame = 0;
     HvInputSink sk = {sink_key, sink_move, sink_button, sink_wheel, sink_hwheel};
     hv_touch_init(&g_touch, &sk);
     hv_touch_set_display(&g_touch, FRAME_W, FRAME_H);
-    int ok = g_buf && g_src ? 0 : -1;
     pthread_mutex_unlock(&g_mu);
-    return ok;
+    hv_gate_open(&g_gate);   /* only now may nativeRender enter */
+    return 0;
 }
 
-/* The contract of host/display_buf.h, in the order it demands: close the buffer (waits for a copy in progress), the caller has joined the render thread, then destroy. */
+/* First step of the shutdown (host/display_buf.h): the buffer stops taking frames and no new render may enter. It does not free anything and is safe to call twice. */
 JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeClose(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
-    if (g_buf) hv_dispbuf_close(g_buf);
+    pthread_once(&g_gate_once, gate_init_once);
+    if (hv_gate_enter(&g_gate)) {          /* the buffer exists while we are inside */
+        hv_dispbuf_close(g_buf);           /* waits for a copy in progress */
+        hv_gate_leave(&g_gate);
+    }
+    hv_gate_begin_close(&g_gate);
 }
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestroy(JNIEnv *env, jclass cls) {
+
+/* Last step: frees the buffer and the source picture, only if this call got the right to (host/render_gate.h). 1: freed. 0: a render is still inside, nothing was freed, try again
+   (the render thread does, when it ends). -1: not this call's to free (another one has it, or nothing is built). Safe to call from the UI thread and the render thread. */
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestroy(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
+    pthread_once(&g_gate_once, gate_init_once);
+    int r = hv_gate_try_destroy(&g_gate);
+    if (r != 1) return r;
     pthread_mutex_lock(&g_mu);
     hv_touch_release_all(&g_touch);
     HvDispBuf *b = g_buf; g_buf = NULL;
-    free(g_src); g_src = NULL;
+    uint8_t *src = g_src; g_src = NULL;
     pthread_mutex_unlock(&g_mu);
     if (b) hv_dispbuf_destroy(b);
+    free(src);
+    hv_gate_released(&g_gate);   /* only now can a new instance start */
+    return 1;
 }
 
 JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetSurface(JNIEnv *env, jclass cls, jobject surface) {
@@ -107,22 +139,25 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetFee
     pthread_mutex_unlock(&g_mu);
 }
 
-/* One picture: the synthetic guest frame is made, pulled through the contract, and the newest copy is shown. Returns the frame number shown, 0 = nothing new, -1 = failed or closed. */
+/* One picture: the synthetic guest frame is made, pulled through the contract, and the newest copy is shown. Returns the frame number shown, 0 = nothing new, -1 = closed or not running.
+   The whole body, up to the single exit, is between hv_gate_enter and hv_gate_leave: that is what keeps g_buf and g_src alive. */
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
-    pthread_mutex_lock(&g_mu);
+    pthread_once(&g_gate_once, gate_init_once);
+    if (!hv_gate_enter(&g_gate)) return -1;
+    int result = 0;
     HvDispBuf *b = g_buf;
-    if (!b || !g_src) { pthread_mutex_unlock(&g_mu); return -1; }
+    uint8_t *src = g_src;      /* stable while we are inside */
+    pthread_mutex_lock(&g_mu);
     int cx = g_guest.x, cy = g_guest.y;
     uint32_t frame = ++g_frame;
-    hv_testpattern(g_src, FRAME_W, FRAME_H, FRAME_W * 4, frame, cx, cy);
+    hv_testpattern(src, FRAME_W, FRAME_H, FRAME_W * 4, frame, cx, cy);
     pthread_mutex_unlock(&g_mu);
 
-    int r = hv_dispbuf_pull(b, fetch_synthetic, NULL);
-    if (r == HV_DISP_CLOSED) return -1;
-    if (r != HV_DISP_NEW) return 0;
+    int r = hv_dispbuf_pull(b, fetch_synthetic, src);
+    if (r == HV_DISP_CLOSED) { result = -1; goto out; }
+    if (r != HV_DISP_NEW) goto out;
 
-    int shown = 0;
     pthread_mutex_lock(&g_win_mu);
     if (g_win) {
         uint32_t w, h;
@@ -135,7 +170,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender
             if (ANativeWindow_lock(g_win, &wb, NULL) == 0) {
                 static uint64_t seen;
                 if (wb.format == WINDOW_FORMAT_RGBX_8888 || wb.format == WINDOW_FORMAT_RGBA_8888) {
-                    if (hv_dispbuf_blit(b, &seen, (uint8_t *)wb.bits, (uint32_t)wb.stride, (uint32_t)wb.width, (uint32_t)wb.height) == 1) shown = (int)frame;
+                    if (hv_dispbuf_blit(b, &seen, (uint8_t *)wb.bits, (uint32_t)wb.stride, (uint32_t)wb.width, (uint32_t)wb.height) == 1) result = (int)frame;
                 } else {
                     __android_log_print(ANDROID_LOG_WARN, TAG, "window format %d is not RGBX/RGBA", wb.format);
                 }
@@ -144,7 +179,9 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender
         }
     }
     pthread_mutex_unlock(&g_win_mu);
-    return shown;
+out:
+    hv_gate_leave(&g_gate);
+    return result;
 }
 
 JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(JNIEnv *env, jclass cls, jint action, jint id, jfloat x, jfloat y, jlong t_ms) {

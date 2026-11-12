@@ -234,6 +234,7 @@ static void row_cleanup(const char *name, const char *status, const char *fmt, .
 static struct idevicerestore_client_t *g_client;
 static volatile int g_rc = 12345, g_done;
 static volatile int g_claimed, g_end_rc = -1;
+static volatile int g_release_rc = -99;   /* idevicerestore_client_release: 0 released; -1 handlers still running (client kept); -2 close failed or release not permitted (client kept); -99 not attempted */
 static uint64_t g_tok;
 static void *restore_thread(void *arg) {
     int rc = 12345;
@@ -243,8 +244,19 @@ static void *restore_thread(void *arg) {
         /* the only way into the tool: refused unless the connection policy is in force, and the policy cannot be removed while this runs */
         if (hv_restore_session_run_client(g_client, &rc) != 0) rc = 12346;
         g_rc = rc;
-        g_end_rc = hv_restore_session_end();   /* the owner ends it after the tool returned; refused = the policy stays */
-    } else g_rc = 12347;
+        /* order (contract of the host): close -> release_permitted -> client_release (checked) -> end. release_permitted is only meaningful before end(), and end() removes
+           the policy the handlers may still depend on. A failure at any step keeps the client AND the session (no end), and is reported by the main thread. */
+        int closed = hv_restore_session_close() == 0;
+        if (closed && hv_restore_session_release_permitted()) {
+            g_release_rc = idevicerestore_client_release(g_client);
+            if (g_release_rc == 0) g_client = NULL;
+        } else g_release_rc = -2;
+        if (g_release_rc == 0) g_end_rc = hv_restore_session_end();   /* the owner ends it after the client was released; refused = the policy stays */
+    } else {
+        g_rc = 12347;
+        g_release_rc = idevicerestore_client_release(g_client);   /* the tool never ran: no handler can exist */
+        if (g_release_rc == 0) g_client = NULL;
+    }
     g_done = 1;
     return NULL;
 }
@@ -417,8 +429,13 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
         row_cleanup("client_free", "FAILED", "NOT done: the restore thread has not returned, so the client is left allocated (reported as a leak, not freed under a running thread)");
         goto report;
     }
-    idevicerestore_client_free(g_client);
-    g_client = NULL;
+    /* the restore thread released the client (checked) before it ended the session; the main thread must not free it */
+    if (g_release_rc != 0) {
+        row_cleanup("client_free", "FAILED", g_release_rc == -1 ? "NOT done: async handlers were still running at the deadline, the client is left allocated and the session is not ended"
+                                           : g_release_rc == -2 ? "NOT done: the session did not close or release was not permitted, the client is left allocated and the session is not ended"
+                                           : "NOT done: the release was not attempted");
+        g_still = 1;
+    }
     usleep(500000); /* the event thread of the tool needs a moment to wind down */
     /* the private usbmuxd: ask it to stop, wait for the thread, check that its listener is gone */
     usbmuxd_request_stop();

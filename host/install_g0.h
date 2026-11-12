@@ -28,7 +28,9 @@ int hv_g0_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_
 /* Waits for the end of the run (cap_ms), asks it to stop once if it does not end, and waits 20 s more. 1: it ended by itself, 0: it needed the cancel, -1: it did
    not end at all (then nothing may be freed or closed: the caller ends the process). */
 int hv_g0_wait(int cap_ms);
-/* The verdict table to `out`. Returns the number of FAILED rows (0 = G0 passed). */
+/* Test only: the amount of data above which a storage file is compared by size and modification time instead of content (default 2 GiB). */
+void hv_g0_set_content_cap(uint64_t bytes);
+/* The verdict table to `out`. Returns the number of FAILED rows (0 = G0 passed). The result line is one of g0_passed (disk and aux content verified), g0_passed_metadata_only (the disk was compared by size and time only) or FAILED. */
 int hv_g0_finish(FILE *out, const char *disk, const char *aux);
 
 #endif

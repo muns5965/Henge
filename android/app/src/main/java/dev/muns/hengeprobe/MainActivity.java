@@ -598,7 +598,8 @@ public class MainActivity extends Activity {
                     });
                     reader.start();
                     boolean done = p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
-                    if (!done) p.destroyForcibly();
+                    boolean killConfirmed = true;
+                    if (!done) { p.destroyForcibly(); if (g0) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
                     reader.join(2000);
                     String out;
                     synchronized (text) {
@@ -1051,7 +1052,8 @@ public class MainActivity extends Activity {
                         }
                         bodyStart = acc.length();
                     }
-                    if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
+                    if (!done) acc.append(g0 ? "G0 FAILED: 제한 시간 초과로 프로세스 강제 종료를 요청했습니다(destroyForcibly). 프로세스 종료 확인: " + (killConfirmed ? "확인됨" : "5초 안에 확인하지 못함")
+                                            + ". 복원 세션 및 자원 정리 완료 여부는 확인하지 못했습니다 — 통과가 아닙니다.\n" : "vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
                     if (installer && !dnload && !tss && !pf && !g0) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
@@ -1079,6 +1081,14 @@ public class MainActivity extends Activity {
                         StringBuilder sum = new StringBuilder();
                         for (String ln : text.toString().split("\n")) if (ln.startsWith("install g0") || ln.startsWith("vmrun RESULT") || ln.startsWith("install: final result")) sum.append(ln).append('\n');
                         acc.append(sum.length() > 0 ? "\n— 요약 (G0 줄 전체) —\n" + sum : "\n— G0 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
+                        String all0 = text.toString();
+                        String verdict;
+                        if (!done) verdict = "실패 — 시간 초과 강제 종료(최종 판정 없음)";
+                        else if (all0.contains("install g0 RESULT: g0_passed stopped=before_rootfs")) verdict = "통과 (g0_passed): 정지점 A, 세션 정리, 디스크·aux 내용 검증까지 완료";
+                        else if (all0.contains("install g0 RESULT: g0_passed_metadata_only")) verdict = "부분 통과 (g0_passed_metadata_only): 나머지 검사는 통과, 디스크 내용은 검증하지 못함(크기·수정시각만) — 완전 통과로 세지 마세요";
+                        else if (all0.contains("install g0 RESULT: FAILED")) verdict = "실패 (FAILED): 위 FAILED 행 참조";
+                        else verdict = "판정 없음 — 최종 RESULT 줄이 없으므로 성공으로 처리하지 않습니다";
+                        acc.append("G0 최종 판정: ").append(verdict).append('\n');
                     }
                     if (irecv) {
                         String all = text.toString();

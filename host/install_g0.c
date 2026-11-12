@@ -77,7 +77,8 @@ static void log_print(enum loglevel level, const char *fmt, va_list ap) {
 }
 
 /* ---- identity of a storage file: size, modification time and content ---- */
-#define CONTENT_CAP (2ULL << 30)   /* more data than this: size and modification time only (said in the table) */
+static uint64_t g_content_cap = 2ULL << 30;   /* more data than this: size and modification time only (hv_g0_set_content_cap is for the test) */
+void hv_g0_set_content_cap(uint64_t bytes) { g_content_cap = bytes; }
 typedef struct { int ok, mode; uint64_t size, data_bytes; long long mtime_ns; uint8_t acc[32]; } FileId;   /* mode 1 content (data extents), 2 size + mtime only */
 
 static void mix(uint8_t acc[32], const uint8_t digest[32], uint64_t off) {
@@ -111,7 +112,7 @@ static void file_id(const char *path, FileId *o) {
     }
     if (!sparse_ok) data = o->size;
     o->data_bytes = data;
-    if (data > CONTENT_CAP) { o->mode = 2; o->ok = 1; close(fd); return; }
+    if (data > g_content_cap) { o->mode = 2; o->ok = 1; close(fd); return; }
     o->mode = 1;
     uint8_t *buf = malloc(1 << 20);
     if (!buf) { close(fd); return; }
@@ -134,7 +135,7 @@ static void file_id(const char *path, FileId *o) {
             }
             pos = de;
         }
-    } else {   /* the whole file as one extent (it is at most CONTENT_CAP) */
+    } else {   /* the whole file as one extent (it is at most the cap) */
         for (uint64_t at = 0; at < o->size && !bad;) {
             size_t n = (size_t)(o->size - at > (1 << 20) ? (1 << 20) : o->size - at);
             ssize_t got = pread(fd, buf, n, (off_t)at);
@@ -246,8 +247,17 @@ static void row(FILE *out, const char *name, int ok, const char *fmt, ...) {
     if (!ok) g_failed++;
 }
 
+static int g_meta;   /* rows that passed on size and modification time only (no content check) */
+static void row_meta(FILE *out, const char *name, const char *fmt, ...) {
+    char d[700];
+    va_list ap; va_start(ap, fmt); vsnprintf(d, sizeof d, fmt, ap); va_end(ap);
+    fprintf(out, "install g0: %-18s %-6s %s\n", name, "META", d);
+    g_meta++;
+}
+
 int hv_g0_finish(FILE *out, const char *disk, const char *aux) {
     g_failed = 0;
+    g_meta = 0;
     int ended = g_started && g_waited != -1 && hv_install_result() != 1;
     usleep(500000);   /* the tool's event thread needs a moment to wind down */
     fprintf(out, "install g0: the install entry point (host/install.c) ran with the tool's stop A; this is NOT a restore: nothing was personalized, sent, extracted or installed\n");
@@ -286,13 +296,16 @@ int hv_g0_finish(FILE *out, const char *disk, const char *aux) {
     file_id(disk, &d1); file_id(aux, &a1);
     char h0[20], h1[20];
     hex(g_disk0.acc, h0); hex(d1.acc, h1);
-    row(out, "disk_identity", d1.ok && d1.size == g_disk0.size && d1.mtime_ns == g_disk0.mtime_ns && !memcmp(d1.acc, g_disk0.acc, 32) && d1.mode == g_disk0.mode,
-        "size %llu -> %llu, modification time %s, %s %s -> %s%s", (unsigned long long)g_disk0.size, (unsigned long long)d1.size, d1.mtime_ns == g_disk0.mtime_ns ? "same" : "CHANGED",
-        d1.mode == 1 ? "content (data extents, sparse holes skipped)" : "NO content hash (more than 2 GiB of data: size and modification time only)", h0, h1, d1.mode == 1 ? "" : " (not a content check)");
+    {
+        int same = d1.ok && d1.size == g_disk0.size && d1.mtime_ns == g_disk0.mtime_ns && !memcmp(d1.acc, g_disk0.acc, 32) && d1.mode == g_disk0.mode;
+        if (same && d1.mode == 2)
+            row_meta(out, "disk_identity", "metadata_only: size %llu and modification time unchanged, but the disk holds more than the content-check limit of data, so its CONTENT was not compared (not a content check)", (unsigned long long)d1.size);
+        else
+            row(out, "disk_identity", same, "hash_verified: size %llu -> %llu, modification time %s, content (data extents, sparse holes skipped) %s -> %s", (unsigned long long)g_disk0.size, (unsigned long long)d1.size, d1.mtime_ns == g_disk0.mtime_ns ? "same" : "CHANGED", h0, h1);
+    }
     hex(g_aux0.acc, h0); hex(a1.acc, h1);
-    row(out, "aux_identity", a1.ok && a1.size == g_aux0.size && a1.mtime_ns == g_aux0.mtime_ns && !memcmp(a1.acc, g_aux0.acc, 32) && a1.mode == g_aux0.mode,
-        "size %llu -> %llu, modification time %s, %s %s -> %s%s", (unsigned long long)g_aux0.size, (unsigned long long)a1.size, a1.mtime_ns == g_aux0.mtime_ns ? "same" : "CHANGED",
-        a1.mode == 1 ? "content" : "NO content hash (size and modification time only)", h0, h1, a1.mode == 1 ? "" : " (not a content check)");
+    row(out, "aux_identity", a1.ok && a1.size == g_aux0.size && a1.mtime_ns == g_aux0.mtime_ns && !memcmp(a1.acc, g_aux0.acc, 32) && a1.mode == g_aux0.mode && a1.mode == 1,
+        "%s: size %llu -> %llu, modification time %s, content %s -> %s (the auxiliary storage must be content-verified; metadata only is a failure)", a1.mode == 1 ? "hash_verified" : "metadata_only", (unsigned long long)g_aux0.size, (unsigned long long)a1.size, a1.mtime_ns == g_aux0.mtime_ns ? "same" : "CHANGED", h0, h1);
     {
         /* by name, like the preflight: no name may have more threads than before the run (a thread replaced by one of the same name is not seen) */
         ThSnap t1;
@@ -303,7 +316,8 @@ int hv_g0_finish(FILE *out, const char *disk, const char *aux) {
             if (th_count(&t1, t1.name[i]) > th_count(&g_th0, t1.name[i]) && !strstr(grown, t1.name[i])) { grew++; strncat(grown, t1.name[i], sizeof grown - strlen(grown) - 2); strncat(grown, " ", sizeof grown - strlen(grown) - 1); }
         row(out, "threads", t1.n >= 0 && g_th0.n >= 0 && !grew && t1.n < MAXTH && g_th0.n < MAXTH, "%d before the run (guest on the bus), %d after; %s%s", g_th0.n, t1.n, grew ? "MORE threads than before for: " : "no name has more threads than before", grown);
     }
-    if (g_failed == 0) fprintf(out, "install g0 RESULT: g0_passed stopped=before_rootfs (observed: hook called, tool returned %d), session report %d, 0 failed row(s). This is NOT a restore.\n", HV_STOP_BEFORE_ROOTFS_RC, g_rec_report);
+    if (g_failed == 0 && g_meta == 0) fprintf(out, "install g0 RESULT: g0_passed stopped=before_rootfs (observed: hook called, tool returned %d), session report %d, disk and aux content verified, 0 failed row(s). This is NOT a restore.\n", HV_STOP_BEFORE_ROOTFS_RC, g_rec_report);
+    else if (g_failed == 0) fprintf(out, "install g0 RESULT: g0_passed_metadata_only stopped=before_rootfs (observed: hook called, tool returned %d), session report %d, 0 failed row(s), but the disk's CONTENT was not verified (size and modification time only). Not a full pass. This is NOT a restore.\n", HV_STOP_BEFORE_ROOTFS_RC, g_rec_report);
     else fprintf(out, "install g0 RESULT: FAILED (%d row(s)). Not a restore.\n", g_failed);
     (void)g_ecid_set;
     return g_failed;

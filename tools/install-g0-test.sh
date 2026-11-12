@@ -13,7 +13,7 @@ cc $FLG -c tests/test_install_g0.c -o "$OUT/g0/test.o" || { echo "FAILED build t
 $CC $FLG "$OUT/g0/test.o" host/install.c host/install_g0.c host/disk.c host/crypto_portable.c tests/fake_device/stubs.c "$R/lib.a" "$R/libzip-build/lib/libzip.a" \
   -Wl,--wrap=usbmuxd_main -Wl,--wrap=idevicerestore_start -Wl,--wrap=hv_usb_wait_online -lz -lm -lpthread -o "$OUT/g0/t" 2> "$OUT/g0/link.log" || { echo "FAILED build"; grep -o "undefined reference to .*\|multiple definition.*" "$OUT/g0/link.log" | sort -u | head; head -20 "$OUT/g0/link.log"; exit 1; }
 rc=0
-for c in ${CASES:-pass disk_changed aux_changed no_hook ran_on write_asked cancel stuck refuse_missing no_ecid readonly_disk}; do
+for c in ${CASES:-pass disk_changed aux_changed no_hook ran_on write_asked meta_only meta_changed cancel stuck refuse_missing no_ecid readonly_disk}; do
   TO=""; case $c in stuck) TO="report_thread_leaks=0";; esac
   TSAN_OPTIONS="$TO" timeout 120 "$OUT/g0/t" $c > "$OUT/g0/$c.out" 2> "$OUT/g0/$c.err"; r=$?
   echo "$c: exit $r, $(grep -c ^PASS "$OUT/g0/$c.out") pass, $(grep -c ^FAIL "$OUT/g0/$c.out") fail"; grep ^FAIL "$OUT/g0/$c.out"

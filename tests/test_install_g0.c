@@ -128,6 +128,23 @@ int main(int argc, char **argv) {
         CHECK(waited == -1 && failed >= 1 && !strcmp(row_status(t, "ended"), "FAILED") && strstr(t, "RESULT: FAILED") != NULL, "a run that ignores the cancel: wait reports -1, the table stops after 'ended' and says FAILED");
         CHECK(strstr(t, "stop_a_hook") == NULL, "no further rows are built on a thread that is still running");
         release_engine = 1; usleep(300000);
+    } else if (!strcmp(c, "meta_only") || !strcmp(c, "meta_changed")) {
+        eng_mode = 0;
+        { int fd = open(disk, O_RDWR); static unsigned char blk[1 << 20]; memset(blk, 0x33, sizeof blk); pwrite(fd, blk, sizeof blk, 0); pwrite(fd, blk, sizeof blk, 1 << 20); close(fd); }   /* 2 MiB of data */
+        hv_g0_set_content_cap(1 << 20);   /* stands in for a file system that cannot report holes, or a disk with more data than the limit */
+        hv_g0_begin(disk, aux, 1);
+        if (!strcmp(c, "meta_changed")) { usleep(20000); poke(disk, 100); }
+        hv_g0_start((HvVirtioUsb *)dummy_usb, "x", "/tmp", 1);
+        hv_g0_wait(10000);
+        char *buf = NULL; size_t len = 0; FILE *o = open_memstream(&buf, &len);
+        failed = hv_g0_finish(o, disk, aux); fclose(o); fputs(buf, stdout);
+        if (!strcmp(c, "meta_only")) {
+            CHECK(failed == 0 && strstr(buf, "disk_identity      META") != NULL && strstr(buf, "metadata_only: size") != NULL, "disk over the limit and untouched: the row says META / metadata_only (content not compared), not a failure");
+            CHECK(strstr(buf, "RESULT: g0_passed_metadata_only stopped=before_rootfs") != NULL && strstr(buf, "RESULT: g0_passed stopped") == NULL, "the final result is g0_passed_metadata_only, never g0_passed");
+            CHECK(!strcmp(row_status(buf, "aux_identity"), "ok") && strstr(buf, "aux_identity       ok     hash_verified") != NULL, "the aux row is still content-verified");
+        } else {
+            CHECK(failed >= 1 && strstr(buf, "g0_passed") == NULL && strstr(buf, "RESULT: FAILED") != NULL, "metadata-only mode with the disk changed (modification time): FAILED, no pass line of either kind");
+        }
     } else if (!strcmp(c, "refuse_missing")) {
         unlink(aux);
         CHECK(hv_g0_begin(disk, aux, 1) == -1, "a missing storage file is refused: G0 creates nothing");

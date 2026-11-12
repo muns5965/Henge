@@ -48,7 +48,7 @@ static int g_want_runner;          /* nativeUseRunner: the picture, the input an
 static HvShm *g_shm;               /* set by nativeAttachRunner once the runner has made its file; under g_mu */
 static uint8_t *g_shm_px;          /* the bounce buffer one picture is copied into before display_buf copies it again */
 static long g_shm_fail;            /* calls that could not take the file's lock */
-static int g_shm_known, g_shm_px_x, g_shm_px_y;
+static int g_shm_known;
 
 /* Diagnostics for the test screen (under g_mu). They only watch; nothing here feeds back into the touch module. */
 static struct {

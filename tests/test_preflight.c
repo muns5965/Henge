@@ -188,6 +188,8 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 300 && hv_restore_session_engine_threads() > 0; i++) usleep(50000);
         printf("scenario hang: thread ended, engine threads %d\n", hv_restore_session_engine_threads());
         if (hv_restore_session_engine_threads() != 0) hang_bad = 1;
+        /* engine_threads == 0 only says run() returned. The restore thread then closes, releases the client and only then ends the session (and removes the policy); wait for that, bounded. */
+        for (int i = 0; i < 600 && hv_net_guard_hooks_intact(); i++) usleep(50000);
         if (hv_restore_session_end() != 0 || hv_net_guard_hooks_intact()) { printf("scenario hang: EXPECTATION NOT MET (policy not removable after the thread ended)\n"); hang_bad = 1; }
         int r3 = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, 1500, stage);
         printf("scenario hang: third run (the private usbmuxd of the first one never stopped) returned %d (must be refused)\n", r3);

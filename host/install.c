@@ -21,6 +21,9 @@
 #ifdef HV_INSTALL_G0
 #include "install_g0.h"   /* the G0 test build only (tools/vmrun-install-g0-build.sh): see host/install_g0.h */
 #endif
+#ifdef HV_INSTALL_G1
+#include "install_g1.h"   /* the G1 test build only (tools/install-g1-test.sh): see host/install_g1.h */
+#endif
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
 #include "restore_session.h"
@@ -118,6 +121,9 @@ static void *restore_thread(void *arg) {
 #ifdef HV_INSTALL_G0
     flags |= hv_g0_extra_flags();   /* G0 test build: the tool's own stop before the root filesystem step (and the hook that reports it) */
 #endif
+#ifdef HV_INSTALL_G1
+    flags |= hv_g1_extra_flags(c);   /* G1 test build: the tool's own end after the signing requests, the signing URL forced to the test server, its one port approved (after the session began) */
+#endif
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
 #ifdef __ANDROID__
@@ -148,7 +154,7 @@ static void *restore_thread(void *arg) {
     /* C18/C9: close the session first (CLOSED or QUIESCENCE_FAILED), then release what the session allows, then ONE final result composed from three things:
        the engine's return value, the cleanup (tasks, client, private usbmuxd) and the session end (policy removal). Nothing is released after a failed close:
        the client is deliberately leaked and the policy and usbmuxd stay, because a task may still use them (the use-after-free the T5 baseline reproduced). */
-#ifdef HV_INSTALL_G0
+#if defined(HV_INSTALL_G0) || defined(HV_INSTALL_G1)
     int engine_rc = r;
 #endif
     int closed = hv_restore_session_close() == 0;
@@ -171,6 +177,9 @@ static void *restore_thread(void *arg) {
     int rep = hv_restore_session_finalize(r, cleanup_mask, &may_publish);
 #ifdef HV_INSTALL_G0
     hv_g0_record(engine_rc, closed, cleanup_mask, rep);   /* before g_result changes, so a poller that sees the end also sees this */
+#endif
+#ifdef HV_INSTALL_G1
+    hv_g1_record(engine_rc, closed, cleanup_mask, rep);
 #endif
     fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
     r = rep == HV_REG_R_SUCCESS ? 0 : -1;

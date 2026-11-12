@@ -37,6 +37,7 @@ on:
       - tools/irecv-test.sh
       - tools/preflight-test.sh
       - tools/install-g0-test.sh
+      - tools/install-g1-test.sh
       - tests/java/**
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
@@ -212,6 +213,8 @@ jobs:
         run: tools/preflight-test.sh build-rs
       - name: "Test G0, the install entry point stopped at stop A (host/install.c + host/install_g0.c with the real session; fake tool; verdict rows for the hook, 217, session report, cleanup, storage identity, write count, cancel, a run that does not end; read-only disk)"
         run: tools/install-g0-test.sh build-rs
+      - name: "Test G1, the restore tool's signing path through the install entry point (real session, policy and tool; synthetic TLS server on 127.0.0.1 only; refusals, bad replies, timeouts, bad certificate, redirect, unapproved destination; controls for ticket files, device downloads and an unapproved port; no Apple request)"
+        run: tools/install-g1-test.sh build-rs
       - name: "Test the default-deny connection policy (policy table, real glue sockets, curl stand-in, URLAsset decisions, loopback listeners only)"
         run: tools/netguard-test.sh build-rs
       - name: "Test the FDR proxy and the URLAsset step against a fake device, and the restore session rules (policy in force before the tool starts, kept while a thread runs)"

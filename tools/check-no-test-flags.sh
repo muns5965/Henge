@@ -10,6 +10,7 @@
 #   HV_TEST_HOOKS           compiles the observation-only test hooks of host/restore_registry.c (docs/fake-device-s4-test-hook-design-2026-11-11.md §3); test builds only
 #   --wrap=thread_new / tests/fake_device/wrap_thread.c   the test-only link-time wrapper of tools/fake-restore-test.sh; never in a shipped link
 #   HV_INSTALL_G0           the G0 test of the install entry point (host/install_g0.h): host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g0-build.sh (the vmrun_g0 test program) and tools/install-g0-test.sh
+#   HV_INSTALL_G1           the G1 test of the install entry point and the restore tool's signing path (host/install_g1.h): host/install.c compiles its hooks only with it; set only by tools/install-g1-test.sh
 #   FLAG_STOP_BEFORE_ROOTFS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/restore_preflight.c ever sets it
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
@@ -34,6 +35,11 @@ done
 if grep -rln "DHV_INSTALL_G0" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g0-build.sh$\|^tools/install-g0-test.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g0-build.sh and tools/install-g0-test.sh sets -DHV_INSTALL_G0"; fi
 # only host/install_g0.c sets the stop flag for the install entry point; host/install.c keeps the plain flag-free source (checked above) and reaches it through hv_g0_extra_flags
 grep -q "hv_g0_extra_flags" host/install.c && ! grep -q "FLAG_STOP_BEFORE_ROOTFS" host/install.c || bad "host/install.c does not go through the G0 hook, or names the stop flag"
+# the G1 switch: only its Linux test may set it
+if grep -rln "DHV_INSTALL_G1" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/install-g1-test.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/install-g1-test.sh sets -DHV_INSTALL_G1"; fi
+grep -q "hv_g1_extra_flags" host/install.c && ! grep -q "FLAG_SHSHONLY" host/install.c || bad "host/install.c does not go through the G1 hook, or names the signing-only flag"
+# the G1 test program is not part of any shipped source list
+if grep -rn "install_g1" android/app/src android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "a shipped build mentions host/install_g1"; fi
 # the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
 if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do
@@ -65,7 +71,7 @@ if nm "$W/ng_ship.o" | grep -q "hv_net_guard_test_allow_loopback" || strings "$W
 $CC -O1 -w -std=gnu11 -D_GNU_SOURCE -DHV_NET_TEST_LOOPBACK -Ihost -I$TP/libimobiledevice-glue/include -c host/net_guard.c -o "$W/ng_test.o"
 nm "$W/ng_test.o" | grep -q "hv_net_guard_test_allow_loopback" || bad "control: the test flavour of net_guard.o lacks the loopback allowance (check is vacuous)"
 if grep -rln "HV_NET_TEST_LOOPBACK" android CMakeLists.txt tools/restore-android-check.sh tools/restore-selftest-build.sh 2>/dev/null | grep . > /dev/null; then bad "a shipped build file mentions HV_NET_TEST_LOOPBACK"; fi
-if grep -rn "hv_net_guard_test_allow_loopback" host devices core android/app/src --include=*.c --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/net_guard\.c:" > /dev/null; then bad "app code calls the test loopback function"; fi
+if grep -rn "hv_net_guard_test_allow_loopback" host devices core android/app/src --include=*.c --include=*.m --include=*.cpp 2>/dev/null | grep -v "^host/net_guard\.c:\|^host/install_g1\.c:" > /dev/null; then bad "app code calls the test loopback function"; fi
 # the registry's observation-only test hooks (HV_TEST_HOOKS): absent from the shipped object, present in the test flavour (control), never called by app code
 if [ -f host/restore_registry.c ]; then
   $CC -O1 -w -std=gnu11 -D_GNU_SOURCE -Ihost -c host/restore_registry.c -o "$W/reg_ship.o"

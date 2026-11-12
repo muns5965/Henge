@@ -135,6 +135,37 @@ int main(int argc, char **argv) {
         char r = 0; CHECK(read(sp[1], &r, 1) == 1 && r == 'k', "and its peer receives the data");
         close(sp[0]); close(sp[1]);
         hv_restore_session_close(); hv_restore_session_end();
+    } else if (!strcmp(c, "reject_full")) {   /* step 6: the registry refuses the registration (table full): who owns the new descriptor? */
+        mux(FAKE_DP_OPEN_SILENT);
+        hv_restore_session_begin(); hv_restore_session_allow_usbmuxd((uint16_t)g_mp); uint64_t g = hv_reg_generation();
+        int dummy[40], nd = 0;
+        for (; nd < 40; nd++) { dummy[nd] = open("/dev/null", O_RDONLY); if (hv_reg_conn_register(g, dummy[nd]) != 0) break; }
+        printf("INFO table full after %d registrations\n", nd);
+        unsigned char was[256]; int before = 0; for (int i = 0; i < 256; i++) { was[i] = (unsigned char)fd_open(i); before += was[i]; }
+        idevice_t dev = NULL; idevice_connection_t cn = NULL; int fd = -1;
+        int r = open_conn(&dev, &cn, &fd);
+        usleep(300000);   /* the fake server closes its side of the refused connection a moment later: count after that */
+        int after = 0; for (int i = 0; i < 256; i++) after += fd_open(i);
+        for (int i = 0; i < 256; i++) if (fd_open(i) && !was[i]) { char l[64], t[128] = ""; snprintf(l, sizeof l, "/proc/self/fd/%d", i); ssize_t n = readlink(l, t, sizeof t - 1); if (n > 0) t[n] = 0; printf("INFO new descriptor %d -> %s\n", i, t); }
+        CHECK(r != 0 && cn == NULL, "idevice_connect fails when the registration is refused");
+        printf("INFO open descriptors before %d, after %d (the refused dummy %d is still open and counted in both)\n", before, after, nd < 40 ? dummy[nd] : -1);
+        CHECK(after <= before, "no descriptor of the refused connection stays open");
+        CHECK(hv_restore_session_close() == -1 && hv_reg_state() == HV_REG_QUIESCENCE_FAILED, "the refusal is a recorded hard failure: the session cannot reach CLOSED (QUIESCENCE_FAILED)");
+        printf("INFO qf reason %d (expected conn_table = %d)\n", (int)hv_reg_qf_reason(), (int)HV_REG_QF_CONN_TABLE);
+    } else if (!strcmp(c, "reject_dup")) {   /* step 6: a stale registration for the number the next socket will get */
+        mux(FAKE_DP_OPEN_SILENT);
+        hv_restore_session_begin(); hv_restore_session_allow_usbmuxd((uint16_t)g_mp); uint64_t g = hv_reg_generation();
+        int probe = dup(0); close(probe);   /* the lowest free descriptor number: the connection's socket will most likely get it */
+        CHECK(hv_reg_conn_register(g, probe) == 0, "a stale entry for that number (it is not open)");
+        int opened_before = 0; for (int i = 0; i < 256; i++) opened_before += fd_open(i);
+        idevice_t dev = NULL; idevice_connection_t cn = NULL; int fd = -1;
+        int r = open_conn(&dev, &cn, &fd);
+        int opened_after = 0; for (int i = 0; i < 256; i++) opened_after += fd_open(i);
+        printf("INFO connect %s; descriptor %d, stale number %d, open before %d after %d\n", r == 0 ? "succeeded" : "failed", fd, probe, opened_before, opened_after);
+        if (r == 0 && fd == probe) CHECK(0, "the stale entry did not stop the connection (unexpected: registration should have been refused)");
+        else if (r != 0) CHECK(opened_after <= opened_before + 1, "refused duplicate: its descriptor is closed (no leak)");
+        else printf("INFO the socket did not get the stale number: the duplicate case was not reproduced\n");
+        hv_restore_session_close();
     } else { printf("unknown case\n"); return 2; }
     fflush(stdout);
     return nfail ? 1 : 0;

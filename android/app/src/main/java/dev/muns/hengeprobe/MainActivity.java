@@ -990,9 +990,9 @@ public class MainActivity extends Activity {
                                 long now = System.currentTimeMillis();
                                 if (now - lastUi >= 300 && uiPending.compareAndSet(false, true)) {
                                     lastUi = now;
-                                    final String snap;
-                                    synchronized (text) { snap = acc + (counts[0] > ring.size() ? "(진행 중: 전체 " + counts[0] + "줄 중 최근 " + ring.size() + "줄만 표시)\n" : "") + String.join("\n", ring) + "\n"; }
-                                    runOnUiThread(() -> { output.setText(deviceInfo() + "\n" + snap); uiPending.set(false); });
+                                    final String view;
+                                    synchronized (text) { view = acc + (counts[0] > ring.size() ? "(진행 중: 전체 " + counts[0] + "줄 중 최근 " + ring.size() + "줄만 표시)\n" : "") + String.join("\n", ring) + "\n"; }
+                                    runOnUiThread(() -> { output.setText(deviceInfo() + "\n" + view); uiPending.set(false); });
                                 }
                             }
                         } catch (IOException ignored) {

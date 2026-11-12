@@ -37,6 +37,7 @@ on:
       - tools/irecv-test.sh
       - tools/preflight-test.sh
       - tools/install-g0-test.sh
+      - tests/java/**
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
@@ -125,6 +126,12 @@ jobs:
           mkdir -p build-java
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
+
+      - name: "Test the G0 verdict the app shows (plain java; exit code, result lines, final vmrun line, output completeness)"
+        run: |
+          mkdir -p build-java-g0
+          javac -encoding UTF-8 -d build-java-g0 android/app/src/main/java/dev/muns/hengeprobe/G0Verdict.java tests/java/G0VerdictTest.java
+          java -cp build-java-g0 dev.muns.hengeprobe.G0VerdictTest
 
       - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
         run: |

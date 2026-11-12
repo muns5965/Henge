@@ -1004,6 +1004,8 @@ public class MainActivity extends Activity {
                     final java.util.ArrayDeque<String> ring = new java.util.ArrayDeque<>();
                     final long[] counts = {0, 0}; // lines read, bytes written to the log file
                     final boolean[] textFull = {false};
+                    final java.util.ArrayList<String> g0Kept = new java.util.ArrayList<>();   // G0 only: the result lines for the verdict, kept apart from text (2 MB cap) and the screen ring
+                    final boolean[] g0Overflow = {false};
                     final RunLog runLog = (tss || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -1015,6 +1017,10 @@ public class MainActivity extends Activity {
                                 synchronized (text) {
                                     counts[0]++;
                                     if (runLog != null) runLog.write(line);
+                                    if (g0) {
+                                        String kl = line.endsWith("\r") ? line.substring(0, line.length() - 1) : line;
+                                        if (G0Verdict.isKept(kl)) { if (g0Kept.size() < G0Verdict.MAX_KEPT) g0Kept.add(kl); else g0Overflow[0] = true; }
+                                    }
                                     if (!isTraceNoise(line)) {
                                         if (text.length() < 2_000_000) text.append(line).append('\n');
                                         else if (!textFull[0]) { textFull[0] = true; text.append("(요약용 보관 상한 2MB에 도달: 이후 줄은 화면 최근 줄과 로그 파일에만 있습니다)\n"); }
@@ -1041,7 +1047,8 @@ public class MainActivity extends Activity {
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
                     boolean killConfirmed = true;
                     if (!done) { p.destroyForcibly(); if (g0) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
-                    reader.join(2000);
+                    reader.join(g0 ? 5000 : 2000);
+                    final boolean readerUnfinished = reader.isAlive();
                     final int bodyStart;
                     synchronized (text) {
                         if (counts[0] > 400) {
@@ -1081,14 +1088,11 @@ public class MainActivity extends Activity {
                         StringBuilder sum = new StringBuilder();
                         for (String ln : text.toString().split("\n")) if (ln.startsWith("install g0") || ln.startsWith("vmrun RESULT") || ln.startsWith("install: final result")) sum.append(ln).append('\n');
                         acc.append(sum.length() > 0 ? "\n— 요약 (G0 줄 전체) —\n" + sum : "\n— G0 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
-                        String all0 = text.toString();
-                        String verdict;
-                        if (!done) verdict = "실패 — 시간 초과 강제 종료(최종 판정 없음)";
-                        else if (all0.contains("install g0 RESULT: g0_passed stopped=before_rootfs")) verdict = "통과 (g0_passed): 정지점 A, 세션 정리, 디스크·aux 내용 검증까지 완료";
-                        else if (all0.contains("install g0 RESULT: g0_passed_metadata_only")) verdict = "부분 통과 (g0_passed_metadata_only): 나머지 검사는 통과, 디스크 내용은 검증하지 못함(크기·수정시각만) — 완전 통과로 세지 마세요";
-                        else if (all0.contains("install g0 RESULT: FAILED")) verdict = "실패 (FAILED): 위 FAILED 행 참조";
-                        else verdict = "판정 없음 — 최종 RESULT 줄이 없으므로 성공으로 처리하지 않습니다";
-                        acc.append("G0 최종 판정: ").append(verdict).append('\n');
+                        String kept;
+                        synchronized (text) { kept = String.join("\n", g0Kept); }
+                        G0Verdict.Result gv = G0Verdict.evaluate(kept, !done, done ? p.exitValue() : -1, g0Overflow[0], readerUnfinished);
+                        String label = gv.kind == G0Verdict.Kind.PASS ? "통과 (g0_passed)" : gv.kind == G0Verdict.Kind.PARTIAL_PASS ? "부분 통과 (g0_passed_metadata_only)" : gv.kind == G0Verdict.Kind.FAILED ? "실패" : "판정 없음";
+                        acc.append("G0 최종 판정: ").append(label).append(" — ").append(gv.text).append('\n');
                     }
                     if (irecv) {
                         String all = text.toString();

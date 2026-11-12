@@ -16,5 +16,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- C0 + B0 screen and input test: no virtual machine, no network. Started from a button of MainActivity. -->
+        <activity
+            android:name=".DisplayTestActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
     </application>
 </manifest>

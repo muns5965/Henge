@@ -133,6 +133,11 @@ public class MainActivity extends Activity {
         bigVmButton.setOnClickListener(v -> runBigVmNow());
         done.addView(bigVmButton);
 
+        Button uiTestButton = new Button(this);
+        uiTestButton.setText("[C0/B0] 합성 화면·입력 시험 (VM 없음)");
+        uiTestButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, DisplayTestActivity.class)));
+        done.addView(uiTestButton);
+
         romDiagButton = new Button(this);
         romDiagButton.setText("ROM 진단 (읽기 전용, 네트워크 없음)");
         romDiagButton.setOnClickListener(v -> runRomDiagnostic());

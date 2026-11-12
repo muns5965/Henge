@@ -65,6 +65,10 @@ typedef struct HvTouch {
     int64_t pending_ms;
     int button_held;               /* left button currently down (drag) */
     int last_tap_valid;
+    /* what the last event was (read through hv_touch_diag only; nothing here changes how a gesture is handled) */
+    int ev_count, ev_last_action;
+    float ev_last_x, ev_last_y;
+    int64_t ev_last_ms;
 } HvTouch;
 
 void hv_touch_init(HvTouch *t, const HvInputSink *sink);
@@ -77,6 +81,21 @@ void hv_touch_pointer(HvTouch *t, int known, int x, int y);
 void hv_touch_event(HvTouch *t, int action, int id, float x, float y, int64_t now_ms);
 /* Call regularly (every 10-20 ms) while anything is going on: moves the pointer toward the target, fires long presses and waiting clicks. */
 void hv_touch_tick(HvTouch *t, int64_t now_ms);
+/* Read-only view of the state, for a test screen and for tests. Changes nothing. */
+typedef struct {
+    int events;                  /* touch events received so far (every call of hv_touch_event) */
+    int last_action;             /* HV_TOUCH_* of the last one, -1 before any */
+    float last_x, last_y;        /* where it was, in view pixels */
+    int64_t last_ms;
+    int fingers;                 /* fingers down now (0..2) */
+    int has_target;              /* a target exists (it stays after the finger lifts; a cancel or release_all clears it) */
+    double target_x, target_y;   /* guest pixels, as converted from the view */
+    int pointer_known;           /* the module's own idea of the guest pointer: the feedback, or dead reckoning */
+    double pointer_x, pointer_y;
+    int drag, button_held;
+} HvTouchDiag;
+void hv_touch_diag(const HvTouch *t, HvTouchDiag *d);
+
 /* Releases anything held (the button, nothing else is held): call when the view goes away or the machine stops. */
 void hv_touch_release_all(HvTouch *t);
 

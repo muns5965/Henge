@@ -9,6 +9,7 @@ void hv_touch_init(HvTouch *t, const HvInputSink *sink) {
     memset(t, 0, sizeof *t);
     if (sink) t->sink = *sink;
     t->vw = t->vh = 1; t->dw = 1920; t->dh = 1080;
+    t->ev_last_action = -1;
 }
 
 void hv_touch_set_view(HvTouch *t, float x, float y, float w, float h) { t->vx = x; t->vy = y; t->vw = w > 1 ? w : 1; t->vh = h > 1 ? h : 1; }
@@ -76,6 +77,7 @@ static int find(HvTouch *t, int id) { for (int i = 0; i < t->nptr; i++) if (t->p
 static void avg(const HvTouch *t, float *x, float *y) { *x = (t->p[0].x + t->p[1].x) / 2; *y = (t->p[0].y + t->p[1].y) / 2; }
 
 void hv_touch_event(HvTouch *t, int action, int id, float x, float y, int64_t now) {
+    t->ev_count++; t->ev_last_action = action; t->ev_last_x = x; t->ev_last_y = y; t->ev_last_ms = now;
     if (action == HV_TOUCH_CANCEL) { hv_touch_release_all(t); return; }
     int i = find(t, id);
     if (action == HV_TOUCH_DOWN) {
@@ -179,4 +181,15 @@ void hv_touch_tick(HvTouch *t, int64_t now) {
     if (t->pending_btn) {
         if (arrived(t) || now - t->pending_ms >= HV_TOUCH_CLICK_WAIT_MS) { click(t, t->pending_btn - 1); t->pending_btn = 0; }
     }
+}
+
+void hv_touch_diag(const HvTouch *t, HvTouchDiag *d) {
+    memset(d, 0, sizeof *d);
+    d->events = t->ev_count; d->last_action = t->ev_last_action;
+    d->last_x = t->ev_last_x; d->last_y = t->ev_last_y; d->last_ms = t->ev_last_ms;
+    d->fingers = t->nptr;
+    d->has_target = t->has_target; d->target_x = t->tx; d->target_y = t->ty;
+    d->pointer_known = t->known || t->homed;
+    d->pointer_x = est_x(t); d->pointer_y = est_y(t);
+    d->drag = t->drag; d->button_held = t->button_held;
 }

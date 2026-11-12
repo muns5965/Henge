@@ -14,6 +14,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,15 @@ static uint8_t *g_src;           /* the synthetic "guest picture" the fetch call
 static uint32_t g_frame;
 static HvTouch g_touch;
 static int g_feedback = 1;
+
+/* Diagnostics for the test screen (under g_mu). They only watch; nothing here feeds back into the touch module. */
+static struct {
+    long down, move, up, cancel;           /* events received by nativeTouch (touches on the status text are not counted: that text takes them) */
+    int have_touch; float tx, ty;          /* the last touch, view pixels, kept after the finger lifts */
+    int have_target; double gx, gy;        /* the module's target for it, guest pixels, kept */
+    float view_w, view_h;                  /* what nativeSetView was told */
+    int64_t up_ms; int settle_armed, settle_valid; int sdx, sdy;   /* error 0.5 s after the last finger lifted */
+} g_dg;
 
 static struct { int x, y; long moves, buttons_down, buttons_up, wheel, hwheel, keys, unmapped_keys; unsigned last_key, last_button; int held; } g_guest;
 
@@ -77,6 +87,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(
     pthread_mutex_lock(&g_mu);
     g_buf = b; g_src = src;
     memset(&g_guest, 0, sizeof g_guest);
+    { float vw = g_dg.view_w, vh = g_dg.view_h; memset(&g_dg, 0, sizeof g_dg); g_dg.view_w = vw; g_dg.view_h = vh; }
     g_guest.x = FRAME_W / 2; g_guest.y = FRAME_H / 2;
     g_frame = 0;
     HvInputSink sk = {sink_key, sink_move, sink_button, sink_wheel, sink_hwheel};
@@ -129,6 +140,7 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetVie
     (void)env; (void)cls;
     pthread_mutex_lock(&g_mu);
     hv_touch_set_view(&g_touch, 0, 0, w, h);
+    g_dg.view_w = w; g_dg.view_h = h;
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -188,6 +200,12 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(
     (void)env; (void)cls;
     pthread_mutex_lock(&g_mu);
     hv_touch_event(&g_touch, action, id, x, y, t_ms);
+    switch (action) { case HV_TOUCH_DOWN: g_dg.down++; break; case HV_TOUCH_MOVE: g_dg.move++; break; case HV_TOUCH_UP: g_dg.up++; break; case HV_TOUCH_CANCEL: g_dg.cancel++; break; default: break; }
+    HvTouchDiag d; hv_touch_diag(&g_touch, &d);
+    if (action != HV_TOUCH_CANCEL) { g_dg.have_touch = 1; g_dg.tx = x; g_dg.ty = y; }
+    if (d.has_target) { g_dg.have_target = 1; g_dg.gx = d.target_x; g_dg.gy = d.target_y; }
+    if (action == HV_TOUCH_DOWN) { g_dg.settle_armed = 0; g_dg.settle_valid = 0; }
+    if ((action == HV_TOUCH_UP || action == HV_TOUCH_CANCEL) && d.fingers == 0) { g_dg.up_ms = t_ms; g_dg.settle_armed = 1; g_dg.settle_valid = 0; }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -196,6 +214,10 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(J
     pthread_mutex_lock(&g_mu);
     hv_touch_pointer(&g_touch, g_feedback, g_guest.x, g_guest.y);
     hv_touch_tick(&g_touch, t_ms);
+    if (g_dg.settle_armed && g_dg.have_target && t_ms - g_dg.up_ms >= 500) {      /* the finger has been up for 0.5 s: what is left is the settled error */
+        g_dg.sdx = (int)lround(g_dg.gx) - g_guest.x; g_dg.sdy = (int)lround(g_dg.gy) - g_guest.y;
+        g_dg.settle_valid = 1; g_dg.settle_armed = 0;
+    }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -217,16 +239,41 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKeyMap
 
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStatus(JNIEnv *env, jclass cls) {
     (void)cls;
-    char s[512];
+    char s[1400], touch[160], err[160];
     HvDispStats st = {0};
     pthread_mutex_lock(&g_mu);
     if (g_buf) hv_dispbuf_stats(g_buf, &st);
+    HvTouchDiag d; hv_touch_diag(&g_touch, &d);
+    static const char *const an[] = {"DOWN", "UP", "MOVE", "CANCEL"};
+    const char *last = d.last_action >= 0 && d.last_action < 4 ? an[d.last_action] : "-";
+    if (g_dg.have_touch && g_dg.view_w > 0 && g_dg.view_h > 0) {
+        /* what the target must be, worked out here from the touch and the view size alone (the module's own conversion is the "target") */
+        double fx = g_dg.tx / g_dg.view_w, fy = g_dg.ty / g_dg.view_h;
+        fx = fx < 0 ? 0 : fx > 1 ? 1 : fx; fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+        int ex = (int)lround(fx * (FRAME_W - 1)), ey = (int)lround(fy * (FRAME_H - 1));
+        if (g_dg.have_target) {
+            int gx = (int)lround(g_dg.gx), gy = (int)lround(g_dg.gy);
+            snprintf(touch, sizeof touch, "touch %.0f,%.0f  expected %d,%d  target %d,%d  conv %+d,%+d", g_dg.tx, g_dg.ty, ex, ey, gx, gy, gx - ex, gy - ey);
+        } else snprintf(touch, sizeof touch, "touch %.0f,%.0f  expected %d,%d  target none", g_dg.tx, g_dg.ty, ex, ey);
+    } else snprintf(touch, sizeof touch, "touch: none yet");
+    if (g_dg.have_target) {
+        int gx = (int)lround(g_dg.gx), gy = (int)lround(g_dg.gy);
+        char settled[64];
+        if (g_dg.settle_valid) snprintf(settled, sizeof settled, "%+d,%+d", g_dg.sdx, g_dg.sdy);
+        else snprintf(settled, sizeof settled, d.fingers ? "(finger down)" : g_dg.settle_armed ? "(waiting 0.5 s)" : "-");
+        snprintf(err, sizeof err, "pointer %d,%d  error now %+d,%+d  settled %s", g_guest.x, g_guest.y, gx - g_guest.x, gy - g_guest.y, settled);
+    } else snprintf(err, sizeof err, "pointer %d,%d  error: no target yet", g_guest.x, g_guest.y);
     snprintf(s, sizeof s,
-             "frames %llu (copied), shown %llu, rejected %llu, after close %llu\nguest pointer %d,%d  moves %ld  feedback %s\nbuttons down %ld up %ld (last %u, left %s)  wheel %ld  hwheel %ld\nkeys %ld (last Linux code %u), unmapped %ld",
+             "frames %llu (copied), shown %llu, rejected %llu, after close %llu\n"
+             "events DOWN %ld MOVE %ld UP %ld CANCEL %ld (last %s)  fingers %d  view %.0fx%.0f  guest %dx%d\n"
+             "%s\n%s\n"
+             "moves %ld  feedback %s  buttons down %ld up %ld (last %u, left %s)  wheel %ld hwheel %ld  keys %ld (last %u) unmapped %ld\n"
+             "(touches on this text are not counted; tap it to switch the feedback)",
              (unsigned long long)st.frames, (unsigned long long)st.blits, (unsigned long long)st.rejected, (unsigned long long)st.closed_refused,
-             g_guest.x, g_guest.y, g_guest.moves, g_feedback ? "on" : "off (dead reckoning)",
-             g_guest.buttons_down, g_guest.buttons_up, g_guest.last_button, g_guest.held ? "held" : "up", g_guest.wheel, g_guest.hwheel,
-             g_guest.keys, g_guest.last_key, g_guest.unmapped_keys);
+             g_dg.down, g_dg.move, g_dg.up, g_dg.cancel, last, d.fingers, g_dg.view_w, g_dg.view_h, FRAME_W, FRAME_H,
+             touch, err,
+             g_guest.moves, g_feedback ? "on" : "off (dead reckoning)", g_guest.buttons_down, g_guest.buttons_up, g_guest.last_button, g_guest.held ? "held" : "up",
+             g_guest.wheel, g_guest.hwheel, g_guest.keys, g_guest.last_key, g_guest.unmapped_keys);
     pthread_mutex_unlock(&g_mu);
     return (*env)->NewStringUTF(env, s);
 }

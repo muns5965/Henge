@@ -427,6 +427,40 @@ static void g_apply(void) {
 static int g_buttons;
 static void g_btn(int b, int d) { (void)b; g_buttons += d ? 1 : 0; s_btn(b, d); }
 
+static void test_touch_diag(void) {
+    group("touch: read-only diagnostics");
+    HvTouch t; HvTouchDiag d;
+    fresh(&t);
+    hv_touch_diag(&t, &d);
+    CHECK(d.events == 0 && d.last_action == -1 && !d.has_target && d.fingers == 0, "nothing yet");
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 500, 250, 10);
+    hv_touch_diag(&t, &d);
+    CHECK(d.events == 1 && d.last_action == HV_TOUCH_DOWN && d.last_x == 500 && d.last_y == 250 && d.last_ms == 10 && d.fingers == 1, "after DOWN");
+    CHECK(d.has_target && fabs(d.target_x - 1000.0 * 1999 / 2000 * 1.0) < 1.5 && fabs(d.target_y - 500.0) < 1.5, "target = %.1f,%.1f", d.target_x, d.target_y);
+    hv_touch_event(&t, HV_TOUCH_UP, 0, 500, 250, 60);
+    hv_touch_diag(&t, &d);
+    CHECK(d.events == 2 && d.last_action == HV_TOUCH_UP && d.fingers == 0 && d.has_target, "the target stays after UP");
+    hv_touch_event(&t, HV_TOUCH_CANCEL, 0, 0, 0, 90);
+    hv_touch_diag(&t, &d);
+    CHECK(d.events == 3 && d.last_action == HV_TOUCH_CANCEL && !d.has_target, "CANCEL clears the target");
+    /* reading changes nothing: the same events with and without reads give the same output */
+    HvTouch a, b; static Ev ref[4096]; int nref = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        fresh(pass ? &b : &a);
+        HvTouch *x = pass ? &b : &a;
+        for (int k = 0; k < 30; k++) {
+            hv_touch_event(x, HV_TOUCH_DOWN, 0, 100 + k * 7, 80 + k * 3, k * 400); if (pass) hv_touch_diag(x, &d);
+            hv_touch_tick(x, k * 400 + 1); if (pass) hv_touch_diag(x, &d);
+            hv_touch_event(x, HV_TOUCH_MOVE, 0, 120 + k * 9, 90 + k * 5, k * 400 + 30); if (pass) hv_touch_diag(x, &d);
+            hv_touch_tick(x, k * 400 + 40);
+            hv_touch_event(x, HV_TOUCH_UP, 0, 120 + k * 9, 90 + k * 5, k * 400 + 90); if (pass) hv_touch_diag(x, &d);
+            hv_touch_tick(x, k * 400 + 100);
+        }
+        if (!pass) { nref = nev; memcpy(ref, ev, sizeof(Ev) * (size_t)(nev < 4096 ? nev : 4096)); }
+    }
+    CHECK(nev == nref && nref > 0 && memcmp(ref, ev, sizeof(Ev) * (size_t)(nref < 4096 ? nref : 4096)) == 0, "reads do not change the output (%d vs %d events)", nref, nev);
+}
+
 static void test_touch_loop(void) {
     group("touch: closed loop against a simulated accelerated pointer");
     struct { int sx, sy; float fx, fy; } cases[] = { {100, 100, 995, 497}, {1900, 1000, 3, 2}, {1000, 500, 1000, 40}, {50, 900, 400, 450}, {960, 540, 970, 448}, {0, 0, 999, 499} };
@@ -612,7 +646,7 @@ static void test_gate_race(void) {
 int main(void) {
     test_convert(); test_buffer_basic(); test_rejects(); test_pull(); test_close_waits(); test_free_after_close(); test_pattern();
     test_keymap();
-    test_touch_basic(); test_touch_drag_scroll(); test_touch_loop();
+    test_touch_basic(); test_touch_drag_scroll(); test_touch_diag(); test_touch_loop();
     test_gate_states(); test_gate_duel(); test_gate_race();
     printf("c0b0: %d check(s), %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

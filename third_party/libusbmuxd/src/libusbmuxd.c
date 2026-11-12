@@ -123,9 +123,13 @@ static int libusbmuxd_debug = 0;
 
 static struct collection devices;
 static THREAD_T devmon = THREAD_T_NULL;
-static int listenfd = -1;
-static int running = 0;
-static int cancelling = 0;
+/* shared between the monitor thread and subscribe/unsubscribe: accessed atomically (relaxed; no data is published through them) */
+static volatile int listenfd = -1;
+static volatile int running = 0;
+static volatile int cancelling = 0;
+static volatile int mon_exited = 0; /* set (release) as the monitor's very last action */
+#define LD(v) __atomic_load_n(&(v), __ATOMIC_RELAXED)
+#define ST(v, x) __atomic_store_n(&(v), (x), __ATOMIC_RELAXED)
 
 static volatile int use_tag = 0;
 static volatile int proto_version = 1;
@@ -141,6 +145,21 @@ static struct usbmuxd_subscription_context *event_ctx = NULL;
 static struct collection listeners;
 thread_once_t listener_init_once = THREAD_ONCE_INIT;
 mutex_t listener_mutex;
+cond_t listener_cond;
+
+/*
+ * Monitor lifecycle, protected by listener_mutex.
+ * Exactly one thread at a time owns a transition that creates (STARTING),
+ * stops (STOPPING) or reclaims the monitor thread; a new monitor is never
+ * started before the previous one has been joined and freed.
+ *   STOPPED  no monitor thread, devmon == NULL
+ *   STARTING a subscriber is inside thread_new()
+ *   RUNNING  monitor thread exists
+ *   STOPPING a thread is shutting down / joining the monitor (lock not held)
+ *   FAILED   join failed: handle kept, nothing reclaimed, retried later
+ */
+enum monitor_state { MON_STOPPED = 0, MON_STARTING, MON_RUNNING, MON_STOPPING, MON_FAILED };
+static enum monitor_state mon_state = MON_STOPPED;
 
 /**
  * Finds a device info record by its handle.
@@ -351,7 +370,7 @@ static int receive_packet(int sfd, struct usbmuxd_header *header, void **payload
 
 	recv_len = socket_receive_timeout(sfd, &hdr, sizeof(hdr), 0, timeout);
 	if (recv_len < 0) {
-		if (!cancelling) {
+		if (!LD(cancelling)) {
 			LIBUSBMUXD_DEBUG(1, "%s: Error receiving packet: %s\n", __func__, strerror(-recv_len));
 		}
 		return recv_len;
@@ -1023,7 +1042,7 @@ retry:
 #endif
 
 	if (sfd < 0) {
-		if (!cancelling) {
+		if (!LD(cancelling)) {
 			LIBUSBMUXD_DEBUG(1, "%s: ERROR: usbmuxd was supposed to be running here...\n", __func__);
 		}
 		return sfd;
@@ -1058,7 +1077,7 @@ static int get_next_event(int sfd)
 
 	/* block until we receive something */
 	if (receive_packet(sfd, &hdr, &payload, 0) < 0) {
-		if (!cancelling) {
+		if (!LD(cancelling)) {
 			LIBUSBMUXD_DEBUG(1, "%s: Error in usbmuxd connection, disconnecting all devices!\n", __func__);
 		}
 		// when then usbmuxd connection fails,
@@ -1123,8 +1142,9 @@ static void device_monitor_cleanup(void* data)
 	} ENDFOREACH
 	collection_free(&devices);
 
-	socket_close(listenfd);
-	listenfd = -1;
+	socket_close(LD(listenfd));
+	ST(listenfd, -1);
+	__atomic_store_n(&mon_exited, 1, __ATOMIC_RELEASE);
 }
 
 /**
@@ -1134,22 +1154,20 @@ static void device_monitor_cleanup(void* data)
  */
 static void *device_monitor(void *data)
 {
-	running = 1;
-	collection_init(&devices);
-	cancelling = 0;
-
+	/* running/cancelling/devices are initialised by the subscriber before
+	 * thread_new(), while it owns the STARTING transition. */
 #ifdef HAVE_THREAD_CLEANUP
 	thread_cleanup_push(device_monitor_cleanup, NULL);
 #endif
 	do {
 
-		listenfd = usbmuxd_listen();
-		if (listenfd < 0) {
+		ST(listenfd, usbmuxd_listen());
+		if (LD(listenfd) < 0) {
 			continue;
 		}
 
-		while (running) {
-			int res = get_next_event(listenfd);
+		while (LD(running)) {
+			int res = get_next_event(LD(listenfd));
 			if (res < 0) {
 				break;
 			}
@@ -1157,10 +1175,10 @@ static void *device_monitor(void *data)
 
 		mutex_lock(&listener_mutex);
 		if (collection_count(&listeners) == 0) {
-			running = 0;
+			ST(running, 0);
 		}
 		mutex_unlock(&listener_mutex);
-	} while (running);
+	} while (LD(running));
 
 #ifdef HAVE_THREAD_CLEANUP
 	thread_cleanup_pop(1);
@@ -1175,56 +1193,151 @@ static void init_listeners(void)
 {
 	collection_init(&listeners);
 	mutex_init(&listener_mutex);
+	cond_init(&listener_cond);
+}
+
+/* Called with listener_mutex held, state RUNNING or FAILED. Stops (if
+ * requested) and joins the monitor outside the lock. Returns 0 when the
+ * thread was joined and reclaimed (state STOPPED), else the join error
+ * (state FAILED, handle kept). Returns with listener_mutex held. */
+static int monitor_stop_and_reclaim_locked(int request_stop)
+{
+	THREAD_T h = devmon;
+	int res;
+
+	mon_state = MON_STOPPING;
+	if (request_stop) {
+		ST(running, 0);
+		ST(cancelling, 1);
+	}
+	mutex_unlock(&listener_mutex);
+
+	if (request_stop) {
+		socket_shutdown(LD(listenfd), SHUT_RDWR);
+		if (thread_cancel(h) < 0) {
+			ST(running, 0);
+		}
+#if defined(HAVE_INOTIFY) && !defined(HAVE_PTHREAD_CANCEL)
+		pthread_kill(h, SIGINT);
+#endif
+	}
+	res = thread_join(h);
+
+	mutex_lock(&listener_mutex);
+	if (res == 0 || res == ESRCH) {
+		thread_free(h);
+		devmon = THREAD_T_NULL;
+		mon_state = MON_STOPPED;
+		res = 0;
+	} else {
+		mon_state = MON_FAILED;
+	}
+	cond_signal(&listener_cond);
+	return res;
+}
+
+static void subscribe_rollback_locked(usbmuxd_subscription_context_t ctx)
+{
+	collection_remove(&listeners, ctx);
+	free(ctx);
 }
 
 int usbmuxd_events_subscribe(usbmuxd_subscription_context_t *context, usbmuxd_event_cb_t callback, void *user_data)
 {
+	usbmuxd_subscription_context_t ctx;
+
 	if (!context || !callback) {
 		return -EINVAL;
 	}
 
 	thread_once(&listener_init_once, init_listeners);
 
-	mutex_lock(&listener_mutex);
-	*context = malloc(sizeof(struct usbmuxd_subscription_context));
-	if (!*context) {
-		mutex_unlock(&listener_mutex);
+	ctx = malloc(sizeof(struct usbmuxd_subscription_context));
+	if (!ctx) {
 		LIBUSBMUXD_ERROR("ERROR: %s: malloc failed\n", __func__);
 		return -ENOMEM;
 	}
-	(*context)->callback = callback;
-	(*context)->user_data = user_data;
+	ctx->callback = callback;
+	ctx->user_data = user_data;
 
-	collection_add(&listeners, *context);
+	mutex_lock(&listener_mutex);
+	collection_add(&listeners, ctx);
 
-	if (devmon == THREAD_T_NULL || !thread_alive(devmon)) {
-		mutex_unlock(&listener_mutex);
-		int res = thread_new(&devmon, device_monitor, NULL);
-		if (res != 0) {
-			free(*context);
-			LIBUSBMUXD_DEBUG(1, "%s: ERROR: Could not start device watcher thread!\n", __func__);
-			return res;
+	for (;;) {
+		if (mon_state == MON_STARTING) {
+			cond_wait(&listener_cond, &listener_mutex);
+			cond_signal(&listener_cond);
+			continue;
 		}
-	} else {
-		/* we need to submit DEVICE_ADD events to the new listener */
-		FOREACH(usbmuxd_device_info_t *dev, &devices) {
-			if (dev) {
-				usbmuxd_event_t ev;
-				ev.event = UE_DEVICE_ADD;
-				memcpy(&ev.device, dev, sizeof(usbmuxd_device_info_t));
-				(*context)->callback(&ev, (*context)->user_data);
+		if (mon_state == MON_STOPPING) {
+			/* someone else is stopping the monitor; never overlap generations */
+			subscribe_rollback_locked(ctx);
+			mutex_unlock(&listener_mutex);
+			return -EBUSY;
+		}
+		if (mon_state == MON_RUNNING && !__atomic_load_n(&mon_exited, __ATOMIC_ACQUIRE)) {
+			/* we need to submit DEVICE_ADD events to the new listener */
+			FOREACH(usbmuxd_device_info_t *dev, &devices) {
+				if (dev) {
+					usbmuxd_event_t ev;
+					ev.event = UE_DEVICE_ADD;
+					memcpy(&ev.device, dev, sizeof(usbmuxd_device_info_t));
+					ctx->callback(&ev, ctx->user_data);
+				}
+			} ENDFOREACH
+			*context = ctx;
+			mutex_unlock(&listener_mutex);
+			return 0;
+		}
+		if (mon_state == MON_FAILED && !__atomic_load_n(&mon_exited, __ATOMIC_ACQUIRE)) {
+			/* a previous stop could not be confirmed and the old thread is still
+			 * running: refuse (no waiting, no second generation) */
+			subscribe_rollback_locked(ctx);
+			mutex_unlock(&listener_mutex);
+			return -EBUSY;
+		}
+		if (mon_state == MON_RUNNING || mon_state == MON_FAILED) {
+			/* exited on its own, or a previous join failed and the thread has
+			 * ended: it is only reclaimed once a join has succeeded */
+			if (monitor_stop_and_reclaim_locked(0) != 0) {
+				subscribe_rollback_locked(ctx);
+				mutex_unlock(&listener_mutex);
+				return -EBUSY;
 			}
-		} ENDFOREACH
+			continue;
+		}
+		/* MON_STOPPED: this thread owns the start */
+		mon_state = MON_STARTING;
+		ST(running, 1);
+		ST(cancelling, 0);
+		__atomic_store_n(&mon_exited, 0, __ATOMIC_RELAXED);
+		collection_init(&devices);
 		mutex_unlock(&listener_mutex);
+		{
+			int res = thread_new(&devmon, device_monitor, NULL);
+			mutex_lock(&listener_mutex);
+			if (res != 0) {
+				devmon = THREAD_T_NULL;
+				mon_state = MON_STOPPED;
+				collection_free(&devices);
+				subscribe_rollback_locked(ctx);
+				cond_signal(&listener_cond);
+				mutex_unlock(&listener_mutex);
+				LIBUSBMUXD_DEBUG(1, "%s: ERROR: Could not start device watcher thread!\n", __func__);
+				return res;
+			}
+			mon_state = MON_RUNNING;
+			cond_signal(&listener_cond);
+		}
+		*context = ctx;
+		mutex_unlock(&listener_mutex);
+		return 0;
 	}
-
-	return 0;
 }
 
 int usbmuxd_events_unsubscribe(usbmuxd_subscription_context_t context)
 {
 	int ret = 0;
-	int num = 0;
 
 	if (!context) {
 		return -EINVAL;
@@ -1242,28 +1355,18 @@ int usbmuxd_events_unsubscribe(usbmuxd_subscription_context_t context)
 		} ENDFOREACH
 		free(context);
 	}
-	num = collection_count(&listeners);
-	mutex_unlock(&listener_mutex);
 
-	if (num == 0) {
-		int res = 0;
-		cancelling = 1;
-		socket_shutdown(listenfd, SHUT_RDWR);
-		if (thread_alive(devmon)) {
-			if (thread_cancel(devmon) < 0) {
-				running = 0;
-			}
-#if defined(HAVE_INOTIFY) && !defined(HAVE_PTHREAD_CANCEL)
-			pthread_kill(devmon, SIGINT);
-#endif
-			res = thread_join(devmon);
-			thread_free(devmon);
-			devmon = THREAD_T_NULL;
-		}
-		if ((res != 0) && (res != ESRCH)) {
-			ret = res;
-		}
+	while (mon_state == MON_STARTING) {
+		cond_wait(&listener_cond, &listener_mutex);
+		cond_signal(&listener_cond);
 	}
+
+	if (collection_count(&listeners) == 0 &&
+	    (mon_state == MON_RUNNING || mon_state == MON_FAILED)) {
+		ret = monitor_stop_and_reclaim_locked(1);
+	}
+	/* MON_STOPPING: another thread owns the stop; MON_STOPPED: nothing to do */
+	mutex_unlock(&listener_mutex);
 
 	return ret;
 }

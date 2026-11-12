@@ -131,7 +131,13 @@ static void *silent_mux_conn(void *a) {
 static void *silent_mux_accept(void *a) { int ls = (int)(intptr_t)a; for (;;) { int c = accept(ls, NULL, NULL); if (c < 0) break; pthread_t t; pthread_create(&t, NULL, silent_mux_conn, (void *)(intptr_t)c); pthread_detach(t); } return NULL; }
 static void ev_cb(const usbmuxd_event_t *e, void *u) { (void)e; (void)u; }
 struct unsub { usbmuxd_subscription_context_t ctx; int rc; int done; double t_end; };
-static void *unsub_thread(void *a) { struct unsub *u = a; u->rc = usbmuxd_events_unsubscribe(u->ctx); u->t_end = now(); u->done = 1; return NULL; }
+static void *unsub_thread(void *a) { struct unsub *u = a; u->rc = usbmuxd_events_unsubscribe(u->ctx); u->t_end = now(); __atomic_store_n(&u->done, 1, __ATOMIC_RELEASE); return NULL; }
+#define DONE(x) __atomic_load_n(&(x).done, __ATOMIC_ACQUIRE)
+#define LD(v) __atomic_load_n(&(v), __ATOMIC_SEQ_CST)
+
+struct sub2 { usbmuxd_subscription_context_t ctx; int rc; };
+static volatile int g_go;
+static void *sub_thread(void *a) { struct sub2 *q = a; while (!__atomic_load_n(&g_go, __ATOMIC_SEQ_CST)) usleep(100); q->rc = usbmuxd_events_subscribe(&q->ctx, ev_cb, NULL); return NULL; }
 
 /* S4j: one injected pthread_join failure, and a look at whether thread_free is then called on a thread that is still alive */
 int __real_thread_join(THREAD_T t);
@@ -139,13 +145,21 @@ void __real_thread_free(THREAD_T t);
 static volatile int g_join_inject = 0, g_join_injected = 0, g_free_calls = 0, g_free_while_alive = 0;
 static THREAD_T g_injected_thread;
 int __wrap_thread_join(THREAD_T t) {
-    if (__atomic_exchange_n(&g_join_inject, 0, __ATOMIC_SEQ_CST)) { g_injected_thread = t; g_join_injected = 1; return EINVAL; }   /* the thread is NOT joined */
+    if (__atomic_exchange_n(&g_join_inject, 0, __ATOMIC_SEQ_CST)) { g_injected_thread = t; __atomic_store_n(&g_join_injected, 1, __ATOMIC_SEQ_CST); return EINVAL; }   /* the thread is NOT joined */
     return __real_thread_join(t);
 }
 void __wrap_thread_free(THREAD_T t) {
-    g_free_calls++;
-    if (g_join_injected && t == g_injected_thread && thread_alive(t)) g_free_while_alive = 1;
+    __atomic_add_fetch(&g_free_calls, 1, __ATOMIC_SEQ_CST);
+    if (LD(g_join_injected) && t == g_injected_thread && thread_alive(t)) __atomic_store_n(&g_free_while_alive, 1, __ATOMIC_SEQ_CST);
     __real_thread_free(t);
+}
+
+/* S4n: one injected thread_new failure */
+int __real_thread_new(THREAD_T *t, void *(*f)(void *), void *d);
+static volatile int g_new_inject = 0, g_new_injected = 0;
+int __wrap_thread_new(THREAD_T *t, void *(*f)(void *), void *d) {
+    if (__atomic_exchange_n(&g_new_inject, 0, __ATOMIC_SEQ_CST)) { __atomic_store_n(&g_new_injected, 1, __ATOMIC_SEQ_CST); return EAGAIN; }
+    return __real_thread_new(t, f, d);
 }
 
 /* S4o: the old monitor thread is HELD inside its cleanup (its first socket_close while armed) so that it is certainly alive when unsubscribe returns after the injected join failure */
@@ -206,26 +220,81 @@ int main(int argc, char **argv) {
     } else if (!strcmp(c, "s4o")) {
         pthread_create(&at, NULL, silent_mux_accept, (void *)(intptr_t)ls); pthread_detach(at);
         char addr[64]; snprintf(addr, sizeof addr, "127.0.0.1:%d", port); setenv("USBMUXD_SOCKET_ADDRESS", addr, 1);
-        usbmuxd_subscription_context_t c1 = NULL, c2 = NULL;
+        usbmuxd_subscription_context_t c1 = NULL, c2 = NULL, c3 = NULL;
         int r1 = usbmuxd_events_subscribe(&c1, ev_cb, NULL); usleep(500000);
-        printf("SD_CASE s4o: unsubscribe with ONE injected join failure while the old monitor thread is held in its cleanup, then an immediate new subscription\n");
-        printf("SD_INFO first subscribe rc=%d, mux connections %d\n", r1, g_nconn);
-        g_join_inject = 1; g_park_arm = 1;
+        printf("SD_CASE s4o: unsubscribe with ONE injected join failure while the old monitor thread is held in its cleanup, then immediate re-subscriptions\n");
+        printf("SD_INFO first subscribe rc=%d, mux connections %d\n", r1, LD(g_nconn));
+        __atomic_store_n(&g_join_inject, 1, __ATOMIC_SEQ_CST); __atomic_store_n(&g_park_arm, 1, __ATOMIC_SEQ_CST);
         struct unsub u = { c1, -99, 0, 0 };
         pthread_t t; pthread_create(&t, NULL, unsub_thread, &u);
-        for (int i = 0; i < 300 && !u.done; i++) usleep(10000);
-        if (u.done) pthread_join(t, NULL);
-        printf("SD_RESULT s4o: unsubscribe done=%d rc=%d, old monitor held in cleanup=%d, thread_free called while it was alive=%d\n", u.done, u.rc, g_parked, g_free_while_alive);
-        int r2 = usbmuxd_events_subscribe(&c2, ev_cb, NULL); usleep(500000);
-        printf("SD_RESULT s4o: second subscribe rc=%d, mux connections %d, closed-by-client before release: conn0=%d conn1=%d\n", r2, g_nconn, g_conn_closed[0], g_conn_closed[1]);
-        g_release = 1; usleep(800000);
-        printf("SD_RESULT s4o: after the old thread finished its cleanup: conn0 closed=%d, conn1 (the NEW monitor's connection) closed=%d, connections %d\n", g_conn_closed[0], g_conn_closed[1], g_nconn);
-        /* the old cleanup ends with "listenfd = -1" on the SHARED variable: if that overwrote the new monitor's descriptor, unsubscribing the new subscription can no longer wake the new monitor */
-        struct unsub u2 = { c2, -99, 0, 0 }; pthread_t t2; double ts2 = now(); pthread_create(&t2, NULL, unsub_thread, &u2);
-        for (int i = 0; i < 400 && !u2.done; i++) usleep(10000);
-        if (u2.done) { pthread_join(t2, NULL); printf("SD_RESULT s4o: unsubscribe of the NEW subscription returned after %.0f ms, rc=%d\n", u2.t_end - ts2, u2.rc); }
-        else printf("SD_RESULT s4o: unsubscribe of the NEW subscription did NOT return within 4000 ms\n");
-        printf("SD_VERDICT s4o: %s\n", !u2.done ? "OVERLAP HARMFUL: the old thread's late cleanup left the new monitor impossible to stop (shared listenfd overwritten)" : (g_conn_closed[1] ? "OVERLAP HARMFUL: the new connection was closed" : "no functional harm observed (not proof; see sanitizer reports)"));
+        for (int i = 0; i < 300 && !DONE(u); i++) usleep(10000);
+        if (DONE(u)) pthread_join(t, NULL);
+        printf("SD_RESULT s4o: unsubscribe done=%d rc=%d, old monitor held in cleanup=%d, thread_free called while it was alive=%d\n", DONE(u), u.rc, LD(g_parked), LD(g_free_while_alive));
+        double t0 = now();
+        int r2 = usbmuxd_events_subscribe(&c2, ev_cb, NULL);
+        printf("SD_RESULT s4o: second subscribe (old monitor alive, stop unconfirmed) rc=%d after %.0f ms, mux connections %d\n", r2, now() - t0, LD(g_nconn));
+        printf("SD_VERDICT s4o: %s\n", (r2 != 0 && LD(g_nconn) == 1 && !LD(g_free_while_alive) && u.rc != 0) ? "OK: resubscribe refused, no second monitor, handle not freed while the old thread was alive" : "OVERLAP: a second monitor was started or the handle was freed while the old thread lived");
+        __atomic_store_n(&g_release, 1, __ATOMIC_SEQ_CST); usleep(800000);
+        int r3 = usbmuxd_events_subscribe(&c3, ev_cb, NULL); usleep(500000);
+        printf("SD_RESULT s4o: after the old thread ended: third subscribe rc=%d, mux connections %d\n", r3, LD(g_nconn));
+        struct unsub u3 = { c3, -99, 0, 0 }; pthread_t t3; double ts3 = now(); pthread_create(&t3, NULL, unsub_thread, &u3);
+        for (int i = 0; i < 400 && !DONE(u3); i++) usleep(10000);
+        if (DONE(u3)) { pthread_join(t3, NULL); printf("SD_RESULT s4o: unsubscribe of the third subscription returned after %.0f ms, rc=%d\n", u3.t_end - ts3, u3.rc); }
+        else printf("SD_RESULT s4o: unsubscribe of the third subscription did NOT return within 4000 ms\n");
+        printf("SD_VERDICT s4o-recover: %s\n", (r3 == 0 && DONE(u3) && u3.rc == 0 && LD(g_nconn) == 2) ? "OK: recovered after the old thread ended; new monitor started once and stopped cleanly" : "NOT RECOVERED");
+    } else if (!strcmp(c, "s4d")) {
+        pthread_create(&at, NULL, silent_mux_accept, (void *)(intptr_t)ls); pthread_detach(at);
+        char addr[64]; snprintf(addr, sizeof addr, "127.0.0.1:%d", port); setenv("USBMUXD_SOCKET_ADDRESS", addr, 1);
+        printf("SD_CASE s4d: two threads subscribe at the same time, 30 rounds; exactly one monitor per round, both unsubscribe\n");
+        int bad = 0;
+        for (int r = 1; r <= 30; r++) {
+            struct sub2 s2[2] = { {0}, {0} }; pthread_t th[2];
+            __atomic_store_n(&g_go, 0, __ATOMIC_SEQ_CST);
+            for (int i = 0; i < 2; i++) pthread_create(&th[i], NULL, sub_thread, &s2[i]);
+            usleep(20000); __atomic_store_n(&g_go, 1, __ATOMIC_SEQ_CST);
+            for (int i = 0; i < 2; i++) pthread_join(th[i], NULL);
+            usleep(100000);
+            int conns = LD(g_nconn);
+            int rc_u[2];
+            for (int i = 0; i < 2; i++) { struct unsub u = { s2[i].ctx, -99, 0, 0 }; pthread_t ut; pthread_create(&ut, NULL, unsub_thread, &u); for (int k = 0; k < 300 && !DONE(u); k++) usleep(10000); rc_u[i] = DONE(u) ? u.rc : -999; if (DONE(u)) pthread_join(ut, NULL); }
+            if (s2[0].rc != 0 || s2[1].rc != 0 || conns != r || rc_u[0] || rc_u[1]) { bad++; printf("SD_INFO round %d: sub rc %d/%d, connections %d (expected %d), unsub rc %d/%d\n", r, s2[0].rc, s2[1].rc, conns, r, rc_u[0], rc_u[1]); }
+        }
+        printf("SD_RESULT s4d: bad rounds %d of 30, total connections %d\n", bad, LD(g_nconn));
+        printf("SD_VERDICT s4d: %s\n", bad == 0 ? "OK" : "FAILED");
+    } else if (!strcmp(c, "s4n")) {
+        pthread_create(&at, NULL, silent_mux_accept, (void *)(intptr_t)ls); pthread_detach(at);
+        char addr[64]; snprintf(addr, sizeof addr, "127.0.0.1:%d", port); setenv("USBMUXD_SOCKET_ADDRESS", addr, 1);
+        usbmuxd_subscription_context_t c1 = NULL, c2 = NULL;
+        printf("SD_CASE s4n: thread_new fails once on subscribe; the context must be rolled back and the next subscribe must work\n");
+        __atomic_store_n(&g_new_inject, 1, __ATOMIC_SEQ_CST);
+        int r1 = usbmuxd_events_subscribe(&c1, ev_cb, NULL);
+        printf("SD_RESULT s4n: subscribe with injected thread_new failure rc=%d (injected=%d), ctx=%p\n", r1, LD(g_new_injected), (void *)c1);
+        int r2 = usbmuxd_events_subscribe(&c2, ev_cb, NULL); usleep(300000);
+        struct unsub u = { c2, -99, 0, 0 }; pthread_t t; pthread_create(&t, NULL, unsub_thread, &u);
+        for (int i = 0; i < 400 && !DONE(u); i++) usleep(10000);
+        if (DONE(u)) pthread_join(t, NULL);
+        printf("SD_RESULT s4n: next subscribe rc=%d, mux connections %d, unsubscribe done=%d rc=%d\n", r2, LD(g_nconn), DONE(u), u.rc);
+        printf("SD_VERDICT s4n: %s\n", (r1 == EAGAIN && r2 == 0 && LD(g_nconn) == 1 && DONE(u) && u.rc == 0) ? "OK" : "FAILED");
+    } else if (!strcmp(c, "s4jj")) {
+        pthread_create(&at, NULL, silent_mux_accept, (void *)(intptr_t)ls); pthread_detach(at);
+        char addr[64]; snprintf(addr, sizeof addr, "127.0.0.1:%d", port); setenv("USBMUXD_SOCKET_ADDRESS", addr, 1);
+        usbmuxd_subscription_context_t c1 = NULL;
+        printf("SD_CASE s4jj: join failure injected on unsubscribe; once the old thread has ended, TWO threads re-subscribe at the same time\n");
+        usbmuxd_events_subscribe(&c1, ev_cb, NULL); usleep(300000);
+        __atomic_store_n(&g_join_inject, 1, __ATOMIC_SEQ_CST);
+        int ru = usbmuxd_events_unsubscribe(c1); usleep(500000);
+        struct sub2 s2[2] = { {0}, {0} }; pthread_t th[2];
+        __atomic_store_n(&g_go, 0, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 2; i++) pthread_create(&th[i], NULL, sub_thread, &s2[i]);
+        usleep(20000); __atomic_store_n(&g_go, 1, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 2; i++) pthread_join(th[i], NULL);
+        usleep(300000);
+        printf("SD_RESULT s4jj: unsubscribe rc=%d, resubscribe rc %d/%d, mux connections %d\n", ru, s2[0].rc, s2[1].rc, LD(g_nconn));
+        int okn = 0, rcu = 0;
+        for (int i = 0; i < 2; i++) if (s2[i].rc == 0) { struct unsub u = { s2[i].ctx, -99, 0, 0 }; pthread_t ut; pthread_create(&ut, NULL, unsub_thread, &u); for (int k = 0; k < 300 && !DONE(u); k++) usleep(10000); if (DONE(u)) { pthread_join(ut, NULL); okn++; rcu |= u.rc; } }
+        printf("SD_RESULT s4jj: unsubscribes returned %d, rc-or %d\n", okn, rcu);
+        int nok = (s2[0].rc == 0) + (s2[1].rc == 0);
+        printf("SD_VERDICT s4jj: %s\n", (ru != 0 && LD(g_nconn) == 2 && nok >= 1 && okn == nok && rcu == 0 && (s2[0].rc == 0 || s2[0].rc == -EBUSY) && (s2[1].rc == 0 || s2[1].rc == -EBUSY)) ? "OK: one new monitor, no overlap, all successful subscribers stopped it" : "FAILED");
     } else if (!strcmp(c, "s4") || !strcmp(c, "s4j")) {
         int inject = !strcmp(c, "s4j");
         pthread_create(&at, NULL, silent_mux_accept, (void *)(intptr_t)ls); pthread_detach(at);
@@ -235,15 +304,15 @@ int main(int argc, char **argv) {
         printf("SD_CASE %s: libusbmuxd device monitor against a usbmuxd that answers Listen and then stays silent%s\n", c, inject ? "; ONE pthread_join failure is injected (the monitor thread is not joined)" : "");
         usleep(500000);
         printf("SD_INFO subscribe rc=%d\n", rc);
-        if (inject) g_join_inject = 1;
+        if (inject) __atomic_store_n(&g_join_inject, 1, __ATOMIC_SEQ_CST);
         struct unsub u = { ctx, -99, 0, 0 };
         pthread_t t; double ts = now(); pthread_create(&t, NULL, unsub_thread, &u);
-        for (int i = 0; i < 500 && !u.done; i++) usleep(10000);
-        if (u.done) { pthread_join(t, NULL); printf("SD_RESULT %s: usbmuxd_events_unsubscribe RETURNED after %.0f ms, rc=%d\n", c, u.t_end - ts, u.rc); }
+        for (int i = 0; i < 500 && !DONE(u); i++) usleep(10000);
+        if (DONE(u)) { pthread_join(t, NULL); printf("SD_RESULT %s: usbmuxd_events_unsubscribe RETURNED after %.0f ms, rc=%d\n", c, u.t_end - ts, u.rc); }
         else printf("SD_RESULT %s: usbmuxd_events_unsubscribe did NOT return within 5000 ms (join waits for a monitor thread that does not exit)\n", c);
         if (inject) {
-            printf("SD_RESULT %s: join injected=%d, thread_free called while the monitor thread was still alive=%d (free calls %d)\n", c, g_join_injected, g_free_while_alive, g_free_calls);
-            if (g_join_injected) { printf("SD_INFO the monitor thread keeps running after unsubscribe returned; cleaning up\n"); }
+            printf("SD_RESULT %s: join injected=%d, thread_free called while the monitor thread was still alive=%d (free calls %d)\n", c, LD(g_join_injected), LD(g_free_while_alive), LD(g_free_calls));
+            if (LD(g_join_injected)) { printf("SD_INFO the monitor thread keeps running after unsubscribe returned; cleaning up\n"); }
         }
     } else { printf("unknown case %s\n", c); return 2; }
     fflush(stdout);

@@ -338,7 +338,7 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     if (pthread_create(&tr, NULL, restore_thread, (void *)(uintptr_t)(g_tok = hv_restore_session_approve_successor())) != 0) { row("init", "FAILED", "restore thread did not start"); goto report; }
     while (!g_done && now_ms() - t0 < cap_ms) usleep(20000);
     int timed_out = !g_done;
-    if (timed_out) { global_quit_flag = 1; for (int i = 0; i < 150 && !g_done; i++) usleep(20000); }
+    if (timed_out) { __atomic_store_n(&global_quit_flag, 1, __ATOMIC_SEQ_CST); for (int i = 0; i < 150 && !g_done; i++) usleep(20000); }
     int still_running = !g_done;   /* the quit flag did not end it either */
     g_still = still_running;
     if (g_done) pthread_join(tr, NULL);

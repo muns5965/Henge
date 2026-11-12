@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
     private Button vmrunButton;
     private Button romDiagButton;
     private Button vmrunVerboseButton;
+    private Button installerVerboseButton;
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -145,6 +146,11 @@ public class MainActivity extends Activity {
         vmrunVerboseButton.setText("ROM 일반 부팅 시험 + 상세 로그 (log=3, 30초)");
         vmrunVerboseButton.setOnClickListener(v -> { verboseMode = true; runVmrun(false); });
         done.addView(vmrunVerboseButton);
+
+        installerVerboseButton = new Button(this);
+        installerVerboseButton.setText("ROM 설치기(DFU) 부팅 + 상세 로그 (log=3, 30초)");
+        installerVerboseButton.setOnClickListener(v -> { verboseMode = true; runVmrun(true); });
+        done.addView(installerVerboseButton);
 
         installerButton = new Button(this);
         installerButton.setText("ROM 설치기(DFU) 부팅 시험 (VM 고유 ECID, 30초)");
@@ -422,6 +428,7 @@ public class MainActivity extends Activity {
             vmrunButton.setEnabled(enabled);
             romDiagButton.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
+            installerVerboseButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
         });
     }
@@ -928,7 +935,7 @@ public class MainActivity extends Activity {
                     if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
-                    acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
+                    acc.append(installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
                     if (installer && !cfg.containsKey("ecid")) {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);

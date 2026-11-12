@@ -127,6 +127,7 @@ LIBIMOBILEDEVICE_API restored_error_t restored_send(restored_client_t client, pl
  *  plist is NULL
  */
 LIBIMOBILEDEVICE_API restored_error_t restored_receive(restored_client_t client, plist_t *plist);
+LIBIMOBILEDEVICE_API restored_error_t restored_receive_timeout(restored_client_t client, plist_t *plist, unsigned int timeout_ms);
 
 /**
  * Sends the Goodbye request to restored signaling the end of communication.

@@ -13,3 +13,4 @@ void hv_life_task_create_failed(uint64_t gen, int kind, int64_t failure) { const
 int hv_life_terminate_requested(void) { const HvLifeOps *o = ops(); return (o && o->terminate_requested) ? o->terminate_requested() : 0; }
 int hv_life_conn_add(int fd, uint64_t *gen) { const HvLifeOps *o = ops(); if (gen) *gen = 0; return (o && o->conn_register) ? o->conn_register(fd, gen) : 0; }
 int hv_life_conn_remove(uint64_t gen, int fd) { const HvLifeOps *o = ops(); return (o && gen && o->conn_unregister_wait) ? o->conn_unregister_wait(gen, fd) : 0; }
+int hv_life_installed(void) { return ops() != NULL; }

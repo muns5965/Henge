@@ -96,7 +96,7 @@ uint64_t hv_reg_begin(void) {
     R.objects_pending = R.objects_released = R.cleanup_hist = R.cleanup_cur = R.release_granted = 0;
     R.report_final = R.report_interim = HV_REG_R_NONE;
     R.pub = HV_REG_PUB_NONE; R.cancel_noted = R.restore_returned = R.cancel_late = 0;
-    R.phase = HV_REG_PHASE_RUN; R.deadline_ns = 0; R.terminate = 0;
+    R.phase = HV_REG_PHASE_RUN; R.deadline_ns = 0; __atomic_store_n(&R.terminate, 0, __ATOMIC_RELEASE);
     R.state = HV_REG_ACTIVE;
     uint64_t g = R.gen;
     changed();
@@ -119,7 +119,7 @@ int hv_reg_close_begin(uint64_t gen) {
     int r = -1;
     if (!stale_locked(gen)) {
         int before = (int)R.state;
-        if (R.state == HV_REG_ACTIVE) { R.state = HV_REG_CLOSING; R.terminate = 1; changed(); r = 0; }   /* C3: CLOSING entry and the registration check share this lock */
+        if (R.state == HV_REG_ACTIVE) { R.state = HV_REG_CLOSING; __atomic_store_n(&R.terminate, 1, __ATOMIC_RELEASE); changed(); r = 0; }   /* C3: CLOSING entry and the registration check share this lock */
         else if (R.state == HV_REG_CLOSING) r = 0;
         HV_TEST_HOOK(HV_HOOK_CLOSE_DECIDED, before, r);
     }
@@ -127,7 +127,7 @@ int hv_reg_close_begin(uint64_t gen) {
     return r;
 }
 static void qf_locked(HvRegQfReason why) {
-    R.state = HV_REG_QUIESCENCE_FAILED; R.qf = why; R.terminate = 1;   /* a terminal state: nothing is released, nothing returns to IDLE (C11) */
+    R.state = HV_REG_QUIESCENCE_FAILED; R.qf = why; __atomic_store_n(&R.terminate, 1, __ATOMIC_RELEASE);   /* a terminal state: nothing is released, nothing returns to IDLE (C11) */
     changed();
 }
 int hv_reg_declare_failed(uint64_t gen, HvRegQfReason why) {
@@ -214,7 +214,7 @@ void hv_reg_record_hard_failure(uint64_t gen, HvRegQfReason why) {
     unlock();
 }
 
-void hv_reg_request_terminate(uint64_t gen) { lock(); if (!stale_locked(gen)) { R.terminate = 1; changed(); } unlock(); }
+void hv_reg_request_terminate(uint64_t gen) { lock(); if (!stale_locked(gen)) { __atomic_store_n(&R.terminate, 1, __ATOMIC_RELEASE); changed(); } unlock(); }
 int hv_reg_terminate_requested(void) { return __atomic_load_n(&R.terminate, __ATOMIC_ACQUIRE); }
 
 /* ---- cancel ---- */

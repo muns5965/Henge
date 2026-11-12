@@ -157,6 +157,15 @@ restored_error_t restored_receive(restored_client_t client, plist_t *plist)
 	return restored_error(property_list_service_receive_plist(client->parent, plist));
 }
 
+/* Henge I3 6-2: like restored_receive but with a caller-chosen wait (ms). A NEW function; restored_receive is unchanged. */
+restored_error_t restored_receive_timeout(restored_client_t client, plist_t *plist, unsigned int timeout_ms)
+{
+	if (!client || !plist || (plist && *plist))
+		return RESTORE_E_INVALID_ARG;
+
+	return restored_error(property_list_service_receive_plist_with_timeout(client->parent, plist, timeout_ms));
+}
+
 restored_error_t restored_send(restored_client_t client, plist_t plist)
 {
 	if (!client || !plist)

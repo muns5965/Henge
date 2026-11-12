@@ -14,10 +14,10 @@ mkdir -p "$OUT/fd"
 INC="-DHAVE_CONFIG_H -I$TP/restore_config -I$TP -I$TP/libplist/include -I$TP/libimobiledevice-glue/include -I$TP/libusbmuxd/include -I$TP/libimobiledevice/include -I$TP/libirecovery/include -I$R/libzip-build -I$TP/libzip/lib -I$TP/idevicerestore/src -I. -Ihost -Idevices -Icore -Itests"
 $CC -std=gnu11 -D_GNU_SOURCE -O1 -g -w $INC tests/test_fake_restore.c tests/fake_device/fake_dev.c tests/fake_device/stubs.c tests/fake_device/wrap_thread.c -Wl,--wrap=thread_new "$R/lib.a" "$R/libzip-build/lib/libzip.a" -lz -lm -lpthread -o "$OUT/fd/test_fake_restore" 2> "$OUT/fd/link.log" \
   || { echo "FAILED  build test_fake_restore"; head -30 "$OUT/fd/link.log"; exit 1; }
-for c in ${CASES:-0 a b c1 c2 c3 d e t5s_bb t5s_fdr t5s_fdr_nr t5a_free t5a_nofree t12 t12_close t13 t1b t3_inject}; do
+for c in ${CASES:-0 a b c1 c2 c3 d e t5s_bb t5s_fdr t5s_fdr_nr t5a_free t5a_nofree t12 t12_close t13 t1b t3_inject t5a_host cancel_loop null_a null_t3}; do
   echo "=== case $c"
   ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" TSAN_OPTIONS=halt_on_error=0 "$OUT/fd/test_fake_restore" "$c" > "$OUT/fd/case_$c.out" 2> "$OUT/fd/case_$c.log"
   echo "exit=$?"
-  grep -E '^(CASE|BUILD|RETURNED|CLIENT|WAITING|HANG|AT_HANG|RESULT|NETGUARD|FAKE|FDS|THREAD_NEW|LATE_SEND|LEAKCHECK|ENGINE)' "$OUT/fd/case_$c.out"
+  grep -E '^(CASE|BUILD|RETURNED|CLIENT|HOSTORDER|CANCEL|HOSTORDER|CANCEL|WAITING|HANG|AT_HANG|RESULT|NETGUARD|FAKE|FDS|THREAD_NEW|LATE_SEND|LEAKCHECK|ENGINE)' "$OUT/fd/case_$c.out"
   grep -E 'ERROR: AddressSanitizer|WARNING: ThreadSanitizer|SUMMARY:' "$OUT/fd/case_$c.log" | head -6
 done

@@ -23,6 +23,7 @@ void hv_life_install(const HvLifeOps *ops);   /* host only; NULL removes */
 int hv_life_task_begin(int kind, uint64_t *gen);                           /* 0 ok (or no ops), -1 refused: do not create the thread */
 void hv_life_task_end(uint64_t gen, int kind, int64_t failure);            /* completion; no-op without ops */
 void hv_life_task_create_failed(uint64_t gen, int kind, int64_t failure);  /* no-op without ops */
+int hv_life_installed(void);                                                /* 1 when a host session installed ops (I3 6-2 only) */
 int hv_life_terminate_requested(void);                                      /* 0 without ops */
 int hv_life_conn_add(int fd, uint64_t *gen);                                /* 0 ok (or no ops); -1: do not use the connection */
 int hv_life_conn_remove(uint64_t gen, int fd);                              /* 0: close(fd) allowed (always without ops); -1: leave the fd open */

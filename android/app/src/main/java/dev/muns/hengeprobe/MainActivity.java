@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private Button romDiagButton;
     private Button vmrunVerboseButton;
     private Button installerVerboseButton;
+    private Button usbNormalButton;
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -146,6 +147,11 @@ public class MainActivity extends Activity {
         vmrunVerboseButton.setText("ROM 일반 부팅 시험 + 상세 로그 (log=3, 30초)");
         vmrunVerboseButton.setOnClickListener(v -> { verboseMode = true; runVmrun(false); });
         done.addView(vmrunVerboseButton);
+
+        usbNormalButton = new Button(this);
+        usbNormalButton.setText("[시험] 일반 부팅 + USB 장치만 노출 (log=3, 3초, 설치기 설정 아님)");
+        usbNormalButton.setOnClickListener(v -> { usbNormalMode = true; runVmrun(false); });
+        done.addView(usbNormalButton);
 
         installerVerboseButton = new Button(this);
         installerVerboseButton.setText("ROM 설치기(DFU) 부팅 + 상세 로그 (log=3, 30초)");
@@ -429,6 +435,7 @@ public class MainActivity extends Activity {
             romDiagButton.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
+            usbNormalButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
         });
     }
@@ -880,7 +887,9 @@ public class MainActivity extends Activity {
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean tss = tssMode;
         tssMode = false;
-        final boolean verbose = verboseMode;
+        final boolean usbN = usbNormalMode;
+        usbNormalMode = false;
+        final boolean verbose = verboseMode || usbN;
         verboseMode = false;
         final boolean pf = preflightMode;
         final boolean pfA = preflightStageA;
@@ -933,9 +942,10 @@ public class MainActivity extends Activity {
                     cmd.add("--psci-log");
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
                     if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
-                    if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
+                    if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
+                    if (usbN) cfg.put("seconds", "3"); // the normal boot ended after 10 ms; with the USB port it may sit in a polling loop printing ~1M lines/s
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
-                    acc.append(installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
+                    acc.append(installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
                     if (installer && !cfg.containsKey("ecid")) {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
@@ -961,6 +971,7 @@ public class MainActivity extends Activity {
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
                     pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                    if (usbN) pb.environment().put("HV_USB_ON_NORMAL", "1"); // this one run only; the engine's default boot is unchanged
                     Process p = pb.start();
                     // Output handling: the reader never stops reading (a full pipe would stall vmrun). It keeps (a) text: every line except the high-volume
                     // trace kinds, which the summaries below scan, (b) the last 200 lines of everything for the screen, (c) the whole output in a log file
@@ -969,7 +980,7 @@ public class MainActivity extends Activity {
                     final java.util.ArrayDeque<String> ring = new java.util.ArrayDeque<>();
                     final long[] counts = {0, 0}; // lines read, bytes written to the log file
                     final boolean[] textFull = {false};
-                    final RunLog runLog = (tss || pf) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    final RunLog runLog = (tss || pf) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
@@ -1281,6 +1292,7 @@ public class MainActivity extends Activity {
 
     private boolean tssMode;
     private boolean preflightStageA;
+    private boolean usbNormalMode;   // set by the USB-on-normal-boot experiment button; read and cleared by runVmrun
     private boolean verboseMode;     // set by the verbose boot button; read and cleared by runVmrun
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 

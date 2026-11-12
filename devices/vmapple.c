@@ -333,8 +333,9 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size,
         b->balloon = hv_virtio_balloon_create(m, b->pcie, b->ram, VMAPPLE_MEM, ram_size, b->ram_fd);
         hv_virtio_balloon_set_target(b->balloon, (uint64_t)atoll(getenv("HV_BALLOON")) << 20);
     }
-    /* Installer boots (the ROM goes to DFU) get the USB device port, as VZ gives it. */
-    if (cfg->run_installer1 || cfg->run_installer2) {
+    /* Installer boots (the ROM goes to DFU) get the USB device port, as VZ gives it. HV_USB_ON_NORMAL is an experiment: the same port on a normal boot
+       (run_installer1/2 stay 0), to see whether the ROM's USB slot check, which a normal boot fails with the slot absent, is what ends it. Off by default. */
+    if (cfg->run_installer1 || cfg->run_installer2 || getenv("HV_USB_ON_NORMAL")) {
         b->vusb = hv_virtio_usb_create(m, b->pcie);
         b->bdif->usb = b->vusb;
     }

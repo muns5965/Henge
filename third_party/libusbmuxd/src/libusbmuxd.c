@@ -1013,7 +1013,7 @@ retry:
 		return sfd;
 	}
 
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 	if (send_listen_packet(sfd, tag) <= 0) {
 		LIBUSBMUXD_DEBUG(1, "%s: ERROR: could not send listen packet\n", __func__);
 		socket_close(sfd);
@@ -1293,7 +1293,7 @@ retry:
 		return sfd;
 	}
 
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 	if ((proto_version == 1) && (try_list_devices)) {
 		if (send_list_devices_packet(sfd, tag) > 0) {
 			plist_t list = NULL;
@@ -1331,7 +1331,7 @@ retry:
 		}
 	}
 
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 	if (send_listen_packet(sfd, tag) > 0) {
 		res = -1;
 		// get response
@@ -1543,7 +1543,7 @@ retry:
 		return sfd;
 	}
 
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 	if (send_connect_packet(sfd, tag, handle, (uint16_t)port) <= 0) {
 		LIBUSBMUXD_DEBUG(1, "%s: Error sending connect message!\n", __func__);
 	} else {
@@ -1646,7 +1646,7 @@ int usbmuxd_read_buid(char **buid)
 	}
 
 	proto_version = 1;
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 	if (send_read_buid_packet(sfd, tag) <= 0) {
 		LIBUSBMUXD_DEBUG(1, "%s: Error sending ReadBUID message!\n", __func__);
 	} else {
@@ -1688,7 +1688,7 @@ int usbmuxd_read_pair_record(const char* record_id, char **record_data, uint32_t
 	}
 
 	proto_version = 1;
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 
 	if (send_pair_record_packet(sfd, tag, "ReadPairRecord", record_id, 0, NULL) <= 0) {
 		LIBUSBMUXD_DEBUG(1, "%s: Error sending ReadPairRecord message!\n", __func__);
@@ -1733,7 +1733,7 @@ int usbmuxd_save_pair_record_with_device_id(const char* record_id, uint32_t devi
 	}
 
 	proto_version = 1;
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 
 	plist_t data = plist_new_data(record_data, record_size);
 	if (send_pair_record_packet(sfd, tag, "SavePairRecord", record_id, device_id, data) <= 0) {
@@ -1776,7 +1776,7 @@ int usbmuxd_delete_pair_record(const char* record_id)
 	}
 
 	proto_version = 1;
-	tag = ++use_tag;
+	tag = __atomic_add_fetch(&use_tag, 1, __ATOMIC_SEQ_CST);
 
 	if (send_pair_record_packet(sfd, tag, "DeletePairRecord", record_id, 0, NULL) <= 0) {
 		LIBUSBMUXD_DEBUG(1, "%s: Error sending DeletePairRecord message!\n", __func__);

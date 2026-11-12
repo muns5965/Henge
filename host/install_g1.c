@@ -54,7 +54,7 @@ void hv_g1_record(int engine_rc, int closed, int cleanup_mask, int final_report)
 static const char *const k_ok[] = {"Found device in DFU mode", "Identified device as", "Device Product", "Extracting BuildManifest", "IPSW Product", "Device supports Image4",
                                    "Variant:", "This restore will erase", "Performing macOS restore", "Checking IPSW for required", "All required components",
                                    "Received SHSH blobs", "SHSH not saved", NULL};
-static volatile int g_lines_shown, g_lines_withheld, g_lines_sensitive, g_shown_sensitive, g_bypassed_lines;
+static volatile int g_lines_shown, g_lines_withheld, g_lines_sensitive, g_bypassed_lines;
 static int looks_sensitive(const char *l) {
     if (!strncmp(l, "ECID", 4) || !strncmp(l, "Nonce", 5) || !strncmp(l, "ApNonce", 7) || !strncasecmp(l, "SepNonce", 8) || !strncasecmp(l, "Ticket", 6)) return 1;
     int run = 0;   /* a hex dump: "00 11 22 ..." (the tool's own format) or a long run of hex digits */
@@ -66,16 +66,28 @@ static int looks_sensitive(const char *l) {
     for (const char *p = l; *p; p++) { if (isxdigit((unsigned char)*p)) { if (++hx >= 32) return 1; } else hx = 0; }
     return 0;
 }
+/* The one place a line of the tool's log is decided: the real log hook (log_print) and the test entry (hv_g1_filter_line) both call it. 1: printed, 0: withheld. */
+static int filter_line(const char *line) {
+    if (g_bypass) { fputs(line, stdout); __atomic_add_fetch(&g_bypassed_lines, 1, __ATOMIC_SEQ_CST); return 1; }   /* a control of the test program, never a default */
+    int sens = looks_sensitive(line);
+    for (int i = 0; k_ok[i]; i++)
+        if (!sens && !strncmp(line, k_ok[i], strlen(k_ok[i]))) { fputs(line, stdout); __atomic_add_fetch(&g_lines_shown, 1, __ATOMIC_SEQ_CST); return 1; }
+    __atomic_add_fetch(&g_lines_withheld, 1, __ATOMIC_SEQ_CST);
+    if (sens) __atomic_add_fetch(&g_lines_sensitive, 1, __ATOMIC_SEQ_CST);
+    return 0;
+}
 static void log_print(enum loglevel level, const char *fmt, va_list ap) {
     char line[1024];
     vsnprintf(line, sizeof line, fmt, ap);
     (void)level;
-    if (g_bypass) { fputs(line, stdout); __atomic_add_fetch(&g_bypassed_lines, 1, __ATOMIC_SEQ_CST); return; }   /* a control of the test program, never a default */
-    for (int i = 0; k_ok[i]; i++)
-        if (!strncmp(line, k_ok[i], strlen(k_ok[i])) && !looks_sensitive(line)) { fputs(line, stdout); __atomic_add_fetch(&g_lines_shown, 1, __ATOMIC_SEQ_CST); return; }
-    /* (a line that matches the whitelist but looks sensitive is withheld above; g_shown_sensitive counts the unlikely case that one is shown anyway) */
-    __atomic_add_fetch(&g_lines_withheld, 1, __ATOMIC_SEQ_CST);
-    if (looks_sensitive(line)) __atomic_add_fetch(&g_lines_sensitive, 1, __ATOMIC_SEQ_CST);
+    filter_line(line);
+}
+int hv_g1_filter_line(const char *line) { return filter_line(line); }
+void hv_g1_log_counts(int *shown, int *withheld, int *sensitive, int *bypassed) {
+    *shown = __atomic_load_n(&g_lines_shown, __ATOMIC_SEQ_CST);
+    *withheld = __atomic_load_n(&g_lines_withheld, __ATOMIC_SEQ_CST);
+    *sensitive = __atomic_load_n(&g_lines_sensitive, __ATOMIC_SEQ_CST);
+    *bypassed = __atomic_load_n(&g_bypassed_lines, __ATOMIC_SEQ_CST);
 }
 
 /* ---- the work directory: names, sizes and times before and after ---- */
@@ -290,9 +302,10 @@ int hv_g1_finish(FILE *out, const char *workdir, const HvG1Expect *x) {
         row(out, "ticket_files", tick == 0, "%d new or changed entr%s whose name looks like a signing ticket (shsh / ticket / img4); ticket files are disabled by the session (hv_no_ticket_files)", tick, tick == 1 ? "y" : "ies");
     }
     {
-        int shown = __atomic_load_n(&g_lines_shown, __ATOMIC_SEQ_CST), wh = __atomic_load_n(&g_lines_withheld, __ATOMIC_SEQ_CST), se = __atomic_load_n(&g_lines_sensitive, __ATOMIC_SEQ_CST), by = __atomic_load_n(&g_bypassed_lines, __ATOMIC_SEQ_CST), ss = __atomic_load_n(&g_shown_sensitive, __ATOMIC_SEQ_CST);
-        row(out, "tool_log", !g_bypass && !ss && by == 0, "%s: %d line(s) shown (known-harmless beginnings only, %d of them looked sensitive), %d withheld (%d of those looked like an ECID, a nonce or a ticket: blocked, which is the filter working; a count, never the text), %d printed unfiltered",
-            g_bypass ? "the filter was SWITCHED OFF (a control; never allowed in a real G1 run)" : "the tool's log is filtered", shown, ss, wh, se, by);
+        int shown, wh, se, by;
+        hv_g1_log_counts(&shown, &wh, &se, &by);
+        row(out, "tool_log", !g_bypass && by == 0, "%s: %d line(s) shown (only lines that begin like a known-harmless one and show no ECID/nonce/ticket pattern), %d withheld (%d of those matched an ECID, nonce or ticket pattern: blocked, which is the filter working; counts only, never the text), %d printed unfiltered; the filter itself is tested on boundary inputs by the scenario \"filter\"",
+            g_bypass ? "the filter was SWITCHED OFF (a control; never allowed in a real G1 run)" : "the tool's log is filtered", shown, wh, se, by);
     }
     {
         ThSnap t1;

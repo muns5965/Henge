@@ -63,7 +63,7 @@ run() { # name scenario port ca [want patterns...]  (a "c-" scenario must exit 1
   fi
   for w in "$@"; do grep -Eq -- "$w" "$G/$name.out" || { echo "MISSING in $name: $w"; rc=1; }; done
 }
-CASES=${CASES:-ok refuse1 refuse2 bad connfail timeout badcert redirect external noallow c-noallow-asok c-tickets c-dnload c-injfile c-showlog}
+CASES=${CASES:-ok refuse1 refuse2 bad connfail timeout badcert redirect external noallow c-noallow-asok c-tickets c-dnload c-injfile c-showlog filter c-filter}
 for c in $CASES; do
   case $c in
     ok)       run ok ok $PORT cadir "RESULT: g1_passed" "tss_diag +ok.*kind=success attempts=1 http=200 tss_status=0" "engine_rc +ok" "tss_requests +ok.*made 3 request" "connections +ok" "device_requests +ok" "local_writes +ok" "ticket_files +ok" "session +ok.*final report 1"
@@ -90,6 +90,8 @@ for c in $CASES; do
     c-injfile) run c-injfile c-injfile $PORT cadir "RESULT: FAILED" "ticket_files +FAILED" "local_writes +FAILED.*stray.shsh" ;;
     c-showlog) run c-showlog c-showlog $PORT cadir "RESULT: FAILED" "tool_log +FAILED.*SWITCHED OFF"
               grep -qi "00 11 22 33 44 55" "$G/c-showlog.out" || { echo "c-showlog: the unfiltered log does not show the nonce, so the filter check proves nothing"; rc=1; } ;;
+    filter)   run filter filter $PORT cadir "filter: 10 case\(s\), 0 failed" "case  1 ok" "case  8 ok" "case  9 ok" ;;
+    c-filter) run c-filter c-filter $PORT cadir "filter: 10 case\(s\), [1-9][0-9]* failed" "case  8 FAILED" ;;
   esac
 done
 [ $rc = 0 ] && echo "INSTALL-G1 OK" || echo "INSTALL-G1 FAILED"; exit $rc

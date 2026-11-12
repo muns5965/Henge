@@ -18,6 +18,8 @@
      c-dnload         ok, and a DFU DNLOAD reaches the device while the tool runs
      c-injfile        ok, and a file named like a ticket appears in the work directory
      c-showlog        ok, with the tool's log filter switched off: the tool_log row must FAIL and the synthetic nonce must show
+     filter           the log filter on boundary inputs (no run): allowed line shown, other line withheld, ECID/nonce/long hex withheld, whitelisted prefix + hex withheld
+     c-filter         the same with the filter switched off: the cases must FAIL (it shows that the test notices a filter that lets everything through)
    Without a "c-" prefix an exit status other than 0 means the scenario's expectation was not met. */
 #define main irecv_main
 #include "test_irecv.c"
@@ -55,9 +57,41 @@ static void hook_dnload(void) {
     for (int i = 0; i < 500 && hv_libusb_ctrl_count() == c0; i++) usleep(2000);
 }
 
+/* Direct test of the log filter. The inputs are synthetic and never printed back; each case reports its number and the counters' change only. */
+static int filter_cases(void) {
+    struct { const char *line; int shown; int sens; const char *what; } c[] = {
+        {"Identified device as vma2macosap, VirtualMac2,1\n", 1, 0, "a known-harmless line is shown"},
+        {"Checking IPSW for required components...\n", 1, 0, "another known-harmless line is shown"},
+        {"Some other message the tool might print\n", 0, 0, "a line outside the list is withheld"},
+        {"ECID: 9999999999\n", 0, 1, "an ECID line is withheld"},
+        {"Nonce: a1 b2 c3 d4 e5 f6 07 18 29 3a 4b 5c\n", 0, 1, "a nonce line is withheld"},
+        {"a1 b2 c3 d4 e5 f6 07 18 29 3a 4b 5c 6d 7e 8f 90\n", 0, 1, "a spaced hex dump is withheld"},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef\n", 0, 1, "a long run of hex digits is withheld"},
+        {"Identified device as a1 b2 c3 d4 e5 f6 07 18 29 3a 4b\n", 0, 1, "a known prefix followed by a hex dump is withheld"},
+        {"Device Product Version: 0123456789abcdef0123456789abcdef0123\n", 0, 1, "a known prefix followed by a long hex run is withheld"},
+        {"ApNonce 0102\n", 0, 1, "an ApNonce line is withheld"},
+    };
+    int bad = 0, n = (int)(sizeof c / sizeof c[0]);
+    for (int k = 0; k < n; k++) {
+        int s0, w0, e0, b0, s1, w1, e1, b1;
+        hv_g1_log_counts(&s0, &w0, &e0, &b0);
+        int r = hv_g1_filter_line(c[k].line);
+        hv_g1_log_counts(&s1, &w1, &e1, &b1);
+        int ok = r == c[k].shown && (s1 - s0) == (c[k].shown ? 1 : 0) && (w1 - w0) == (c[k].shown ? 0 : 1) && (e1 - e0) == c[k].sens && b1 == b0;
+        printf("install g1 filter: case %2d %-6s %s\n", k + 1, ok ? "ok" : "FAILED", c[k].what);
+        if (!ok) bad++;
+    }
+    printf("install g1 filter: %d case(s), %d failed\n", n, bad);
+    return bad;
+}
+
 int main(int argc, char **argv) {
     if (argc < 5) { fprintf(stderr, "usage: %s SCENARIO IPSW WORKDIR PORT\n", argv[0]); return 2; }
     const char *sc = argv[1], *ipsw = argv[2], *work = argv[3];
+    if (!strcmp(sc, "filter") || !strcmp(sc, "c-filter")) {
+        if (!strcmp(sc, "c-filter")) hv_g1_set_log_bypass(1);
+        return filter_cases() ? 1 : 0;
+    }
     int port = atoi(argv[4]);
     g_work = work;
     const char *kind = !strncmp(sc, "c-", 2) ? sc + 2 : sc;

@@ -37,6 +37,10 @@ typedef struct {
     int diag_kind, diag_val;    /* HV_G1D_*; diag_val: the TSS status (HV_G1D_STATUS) or the curl code (HV_G1D_TRANSPORT), -1 = any. HV_G1D_UNCHECKED only prints what was seen */
 } HvG1Expect;
 
+/* The tool's log decision, for the direct test of the filter: the very function the real log hook calls. 1: the line was printed, 0: withheld. Counters: lines shown, withheld, withheld as sensitive, printed unfiltered. */
+int hv_g1_filter_line(const char *line);
+void hv_g1_log_counts(int *shown, int *withheld, int *sensitive, int *bypassed);
+
 /* Options of the test program (defaults: the port is approved, ticket files stay disabled). */
 void hv_g1_set_server(const char *url, int port);   /* the forced signing URL ("https://127.0.0.1:port/path") and the port to approve (0: approve nothing) */
 void hv_g1_set_log_bypass(int on);                  /* control: the tool's log is printed unfiltered (synthetic data only); the table then FAILS its tool_log row, by design */

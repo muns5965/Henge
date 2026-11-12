@@ -76,6 +76,7 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
     // C1-1: the runner process
     private boolean runnerMode;
     private volatile Process runner;
+    private volatile long runnerPid;                 // the pid the runner printed on its first line
     private volatile String runnerLine = "runner: not started";     // the last status/result line it printed, or why it ended
     private final java.util.ArrayDeque<String> runnerLog = new java.util.ArrayDeque<>();
 
@@ -119,13 +120,16 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
         try {
             final Process p = new ProcessBuilder(exe.getAbsolutePath(), "--shm", shm.getAbsolutePath()).directory(getFilesDir()).redirectErrorStream(true).start();
             runner = p;
-            final long pid = p.pid();
+            runnerPid = 0;
             new Thread(() -> {                           // output: keep the last lines; the last "ui_runner ..." line is what the screen shows
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                     String ln;
                     while ((ln = br.readLine()) != null) {
                         synchronized (runnerLog) { runnerLog.addLast(ln); while (runnerLog.size() > 40) runnerLog.removeFirst(); }
                         if (ln.startsWith("ui_runner")) runnerLine = ln;
+                        if (ln.startsWith("ui_runner: started pid ")) {      // the pid the runner names itself: android.jar's Process has no pid()
+                            try { runnerPid = Long.parseLong(ln.substring(23).split("[ ,]")[0]); } catch (NumberFormatException ignored) { }
+                        }
                         Log.i(TAG, ln);
                     }
                 } catch (java.io.IOException ignored) { }
@@ -136,9 +140,12 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
                 String path = shm.getAbsolutePath();
                 long t0 = SystemClock.uptimeMillis();
                 while (!dead && SystemClock.uptimeMillis() - t0 < 8000) {
-                    int rc = nativeAttachRunner(path, pid);
-                    if (rc >= 0) { Log.i(TAG, "attached to the runner, pid " + pid); return; }
-                    if (rc == -1) return;                // no instance here any more
+                    long pid = runnerPid;                // 0 until the runner has printed its own pid
+                    if (pid > 0) {
+                        int rc = nativeAttachRunner(path, pid);
+                        if (rc >= 0) { Log.i(TAG, "attached to the runner, pid " + pid); return; }
+                        if (rc == -1) return;            // no instance here any more
+                    }
                     try { Thread.sleep(50); } catch (InterruptedException e) { return; }
                 }
                 if (!dead) runnerLine = "runner: its file did not appear within 8 s (is it running?)";

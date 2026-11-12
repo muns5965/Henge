@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private Button bigVmButton;
     private Button vmrunButton;
     private Button romDiagButton;
+    private Button vmrunVerboseButton;
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -139,6 +140,11 @@ public class MainActivity extends Activity {
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
         vmrunButton.setOnClickListener(v -> runVmrun(false));
         done.addView(vmrunButton);
+
+        vmrunVerboseButton = new Button(this);
+        vmrunVerboseButton.setText("ROM 일반 부팅 시험 + 상세 로그 (log=3, 30초)");
+        vmrunVerboseButton.setOnClickListener(v -> { verboseMode = true; runVmrun(false); });
+        done.addView(vmrunVerboseButton);
 
         installerButton = new Button(this);
         installerButton.setText("ROM 설치기(DFU) 부팅 시험 (VM 고유 ECID, 30초)");
@@ -415,6 +421,7 @@ public class MainActivity extends Activity {
             bigVmButton.setEnabled(enabled);
             vmrunButton.setEnabled(enabled);
             romDiagButton.setEnabled(enabled);
+            vmrunVerboseButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
         });
     }
@@ -866,6 +873,8 @@ public class MainActivity extends Activity {
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean tss = tssMode;
         tssMode = false;
+        final boolean verbose = verboseMode;
+        verboseMode = false;
         final boolean pf = preflightMode;
         final boolean pfA = preflightStageA;
         preflightMode = false;
@@ -918,7 +927,8 @@ public class MainActivity extends Activity {
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
                     if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || "1".equals(cfg.get("installer"))) cmd.add("--installer");
-                    acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : "모드: 일반 부팅\n");
+                    if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
+                    acc.append(installer ? "모드: 설치기(DFU) 부팅\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
                     if (installer && !cfg.containsKey("ecid")) {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
@@ -1128,6 +1138,7 @@ public class MainActivity extends Activity {
 
     private boolean tssMode;
     private boolean preflightStageA;
+    private boolean verboseMode;     // set by the verbose boot button; read and cleared by runVmrun
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 
     /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */

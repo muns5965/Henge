@@ -135,6 +135,7 @@ restored_error_t restored_client_free(restored_client_t client)
 		plist_free(client->info);
 	}
 
+	mutex_destroy(&client->send_mutex);
 	free(client);
 	return ret;
 }
@@ -171,7 +172,10 @@ restored_error_t restored_send(restored_client_t client, plist_t plist)
 	if (!client || !plist)
 		return RESTORE_E_INVALID_ARG;
 
-	return restored_error(property_list_service_send_xml_plist(client->parent, plist));
+	mutex_lock(&client->send_mutex);
+	restored_error_t r = restored_error(property_list_service_send_xml_plist(client->parent, plist));
+	mutex_unlock(&client->send_mutex);
+	return r;
 }
 
 restored_error_t restored_query_type(restored_client_t client, char **type, uint64_t *version)
@@ -322,6 +326,7 @@ restored_error_t restored_client_new(idevice_t device, restored_client_t *client
 
 	restored_client_t client_loc = (restored_client_t) malloc(sizeof(struct restored_client_private));
 	client_loc->parent = plistclient;
+	mutex_init(&client_loc->send_mutex);
 	client_loc->udid = NULL;
 	client_loc->label = NULL;
 	client_loc->info = NULL;

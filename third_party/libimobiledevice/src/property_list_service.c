@@ -204,6 +204,19 @@ static property_list_service_error_t internal_plist_receive_timeout(property_lis
 
 	debug_info("initial read=%i", bytes);
 
+	/* Henge: the 4-byte length may arrive in pieces (a TCP/usbmux segment boundary inside it). The rest is read like the body is (service_receive): giving up here
+	   would drop the bytes already consumed and desynchronize the stream. */
+	while (bytes < sizeof(pktlen)) {
+		uint32_t more = 0;
+		serr = service_receive(client->parent, ((char*)&pktlen) + bytes, sizeof(pktlen) - bytes, &more);
+		if (serr != SERVICE_E_SUCCESS) {
+			debug_info("reading the rest of the length failed (%u of 4 bytes)", bytes);
+			return service_to_property_list_service_error(serr);
+		}
+		if (more == 0) return PROPERTY_LIST_SERVICE_E_RECEIVE_TIMEOUT;   /* nothing arrived in the library's own wait: no spinning */
+		bytes += more;
+	}
+
 	uint32_t curlen = 0;
 	char *content = NULL;
 

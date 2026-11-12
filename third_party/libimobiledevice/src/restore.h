@@ -25,11 +25,13 @@
 #include <string.h>
 
 #include "idevice.h"
+#include <libimobiledevice-glue/thread.h>
 #include "libimobiledevice/restore.h"
 #include "property_list_service.h"
 
 struct restored_client_private {
 	property_list_service_client_t parent;
+	mutex_t send_mutex;   /* Henge I4: serializes restored_send on this connection */
 	char *udid;
 	char *label;
 	plist_t info;

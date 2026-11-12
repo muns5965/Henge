@@ -61,6 +61,7 @@
 #include <libimobiledevice-glue/thread.h>
 
 #include "idevice.h"
+#include "hv_life.h"
 #include "lockdown.h"
 #include "common/userpref.h"
 #include "common/debug.h"
@@ -536,7 +537,18 @@ idevice_error_t idevice_connect(idevice_t device, uint16_t port, idevice_connect
 			}
 			return IDEVICE_E_UNKNOWN_ERROR;
 		}
+		uint64_t life_gen = 0;
+		if (hv_life_conn_add(sfd, &life_gen) != 0) {   /* refused: the connection must not be used (the descriptor was never published) */
+			usbmuxd_disconnect(sfd);
+			return IDEVICE_E_UNKNOWN_ERROR;
+		}
 		idevice_connection_t new_connection = (idevice_connection_t)malloc(sizeof(struct idevice_connection_private));
+		if (!new_connection) {
+			if (hv_life_conn_remove(life_gen, sfd) == 0) usbmuxd_disconnect(sfd);
+			return IDEVICE_E_UNKNOWN_ERROR;
+		}
+		new_connection->life_gen = life_gen;
+		new_connection->life_fd = sfd;
 		new_connection->type = CONNECTION_USBMUXD;
 		new_connection->data = (void*)(uintptr_t)sfd;
 		new_connection->ssl_data = NULL;
@@ -581,7 +593,18 @@ idevice_error_t idevice_connect(idevice_t device, uint16_t port, idevice_connect
 			return IDEVICE_E_NO_DEVICE;
 		}
 
+		uint64_t life_gen = 0;
+		if (hv_life_conn_add(sfd, &life_gen) != 0) {
+			socket_close(sfd);
+			return IDEVICE_E_UNKNOWN_ERROR;
+		}
 		idevice_connection_t new_connection = (idevice_connection_t)malloc(sizeof(struct idevice_connection_private));
+		if (!new_connection) {
+			if (hv_life_conn_remove(life_gen, sfd) == 0) socket_close(sfd);
+			return IDEVICE_E_UNKNOWN_ERROR;
+		}
+		new_connection->life_gen = life_gen;
+		new_connection->life_fd = sfd;
 		new_connection->type = CONNECTION_NETWORK;
 		new_connection->data = (void*)(uintptr_t)sfd;
 		new_connection->ssl_data = NULL;
@@ -607,14 +630,18 @@ idevice_error_t idevice_disconnect(idevice_connection_t connection)
 		idevice_connection_disable_ssl(connection);
 	}
 	idevice_error_t result = IDEVICE_E_UNKNOWN_ERROR;
+	/* Henge I5: unregister and wait for the cancel path's references BEFORE close(); -1 = a reference did not come back, the descriptor stays open (never closed under a
+	   thread that may still shutdown() it, and its number is never reused) */
+	int may_close = 1;
+	if (connection->life_gen) may_close = (hv_life_conn_remove(connection->life_gen, connection->life_fd) == 0);
 	if (connection->type == CONNECTION_USBMUXD) {
-		usbmuxd_disconnect((int)(uintptr_t)connection->data);
+		if (may_close) usbmuxd_disconnect((int)(uintptr_t)connection->data);
 		connection->data = NULL;
-		result = IDEVICE_E_SUCCESS;
+		result = may_close ? IDEVICE_E_SUCCESS : IDEVICE_E_UNKNOWN_ERROR;
 	} else if (connection->type == CONNECTION_NETWORK) {
-		socket_close((int)(uintptr_t)connection->data);
+		if (may_close) socket_close((int)(uintptr_t)connection->data);
 		connection->data = NULL;
-		result = IDEVICE_E_SUCCESS;
+		result = may_close ? IDEVICE_E_SUCCESS : IDEVICE_E_UNKNOWN_ERROR;
 	} else {
 		debug_info("Unknown connection type %d", connection->type);
 	}

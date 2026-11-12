@@ -14,8 +14,12 @@ $CC $FL -c host/irecv_probe.c -o "$OUT/pf/irecv_probe.o" || exit 1
 $CC $FL -c host/restore_preflight.c -o "$OUT/pf/pf.o" || exit 1
 $CC $FL -DHV_PREFLIGHT_NEGATIVE_CONTROL -c host/restore_preflight.c -o "$OUT/pf/pf_neg.o" || exit 1
 $CC $FL -c tests/test_preflight.c -o "$OUT/pf/test.o" || exit 1
-for v in pf pf_neg; do
-  $CC "$OUT/pf/test.o" "$OUT/pf/$v.o" "$OUT/pf/irecv_probe.o" "$R/lib.a" "$R/libzip-build/lib/libzip.a" -lz -lm -lpthread -o "$OUT/pf/test_$v" 2> "$OUT/pf/link_$v.log" || { echo "FAILED link $v"; head -20 "$OUT/pf/link_$v.log"; exit 1; }
+# test-only build with a held async task (client_release failure injection): HV_PREFLIGHT_TEST_HOLD_ASYNC, never part of a shipped build
+$CC $FL -DHV_PREFLIGHT_TEST_HOLD_ASYNC -c host/restore_preflight.c -o "$OUT/pf/pf_hold.o" || exit 1
+$CC $FL -DHV_PREFLIGHT_TEST_HOLD_ASYNC -c tests/test_preflight.c -o "$OUT/pf/test_hold.o" || exit 1
+for v in pf pf_neg pf_hold; do
+  OBJ="$OUT/pf/test.o"; [ $v = pf_hold ] && OBJ="$OUT/pf/test_hold.o"
+  $CC "$OBJ" "$OUT/pf/$v.o" "$OUT/pf/irecv_probe.o" "$R/lib.a" "$R/libzip-build/lib/libzip.a" -lz -lm -lpthread -o "$OUT/pf/test_$v" 2> "$OUT/pf/link_$v.log" || { echo "FAILED link $v"; head -20 "$OUT/pf/link_$v.log"; exit 1; }
 done
 # fake IPSWs: ZIPs with and without what stop A looks at. fake.ipsw has no BuildManifest (stage 0). The a_* ones have a BuildManifest.plist with an erase identity and a macOS
 # recovery identity for vma2macosap (the model the stand-in ROM reports), and the components they name; the root filesystem is stored (a_stored) or deflated (a_deflated).
@@ -58,6 +62,9 @@ run curl test_pf curl fake.ipsw "network_requests +FAILED" "([1-9][0-9]*) attemp
 run dnload test_pf dnload fake.ipsw "data_transfers +FAILED" "RESULT: FAILED" || { [ $? -ge 100 ] && rc=1; }
 run negative test_pf_neg ok fake.ipsw "init +FAILED" "stopped=noaction +FAILED" "RESULT: FAILED" ; [ $? = 102 ] || { echo "negative control: expected exit 102 (the ok scenario's expectation not met)"; rc=1; }
 run hang test_pf hang fake.ipsw "init +FAILED" "TIMEOUT" "client_free +FAILED" "RESULT: FAILED \\([0-9]+ row\\(s\\), [1-9][0-9]* of them clean-up rows" || { [ $? -ge 100 ] && rc=1; }
+# client_release failure injection (test-only build with a held async task): the client, the private usbmuxd and the policy must be kept, the session not ended
+run relfail test_pf_hold relfail fake.ipsw "client_free +FAILED +NOT done: async handlers were still running at the deadline" "RESULT: FAILED" "scenario relfail: client still valid=1 .* private usbmuxd running and answering=1 .* policy in force=1 .* engine threads=0" "second run returned -1" "retried release returned 0" || { [ $? -ge 100 ] && rc=1; }
+if grep -Eq "^restore preflight: (usbmuxd|threads|fds|usb_handles) " "$OUT/pf/relfail.out"; then echo "relfail: clean-up rows must be absent (resources were deliberately kept)"; rc=1; fi
 # stop A
 run a-stored test_pf a-ok a_stored.ipsw "init +ok" "progress +ok" "stopped=before_rootfs +direct" "identity +ok.*Customer Erase Install" "macos_variant +info +present" "components +ok" "rootfs_entry +ok.*method stored.*seekable.*agrees" \
   "extraction_rule +info.*extract no" "local_writes +ok.*0 new, 0 removed, 0 changed" "network_requests +ok" "connections +ok" "data_transfers +ok" "ipsw_fd +ok" "usbmuxd +ok" "threads +ok" "RESULT: preflight_completed stopped=before_rootfs \\(observed\\), 0 clean-up failed row" "install_disk +info" "temp_disks +info.*NOT the install disk" || rc=1

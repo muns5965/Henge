@@ -134,6 +134,13 @@ static int progress_tests(void) {
     return fails;
 }
 
+#ifdef HV_PREFLIGHT_TEST_HOLD_ASYNC
+void hv_preflight_test_hold_release(void);
+int hv_preflight_test_client_alive(void);
+int hv_preflight_test_retry_release(void);
+int hv_preflight_test_mux_running(void);
+#endif
+
 int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "ok";
     if (!strcmp(sc, "progress")) return progress_tests();
@@ -195,10 +202,29 @@ int main(int argc, char **argv) {
         printf("scenario hang: third run (the private usbmuxd of the first one never stopped) returned %d (must be refused)\n", r3);
         if (r3 != -1) hang_bad = 1;
     }
+#ifdef HV_PREFLIGHT_TEST_HOLD_ASYNC
+    if (!strcmp(kind, "relfail")) {
+        /* client_release ran into its real deadline (an async task is held): everything the task may still use must be kept */
+        int bad_rf = 0;
+        int alive = hv_preflight_test_client_alive(), mux = hv_preflight_test_mux_running(), hooks = hv_net_guard_hooks_intact(), thr = hv_restore_session_engine_threads();
+        printf("scenario relfail: client still valid=%d (expect 1), private usbmuxd running and answering=%d (expect 1), policy in force=%d (expect 1), engine threads=%d (expect 0)\n", alive, mux, hooks, thr);
+        if (alive != 1 || mux != 1 || hooks != 1 || thr != 0) bad_rf = 1;
+        int r2 = hv_restore_preflight_run(g_u, ipsw, work, ecid, stdout, 1500, stage);
+        printf("scenario relfail: a second run returned %d (must be refused: -1)\n", r2);
+        if (r2 != -1) bad_rf = 1;
+        if (hv_restore_session_end() == 0) { printf("scenario relfail: EXPECTATION NOT MET (end() succeeded from a thread that is not the owner)\n"); bad_rf = 1; }
+        hv_preflight_test_hold_release();   /* the held task finishes */
+        int rr = hv_preflight_test_retry_release();
+        printf("scenario relfail: after the held task finished, a retried release returned %d (expect 0)\n", rr);
+        if (rr != 0) bad_rf = 1;
+        if (bad_rf) hang_bad = 1;
+        if (r < 1) hang_bad = 1;
+    }
+#endif
     if (!strcmp(kind, "curl")) { pthread_join(ta, NULL); printf("scenario curl: the local server saw %d connection(s)\n", g_conn_seen); }
     int bad = 0;
     if (!strcmp(kind, "ok")) bad = r != 0;
-    else if (!strcmp(kind, "no-ipsw") || !strcmp(kind, "dnload") || !strcmp(kind, "hang")) bad = r < 1;
+    else if (!strcmp(kind, "no-ipsw") || !strcmp(kind, "dnload") || !strcmp(kind, "hang") || !strcmp(kind, "relfail")) bad = r < 1;
     else if (!strcmp(kind, "curl")) bad = !(r >= 1 && g_conn_seen == 0);
     else if (!strncmp(kind, "bad-", 4)) bad = r < 1;
     else if (!strcmp(kind, "leakfd") || !strcmp(kind, "leakthread") || !strcmp(kind, "wnew") || !strcmp(kind, "wmod") || !strcmp(kind, "wdel") || !strcmp(kind, "w513")) bad = r < 1;   /* a-bad-component, a-bad-identity: the fake IPSW is wrong on purpose */

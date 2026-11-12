@@ -232,10 +232,24 @@ static void row_cleanup(const char *name, const char *status, const char *fmt, .
 
 /* ---- the restore thread ---- */
 static struct idevicerestore_client_t *g_client;
+static int mux_listening(void);
 static volatile int g_rc = 12345, g_done;
 static volatile int g_claimed, g_end_rc = -1;
 static volatile int g_release_rc = -99;   /* idevicerestore_client_release: 0 released; -1 handlers still running (client kept); -2 close failed or release not permitted (client kept); -99 not attempted */
 static uint64_t g_tok;
+#ifdef HV_PREFLIGHT_TEST_HOLD_ASYNC
+/* TEST ONLY (tools/preflight-test.sh builds a second object with it; never in a shipped build, see tools/check-no-test-flags.sh): a real, unfinished async task is
+   registered in the client's tracker before the restore thread starts, so idevicerestore_client_release() has to run into its REAL deadline (shortened here). */
+#define PF_CLIENT_RELEASE(c) idevicerestore_client_release_timeout((c), 1500)
+static struct hv_async_tracker *g_hold_trk;
+void hv_preflight_test_hold_release(void) { hv_async_task_done(g_hold_trk); }
+int hv_preflight_test_client_alive(void) { return g_client != NULL && __atomic_load_n(&g_client->ecid, __ATOMIC_RELAXED) == g_client->ecid; }   /* reads the client: ASan flags it if it was freed */
+int hv_preflight_test_retry_release(void) { int r = idevicerestore_client_release(g_client); if (r == 0) g_client = NULL; return r; }
+int hv_preflight_test_mux_running(void) { return !g_mux_exited && mux_listening(); }
+#else
+#define PF_CLIENT_RELEASE(c) idevicerestore_client_release(c)
+#endif
+
 static void *restore_thread(void *arg) {
     int rc = 12345;
     /* ownership: the session was begun by the main thread, which handed the right to end it to this thread (claim); only the owner may enter the tool */
@@ -248,7 +262,7 @@ static void *restore_thread(void *arg) {
            the policy the handlers may still depend on. A failure at any step keeps the client AND the session (no end), and is reported by the main thread. */
         int closed = hv_restore_session_close() == 0;
         if (closed && hv_restore_session_release_permitted()) {
-            g_release_rc = idevicerestore_client_release(g_client);
+            g_release_rc = PF_CLIENT_RELEASE(g_client);
             if (g_release_rc == 0) g_client = NULL;
         } else g_release_rc = -2;
         if (g_release_rc == 0) g_end_rc = hv_restore_session_end();   /* the owner ends it after the client was released; refused = the policy stays */
@@ -324,6 +338,10 @@ int hv_restore_preflight_run(HvVirtioUsb *usb, const char *ipsw, const char *wor
     logger_set_print_func(log_print);
     g_client = idevicerestore_client_new();
     if (!g_client) { row("init", "FAILED", "idevicerestore_client_new failed"); goto report; }
+#ifdef HV_PREFLIGHT_TEST_HOLD_ASYNC
+    g_hold_trk = g_client->async_trk;
+    if (hv_async_task_register(g_hold_trk) != 0) { row("init", "FAILED", "test hook: the tracker refused the held task"); goto report; }
+#endif
     /* FLAG_ERASE like the install; FLAG_NOACTION is the stop. Not set: FLAG_LATEST (network), FLAG_SHSHONLY, FLAG_NO_RESTORE, FLAG_PWN, FLAG_CUSTOM. */
     int stop_flag = stage == HV_PF_STOP_A ? FLAG_STOP_BEFORE_ROOTFS : FLAG_NOACTION;
     hv_stop_a_hook = stop_a;

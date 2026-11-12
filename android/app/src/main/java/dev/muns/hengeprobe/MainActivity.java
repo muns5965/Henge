@@ -133,11 +133,6 @@ public class MainActivity extends Activity {
         bigVmButton.setOnClickListener(v -> runBigVmNow());
         done.addView(bigVmButton);
 
-        Button uiTestButton = new Button(this);
-        uiTestButton.setText("[C0/B0] 합성 화면·입력 시험 (VM 없음)");
-        uiTestButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, DisplayTestActivity.class)));
-        done.addView(uiTestButton);
-
         romDiagButton = new Button(this);
         romDiagButton.setText("ROM 진단 (읽기 전용, 네트워크 없음)");
         romDiagButton.setOnClickListener(v -> runRomDiagnostic());
@@ -320,6 +315,16 @@ public class MainActivity extends Activity {
                 + "디스크·aux가 없으면 아무것도 만들지 않고 멈춥니다(먼저 일반/설치기 부팅 시험을 한 번 해 두세요). 이 시험은 로그 파일을 저장하지 않습니다.");
         g0Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(g0Note);
+
+        // C0 + B0: the synthetic screen and input test (no virtual machine). On top, not in the folded section of finished tests.
+        final Button uiTestButton = new Button(this);
+        uiTestButton.setText("[C0/B0] 합성 화면·입력 시험 (VM 없음)");
+        uiTestButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, DisplayTestActivity.class)));
+        root.addView(uiTestButton);
+        final TextView uiTestNote = new TextView(this);
+        uiTestNote.setText("가상 머신을 실행하지 않습니다. 합성 화면을 그리고, 터치·키 입력이 시뮬레이션 포인터와 카운터에 반영되는지만 봅니다. 네트워크·Apple·펌웨어·디스크와 무관합니다.");
+        uiTestNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(uiTestNote);
 
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");

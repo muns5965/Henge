@@ -94,6 +94,15 @@ static void *ar_thread(void *a) {
     STV(ar_end, hv_restore_session_end());
     return NULL;
 }
+static volatile int af_gate, af_claim, af_ran, rf_in, rf_go;
+static void *af_thread(void *a) {   /* waits at a gate, then claims and runs: it must find the generation already gone */
+    (void)a; int rc; while (!LDV(af_gate)) usleep(200);
+    STV(af_claim, hv_restore_session_claim(ar_tok)); if (LDV(af_claim) != 0) return NULL;
+    STV(af_ran, hv_restore_session_run(engine, NULL, &rc) == 0); hv_restore_session_end(); return NULL;
+}
+static int rf_engine(void *a) { (void)a; STV(rf_in, 1); while (!LDV(rf_go)) usleep(200); return 0; }
+static int rf_end_rc = -9, rf_claim = -9;
+static void *rf_thread(void *a) { (void)a; int rc; STV(rf_claim, hv_restore_session_claim(ar_tok)); if (LDV(rf_claim) == 0) { hv_restore_session_run(rf_engine, NULL, &rc); rf_end_rc = hv_restore_session_end(); } return NULL; }
 static void *pr_stranger(void *a) { int *o = a; o[0] = hv_restore_session_publish(NULL, NULL); o[1] = hv_restore_session_release_idle(); int mp; o[2] = hv_restore_session_finalize(0, 0, &mp); o[3] = mp; return NULL; }
 
 int main(int argc, char **argv) {
@@ -172,6 +181,25 @@ int main(int argc, char **argv) {
         CHECK(b_fin3 == (int)HV_REG_R_ABORTED_BY_USER, "a failing engine after an accepted cancel: ABORTED_BY_USER (history decides)");
         CHECK(b_cancel_late == -1, "cancel after the engine returned: refused (completion first)");
         CHECK(b_fin4 == (int)HV_REG_R_RESTORE_FAILED, "...so a failure is RESTORE_FAILED, not a user cancel");
+    } else if (!strcmp(c, "abort_first")) {   /* deterministic order 1: abort_start() completes BEFORE the successor claims; the two threads still use the same g_own_mu */
+        hv_restore_session_begin(); ar_tok = hv_restore_session_approve_successor();
+        STV(af_gate, 0); STV(af_claim, -9); STV(af_ran, 0);
+        pthread_t t; pthread_create(&t, NULL, af_thread, NULL);
+        CHECK(hv_restore_session_abort_start() == 0, "abort_start wins: abandoned");
+        STV(af_gate, 1); pthread_join(t, NULL);
+        CHECK(LDV(af_claim) != 0 && !LDV(af_ran), "the late claim is refused and run never happens");
+        CHECK(hv_reg_state() == HV_REG_IDLE && !hv_net_guard_active() && hv_net_guard_engine_count() == 0, "IDLE, no policy, no engine");
+        CHECK(hv_restore_session_abort_uninstall_failures() == 0, "no uninstall failure");
+    } else if (!strcmp(c, "run_first")) {   /* deterministic order 2: the engine is already running (counted) when abort_start() is called: it must refuse and change nothing */
+        hv_restore_session_begin(); ar_tok = hv_restore_session_approve_successor();
+        STV(rf_in, 0); STV(rf_go, 0);
+        pthread_t t; pthread_create(&t, NULL, rf_thread, NULL);
+        while (!LDV(rf_in)) usleep(200);
+        CHECK(hv_net_guard_engine_count() == 1, "the engine is counted");
+        CHECK(hv_restore_session_abort_start() == -1, "abort_start refuses while an engine is running (and the caller is no longer the owner)");
+        CHECK(hv_reg_state() == HV_REG_ACTIVE && hv_net_guard_active(), "nothing changed: ACTIVE, policy in force");
+        STV(rf_go, 1); pthread_join(t, NULL);
+        CHECK(LDV(rf_claim) == 0 && rf_end_rc == 0 && hv_reg_state() == HV_REG_IDLE && !hv_net_guard_active(), "the claimed thread ended the session cleanly");
     } else if (!strcmp(c, "abort_race")) {   /* abort_start() against claim()+run(): one g_own_mu serializes them; after abandon succeeded uninstall can never fail */
         int abort_won = 0, claim_won = 0, bad = 0;
         for (int i = 0; i < 400; i++) {
@@ -195,7 +223,8 @@ int main(int argc, char **argv) {
         CHECK(bad == 0, "400 rounds abort_start vs claim+run: exactly one wins, never a leftover policy, engine or non-IDLE state ");
         printf("INFO abort won %d, claim won %d\n", abort_won, claim_won);
         CHECK(hv_restore_session_abort_uninstall_failures() == 0, "the 'cannot happen' uninstall failure in abort_start was never reached");
-        CHECK(abort_won > 0 && claim_won > 0, "both orders happened");
+        /* the scheduler decides how often each order occurs (ASan slows one side: on the baseline too, only one order was seen), so this is information; abort_first and run_first check each order deterministically */
+        printf("INFO both orders happened: %s\n", abort_won > 0 && claim_won > 0 ? "yes" : "NO (see abort_first / run_first)");
     } else if (!strcmp(c, "pubrights")) {   /* the publish right: one per generation, held by the owner; nobody else, nothing early, nothing twice */
         hv_restore_session_begin();
         int o[4] = {0}; pthread_t t; int mp;

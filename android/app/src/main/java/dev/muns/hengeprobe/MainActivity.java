@@ -598,8 +598,7 @@ public class MainActivity extends Activity {
                     });
                     reader.start();
                     boolean done = p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
-                    boolean killConfirmed = true;
-                    if (!done) { p.destroyForcibly(); if (g0) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
+                    if (!done) p.destroyForcibly();
                     reader.join(2000);
                     String out;
                     synchronized (text) {
@@ -1040,7 +1039,8 @@ public class MainActivity extends Activity {
                     if (pf && secs < 150) secs = 150;
                     if (g0 && secs < 260) secs = 260; // up to 60 s for the guest on the bus, 120 s for the run, 20 s after a cancel request
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
-                    if (!done) p.destroyForcibly();
+                    boolean killConfirmed = true;
+                    if (!done) { p.destroyForcibly(); if (g0) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
                     reader.join(2000);
                     final int bodyStart;
                     synchronized (text) {

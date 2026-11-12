@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     private Button engineButton;
     private Button bigVmButton;
     private Button vmrunButton;
+    private Button romDiagButton;
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -128,6 +129,11 @@ public class MainActivity extends Activity {
         bigVmButton.setText("VM 대용량 시험 (RAM 2048MB, JIT 768MB)");
         bigVmButton.setOnClickListener(v -> runBigVmNow());
         done.addView(bigVmButton);
+
+        romDiagButton = new Button(this);
+        romDiagButton.setText("ROM 진단 (읽기 전용, 네트워크 없음)");
+        romDiagButton.setOnClickListener(v -> runRomDiagnostic());
+        done.addView(romDiagButton);
 
         vmrunButton = new Button(this);
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
@@ -408,6 +414,7 @@ public class MainActivity extends Activity {
             engineButton.setEnabled(enabled);
             bigVmButton.setEnabled(enabled);
             vmrunButton.setEnabled(enabled);
+            romDiagButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
         });
     }
@@ -632,6 +639,98 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** One line about a ROM candidate: existence, size, SHA-256 verdict. Read-only: no network, nothing is created or deleted. */
+    private static String romInfo(File f) {
+        if (!f.exists()) return "없음";
+        if (!f.isFile()) return "파일이 아님";
+        String sha = "?";
+        try (FileInputStream in = new FileInputStream(f)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            StringBuilder hex = new StringBuilder();
+            for (byte b : md.digest()) hex.append(String.format("%02x", b));
+            sha = hex.toString();
+        } catch (Exception e) {
+            sha = "읽기 실패: " + e;
+        }
+        boolean ok = f.length() == ROM_LENGTH && sha.equals(ROM_SHA256);
+        return "있음, " + f.length() + "바이트 (기대 " + ROM_LENGTH + "), SHA-256 " + sha + " → " + (ok ? "정상" : "손상/다른 파일");
+    }
+
+    /**
+     * A usable ROM without any network: the external vm/rom.bin if it is the genuine one, else the cached private copy if genuine.
+     * A bad file is reported but never deleted here. Returns null if neither is usable.
+     */
+    private File findLocalRom(StringBuilder acc) {
+        File ext = new File(new File(getExternalFilesDir(null), "vm"), "rom.bin");
+        File internal = new File(new File(getFilesDir(), "vm"), "AVPBooter.vmapple2.bin");
+        if (isGenuineRom(ext)) {
+            acc.append("ROM: 외부 vm/rom.bin 사용 (크기·SHA-256 정상).\n");
+            return ext;
+        }
+        if (ext.exists()) acc.append("ROM: 외부 vm/rom.bin이 정상 ROM이 아닙니다 (지우지 않음).\n");
+        if (isGenuineRom(internal)) {
+            acc.append("ROM: 앱 내부 저장본 사용 (크기·SHA-256 정상, 다시 받지 않음).\n");
+            return internal;
+        }
+        if (internal.exists()) acc.append("ROM: 앱 내부 저장본이 정상 ROM이 아닙니다.\n");
+        return null;
+    }
+
+    /**
+     * Asks on the UI thread whether Apple's CDN may be contacted, and blocks the calling worker thread until the person answers
+     * (never call on the UI thread). Not cancelable by tapping outside; no answer within 10 minutes counts as a refusal. Only a "yes" lets a request go out.
+     */
+    private boolean confirmRomDownload(StringBuilder acc) {
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final boolean[] yes = {false};
+        show(acc + "ROM이 없습니다. 다운로드 허용 여부를 기다리는 중입니다 (아직 네트워크 요청 없음).\n");
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) { latch.countDown(); return; }
+            new AlertDialog.Builder(this)
+                    .setTitle("ROM 다운로드 확인")
+                    .setMessage("사용할 수 있는 ROM(AVPBooter)이 없습니다.\n허용하면 Apple 서버(updates.cdn-apple.com)에 HTTP Range 요청 1건(약 840KB)을 보내 ROM을 받아 크기·SHA-256을 확인합니다. 거부하면 아무 요청도 하지 않고 중단합니다.")
+                    .setCancelable(false)
+                    .setPositiveButton("다운로드 허용", (d, w) -> { yes[0] = true; latch.countDown(); })
+                    .setNegativeButton("거부", (d, w) -> latch.countDown())
+                    .show();
+        });
+        try {
+            if (!latch.await(10, java.util.concurrent.TimeUnit.MINUTES)) acc.append("ROM 다운로드: 10분간 응답이 없어 거부로 처리했습니다.\n");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        acc.append(yes[0] ? "ROM 다운로드: 사용자가 허용했습니다.\n" : "ROM 다운로드: 허용되지 않았습니다.\n");
+        return yes[0];
+    }
+
+    /** ROM diagnostic button: reports both candidates, read-only (no network, no file created or deleted). */
+    private void runRomDiagnostic() {
+        if (running) return;
+        running = true;
+        setButtons(false);
+        new Thread(() -> {
+            StringBuilder acc = new StringBuilder("ROM 진단 (읽기 전용: 네트워크·파일 생성·삭제 없음)\n");
+            try {
+                File ext = new File(new File(getExternalFilesDir(null), "vm"), "rom.bin");
+                File internal = new File(new File(getFilesDir(), "vm"), "AVPBooter.vmapple2.bin");
+                acc.append("외부 ").append(ext).append(": ").append(romInfo(ext)).append('\n');
+                acc.append("내부 ").append(internal).append(": ").append(romInfo(internal)).append('\n');
+                StringBuilder pick = new StringBuilder();
+                File use = findLocalRom(pick);
+                acc.append(use == null ? "→ 지금 실행하면: 사용할 ROM 없음, 다운로드 확인 대화상자가 뜹니다 (허용해야만 Apple 요청).\n"
+                        : "→ 지금 실행하면: " + use + " 사용, 네트워크 요청 없음.\n");
+            } catch (Exception e) {
+                acc.append("진단 오류: ").append(e).append('\n');
+            }
+            show(acc.toString());
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
     /**
      * The AVPBooter ROM in the app's private folder: the cached one if its size and SHA-256 are right, else downloaded from
      * Apple (one HTTP Range request for the 859,848 bytes that hold it, as Henge's iOS app does) and unpacked by
@@ -784,8 +883,10 @@ public class MainActivity extends Activity {
                 final File pfIpsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw");
                 if (!exe.exists()) acc.append(pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
                 else if (pf && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
-                else if (!rom.exists() && (rom = ensureRom(acc)) == null) {
-                    acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다.\n");
+                else if ((rom = findLocalRom(acc)) == null && !confirmRomDownload(acc)) {
+                    acc.append("ROM이 없어 실행하지 않았습니다. 네트워크 요청은 하지 않았습니다.\n");
+                } else if (rom == null && (rom = ensureRom(acc)) == null) {
+                    acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다 (다시 묻지 않고 종료).\n");
                     base.mkdirs();
                 } else {
                     java.util.Map<String, String> cfg = new java.util.HashMap<>();

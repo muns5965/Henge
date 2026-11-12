@@ -685,25 +685,32 @@ public class MainActivity extends Activity {
      */
     private boolean confirmRomDownload(StringBuilder acc) {
         final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        final boolean[] yes = {false};
+        final java.util.concurrent.atomic.AtomicInteger choice = new java.util.concurrent.atomic.AtomicInteger(0); // 0 waiting, 1 yes, 2 no/timeout; first writer wins
+        final AlertDialog[] dlg = {null};
         show(acc + "ROM이 없습니다. 다운로드 허용 여부를 기다리는 중입니다 (아직 네트워크 요청 없음).\n");
         runOnUiThread(() -> {
-            if (isFinishing() || isDestroyed()) { latch.countDown(); return; }
-            new AlertDialog.Builder(this)
+            if (isFinishing() || isDestroyed()) { choice.compareAndSet(0, 2); latch.countDown(); return; }
+            if (choice.get() != 0) return; // already timed out
+            dlg[0] = new AlertDialog.Builder(this)
                     .setTitle("ROM 다운로드 확인")
                     .setMessage("사용할 수 있는 ROM(AVPBooter)이 없습니다.\n허용하면 Apple 서버(updates.cdn-apple.com)에 HTTP Range 요청 1건(약 840KB)을 보내 ROM을 받아 크기·SHA-256을 확인합니다. 거부하면 아무 요청도 하지 않고 중단합니다.")
                     .setCancelable(false)
-                    .setPositiveButton("다운로드 허용", (d, w) -> { yes[0] = true; latch.countDown(); })
-                    .setNegativeButton("거부", (d, w) -> latch.countDown())
+                    .setPositiveButton("다운로드 허용", (d, w) -> { choice.compareAndSet(0, 1); latch.countDown(); })
+                    .setNegativeButton("거부", (d, w) -> { choice.compareAndSet(0, 2); latch.countDown(); })
                     .show();
         });
         try {
-            if (!latch.await(10, java.util.concurrent.TimeUnit.MINUTES)) acc.append("ROM 다운로드: 10분간 응답이 없어 거부로 처리했습니다.\n");
+            if (!latch.await(10, java.util.concurrent.TimeUnit.MINUTES) && choice.compareAndSet(0, 2)) {
+                acc.append("ROM 다운로드: 10분간 응답이 없어 거부로 처리했습니다.\n");
+                runOnUiThread(() -> { if (dlg[0] != null && dlg[0].isShowing()) dlg[0].dismiss(); });
+            }
         } catch (InterruptedException e) {
+            choice.compareAndSet(0, 2);
             Thread.currentThread().interrupt();
         }
-        acc.append(yes[0] ? "ROM 다운로드: 사용자가 허용했습니다.\n" : "ROM 다운로드: 허용되지 않았습니다.\n");
-        return yes[0];
+        boolean yes = choice.get() == 1;
+        acc.append(yes ? "ROM 다운로드: 사용자가 허용했습니다.\n" : "ROM 다운로드: 허용되지 않았습니다.\n");
+        return yes;
     }
 
     /** ROM diagnostic button: reports both candidates, read-only (no network, no file created or deleted). */
@@ -874,8 +881,7 @@ public class MainActivity extends Activity {
                 File base = new File(getExternalFilesDir(null), "vm");
                 File rom = new File(base, "rom.bin"); // a ROM placed here is used as it is; otherwise the app fetches and checks its own
                 // disk and aux: the ones in that folder if present, else blank ones in the app's private folder (made by vmrun)
-                File priv = new File(getFilesDir(), "vm");
-                priv.mkdirs();
+                File priv = new File(getFilesDir(), "vm"); // created only once a ROM is settled (a refused download changes no files)
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
@@ -889,6 +895,7 @@ public class MainActivity extends Activity {
                     acc.append("ROM을 준비하지 못해 실행하지 않았습니다. 위 메시지가 사유입니다 (다시 묻지 않고 종료).\n");
                     base.mkdirs();
                 } else {
+                    priv.mkdirs();
                     java.util.Map<String, String> cfg = new java.util.HashMap<>();
                     File cf = new File(base, "config.txt");
                     if (cf.exists()) {

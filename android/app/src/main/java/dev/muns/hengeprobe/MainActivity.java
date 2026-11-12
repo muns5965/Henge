@@ -325,6 +325,16 @@ public class MainActivity extends Activity {
         uiTestNote.setText("가상 머신을 실행하지 않습니다. 합성 화면을 그리고, 터치·키 입력이 시뮬레이션 포인터와 카운터에 반영되는지만 봅니다. 네트워크·Apple·펌웨어·디스크와 무관합니다.");
         uiTestNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(uiTestNote);
+        // C1-1: the same screen through a separate process (the runner), still no virtual machine.
+        final Button c1Button = new Button(this);
+        c1Button.setText("[C1-1] 별도 프로세스(실행기) 화면·입력 시험 (VM 없음)");
+        c1Button.setOnClickListener(v -> startActivity(new android.content.Intent(this, DisplayTestActivity.class).putExtra("runner", true)));
+        root.addView(c1Button);
+        final TextView c1Note = new TextView(this);
+        c1Note.setText("앱이 실행기 프로세스(libuirunner.so)를 따로 시작하고, 화면·입력·포인터 피드백이 공유 파일을 거쳐 오갑니다. 실행기에도 가상 머신·ROM·디스크·네트워크 코드가 없습니다(합성 모드). "
+                + "화면을 닫으면 종료 신호를 보내고 5초까지 기다린 뒤에만 강제 종료하며, 강제 종료는 로그와 화면에 표시됩니다.");
+        c1Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(c1Note);
 
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");

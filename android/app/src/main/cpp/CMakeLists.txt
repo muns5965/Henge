@@ -26,7 +26,8 @@ add_library(henge_ui SHARED
     ${HENGE_ROOT}/host/display_buf.c
     ${HENGE_ROOT}/host/key_map.c
     ${HENGE_ROOT}/host/touch_input.c
-    ${HENGE_ROOT}/host/render_gate.c)
+    ${HENGE_ROOT}/host/render_gate.c
+    ${HENGE_ROOT}/host/frame_shm.c)
 
 target_include_directories(henge_ui PRIVATE ${HENGE_ROOT}/host)
 target_compile_options(henge_ui PRIVATE -O1 -Wall -Wextra -Werror)

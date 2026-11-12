@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "display_buf.h"
+#include "frame_shm.h"
 #include "key_map.h"
 #include "render_gate.h"
 #include "touch_input.h"
@@ -41,6 +42,14 @@ static uint32_t g_frame;
 static HvTouch g_touch;
 static int g_feedback = 1;
 
+/* C1-1: the runner mode */
+#define SHM_PX_CAP (1920u * 1200u * 4u)
+static int g_want_runner;          /* nativeUseRunner: the picture, the input and the pointer feedback go through the shared file */
+static HvShm *g_shm;               /* set by nativeAttachRunner once the runner has made its file; under g_mu */
+static uint8_t *g_shm_px;          /* the bounce buffer one picture is copied into before display_buf copies it again */
+static long g_shm_fail;            /* calls that could not take the file's lock */
+static int g_shm_known, g_shm_px_x, g_shm_px_y;
+
 /* Diagnostics for the test screen (under g_mu). They only watch; nothing here feeds back into the touch module. */
 static struct {
     long down, move, up, cancel;           /* events received by nativeTouch (touches on the status text are not counted: that text takes them) */
@@ -52,18 +61,29 @@ static struct { int x, y; long moves, buttons_down, buttons_up, wheel, hwheel, k
 
 static int accel(int d) { double a = 1.0 + (abs(d) / 40.0 > 1.5 ? 1.5 : abs(d) / 40.0); return (int)(d * a + (d < 0 ? -0.5 : 0.5)); }
 static void sink_move(int dx, int dy) {
+    if (g_want_runner) { if (g_shm && hv_shm_push_cmd(g_shm, HV_SHM_CMD_MOVE, dx, dy) < 0) g_shm_fail++; return; }
     g_guest.moves++;
     g_guest.x += accel(dx); g_guest.y += accel(dy);
     g_guest.x = g_guest.x < 0 ? 0 : g_guest.x > FRAME_W - 1 ? FRAME_W - 1 : g_guest.x;
     g_guest.y = g_guest.y < 0 ? 0 : g_guest.y > FRAME_H - 1 ? FRAME_H - 1 : g_guest.y;
 }
-static void sink_button(int b, int down) { g_guest.last_button = (unsigned)b; if (down) g_guest.buttons_down++; else g_guest.buttons_up++; if (b == 0) g_guest.held = down; }
-static void sink_wheel(int n) { g_guest.wheel += n; }
-static void sink_hwheel(int n) { g_guest.hwheel += n; }
-static void sink_key(uint16_t code, int down) { (void)down; g_guest.keys++; g_guest.last_key = code; }
+static void sink_button(int b, int down) { if (g_want_runner) { if (g_shm && hv_shm_push_cmd(g_shm, HV_SHM_CMD_BUTTON, b, down ? 1 : 0) < 0) g_shm_fail++; return; } g_guest.last_button = (unsigned)b; if (down) g_guest.buttons_down++; else g_guest.buttons_up++; if (b == 0) g_guest.held = down; }
+static void sink_wheel(int n) { if (g_want_runner) { if (g_shm && hv_shm_push_cmd(g_shm, HV_SHM_CMD_WHEEL, n, 0) < 0) g_shm_fail++; return; } g_guest.wheel += n; }
+static void sink_hwheel(int n) { if (g_want_runner) { if (g_shm && hv_shm_push_cmd(g_shm, HV_SHM_CMD_HWHEEL, n, 0) < 0) g_shm_fail++; return; } g_guest.hwheel += n; }
+static void sink_key(uint16_t code, int down) { if (g_want_runner) { if (g_shm && hv_shm_push_cmd(g_shm, HV_SHM_CMD_KEY, code, down ? 1 : 0) < 0) g_shm_fail++; return; } (void)down; g_guest.keys++; g_guest.last_key = code; }
 
 static int fetch_synthetic(void *ctx, const uint8_t **px, uint32_t *w, uint32_t *h, uint32_t *stride) {
     *px = ctx; *w = FRAME_W; *h = FRAME_H; *stride = FRAME_W * 4;
+    return 0;
+}
+
+typedef struct { HvShm *shm; uint8_t *px; } ShmSrc;
+static int fetch_shm(void *ctx, const uint8_t **px, uint32_t *w, uint32_t *h, uint32_t *stride) {
+    ShmSrc *src = ctx;
+    static uint64_t seen;                       /* the render thread only */
+    if (!src->shm || !src->px) return -1;
+    if (hv_shm_read_frame(src->shm, &seen, src->px, SHM_PX_CAP, w, h) != 1) return -1;   /* nothing newer, or none yet */
+    *px = src->px; *stride = *w * 4;
     return 0;
 }
 
@@ -88,6 +108,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(
     { float vw = g_dg.view_w, vh = g_dg.view_h; memset(&g_dg, 0, sizeof g_dg); g_dg.view_w = vw; g_dg.view_h = vh; }
     g_guest.x = FRAME_W / 2; g_guest.y = FRAME_H / 2;
     g_frame = 0;
+    g_want_runner = 0; g_shm_fail = 0; g_shm_known = 0;
     HvInputSink sk = {sink_key, sink_move, sink_button, sink_wheel, sink_hwheel};
     hv_touch_init(&g_touch, &sk);
     hv_touch_set_display(&g_touch, FRAME_W, FRAME_H);
@@ -118,9 +139,14 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestro
     hv_touch_release_all(&g_touch);
     HvDispBuf *b = g_buf; g_buf = NULL;
     uint8_t *src = g_src; g_src = NULL;
+    HvShm *shm = g_shm; g_shm = NULL;           /* after this nothing under g_mu can reach it any more */
+    uint8_t *spx = g_shm_px; g_shm_px = NULL;
+    g_want_runner = 0;
     pthread_mutex_unlock(&g_mu);
     if (b) hv_dispbuf_destroy(b);
     free(src);
+    hv_shm_close(shm);
+    free(spx);
     hv_gate_released(&g_gate);   /* only now can a new instance start */
     return 1;
 }
@@ -149,6 +175,45 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetFee
     pthread_mutex_unlock(&g_mu);
 }
 
+/* C1-1: switch the screen to the runner's shared file. Call right after nativeStart, before the render thread starts. */
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeUseRunner(JNIEnv *env, jclass cls, jboolean on) {
+    (void)env; (void)cls;
+    pthread_mutex_lock(&g_mu);
+    g_want_runner = on ? 1 : 0;
+    pthread_mutex_unlock(&g_mu);
+}
+
+/* Opens the runner's file, which must name `pid` (the process the app started; pid <= 0 = any). 0 attached, 1 already attached, -1 no instance is running here (or it is being closed), -2 the file is not there yet or is not a good one (try again). */
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeAttachRunner(JNIEnv *env, jclass cls, jstring jpath, jlong pid) {
+    (void)cls;
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    if (!path) return -2;
+    pthread_mutex_lock(&g_mu);
+    int pre = g_shm ? 1 : !g_buf ? -1 : 0;
+    pthread_mutex_unlock(&g_mu);
+    if (pre) { (*env)->ReleaseStringUTFChars(env, jpath, path); return pre; }
+    HvShm *s = NULL;
+    int r = hv_shm_open(path, &s);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+    if (r != 0) return -2;
+    HvShmStats rs;
+    if (hv_shm_stats(s, &rs) != 0 || (pid > 0 && rs.runner_pid != (uint32_t)pid)) { hv_shm_close(s); return -2; }   /* a file an earlier runner left behind is not the one we started */
+    uint8_t *px = malloc(SHM_PX_CAP);
+    pthread_mutex_lock(&g_mu);
+    if (!px || !g_buf || g_shm) { int was = g_shm ? 1 : -1; pthread_mutex_unlock(&g_mu); free(px); hv_shm_close(s); return was; }
+    g_shm = s; g_shm_px = px;
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
+
+/* Tells the runner the app is closing (it then stops by itself; the Activity also sends it "quit"). */
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRunnerAppClose(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    pthread_mutex_lock(&g_mu);
+    if (g_shm) hv_shm_app_close(g_shm);
+    pthread_mutex_unlock(&g_mu);
+}
+
 /* One picture: the synthetic guest frame is made, pulled through the contract, and the newest copy is shown. Returns the frame number shown, 0 = nothing new, -1 = closed or not running.
    The whole body, up to the single exit, is between hv_gate_enter and hv_gate_leave: that is what keeps g_buf and g_src alive. */
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender(JNIEnv *env, jclass cls) {
@@ -161,10 +226,12 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender
     pthread_mutex_lock(&g_mu);
     int cx = g_guest.x, cy = g_guest.y;
     uint32_t frame = ++g_frame;
-    hv_testpattern(src, FRAME_W, FRAME_H, FRAME_W * 4, frame, cx, cy);
+    int want = g_want_runner;
+    ShmSrc ss = {g_shm, g_shm_px};
+    if (!want) hv_testpattern(src, FRAME_W, FRAME_H, FRAME_W * 4, frame, cx, cy);
     pthread_mutex_unlock(&g_mu);
 
-    int r = hv_dispbuf_pull(b, fetch_synthetic, src);
+    int r = want ? hv_dispbuf_pull(b, fetch_shm, &ss) : hv_dispbuf_pull(b, fetch_synthetic, src);
     if (r == HV_DISP_CLOSED) { result = -1; goto out; }
     if (r != HV_DISP_NEW) goto out;
 
@@ -208,7 +275,12 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(
 JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(JNIEnv *env, jclass cls, jlong t_ms) {
     (void)env; (void)cls;
     pthread_mutex_lock(&g_mu);
-    hv_touch_pointer(&g_touch, g_feedback, g_guest.x, g_guest.y);
+    if (g_want_runner) {                                  /* the feedback is the runner's guest pointer, from the shared file */
+        int x = 0, y = 0, v = g_shm ? hv_shm_get_pointer(g_shm, &x, &y) : 0;
+        if (v < 0) { g_shm_fail++; }                      /* the lock was not taken: keep what we knew */
+        else { g_shm_known = v; if (v) { g_guest.x = x; g_guest.y = y; } }
+        hv_touch_pointer(&g_touch, g_feedback && g_shm_known, g_guest.x, g_guest.y);
+    } else hv_touch_pointer(&g_touch, g_feedback, g_guest.x, g_guest.y);
     hv_touch_tick(&g_touch, t_ms);
     HvTouchDiag d; hv_touch_diag(&g_touch, &d);
     if (g_dg.settle_armed && d.has_target && t_ms - g_dg.up_ms >= 500) {      /* the finger has been up for 0.5 s: what is left is the settled error */
@@ -236,7 +308,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKeyMap
 
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStatus(JNIEnv *env, jclass cls) {
     (void)cls;
-    char s[1700], touch[320], err[160];
+    char s[2400], touch[320], err[160], runner[420] = "";
     HvDispStats st = {0};
     pthread_mutex_lock(&g_mu);
     if (g_buf) hv_dispbuf_stats(g_buf, &st);
@@ -263,15 +335,24 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSta
         else snprintf(settled, sizeof settled, d.fingers ? "(finger down)" : g_dg.settle_armed ? "(waiting 0.5 s)" : "-");
         snprintf(err, sizeof err, "pointer %d,%d  error now %+d,%+d  settled %s", g_guest.x, g_guest.y, gx - g_guest.x, gy - g_guest.y, settled);
     } else snprintf(err, sizeof err, "pointer %d,%d  error: no target", g_guest.x, g_guest.y);
+    if (g_want_runner) {
+        HvShmStats rs; int ok = g_shm && hv_shm_stats(g_shm, &rs) == 0;
+        static const char *const sn[] = {"none", "starting", "running", "stopping", "stopped"};
+        if (!g_shm) snprintf(runner, sizeof runner, "runner: not attached yet\n");
+        else if (!ok) snprintf(runner, sizeof runner, "runner: file lock not taken (%ld failures)\n", g_shm_fail);
+        else snprintf(runner, sizeof runner, "runner pid %u %s heartbeat %llu  published %llu refused %llu  cmds pushed %llu applied %llu dropped %llu  lock recovered %u failed %ld  pointer %s\n",
+                      rs.runner_pid, rs.state >= 0 && rs.state < 5 ? sn[rs.state] : "?", (unsigned long long)rs.heartbeat, (unsigned long long)rs.frames, (unsigned long long)rs.rejected,
+                      (unsigned long long)rs.cmds_pushed, (unsigned long long)rs.cmds_applied, (unsigned long long)rs.cmds_dropped, rs.recovered, g_shm_fail, g_shm_known ? "known" : "not yet");
+    }
     snprintf(s, sizeof s,
              "frames %llu (copied), shown %llu, rejected %llu, after close %llu\n"
              "events DOWN %ld MOVE %ld UP %ld CANCEL %ld (last %s)  fingers %d  view %.0fx%.0f  guest %dx%d\n"
-             "%s\n%s\n"
+             "%s\n%s\n%s"
              "moves %ld  feedback %s  buttons down %ld up %ld (last %u, left %s)  wheel %ld hwheel %ld  keys %ld (last %u) unmapped %ld\n"
              "(touches on this text are not counted; tap it to switch the feedback. conv=0 only says two calculations from the same view size agree; it does not prove the screen mapping.)",
              (unsigned long long)st.frames, (unsigned long long)st.blits, (unsigned long long)st.rejected, (unsigned long long)st.closed_refused,
              g_dg.down, g_dg.move, g_dg.up, g_dg.cancel, last, d.fingers, g_dg.view_w, g_dg.view_h, FRAME_W, FRAME_H,
-             touch, err,
+             touch, err, runner,
              g_guest.moves, g_feedback ? "on" : "off (dead reckoning)", g_guest.buttons_down, g_guest.buttons_up, g_guest.last_button, g_guest.held ? "held" : "up",
              g_guest.wheel, g_guest.hwheel, g_guest.keys, g_guest.last_key, g_guest.unmapped_keys);
     pthread_mutex_unlock(&g_mu);

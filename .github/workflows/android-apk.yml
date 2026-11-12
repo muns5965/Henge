@@ -111,6 +111,9 @@ jobs:
           # vmrun with the install entry point and the G0 test in it (the "[G0] 복원 진입점 시험" button, --install-g0): host/install.c up to the tool's stop A, storage read-only. A test program, not an installer; optional.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-install-g0-build.sh build-engine build-restore \
             && cp build-engine/vmrun_g0 android/app/src/main/jniLibs/arm64-v8a/libvmrung0.so || echo "::warning::vmrun with the G0 test did not build; the APK goes without that button's program"
+          # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
+            && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake

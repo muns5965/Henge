@@ -39,6 +39,9 @@ on:
       - tools/install-g0-test.sh
       - tools/install-g1-test.sh
       - tools/c0b0-test.sh
+      - tools/c1-test.sh
+      - tools/check-runner-safe.sh
+      - tools/ui-runner-build.sh
       - tests/java/**
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
@@ -216,6 +219,8 @@ jobs:
         run: tools/install-g0-test.sh build-rs
       - name: "Test C0 + B0, the screen buffer and its close contract, the key table and the touch-to-mouse loop (plain, ASan+UBSan, TSan; no VM, no Android, no network)"
         run: tools/c0b0-test.sh build-c0
+      - name: "Test C1-1, the runner process and the file it shares with the app (plain, ASan+UBSan, TSan; synthetic mode: no VM, no Android, no network): pictures, input, pointer feedback, every stop path, a killed runner, a killed app, dead lock owners; the runner binary is checked for network and VM symbols"
+        run: tools/c1-test.sh build-c1
 
       - name: "Test G1, the restore tool's signing path through the install entry point (real session, policy and tool; synthetic TLS server on 127.0.0.1 only; refusals, bad replies, timeouts, bad certificate, redirect, unapproved destination; controls for ticket files, device downloads and an unapproved port; no Apple request)"
         run: tools/install-g1-test.sh build-rs
@@ -255,6 +260,8 @@ jobs:
         run: |
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-tss-build.sh build-android
+      - name: Build the C1-1 runner for Android and check the binary (no network or VM symbols)
+        run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-android-runner
       - name: Build the IPSW downloader for Android (link only; shipped configuration)
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/ipswdl-build.sh build-android-dl
       - name: Build the whole restore stack for Android (integrated link of idevicerestore + usbmuxd + libirecovery + libtatsu + libzip + self-test)

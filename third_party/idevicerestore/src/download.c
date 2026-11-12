@@ -96,7 +96,7 @@ static int download_progress(void *clientp, double dltotal, double dlnow, double
 
 	set_progress('DNLD', p);
 
-	if (global_quit_flag > 0) {
+	if (__atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED) > 0) {
 		return 1;
 	}
 
@@ -220,7 +220,7 @@ int download_to_file(const char* url, const char* filename, int enable_progress)
 		off_t o = ftello(f);
 		sz = (o == (off_t)-1) ? -1 : (long long)o;
 	}
-	if (!why && global_quit_flag > 0) why = "cancelled";
+	if (!why && __atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED) > 0) why = "cancelled";
 	else if (!why && cr != CURLE_OK) why = curl_easy_strerror(cr);
 	else if (!why && status != 200) why = "HTTP status is not 200";
 	else if (!why && sz <= 0) why = "empty download";
@@ -230,7 +230,7 @@ int download_to_file(const char* url, const char* filename, int enable_progress)
 	if (!why && rename(tmp, filename) != 0) why = "rename failed";
 	if (why) {
 		unlink(tmp);
-		if (global_quit_flag > 0) res = -2;
+		if (__atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED) > 0) res = -2;
 		else {
 			res = -1;
 			logger(LL_ERROR, "Download of '%s' failed: %s (curl %d, status %ld, %lld bytes)\n", filename, why, (int)cr, status, sz);
@@ -297,7 +297,7 @@ int download_to_file(const char* url, const char* filename, int enable_progress)
 		res = -1;
 		remove(filename);
 	}
-	if (global_quit_flag > 0) {
+	if (__atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED) > 0) {
 		res = -2;
 	}
 

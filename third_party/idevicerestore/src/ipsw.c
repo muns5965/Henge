@@ -1358,7 +1358,7 @@ int ipsw_download_fw(const char *fwurl, unsigned char* isha1, const char* todir,
 			remove(fwlfn);
 			logger(LL_INFO, "Downloading firmware (%s)\n", fwurl);
 			download_to_file(fwurl, fwlfn, 1);
-			if (global_quit_flag > 0) {
+			if (__atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED) > 0) {
 				logger(LL_NOTICE, "Download aborted by user\n");
 				return -1;
 			}

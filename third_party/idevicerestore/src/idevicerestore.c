@@ -1791,7 +1791,7 @@ static void handle_signal(int sig)
 {
 	if (idevicerestore_client) {
 		idevicerestore_client->flags |= FLAG_QUIT;
-		global_quit_flag++;
+		__atomic_add_fetch(&global_quit_flag, 1, __ATOMIC_SEQ_CST);
 		ipsw_cancel();
 	}
 }

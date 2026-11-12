@@ -35,6 +35,14 @@
 #include <libimobiledevice-glue/socket.h>
 
 #include "reverse_proxy.h"
+#include "hv_life.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include "lockdown.h"
 #include "common/debug.h"
 #include "endianness.h"
@@ -122,6 +130,99 @@ static void _reverse_proxy_status(reverse_proxy_client_t client, int status, con
 	free(buffer);
 }
 
+
+/* ---- Henge (I6): thread and socket lifetime ------------------------------------------------------------------------------------------------------------ */
+struct rp_conn_node {
+	THREAD_T th;
+	uint64_t gen;
+	int registered;       /* hv_life_task_begin succeeded: the thread's last act is hv_life_task_end */
+	reverse_proxy_client_t client;   /* the control client the thread belongs to */
+	struct rp_conn_node *next;
+};
+
+static reverse_proxy_client_t rp_root(reverse_proxy_client_t c) { return (c && c->root) ? c->root : c; }
+
+/* 1 = this proxy must wind down: client_free asked for it, or the host session was cancelled/closed */
+static int rp_stopped(reverse_proxy_client_t c)
+{
+	reverse_proxy_client_t r = rp_root(c);
+	return (r && __atomic_load_n(&r->stop, __ATOMIC_SEQ_CST)) || hv_life_terminate_requested();
+}
+
+/* close an external socket that was registered with the host (contract rule 1): only when every reference came back */
+static void rp_sock_close(uint64_t gen, int fd)
+{
+	if (fd < 0) return;
+	if (hv_life_conn_remove(gen, fd) == 0) {
+		socket_close(fd);
+	}
+	/* -1: a cancel still holds a reference (or the table refused): the fd is left open on purpose (a leak is safer than closing a number another thread may still shutdown()) */
+}
+
+/* Connect to an external host so that a cancel can reach it: the socket is registered (hv_life_conn_add) BEFORE connect() starts, so the host's shutdown() wakes the
+   wait; the wait itself is sliced (100 ms) and re-checks rp_stopped(), so it also ends when the proxy is freed. The 5000 ms limit and the errno contract (-1 + errno)
+   are those of glue's socket_connect(), whose policy hook (limd_glue_connect_guard) is called the same way. Name resolution (getaddrinfo) is not cancellable. */
+static int rp_connect_cancelable(reverse_proxy_client_t client, const char *host, uint16_t port, uint64_t *gen_out)
+{
+	struct addrinfo hints, *result = NULL, *ai;
+	char portstr[8];
+	int sfd = -1, yes = 1, bufsize = 0x20000;
+	uint64_t gen = 0;
+	*gen_out = 0;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_NUMERICSERV;
+	hints.ai_protocol = IPPROTO_TCP;
+	snprintf(portstr, sizeof(portstr), "%d", port);
+	if (rp_stopped(client)) { errno = ECANCELED; return -1; }
+	if (getaddrinfo(host, portstr, &hints, &result) != 0) { errno = EHOSTUNREACH; return -1; }
+	int err = ECONNREFUSED;
+	for (ai = result; ai; ai = ai->ai_next) {
+		if (rp_stopped(client)) { err = ECANCELED; break; }
+		sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (sfd < 0) continue;
+		if (hv_life_conn_add(sfd, &gen) != 0) { close(sfd); sfd = -1; err = ECANCELED; break; }   /* refused: never registered, so a plain close is right */
+		setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void*)&yes, sizeof(int));
+		fcntl(sfd, F_SETFL, fcntl(sfd, F_GETFL, 0) | O_NONBLOCK);
+		if (limd_glue_connect_guard && limd_glue_connect_guard(ai->ai_addr, ai->ai_addrlen) != 0) { rp_sock_close(gen, sfd); sfd = -1; err = EACCES; continue; }
+		int ok = 0;
+		if (connect(sfd, ai->ai_addr, ai->ai_addrlen) == 0) {
+			ok = 1;
+		} else if (errno == EINPROGRESS) {
+			int waited = 0;
+			while (waited < 5000) {
+				struct pollfd pfd = { sfd, POLLOUT, 0 };
+				int pr = poll(&pfd, 1, 100);
+				if (pr > 0) {
+					int so_error = 0; socklen_t l = sizeof(so_error);
+					getsockopt(sfd, SOL_SOCKET, SO_ERROR, (void*)&so_error, &l);
+					if (so_error == 0) ok = 1; else err = so_error;
+					break;
+				}
+				if (pr < 0 && errno != EINTR) { err = errno; break; }
+				if (rp_stopped(client)) { err = ECANCELED; break; }
+				waited += 100;
+			}
+			if (!ok && waited >= 5000) err = ETIMEDOUT;
+		} else {
+			err = errno;
+		}
+		if (ok && rp_stopped(client)) { ok = 0; err = ECANCELED; }   /* connected, but we were told to stop: do not hand it out */
+		if (ok) break;
+		rp_sock_close(gen, sfd);
+		sfd = -1;
+		if (err == ECANCELED) break;
+	}
+	freeaddrinfo(result);
+	if (sfd < 0) { errno = err; return -1; }
+	setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void*)&yes, sizeof(int));
+	setsockopt(sfd, SOL_SOCKET, SO_SNDBUF, (void*)&bufsize, sizeof(int));
+	setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, (void*)&bufsize, sizeof(int));
+	*gen_out = gen;
+	return sfd;
+}
+
 static int _reverse_proxy_handle_proxy_cmd(reverse_proxy_client_t client)
 {
 	reverse_proxy_error_t err = REVERSE_PROXY_E_SUCCESS;
@@ -183,12 +284,14 @@ static int _reverse_proxy_handle_proxy_cmd(reverse_proxy_client_t client)
 
 	if (!host || !buf[2]) {
 		/* missing or zero length host name */
+		free(host);
 		free(buf);
 		return 0;
 	}
 
 	/* else wait for messages and forward them */
-	int sockfd = socket_connect(host, port);
+	uint64_t sock_gen = 0;
+	int sockfd = rp_connect_cancelable(client, host, port, &sock_gen);
 	if (sockfd < 0) {
 		free(buf);
 		_reverse_proxy_log(client, "ERROR: Connection to %s:%u failed: %s", host, port, strerror(errno));
@@ -199,7 +302,7 @@ static int _reverse_proxy_handle_proxy_cmd(reverse_proxy_client_t client)
 	_reverse_proxy_status(client, RP_STATUS_CONNECTED, "Connected to %s:%u", host, port);
 
 	int res = 0, bytes_ret;
-	while (1) {
+	while (!rp_stopped(client)) {
 		bytes = 0;
 		err = reverse_proxy_receive_with_timeout(client, buf, bufsize, &bytes, 100);
 		if (err == REVERSE_PROXY_E_TIMEOUT || (err == REVERSE_PROXY_E_SUCCESS && !bytes)) {
@@ -224,7 +327,6 @@ static int _reverse_proxy_handle_proxy_cmd(reverse_proxy_client_t client)
 			sent_total += sent;
 			if (sent != bytes) {
 				_reverse_proxy_log(client, "ERROR: Sending proxy payload failed: %s. Sent %u of %u bytes.", strerror(errno), sent, bytes);
-				socket_close(sockfd);
 				res = -1;
 				break;
 			}
@@ -261,7 +363,7 @@ static int _reverse_proxy_handle_proxy_cmd(reverse_proxy_client_t client)
 			}
 		}
 	}
-	socket_close(sockfd);
+	rp_sock_close(sock_gen, sockfd);   /* the one close (the send-failure branch used to close it and the line here closed it again) */
 	free(host);
 	free(buf);
 
@@ -344,7 +446,8 @@ static reverse_proxy_error_t reverse_proxy_client_new(idevice_t device, lockdown
 
 static void* _reverse_proxy_connection_thread(void *cdata)
 {
-	reverse_proxy_client_t client = (reverse_proxy_client_t)cdata;
+	struct rp_conn_node *node = (struct rp_conn_node *)cdata;
+	reverse_proxy_client_t client = node->client;
 	uint32_t bytes = 0;
 	reverse_proxy_client_t conn_client = NULL;
 	reverse_proxy_error_t err = REVERSE_PROXY_E_UNKNOWN_ERROR;
@@ -368,6 +471,7 @@ static void* _reverse_proxy_connection_thread(void *cdata)
 		goto leave;
 	}
 	conn_client->type = RP_TYPE_CONN;
+	conn_client->root = client;
 	conn_client->protoversion = client->protoversion;
 	conn_client->log_cb = client->log_cb;
 	conn_client->log_cb_user_data = client->log_cb_user_data;
@@ -430,7 +534,7 @@ static void* _reverse_proxy_connection_thread(void *cdata)
 	_reverse_proxy_status(conn_client, RP_STATUS_READY, "Ready");
 
 	int running = 1;
-	while (client->th_ctrl != THREAD_T_NULL && conn_client && running) {
+	while (!rp_stopped(client) && conn_client && running) {
 		uint16_t cmd = 0;
 		bytes = 0;
 		err = reverse_proxy_receive_with_timeout(conn_client, (char*)&cmd, sizeof(cmd), &bytes, 1000);
@@ -469,16 +573,20 @@ leave:
 		reverse_proxy_client_free(conn_client);
 	}
 
+	/* the thread's last act: nothing shared is touched after this (the node and the control client are released only after the join) */
+	if (node->registered) {
+		hv_life_task_end(node->gen, HV_LIFE_K_PROXY_CONN, 0);
+	}
 	return NULL;
 }
 
 static void* _reverse_proxy_control_thread(void *cdata)
 {
 	reverse_proxy_client_t client = (reverse_proxy_client_t)cdata;
-	THREAD_T th_conn = THREAD_T_NULL;
 	int running = 1;
+	int join_failed = 0;
 	_reverse_proxy_status(client, RP_STATUS_READY, "Ready");
-	while (client && client->parent && running) {
+	while (client && !rp_stopped(client) && running) {
 		uint32_t cmd = 0;
 		uint32_t bytes = 0;
 		reverse_proxy_error_t err = reverse_proxy_receive_with_timeout(client, (char*)&cmd, sizeof(cmd), &bytes, 1000);
@@ -494,10 +602,27 @@ static void* _reverse_proxy_control_thread(void *cdata)
 			/* connection request */
 			debug_info("ReverseProxy<%p> got connect request", client);
 			_reverse_proxy_status(client, RP_STATUS_CONNECT_REQ, "Connect Request");
-			if (thread_new(&th_conn, _reverse_proxy_connection_thread, client) != 0) {
-				debug_info("ERROR: Failed to start connection thread");
-				th_conn = THREAD_T_NULL;
-				running = 0;
+			{
+				/* every connection thread has its own node: the handle is kept until it is joined (the single 'th_conn' used to be overwritten, so only the last one was joined) */
+				struct rp_conn_node *node = (struct rp_conn_node *)calloc(1, sizeof(*node));
+				if (!node) { running = 0; break; }
+				node->client = client;
+				node->registered = (hv_life_task_begin(HV_LIFE_K_PROXY_CONN, &node->gen) == 0);
+				if (!node->registered) {   /* refused by the host session (closing): no thread is created */
+					_reverse_proxy_log(client, "Connection thread refused");
+					free(node);
+					running = 0;
+					break;
+				}
+				if (thread_new(&node->th, _reverse_proxy_connection_thread, node) != 0) {
+					debug_info("ERROR: Failed to start connection thread");
+					hv_life_task_create_failed(node->gen, HV_LIFE_K_PROXY_CONN, 1);
+					free(node);
+					running = 0;
+					break;
+				}
+				node->next = client->conns;
+				client->conns = node;
 			}
 			break;
 		case 2:
@@ -516,15 +641,26 @@ static void* _reverse_proxy_control_thread(void *cdata)
 	}
 	_reverse_proxy_log(client, "Terminating");
 
-	client->th_ctrl = THREAD_T_NULL;
-	if (th_conn) {
+	/* tell the connection threads to leave, then join EVERY one of them. A node whose join fails is kept (leaked) rather than freed under a thread that may still run. */
+	__atomic_store_n(&client->stop, 1, __ATOMIC_SEQ_CST);
+	struct rp_conn_node *n = client->conns;
+	client->conns = NULL;
+	while (n) {
+		struct rp_conn_node *next = n->next;
 		debug_info("joining connection thread");
-		thread_join(th_conn);
-		thread_free(th_conn);
+		if (thread_join(n->th) == 0) {
+			thread_free(n->th);
+			free(n);
+		} else {
+			join_failed = 1;
+		}
+		n = next;
 	}
 
 	_reverse_proxy_status(client, RP_STATUS_TERMINATE, "Terminated");
 
+	/* last act of the control thread */
+	hv_life_task_end(client->ctrl_gen, HV_LIFE_K_PROXY_CTRL, join_failed ? 1 : 0);
 	return NULL;
 }
 
@@ -598,8 +734,13 @@ reverse_proxy_error_t reverse_proxy_client_start_proxy(reverse_proxy_client_t cl
 		client->protoversion = 1;
 	}
 
+	if (hv_life_task_begin(HV_LIFE_K_PROXY_CTRL, &client->ctrl_gen) != 0) {   /* refused by the host session: no thread */
+		_reverse_proxy_log(client, "ERROR: Control thread refused");
+		return REVERSE_PROXY_E_UNKNOWN_ERROR;
+	}
 	if (thread_new(&(client->th_ctrl), _reverse_proxy_control_thread, client) != 0) {
 		_reverse_proxy_log(client, "ERROR: Failed to start control thread");
+		hv_life_task_create_failed(client->ctrl_gen, HV_LIFE_K_PROXY_CTRL, 1);
 		client->th_ctrl = THREAD_T_NULL; /* undefined after failure */
 		err = REVERSE_PROXY_E_UNKNOWN_ERROR;
 	}
@@ -645,14 +786,19 @@ reverse_proxy_error_t reverse_proxy_client_free(reverse_proxy_client_t client)
 {
 	if (!client)
 		return REVERSE_PROXY_E_INVALID_ARG;
-	service_client_t parent = client->parent;
-	client->parent = NULL;
+	/* 1. ask every thread of this proxy to leave; 2. wait for the control thread (it joins all connection threads); 3. only then free the parent connection and the client.
+	   If the join cannot be confirmed nothing is freed (a thread may still be using it). */
+	__atomic_store_n(&client->stop, 1, __ATOMIC_SEQ_CST);
 	if (client->th_ctrl) {
 		debug_info("joining control thread");
-		thread_join(client->th_ctrl);
+		if (thread_join(client->th_ctrl) != 0) {
+			return REVERSE_PROXY_E_UNKNOWN_ERROR;
+		}
 		thread_free(client->th_ctrl);
 		client->th_ctrl = THREAD_T_NULL;
 	}
+	service_client_t parent = client->parent;
+	client->parent = NULL;
 	reverse_proxy_error_t err = reverse_proxy_error(service_client_free(parent));
 	free(client->label);
 	free(client);

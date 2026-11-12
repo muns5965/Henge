@@ -51,6 +51,16 @@ I3~I6 구현은 별도 승인 전까지 착수하지 않는다.
 
 ## 4. `global_quit_flag` 접근 표 [확인, 9곳]
 
+> **정정 (2026-11-12, `c4137e3` 소스 대조)**: 아래 표와 "9곳"은 I6-3 적용 전의 상태이고, 일부 줄 번호와 "일반 읽기"는 현재 맞지 않는다. 현재(`research/android-port-integ`) 접근을 종류별로 적는다.
+> - 정의 1: `common.c:64` (`int global_quit_flag = 0`, 초기화만), 선언 1: `common.h:143`.
+> - 벤더링 읽기 6곳, 모두 `__atomic_load_n(..., RELAXED)`: `download.c:99, 223, 233, 300`, `ipsw.c:1361`, `common.c:292`.
+> - 벤더링 쓰기 1곳: `idevicerestore.c:1910` (시그널 핸들러, `__atomic_add_fetch`, SEQ_CST).
+> - `restore.c`에는 접근이 **없다**(복원 루프는 `FLAG_QUIT`과 레지스트리 종료 플래그를 본다).
+> - 호스트 쓰기 3곳: `install.c:211, 264`(`ST` 매크로), `restore_preflight.c:371`(`__atomic_store_n`, SEQ_CST). `ST`/`LD`는 `host/install.c:36-37`에서 `__atomic_store_n`/`__atomic_load_n`(SEQ_CST)으로 정의돼 있다.
+> - 주소 전달 2곳: `install.c:122`, `restore_preflight.c:355`가 `hv_curl_set_cancel_flag((volatile int *)&global_quit_flag)`로 주소를 넘기고, 읽는 곳은 `host/curl_mbedtls.c:106`(`__atomic_load_n`, SEQ_CST)이다.
+> - 시험 코드(`tests/test_install_start.c`, `tests/test_download.c`)의 접근은 일반 접근이고 시험 전용이다.
+> - 위 분류는 소스 grep 기준이다. 실행 중 실제로 도달하는지는 별개이며, 데이터 경쟁이 없다는 증명이 아니다(TSan이 제품 코드에서 보고하지 않았다는 관측만 있다).
+
 | 위치 | 접근 | 비고 |
 |---|---|---|
 | `common.c:64` | 정의 `int global_quit_flag = 0` | 원자 아님 |

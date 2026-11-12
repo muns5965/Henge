@@ -31,11 +31,11 @@
 | s1b | `idevice_connection_receive`(asr.c가 쓰는 호출), usbmuxd 터널 위 | 대조 통과 → 즉시 반환 |
 | s2 | `socket_send`가 상대가 읽지 않아 가득 찬 버퍼에서 막힘 | 대조 통과 → 즉시 반환, `EPIPE` |
 | s3 | 원시 `connect()`가 리스너 큐가 가득 차 SYN_SENT에서 막힘, fd는 시험이 알고 있음 | 대조 통과 → 즉시 반환, `ECONNRESET` |
-| s3lib | 라이브러리 `socket_connect`(같은 조건) | **3000 ms 넘게 막힘**(자체 시간 제한 없음). fd는 반환 전까지 라이브러리 밖에 공개되지 않으므로 다른 스레드가 `shutdown`을 할 **수단이 없다** |
+| s3lib | 라이브러리 `socket_connect`(같은 조건) | **3000 ms 넘게 막힘**(라이브러리에 `CONNECT_TIMEOUT` 5000 ms가 있어 그 전까지 막히며, 다른 스레드가 막을 풀 수단은 없다). fd는 반환 전까지 라이브러리 밖에 공개되지 않으므로 다른 스레드가 `shutdown`을 할 **수단이 없다** |
 
 해석:
 - **[확인, Linux]** 연결이 이미 성립한 소켓의 `recv`·`send`는 `shutdown`으로 즉시 풀린다(s1, s5, s1b, s2). 이는 6-3(ASR), 6-4(프록시 수신·송신 루프)의 `shutdown` 방식이 Linux에서는 성립함을 뜻한다.
-- **[확인]** `connect` 진행 중인 소켓은 fd를 알면 풀리지만(s3), 라이브러리 `socket_connect`는 시간 제한이 없고 fd를 노출하지 않아 **프록시의 외부 호스트 연결(`reverse_proxy.c:191`)은 `shutdown`으로 취소할 수 없다**(s3lib). 이 경로는 별도 수단(연결 전 fd 공개, 논블로킹+폴링, 시간 제한)이 필요하며 지금은 **미결**이다.
+- **[확인]** `connect` 진행 중인 소켓은 fd를 알면 풀리지만(s3), 라이브러리 `socket_connect`는 5000 ms `CONNECT_TIMEOUT`(`socket.c:75`)만 있고 취소할 수 없으며 fd를 연결 전에 노출하지 않아 **프록시의 외부 호스트 연결(`reverse_proxy.c:191`)은 `shutdown`으로 취소할 수 없다**(s3lib). 이 경로는 별도 수단(연결 전 fd 공개, 논블로킹+폴링, 시간 제한)이 필요하며 지금은 **미결**이다.
 - **[미확인]** Android(bionic 커널 소켓)에서도 같은 결과인지는 시험하지 않았다. Linux 결과를 Android 보장으로 쓰지 않는다. 참조 반환(다른 스레드가 같은 fd를 쓰는 중 `close` 금지) 시험과 fd 재사용 경쟁 시험은 **이번에 하지 않았다**(C14 구현 뒤 시험).
 
 ## 3. libusbmuxd 모니터 (F)
@@ -47,7 +47,7 @@
 
 해석:
 - **[확인, Linux]** 정상 경로에서는 모니터가 즉시 종료한다. 이 빌드에서 `thread_cancel`이 항상 실패하는데도(§7 문서) `socket_shutdown(listenfd)`+join으로 종료된다.
-- **[확인, 주입]** join이 실패하면 해제 함수는 오류를 반환하지만 스레드 핸들을 해제하고 `devmon=NULL`로 만든다. 이 시험에서 스레드는 곧 스스로 끝났지만 **종료 확인 없이** 해제되었다. 호출자 `idevicerestore_client_free`는 반환값을 확인하지 않는다 [코드 확인]. 따라서 join이 실제로 실패하는 상황(드문 오류)에서는 콜백이 `client`를 참조하는 중에 해제가 완료될 수 있다. 발생 조건은 **[미확인]**(`pthread_join`이 실제로 `EINVAL`·`EDEADLK`을 내는 경우는 호출 규약 위반에 가깝다).
+- **[확인, 주입]** join이 실패하면 해제 함수는 오류를 반환하지만 스레드 핸들을 해제하고 `devmon=NULL`로 만든다. 이 시험에서 스레드는 곧 스스로 끝났지만 **종료 확인 없이** 해제되었다. 호출자 `idevicerestore_client_free`는 반환값을 확인하지 않는다 [코드 확인]. 따라서 join이 실제로 실패하는 상황(드문 오류)에서는 콜백이 `client`를 참조하는 중에 해제가 완료될 수 있다고 적었으나, **이 서술은 정정한다(아래 정정 블록)**. 발생 조건은 **[미확인]**(`pthread_join`이 실제로 `EINVAL`·`EDEADLK`을 내는 경우는 호출 규약 위반에 가깝다).
 - F의 조건부 제외는 유지한다. 이 시험은 "join 성공 시 종료 보장"과 "join 실패 시 보장 없음"을 둘 다 보였다. 호스트가 `client_free` 반환값을 확인할 수 없는 구조라 **실패 경로는 감지되지 않는다**는 점을 위험으로 기록한다.
 
 ## 4. 서비스 스레드의 링크 닫힘
@@ -84,3 +84,12 @@
 - 일반 빌드 1회씩만 실행. ASan/TSan으로 이 시험을 돌리지 않았다. S4/S4j의 `running`·`cancelling`·`listenfd` 경합은 TSan 대상이다(기준선 TSan 지적과 같은 계열).
 - 이 문서는 Android 동작을 보증하지 않는다.
 - 하지 않은 시험: 참조 반환·fd 재사용 경쟁(C14), 오류 전파(ASR 재시도), 실제 USB 터널의 길이 접두 분할 빈도, `thread_cancel`이 동작하는 구성.
+
+## 정정과 후속 결과 (2026-11-12, `c4137e3` 소스 대조 및 시험)
+
+1. **`socket_connect`**: `libimobiledevice-glue/src/socket.c:75`에 `CONNECT_TIMEOUT 5000`이 있다. 결함은 "시간 제한이 없다"가 아니라 (a) 다른 스레드가 연결 중인 호출을 취소할 수 없고 (b) 연결 전 fd가 공개되지 않아 `shutdown`할 수단이 없다는 점이다. I6의 `rp_connect_cancelable`이 프록시 경로에서 이를 해결했고, 최대 대기는 5000 ms다.
+2. **join 실패 뒤 콜백**: 콜백은 `listener_mutex`를 잡은 채 실행되고 구독 컨텍스트 제거도 같은 뮤텍스로 보호되므로, "콜백이 해제 중인 `client`를 참조한다"는 우려는 근거가 약하다(위 서술 정정). 실제로 확인된 결함은 **모니터 스레드 핸들·전역 연결 상태의 수명**이다: join 실패 후 `thread_free`와 `devmon=NULL`이 일어나고 다시 구독하면 두 번째 모니터가 같은 `listenfd`/`devices`/`running`을 덮어써 새 구독을 멈출 수 없었다(`s4o`).
+   - 이 결함은 `caa4f08`(모니터 상태 전이 STOPPED/STARTING/RUNNING/STOPPING/FAILED)로 해결했다. 검증: `s4o`(재구독 거부 → 구 스레드 종료 뒤 복구), `s4d`(동시 구독 30회), `s4n`(`thread_new` 실패 롤백), `s4jj`(join 실패 뒤 동시 재구독 2개)가 일반·ASan·TSan에서 3회씩 통과.
+3. **`global_quit_flag`**: `docs/i3-i6-entry-analysis-2026-11-12.md` §4의 정정 참조.
+4. **`client_release` 실패 경로(`c4137e3`)**: 시험 전용 매크로 `HV_PREFLIGHT_TEST_HOLD_ASYNC`로 실제 미완료 작업을 등록하고 1500 ms 기한에 걸리게 했다. 클라이언트 유지, 사설 usbmuxd 실행·응답, 정책 유지, 두 번째 실행 거부, 비소유 스레드 `end()` 거부, `client_free FAILED` 행, 정리 행 부재, 작업 종료 뒤 재시도 성공을 확인했다(일반·ASan 통과, TSan은 기존 플래그 경쟁만). 음성 대조(`goto report` 제거)에서 시험이 실패한다.
+5. **ASan `a-curl` 출력 누락**: `5d6d44a`, `c5dc8be`, 현재 통합본에서 동일하게 재현된다(출력 41줄, `scenario` 줄 없음, LeakSanitizer 8바이트 누수로 종료 코드 1). `detect_leaks=0`이면 줄이 나오고 종료 코드 0이다. 누수는 `plist_dict_new_iter` 할당이며 원인은 **미조사**, 출력이 사라지는 정확한 메커니즘은 **미확정**이다. 신규 회귀의 증거는 없다.

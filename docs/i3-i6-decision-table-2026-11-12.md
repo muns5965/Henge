@@ -41,7 +41,7 @@
 | I5 | `idevice.c:519` `idevice_connect`, `:600` `idevice_disconnect`(`socket_close` `:615`) | 연결 등록·참조 규약(C14); 닫기 전 참조 반환 대기 | T15, T8, T18 |
 | I6-1 | `reverse_proxy.c:497` | `th_conn` 덮어쓰기 제거; 연결별 핸들·종료 상태 | T13 |
 | I6-2 | `reverse_proxy.c:601`, `:~634~648` `client_free` | 제어·연결 스레드 등록·완료; 종료 요청/완료 확인/해제 분리; `parent`는 연결 스레드 종료 확인 뒤 해제 | T12, T13 |
-| I6-3 | `global_quit_flag` 9곳 | 벤더링 쪽 접근 규칙 통일(호스트는 원자 접근) | TSan |
+| I6-3 | `global_quit_flag` 9곳 (현재 접근 수는 `docs/i3-i6-entry-analysis-2026-11-12.md` §4의 정정 참조; `restore.c`에는 없고 원자 접근은 `download.c`, `ipsw.c`, `common.c`, `idevicerestore.c`) | 벤더링 쪽 접근 규칙 통일(호스트는 원자 접근) | TSan |
 
 그 밖의 파일(`fdr.c`, `libusbmuxd.c`, `deviceinterfaced.c`)은 위 §2 결정에 따라 **변경 대상에서 제외**한다.
 
@@ -143,7 +143,7 @@
 |---|---|---|---|
 | S1 | 연결된 TCP 소켓의 `recv`(예: `asr_receive`→`idevice_connection_receive`, 프록시 `socket_receive_timeout`) | 다른 스레드가 `shutdown(SHUT_RDWR)` | 반환 여부·반환 코드·소요 시간 |
 | S2 | 연결된 소켓의 `send`가 상대의 수신 지연으로 막힘(프록시 송신 루프, ASR 송신) | `shutdown` | 반환 여부·부분 송신 처리(`sent != bytes`) |
-| S3 | `connect` 진행 중(`socket_connect`가 시간 제한 없이 차단되는 경우; 응답 없는 가짜 호스트) | `shutdown`(소켓이 아직 연결 전) | 반환 여부 — 연결 전 소켓에는 효과가 다를 수 있어 별도 판정 |
+| S3 | `connect` 진행 중(`socket_connect`가 차단되는 경우(라이브러리에 `CONNECT_TIMEOUT` 5000 ms가 있다. 결함은 시간 제한이 아니라 취소할 수 없고 연결 전 fd가 공개되지 않는다는 점); 응답 없는 가짜 호스트) | `shutdown`(소켓이 아직 연결 전) | 반환 여부 — 연결 전 소켓에는 효과가 다를 수 있어 별도 판정 |
 | S4 | 로컬 사설 usbmuxd 수신(F의 `get_next_event`) | `socket_shutdown(listenfd)` | 모니터 스레드 종료와 `join` 반환(§7) |
 | S5 | `poll/select` 대기(`socket_receive_timeout`) | `shutdown` | 타임아웃 전에 반환하는지 |
 

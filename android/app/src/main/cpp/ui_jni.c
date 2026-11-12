@@ -44,8 +44,6 @@ static int g_feedback = 1;
 /* Diagnostics for the test screen (under g_mu). They only watch; nothing here feeds back into the touch module. */
 static struct {
     long down, move, up, cancel;           /* events received by nativeTouch (touches on the status text are not counted: that text takes them) */
-    int have_touch; float tx, ty;          /* the last touch, view pixels, kept after the finger lifts */
-    int have_target; double gx, gy;        /* the module's target for it, guest pixels, kept */
     float view_w, view_h;                  /* what nativeSetView was told */
     int64_t up_ms; int settle_armed, settle_valid; int sdx, sdy;   /* error 0.5 s after the last finger lifted */
 } g_dg;
@@ -202,8 +200,6 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(
     hv_touch_event(&g_touch, action, id, x, y, t_ms);
     switch (action) { case HV_TOUCH_DOWN: g_dg.down++; break; case HV_TOUCH_MOVE: g_dg.move++; break; case HV_TOUCH_UP: g_dg.up++; break; case HV_TOUCH_CANCEL: g_dg.cancel++; break; default: break; }
     HvTouchDiag d; hv_touch_diag(&g_touch, &d);
-    if (action != HV_TOUCH_CANCEL) { g_dg.have_touch = 1; g_dg.tx = x; g_dg.ty = y; }
-    if (d.has_target) { g_dg.have_target = 1; g_dg.gx = d.target_x; g_dg.gy = d.target_y; }
     if (action == HV_TOUCH_DOWN) { g_dg.settle_armed = 0; g_dg.settle_valid = 0; }
     if ((action == HV_TOUCH_UP || action == HV_TOUCH_CANCEL) && d.fingers == 0) { g_dg.up_ms = t_ms; g_dg.settle_armed = 1; g_dg.settle_valid = 0; }
     pthread_mutex_unlock(&g_mu);
@@ -214,8 +210,9 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(J
     pthread_mutex_lock(&g_mu);
     hv_touch_pointer(&g_touch, g_feedback, g_guest.x, g_guest.y);
     hv_touch_tick(&g_touch, t_ms);
-    if (g_dg.settle_armed && g_dg.have_target && t_ms - g_dg.up_ms >= 500) {      /* the finger has been up for 0.5 s: what is left is the settled error */
-        g_dg.sdx = (int)lround(g_dg.gx) - g_guest.x; g_dg.sdy = (int)lround(g_dg.gy) - g_guest.y;
+    HvTouchDiag d; hv_touch_diag(&g_touch, &d);
+    if (g_dg.settle_armed && d.has_target && t_ms - g_dg.up_ms >= 500) {      /* the finger has been up for 0.5 s: what is left is the settled error */
+        g_dg.sdx = (int)lround(d.target_x) - g_guest.x; g_dg.sdy = (int)lround(d.target_y) - g_guest.y;
         g_dg.settle_valid = 1; g_dg.settle_armed = 0;
     }
     pthread_mutex_unlock(&g_mu);
@@ -239,36 +236,39 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKeyMap
 
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStatus(JNIEnv *env, jclass cls) {
     (void)cls;
-    char s[1400], touch[160], err[160];
+    char s[1700], touch[320], err[160];
     HvDispStats st = {0};
     pthread_mutex_lock(&g_mu);
     if (g_buf) hv_dispbuf_stats(g_buf, &st);
-    HvTouchDiag d; hv_touch_diag(&g_touch, &d);
+    HvTouchDiag d; hv_touch_diag(&g_touch, &d);          /* one copy, under g_mu: everything below is from the same moment */
     static const char *const an[] = {"DOWN", "UP", "MOVE", "CANCEL"};
     const char *last = d.last_action >= 0 && d.last_action < 4 ? an[d.last_action] : "-";
-    if (g_dg.have_touch && g_dg.view_w > 0 && g_dg.view_h > 0) {
-        /* what the target must be, worked out here from the touch and the view size alone (the module's own conversion is the "target") */
-        double fx = g_dg.tx / g_dg.view_w, fy = g_dg.ty / g_dg.view_h;
+    if (d.events == 0) snprintf(touch, sizeof touch, "touch: none yet");
+    else if (!d.has_target) snprintf(touch, sizeof touch, "last event %s %.0f,%.0f  target: none (cancelled or no finger yet)  conv N/A  [seq %d]", last, d.last_x, d.last_y, d.tgt_seq);
+    else {
+        /* what the target must be, worked out here from the point that set it and the view size (the same view size the module was given: conv=0 only says the two calculations agree, not that the screen mapping is right) */
+        double fx = g_dg.view_w > 0 ? d.tgt_src_x / g_dg.view_w : 0, fy = g_dg.view_h > 0 ? d.tgt_src_y / g_dg.view_h : 0;
         fx = fx < 0 ? 0 : fx > 1 ? 1 : fx; fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
         int ex = (int)lround(fx * (FRAME_W - 1)), ey = (int)lround(fy * (FRAME_H - 1));
-        if (g_dg.have_target) {
-            int gx = (int)lround(g_dg.gx), gy = (int)lround(g_dg.gy);
-            snprintf(touch, sizeof touch, "touch %.0f,%.0f  expected %d,%d  target %d,%d  conv %+d,%+d", g_dg.tx, g_dg.ty, ex, ey, gx, gy, gx - ex, gy - ey);
-        } else snprintf(touch, sizeof touch, "touch %.0f,%.0f  expected %d,%d  target none", g_dg.tx, g_dg.ty, ex, ey);
-    } else snprintf(touch, sizeof touch, "touch: none yet");
-    if (g_dg.have_target) {
-        int gx = (int)lround(g_dg.gx), gy = (int)lround(g_dg.gy);
+        int gx = (int)lround(d.target_x), gy = (int)lround(d.target_y);
+        char conv[96];
+        if (d.fingers >= 2) snprintf(conv, sizeof conv, "conv N/A (two fingers: target is from the earlier single finger)");
+        else snprintf(conv, sizeof conv, "conv %+d,%+d", gx - ex, gy - ey);
+        snprintf(touch, sizeof touch, "last event %s %.0f,%.0f  target set by %.0f,%.0f [seq %d]  expected %d,%d  target %d,%d  %s", last, d.last_x, d.last_y, d.tgt_src_x, d.tgt_src_y, d.tgt_seq, ex, ey, gx, gy, conv);
+    }
+    if (d.has_target) {
+        int gx = (int)lround(d.target_x), gy = (int)lround(d.target_y);
         char settled[64];
         if (g_dg.settle_valid) snprintf(settled, sizeof settled, "%+d,%+d", g_dg.sdx, g_dg.sdy);
         else snprintf(settled, sizeof settled, d.fingers ? "(finger down)" : g_dg.settle_armed ? "(waiting 0.5 s)" : "-");
         snprintf(err, sizeof err, "pointer %d,%d  error now %+d,%+d  settled %s", g_guest.x, g_guest.y, gx - g_guest.x, gy - g_guest.y, settled);
-    } else snprintf(err, sizeof err, "pointer %d,%d  error: no target yet", g_guest.x, g_guest.y);
+    } else snprintf(err, sizeof err, "pointer %d,%d  error: no target", g_guest.x, g_guest.y);
     snprintf(s, sizeof s,
              "frames %llu (copied), shown %llu, rejected %llu, after close %llu\n"
              "events DOWN %ld MOVE %ld UP %ld CANCEL %ld (last %s)  fingers %d  view %.0fx%.0f  guest %dx%d\n"
              "%s\n%s\n"
              "moves %ld  feedback %s  buttons down %ld up %ld (last %u, left %s)  wheel %ld hwheel %ld  keys %ld (last %u) unmapped %ld\n"
-             "(touches on this text are not counted; tap it to switch the feedback)",
+             "(touches on this text are not counted; tap it to switch the feedback. conv=0 only says two calculations from the same view size agree; it does not prove the screen mapping.)",
              (unsigned long long)st.frames, (unsigned long long)st.blits, (unsigned long long)st.rejected, (unsigned long long)st.closed_refused,
              g_dg.down, g_dg.move, g_dg.up, g_dg.cancel, last, d.fingers, g_dg.view_w, g_dg.view_h, FRAME_W, FRAME_H,
              touch, err,

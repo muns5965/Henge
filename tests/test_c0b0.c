@@ -461,6 +461,54 @@ static void test_touch_diag(void) {
     CHECK(nev == nref && nref > 0 && memcmp(ref, ev, sizeof(Ev) * (size_t)(nref < 4096 ? nref : 4096)) == 0, "reads do not change the output (%d vs %d events)", nref, nev);
 }
 
+static void test_touch_seq(void) {
+    group("touch: target sequence (diagnostics)");
+    HvTouch t; HvTouchDiag d;
+    fresh(&t);
+    hv_touch_diag(&t, &d); CHECK(d.tgt_seq == 0, "starts at 0");
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 100, 60, 0); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == 1 && d.tgt_src_x == 100 && d.tgt_src_y == 60, "first DOWN sets it (seq %d)", d.tgt_seq);
+    hv_touch_event(&t, HV_TOUCH_MOVE, 0, 100, 60, 10); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == 2, "a single-finger MOVE sets it, even to the same point (seq %d)", d.tgt_seq);
+    hv_touch_event(&t, HV_TOUCH_MOVE, 0, 140, 70, 20); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == 3 && d.tgt_src_x == 140 && d.tgt_src_y == 70, "MOVE moves the source");
+    hv_touch_event(&t, HV_TOUCH_UP, 0, 150, 90, 30); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == 3 && d.tgt_src_x == 140 && d.tgt_src_y == 70 && d.has_target, "UP does not set it: the source stays the last MOVE, not the UP point");
+    CHECK(d.last_x == 150 && d.last_y == 90, "but the last event is the UP");
+    /* tapping the same spot again counts every time */
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 300, 200, 1000); hv_touch_event(&t, HV_TOUCH_UP, 0, 300, 200, 1050);
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 300, 200, 2000); hv_touch_event(&t, HV_TOUCH_UP, 0, 300, 200, 2050); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == 5, "two taps at the same place are two sets (seq %d)", d.tgt_seq);
+    /* two fingers: the second DOWN, the moves and the UPs set nothing */
+    int s0 = d.tgt_seq;
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 200, 200, 3000); hv_touch_diag(&t, &d); s0 = d.tgt_seq;
+    hv_touch_event(&t, HV_TOUCH_DOWN, 1, 260, 200, 3010);
+    hv_touch_event(&t, HV_TOUCH_MOVE, 0, 200, 250, 3020); hv_touch_event(&t, HV_TOUCH_MOVE, 1, 260, 250, 3020);
+    hv_touch_event(&t, HV_TOUCH_UP, 1, 260, 250, 3030); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == s0 && d.fingers == 1, "a two-finger gesture sets nothing (seq %d, want %d)", d.tgt_seq, s0);
+    hv_touch_event(&t, HV_TOUCH_MOVE, 0, 210, 260, 3040); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == s0, "the remaining finger's MOVE is ignored after a two-finger gesture (ignore_rest)");
+    hv_touch_event(&t, HV_TOUCH_UP, 0, 210, 260, 3050);
+    /* a third finger is ignored */
+    fresh(&t);
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 10, 10, 0); hv_touch_event(&t, HV_TOUCH_DOWN, 1, 20, 20, 1); hv_touch_diag(&t, &d); s0 = d.tgt_seq;
+    hv_touch_event(&t, HV_TOUCH_DOWN, 2, 30, 30, 2); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == s0, "a third finger sets nothing");
+    /* during a drag a second finger is ignored */
+    fresh(&t);
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 300, 200, 0); hv_touch_event(&t, HV_TOUCH_UP, 0, 300, 200, 50);
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 305, 202, 150); hv_touch_diag(&t, &d);
+    CHECK(d.drag, "a drag is held"); s0 = d.tgt_seq;
+    hv_touch_event(&t, HV_TOUCH_DOWN, 1, 50, 50, 160); hv_touch_diag(&t, &d);
+    CHECK(d.tgt_seq == s0 && d.fingers == 1, "a second finger during a drag sets nothing");
+    /* cancel: the target is gone, the count is kept, the next DOWN sets a new one */
+    s0 = d.tgt_seq;
+    hv_touch_event(&t, HV_TOUCH_CANCEL, 0, 0, 0, 200); hv_touch_diag(&t, &d);
+    CHECK(!d.has_target && d.tgt_seq == s0, "CANCEL clears has_target and keeps the count");
+    hv_touch_event(&t, HV_TOUCH_DOWN, 0, 400, 100, 300); hv_touch_diag(&t, &d);
+    CHECK(d.has_target && d.tgt_seq == s0 + 1 && d.tgt_src_x == 400 && d.tgt_src_y == 100, "the next DOWN sets a new target");
+}
+
 static void test_touch_loop(void) {
     group("touch: closed loop against a simulated accelerated pointer");
     struct { int sx, sy; float fx, fy; } cases[] = { {100, 100, 995, 497}, {1900, 1000, 3, 2}, {1000, 500, 1000, 40}, {50, 900, 400, 450}, {960, 540, 970, 448}, {0, 0, 999, 499} };
@@ -646,7 +694,7 @@ static void test_gate_race(void) {
 int main(void) {
     test_convert(); test_buffer_basic(); test_rejects(); test_pull(); test_close_waits(); test_free_after_close(); test_pattern();
     test_keymap();
-    test_touch_basic(); test_touch_drag_scroll(); test_touch_diag(); test_touch_loop();
+    test_touch_basic(); test_touch_drag_scroll(); test_touch_diag(); test_touch_seq(); test_touch_loop();
     test_gate_states(); test_gate_duel(); test_gate_race();
     printf("c0b0: %d check(s), %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

@@ -69,6 +69,7 @@ typedef struct HvTouch {
     int ev_count, ev_last_action;
     float ev_last_x, ev_last_y;
     int64_t ev_last_ms;
+    int tgt_seq; float tgt_src_x, tgt_src_y;   /* how many times the target was set, and the view point that set it last (diagnostics only) */
 } HvTouch;
 
 void hv_touch_init(HvTouch *t, const HvInputSink *sink);
@@ -93,6 +94,8 @@ typedef struct {
     int pointer_known;           /* the module's own idea of the guest pointer: the feedback, or dead reckoning */
     double pointer_x, pointer_y;
     int drag, button_held;
+    int tgt_seq;                 /* number of times the target was set (every call that converts a view point, same point or not; UP, two-finger and ignored events do not). A cancel keeps it. */
+    float tgt_src_x, tgt_src_y;  /* the view point the current target was converted from; meaningful only while has_target */
 } HvTouchDiag;
 void hv_touch_diag(const HvTouch *t, HvTouchDiag *d);
 

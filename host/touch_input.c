@@ -31,6 +31,7 @@ static void map_to_target(HvTouch *t, float x, float y) {
     t->tx = fx * (t->dw - 1);
     t->ty = fy * (t->dh - 1);
     t->has_target = 1;
+    t->tgt_seq++; t->tgt_src_x = x; t->tgt_src_y = y;
 }
 
 static int step_clamp(int v) { return v > HV_TOUCH_STEP_MAX ? HV_TOUCH_STEP_MAX : v < -HV_TOUCH_STEP_MAX ? -HV_TOUCH_STEP_MAX : v; }
@@ -192,4 +193,5 @@ void hv_touch_diag(const HvTouch *t, HvTouchDiag *d) {
     d->pointer_known = t->known || t->homed;
     d->pointer_x = est_x(t); d->pointer_y = est_y(t);
     d->drag = t->drag; d->button_held = t->button_held;
+    d->tgt_seq = t->tgt_seq; d->tgt_src_x = t->tgt_src_x; d->tgt_src_y = t->tgt_src_y;
 }

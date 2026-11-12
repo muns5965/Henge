@@ -11,6 +11,7 @@ typedef struct HvDisk {
     uint64_t offset;
     uint64_t size;   /* bytes visible to the guest */
     int readonly;
+    uint64_t write_calls, write_refused;   /* hv_disk_write calls, and those turned away (read-only or out of range); read with hv_disk_write_stats */
 } HvDisk;
 
 int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly);
@@ -19,5 +20,7 @@ void hv_disk_close(HvDisk *d);
 int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len);
 int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len);
 int hv_disk_flush(HvDisk *d);
+/* How many writes the guest's devices asked for since the disk was opened (any thread). */
+void hv_disk_write_stats(const HvDisk *d, uint64_t *calls, uint64_t *refused);
 
 #endif

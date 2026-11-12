@@ -298,6 +298,24 @@ public class MainActivity extends Activity {
         pfNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(pfNote);
 
+        final Button g0Button = new Button(this);
+        g0Button.setText("[G0] 복원 진입점 시험 (install 경로, 정지점 A까지, 저장장치 읽기 전용, Apple 요청 없음)");
+        g0Button.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("복원 진입점(G0)을 시험합니다")
+                .setMessage("앱의 복원 시작 경로(hv_install_start)를 한 번 실행하되, 복원 도구가 루트 파일시스템을 추출하기 직전의 정지점 A에서 스스로 멈추게 합니다. "
+                        + "디스크와 aux는 읽기 전용으로 열고, 새로 만들거나 지우지 않습니다(이미 있어야 합니다). Apple 서명 요청·이미지 전송·추출·디스크 쓰기·가상 Mac 네트워크는 없습니다. "
+                        + "ECID는 만들지 않고(이미 있어야 함) 화면에도 표시하지 않습니다. "
+                        + "통과 조건: 정지점 도달 + 반환값 217 + 세션 정리 완료 + 연결·장치 요청 0건 + 저장장치 쓰기 0건 + 크기·내용 불변. 연결 거부가 생기면 통과가 아닙니다. 약 1~3분. 실행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("실행", (d, w) -> { g0Mode = true; runVmrun(true, false, false, 2); })
+                .show());
+        root.addView(g0Button);
+        final TextView g0Note = new TextView(this);
+        g0Note.setText("결과는 '복원 성공'이 아니라 g0_passed 입니다. 앞의 정지점 A 버튼과 달리 복원 도구를 install 경로(전용 usbmuxd·세션·정리 포함)로 시작합니다. "
+                + "디스크·aux가 없으면 아무것도 만들지 않고 멈춥니다(먼저 일반/설치기 부팅 시험을 한 번 해 두세요). 이 시험은 로그 파일을 저장하지 않습니다.");
+        g0Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(g0Note);
+
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");
         toggle.setOnClickListener(v -> {
@@ -895,6 +913,8 @@ public class MainActivity extends Activity {
         final boolean pfA = preflightStageA;
         preflightMode = false;
         preflightStageA = false;
+        final boolean g0 = g0Mode;
+        g0Mode = false;
         final boolean irecv = irecvIn;
         if (running) return;
         running = true;
@@ -910,10 +930,11 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, pf ? "libvmrunpreflight.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                File exe = new File(libDir, g0 ? "libvmrung0.so" : pf ? "libvmrunpreflight.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
                 final File pfIpsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw");
-                if (!exe.exists()) acc.append(pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
-                else if (pf && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
+                if (!exe.exists()) acc.append(g0 ? "G0 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                else if ((pf || g0) && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
+                else if (g0 && (!disk.isFile() || !aux.isFile())) acc.append("디스크 또는 aux 파일이 아직 없습니다(").append(disk.getName()).append(", ").append(aux.getName()).append("). G0은 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요. 아무것도 하지 않았습니다.\n");
                 else if ((rom = findLocalRom(acc)) == null && !confirmRomDownload(acc)) {
                     acc.append("ROM이 없어 실행하지 않았습니다. 네트워크 요청은 하지 않았습니다.\n");
                 } else if (rom == null && (rom = ensureRom(acc)) == null) {
@@ -937,21 +958,24 @@ public class MainActivity extends Activity {
                     cmd.add("--rom"); cmd.add(rom.getAbsolutePath());
                     cmd.add("--disk"); cmd.add(disk.getAbsolutePath());
                     cmd.add("--aux"); cmd.add(aux.getAbsolutePath());
-                    cmd.add("--make-blank");
-                    cmd.add("--recreate-blank");
-                    cmd.add("--psci-log");
+                    if (!g0) { cmd.add("--make-blank"); cmd.add("--recreate-blank"); cmd.add("--psci-log"); } // G0 never creates, recreates or removes storage
+                    if (g0) { File g0Work = new File(getFilesDir(), "rs_g0"); g0Work.mkdirs(); cmd.add("--install-g0"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g0Work.getAbsolutePath()); }
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
-                    if (installer && !pf) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer && !pf && !g0) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
                     if (usbN) cfg.put("seconds", "3"); // the normal boot ended after 10 ms; with the USB port it may sit in a polling loop printing ~1M lines/s
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
-                    acc.append(installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
+                    acc.append(g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
+                    if (g0 && !cfg.containsKey("ecid") && !new File(priv, VmEcid.FILE).isFile()) {
+                        acc.append("이 VM의 ECID 파일이 아직 없습니다. G0은 ECID를 만들지 않습니다. 먼저 설치기 부팅 시험을 한 번 실행하세요. 아무것도 하지 않았습니다.\n");
+                        show(acc.toString()); running = false; setButtons(true); return;
+                    }
                     if (installer && !cfg.containsKey("ecid")) {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
                         switch (er.status) {
                             case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
-                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || pf ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || pf || g0 ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
                             default:
                                 acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
                                    .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
@@ -966,7 +990,7 @@ public class MainActivity extends Activity {
                     File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
                     cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
                     java.util.List<String> shown = new java.util.ArrayList<>(cmd);
-                    if (tss || pf) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
+                    if (tss || pf || g0) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
                     acc.append("명령: ").append(android.text.TextUtils.join(" ", shown)).append('\n');
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
@@ -980,7 +1004,7 @@ public class MainActivity extends Activity {
                     final java.util.ArrayDeque<String> ring = new java.util.ArrayDeque<>();
                     final long[] counts = {0, 0}; // lines read, bytes written to the log file
                     final boolean[] textFull = {false};
-                    final RunLog runLog = (tss || pf) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    final RunLog runLog = (tss || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
@@ -1013,6 +1037,7 @@ public class MainActivity extends Activity {
                     double secs = 30;
                     try { if (cfg.containsKey("seconds")) secs = Double.parseDouble(cfg.get("seconds")); } catch (NumberFormatException ignored) { }
                     if (pf && secs < 150) secs = 150;
+                    if (g0 && secs < 260) secs = 260; // up to 60 s for the guest on the bus, 120 s for the run, 20 s after a cancel request
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
                     if (!done) p.destroyForcibly();
                     reader.join(2000);
@@ -1028,7 +1053,7 @@ public class MainActivity extends Activity {
                     }
                     if (!done) acc.append("vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer && !dnload && !tss && !pf) { // the dnload probe does not read the DFU string, so there is nothing to compare
+                    if (installer && !dnload && !tss && !pf && !g0) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));
@@ -1049,6 +1074,11 @@ public class MainActivity extends Activity {
                         StringBuilder sum = new StringBuilder();
                         for (String ln : text.toString().split("\n")) if (ln.startsWith("restore preflight")) sum.append(ln).append('\n');
                         acc.append(sum.length() > 0 ? "\n— 요약 (restore preflight 줄 전체) —\n" + sum : "\n— restore preflight 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
+                    }
+                    if (g0) {
+                        StringBuilder sum = new StringBuilder();
+                        for (String ln : text.toString().split("\n")) if (ln.startsWith("install g0") || ln.startsWith("vmrun RESULT") || ln.startsWith("install: final result")) sum.append(ln).append('\n');
+                        acc.append(sum.length() > 0 ? "\n— 요약 (G0 줄 전체) —\n" + sum : "\n— G0 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
                     }
                     if (irecv) {
                         String all = text.toString();
@@ -1294,6 +1324,7 @@ public class MainActivity extends Activity {
     private boolean preflightStageA;
     private boolean usbNormalMode;   // set by the USB-on-normal-boot experiment button; read and cleared by runVmrun
     private boolean verboseMode;     // set by the verbose boot button; read and cleared by runVmrun
+    private boolean g0Mode;   // set by the G0 button; read and cleared by runVmrun
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 
     /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */

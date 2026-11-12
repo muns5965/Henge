@@ -36,6 +36,8 @@ on:
       - tools/check-apple-ca.sh
       - tools/irecv-test.sh
       - tools/preflight-test.sh
+      - tools/install-g0-test.sh
+      - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
       - tools/disk-policy-test.sh
@@ -201,6 +203,8 @@ jobs:
         run: tools/restore-selftest.sh build-rs/restore_selftest build-rs/work
       - name: Test the restore preflight (real restore tool stopped by FLAG_NOACTION against a stand-in ROM and a fake IPSW; deny-mode, boundary and ECID-redaction checks; negative control)
         run: tools/preflight-test.sh build-rs
+      - name: "Test G0, the install entry point stopped at stop A (host/install.c + host/install_g0.c with the real session; fake tool; verdict rows for the hook, 217, session report, cleanup, storage identity, write count, cancel, a run that does not end; read-only disk)"
+        run: tools/install-g0-test.sh build-rs
       - name: "Test the default-deny connection policy (policy table, real glue sockets, curl stand-in, URLAsset decisions, loopback listeners only)"
         run: tools/netguard-test.sh build-rs
       - name: "Test the FDR proxy and the URLAsset step against a fake device, and the restore session rules (policy in force before the tool starts, kept while a thread runs)"

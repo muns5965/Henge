@@ -9,6 +9,7 @@
 #   HV_ALLOW_CA_ENV         lets HV_EXTRA_ANCHOR / HV_CA_PATH widen trust      (the test builds of the HTTP client only)
 #   HV_TEST_HOOKS           compiles the observation-only test hooks of host/restore_registry.c (docs/fake-device-s4-test-hook-design-2026-11-11.md §3); test builds only
 #   --wrap=thread_new / tests/fake_device/wrap_thread.c   the test-only link-time wrapper of tools/fake-restore-test.sh; never in a shipped link
+#   HV_INSTALL_G0           the G0 test of the install entry point (host/install_g0.h): host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g0-build.sh (the vmrun_g0 test program) and tools/install-g0-test.sh
 #   FLAG_STOP_BEFORE_ROOTFS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/restore_preflight.c ever sets it
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
@@ -19,7 +20,7 @@ CC=${CC:-cc}; W=${1:-build-flagcheck}; mkdir -p "$W"
 fail=0
 bad() { echo "FAIL $*"; fail=1; }
 # files that build what ships (the test scripts tatsu-test.sh, curl-test.sh, download-test.sh and the engine workflow's test steps are the places allowed to use them)
-for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/ipswdl-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh tools/vmrun-preflight-build.sh \
+for f in tools/restore-selftest-build.sh tools/bmprobe-build.sh tools/ipswdl-build.sh tools/restore-android-check.sh tools/build_ios_restore.sh tools/engine-build.sh tools/devices-build.sh tools/vmrun-irecv-build.sh tools/vmrun-preflight-build.sh tools/vmrun-install-g0-build.sh \
          android/app/src/main/cpp/CMakeLists.txt android/app/build.gradle .github/workflows/android-apk.yml .github/workflows/build-henge.yml ios/project.yml Makefile; do
   [ -f "$f" ] || continue
   if grep -n "HV_TSS_ALLOW_HTTP_TEST\|HV_RZ_ALLOW_HTTP_TEST\|HV_DL_ALLOW_HTTP_TEST\|HV_DL_TEST\|HV_PREFLIGHT_NEGATIVE_CONTROL\|HV_PREFLIGHT_TEST_HOLD_ASYNC\|HV_TEST_HOOKS\|wrap=thread_new\|wrap_thread\.c" "$f" | grep -v '^[0-9]*:[[:space:]]*#' > /dev/null; then bad "$f sets a test-only switch (HV_TSS_/HV_RZ_/HV_DL_ALLOW_HTTP_TEST, HV_DL_TEST, HV_TEST_HOOKS, thread_new wrapper)"; fi
@@ -29,6 +30,10 @@ done
 for f in host/install.c host/ipsw_dl.c host/tss_probe.c; do
   [ -f "$f" ] && grep -q "FLAG_STOP_BEFORE_ROOTFS" "$f" && bad "$f sets the stop-A test flag"
 done
+# the G0 switch: only its own build script and its Linux test may set it (never the app's CMake, gradle, workflows for the main program, the iOS project, the Makefile)
+if grep -rln "DHV_INSTALL_G0" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g0-build.sh$\|^tools/install-g0-test.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g0-build.sh and tools/install-g0-test.sh sets -DHV_INSTALL_G0"; fi
+# only host/install_g0.c sets the stop flag for the install entry point; host/install.c keeps the plain flag-free source (checked above) and reaches it through hv_g0_extra_flags
+grep -q "hv_g0_extra_flags" host/install.c && ! grep -q "FLAG_STOP_BEFORE_ROOTFS" host/install.c || bad "host/install.c does not go through the G0 hook, or names the stop flag"
 # the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
 if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do

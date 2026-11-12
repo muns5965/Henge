@@ -18,6 +18,9 @@
 
 #include "idevicerestore/src/idevicerestore.h"
 #include "usb_host.h"
+#ifdef HV_INSTALL_G0
+#include "install_g0.h"   /* the G0 test build only (tools/vmrun-install-g0-build.sh): see host/install_g0.h */
+#endif
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
 #include "restore_session.h"
@@ -112,6 +115,9 @@ static void *restore_thread(void *arg) {
         return NULL;
     }
     int flags = FLAG_ERASE;
+#ifdef HV_INSTALL_G0
+    flags |= hv_g0_extra_flags();   /* G0 test build: the tool's own stop before the root filesystem step (and the hook that reports it) */
+#endif
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
 #ifdef __ANDROID__
@@ -142,6 +148,9 @@ static void *restore_thread(void *arg) {
     /* C18/C9: close the session first (CLOSED or QUIESCENCE_FAILED), then release what the session allows, then ONE final result composed from three things:
        the engine's return value, the cleanup (tasks, client, private usbmuxd) and the session end (policy removal). Nothing is released after a failed close:
        the client is deliberately leaked and the policy and usbmuxd stay, because a task may still use them (the use-after-free the T5 baseline reproduced). */
+#ifdef HV_INSTALL_G0
+    int engine_rc = r;
+#endif
     int closed = hv_restore_session_close() == 0;
     int cleanup_mask = 0;
     if (closed && hv_restore_session_release_permitted()) {
@@ -160,6 +169,9 @@ static void *restore_thread(void *arg) {
     }
     int may_publish = 0;
     int rep = hv_restore_session_finalize(r, cleanup_mask, &may_publish);
+#ifdef HV_INSTALL_G0
+    hv_g0_record(engine_rc, closed, cleanup_mask, rep);   /* before g_result changes, so a poller that sees the end also sees this */
+#endif
     fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
     r = rep == HV_REG_R_SUCCESS ? 0 : -1;
     /* Publishing: only the caller that received the right publishes, outside every lock; the session leaves CLOSED only after the publication returned (C15 (e)).

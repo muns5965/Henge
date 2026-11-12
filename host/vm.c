@@ -239,8 +239,8 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     sigaction(SIGSEGV, &ill, &prior_segv);
 #endif
     signal(SIGPIPE, SIG_IGN); /* a guest connection closing at the far end must not end the machine */
-    if (hv_disk_open(&disk, c->disk, 0, 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
-    if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0)
+    if (hv_disk_open(&disk, c->disk, 0, c->readonly_storage ? 1 : 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
+    if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, c->readonly_storage ? 1 : 0) != 0)
         return fail(err, errlen, "Cannot open the auxiliary storage.");
     size_t jit = c->jit_bytes ? c->jit_bytes : (size_t)768 << 20;
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
@@ -336,6 +336,13 @@ static void *secondary_thread(void *arg) {
 void hv_vm_flush_disks(void) {
     hv_disk_flush(&disk);
     hv_disk_flush(&aux);
+}
+
+void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) {
+    uint64_t c1, r1, c2, r2;
+    hv_disk_write_stats(&disk, &c1, &r1);
+    hv_disk_write_stats(&aux, &c2, &r2);
+    *calls = c1 + c2, *refused = r1 + r2;
 }
 
 int hv_vm_run_cpu0(void) {

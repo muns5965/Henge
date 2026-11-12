@@ -36,6 +36,7 @@ int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly) {
     d->offset = offset;
     d->size = (uint64_t)st.st_size - offset;
     d->readonly = readonly;
+    d->write_calls = d->write_refused = 0;
     /* HV_WRITE_CACHE=0: writes skip the host's cache (F_NOCACHE), so a long run of them cannot pile up
        gigabytes of dirty pages; reads stay cached, and the kernel keeps the two coherent. Off by default:
        on the Mac bench big writes took 2-3x as long that way (2 GB + sync 4-6 s -> 9-17 s) and everyday
@@ -73,7 +74,11 @@ int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
 }
 
 int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
-    if (d->readonly || off > d->size || len > d->size - off) return -1;
+    __atomic_add_fetch(&d->write_calls, 1, __ATOMIC_RELAXED);
+    if (d->readonly || off > d->size || len > d->size - off) {
+        __atomic_add_fetch(&d->write_refused, 1, __ATOMIC_RELAXED);
+        return -1;
+    }
     const uint8_t *p = buf;
     while (len) {
         size_t count = len > DISK_IO_CHUNK ? DISK_IO_CHUNK : (size_t)len;
@@ -96,4 +101,9 @@ int hv_disk_flush(HvDisk *d) {
     case 2: return HV_FD_BARRIER_FSYNC(d->fd) == -1 ? -1 : 0;
     default: return fsync(d->fd);
     }
+}
+
+void hv_disk_write_stats(const HvDisk *d, uint64_t *calls, uint64_t *refused) {
+    *calls = __atomic_load_n(&d->write_calls, __ATOMIC_RELAXED);
+    *refused = __atomic_load_n(&d->write_refused, __ATOMIC_RELAXED);
 }

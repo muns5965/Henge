@@ -20,6 +20,7 @@ typedef struct HvVmConfig {
     int log;                  /* m->log */
     int no_net, no_sound;
     int installer;            /* boot the ROM in DFU mode with the USB device port (installing macOS) */
+    int readonly_storage;     /* open the disk and the auxiliary storage read-only (the G0 test: any write the guest asks for is refused and counted) */
     /* JIT memory the host already has (iOS: granted by a debugger), or NULL to map it here. */
     void *jit_rx, *jit_rw;
     size_t jit_bytes;         /* 0: 768 MB */
@@ -63,6 +64,8 @@ int hv_vm_run_cpu0(void);
 /* Stop at the next block; the CPUs' threads end. */
 void hv_vm_stop(void);
 void hv_vm_flush_disks(void);
+/* Writes the devices asked for on the root disk and the auxiliary storage (calls, and those refused). */
+void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused);
 const char *hv_vm_reason_name(int reason);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */

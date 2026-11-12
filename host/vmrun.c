@@ -23,6 +23,9 @@
 #ifdef HV_RESTORE_PREFLIGHT
 #include "restore_preflight.h"
 #endif
+#ifdef HV_INSTALL_G0
+#include "install_g0.h"
+#endif
 #include "vmapple.h"
 
 static int exited;
@@ -124,7 +127,7 @@ int main(int argc, char **argv) {
     double seconds = 30;
     const char *snap = NULL;
     int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0, tss_probe = 0;
-    const char *pf_ipsw = NULL, *pf_work = ".";
+    const char *pf_ipsw = NULL, *pf_work = ".", *g0_ipsw = NULL;
     int pf_stage = 0;
     unsigned long long disk_gb = 8;
     for (int i = 1; i < argc; i++) {
@@ -153,11 +156,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
         else if (!strcmp(a, "--restore-preflight") && more) pf_ipsw = argv[++i]; /* needs a vmrun built with HV_RESTORE_PREFLIGHT: the real restore tool up to its no-action stop (host/restore_preflight.h); asks Apple nothing */
         else if (!strcmp(a, "--restore-preflight-stop-a")) pf_stage = 1; /* with --restore-preflight: stop A (before the root filesystem step) instead of FLAG_NOACTION */
+        else if (!strcmp(a, "--install-g0") && more) g0_ipsw = argv[++i]; /* needs a vmrun built with HV_INSTALL_G0: the install entry point (host/install.c) up to the tool's stop A, storage read-only; asks Apple nothing (host/install_g0.h) */
         else if (!strcmp(a, "--workdir") && more) pf_work = argv[++i];
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--restore-preflight IPSW [--restore-preflight-stop-a] [--workdir DIR]] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--restore-preflight IPSW [--restore-preflight-stop-a] [--workdir DIR]] [--install-g0 IPSW [--workdir DIR]] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -188,6 +192,20 @@ int main(int argc, char **argv) {
         if (seconds < 150) seconds = 150; /* up to 60 s for the guest to come on the bus, then the tool (cap 120 s) */
 #else
         fprintf(stderr, "vmrun: this build has no restore tool in it (--restore-preflight unavailable)\n");
+        return 2;
+#endif
+    }
+    if (g0_ipsw) {
+#ifdef HV_INSTALL_G0
+        if (usb_probe || irecv_probe || dnload_probe || tss_probe || pf_ipsw) { fprintf(stderr, "vmrun: --install-g0 cannot be combined with the probes or --restore-preflight\n"); return 2; }
+        if (!cfg.installer) { fprintf(stderr, "vmrun: --install-g0 needs --installer (the DFU boot)\n"); return 2; }
+        if (make_blank || recreate_blank) { fprintf(stderr, "vmrun: --install-g0 never creates or recreates storage (no --make-blank, no --recreate-blank)\n"); return 2; }
+        if (getenv("HV_USB_ON_NORMAL")) { fprintf(stderr, "vmrun: --install-g0 is not combined with the normal-boot USB experiment\n"); return 2; }
+        cfg.readonly_storage = 1;   /* the disk and the auxiliary storage cannot be written; every write the guest asks for is refused and counted */
+        cfg.no_net = 1;             /* the guest's own network stays off (already the default of this program) */
+        if (seconds < 200) seconds = 200;
+#else
+        fprintf(stderr, "vmrun: this build has no install entry point test in it (--install-g0 unavailable)\n");
         return 2;
 #endif
     }
@@ -228,9 +246,12 @@ int main(int argc, char **argv) {
     }
     char ecid_txt[24];
     printf("vmrun config: ram %llu MB, cpus %d, jit %zu MB (0 = the VM's default), ecid %s, seed %llx, aux_offset %llu, installer %d, psci_log %d, seconds %.0f\n",
-           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (tss_probe || pf_ipsw) ? "(hidden)" : (snprintf(ecid_txt, sizeof ecid_txt, "%llx", (unsigned long long)cfg.ecid), ecid_txt),
+           (unsigned long long)cfg.ram_mb, cfg.ncpus, cfg.jit_bytes >> 20, (tss_probe || pf_ipsw || g0_ipsw) ? "(hidden)" : (snprintf(ecid_txt, sizeof ecid_txt, "%llx", (unsigned long long)cfg.ecid), ecid_txt),
            (unsigned long long)cfg.seed, (unsigned long long)cfg.aux_offset, cfg.installer, psci_log, seconds);
     char err[512] = "";
+#ifdef HV_INSTALL_G0
+    if (g0_ipsw && hv_g0_begin(cfg.disk, cfg.aux, cfg.ecid) != 0) { printf("vmrun RESULT: install g0 FAILED before the machine was created\n"); return 1; }
+#endif
     double t0 = now();
     if (hv_vm_create(&cfg, err, sizeof err) != 0) {
         printf("vmrun RESULT: CREATE FAILED: %s\n", err);
@@ -265,6 +286,20 @@ int main(int argc, char **argv) {
 #endif
     status("start", 0);
     hv_vm_start(1, on_exit_cb);
+#ifdef HV_INSTALL_G0
+    if (g0_ipsw) {
+        HvVmapple *bdg = hv_vm_board();
+        int started = bdg && bdg->vusb && hv_g0_start(bdg->vusb, g0_ipsw, pf_work, cfg.ecid) == 0;
+        int w = started ? hv_g0_wait(120000) : 1;
+        int failed = hv_g0_finish(stdout, cfg.disk, cfg.aux);
+        if (w == -1) { printf("vmrun RESULT: install g0 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
+        double tsg = now();
+        while (!EXITED() && now() - tsg < 5.0) usleep(10000);
+        printf("vmrun RESULT: install g0 %s; machine %s\n", failed ? "FAILED" : "passed", EXITED() ? "stopped" : "did not confirm stopping within 5 s");
+        return failed ? 1 : EXITED() ? 0 : 3;
+    }
+#endif
     double t1 = now(), next = 2;
     Sample prev, cur;
     sample(&prev);

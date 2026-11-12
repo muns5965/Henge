@@ -25,6 +25,7 @@
 #include "../host/restore_session.h"
 #include "../host/net_guard.h"
 #include "../host/restore_registry.h"
+#include "../third_party/libimobiledevice/src/hv_life.h"
 #include "../third_party/idevicerestore/src/idevicerestore.h"
 #include "../third_party/idevicerestore/src/restore.h"
 #include "../third_party/idevicerestore/src/log.h"
@@ -122,17 +123,18 @@ static int syn_sent_to(int port) {   /* sockets of this host in SYN_SENT towards
     }
     fclose(f); return n;
 }
-static int g_ext_port_s;
+static int g_ext_port_s, g_syn_base, g_max_ctrl, g_max_conn, g_max_connfd;
+static void *reg_sampler(void *a) { (void)a; for (;;) { int c = hv_reg_active(HV_REG_K_PROXY_CTRL), n = hv_reg_active(HV_REG_K_PROXY_CONN), f = hv_reg_conn_count(); if (c > g_max_ctrl) g_max_ctrl = c; if (n > g_max_conn) g_max_conn = n; if (f > g_max_connfd) g_max_connfd = f; usleep(10000); } return NULL; }
 static int count_threads(void) { int n = 0; DIR *d = opendir("/proc/self/task"); if (!d) return -1; struct dirent *e; while ((e = readdir(d))) if (e->d_name[0] != '.') n++; closedir(d); return n; }
 static void *cancel_probe(void *a) {   /* waits for the proxy connect to sit in SYN_SENT, cancels through the host API, measures when it is gone */
     (void)a; double w = now();
-    while (syn_sent_to(g_ext_port_s) < 1 && now() - w < 8) usleep(20000);
-    if (syn_sent_to(g_ext_port_s) < 1) { printf("CONNECT_CANCEL no connect reached SYN_SENT (nothing to cancel)\n"); fflush(stdout); _exit(0); }
+    while (syn_sent_to(g_ext_port_s) <= g_syn_base && now() - w < 8) usleep(20000);   /* g_syn_base: the filler connections that are themselves stuck in SYN_SENT */
+    if (syn_sent_to(g_ext_port_s) <= g_syn_base) { printf("CONNECT_CANCEL no connect reached SYN_SENT (nothing to cancel)\n"); fflush(stdout); _exit(0); }
     double tc = now();
     int r = hv_restore_session_cancel();
-    while (syn_sent_to(g_ext_port_s) > 0 && now() - tc < 12) usleep(10000);
+    while (syn_sent_to(g_ext_port_s) > g_syn_base && now() - tc < 12) usleep(10000);
     double gone = now() - tc;
-    printf("CONNECT_CANCEL cancel()=%d syn_sent_left=%d gone_after=%.3fs (%s)\n", r, syn_sent_to(g_ext_port_s), gone, syn_sent_to(g_ext_port_s) ? "STILL BLOCKED" : "released");
+    printf("CONNECT_CANCEL cancel()=%d proxy_syn_sent_left=%d gone_after=%.3fs (%s)\n", r, syn_sent_to(g_ext_port_s) - g_syn_base, gone, syn_sent_to(g_ext_port_s) > g_syn_base ? "STILL BLOCKED" : "released");
     fflush(stdout); _exit(0);
 }
 
@@ -167,7 +169,7 @@ int main(int argc, char **argv) {
     }
     /* S3 (T12/T13): fake reverse-proxy device */
     else if (!strcmp(g_case, "t12") || !strcmp(g_case, "t12_close") || !strcmp(g_case, "t13") || !strcmp(g_case, "t12_conn") || !strcmp(g_case, "t12_conn_cancel")) {
-        ext_port = (!strcmp(g_case, "t12_conn") || !strcmp(g_case, "t12_conn_cancel")) ? ext_start_full() : ext_start(); g_ext_port_s = ext_port;
+        ext_port = (!strcmp(g_case, "t12_conn") || !strcmp(g_case, "t12_conn_cancel")) ? ext_start_full() : ext_start(); g_ext_port_s = ext_port; g_syn_base = syn_sent_to(ext_port) > 0 ? syn_sent_to(ext_port) : 0;
         scn.proxy = 1; scn.msg_delay_ms = 1500; scn.proxy_target_port = (uint16_t)ext_port;
         msgs[0] = status(0, 0, 0); scn.nmsgs = 1; after_s = 4;
         if (!strcmp(g_case, "t12_close")) { scn.proxy_connect_reqs = 1; scn.proxy_do_cmd = 1; scn.proxy_close_after_ms = 1000; desc = "T12 variant: the device closes the proxy connection channel 1 s after the proxy command; restored finishes 1.5 s after StartRestore"; }
@@ -207,9 +209,11 @@ int main(int argc, char **argv) {
 #endif
     if (hv_restore_session_begin() != 0) { printf("CASE %s: session begin refused\n", g_case); return 2; }
     hv_restore_session_allow_usbmuxd((uint16_t)port);
+    if (getenv("FAKE_NO_LIFE")) { hv_life_install(NULL); printf("LIFE ops removed (NULL-hook path)\n"); }   /* the vendored side must then behave as before I6 */
     log_level = LL_DEBUG;
     if (ext_port) hv_net_guard_allow_local("127.0.0.1", (uint16_t)ext_port);   /* test-side policy entry: the "external host" the fake device names (the reverse-proxy target is checked with the DEFAULT purpose) */
     int fds_before = count_fds(), thr_before = count_threads();
+    { pthread_t sp; pthread_create(&sp, NULL, reg_sampler, NULL); pthread_detach(sp); }
     if (!strcmp(g_case, "t12_conn_cancel")) { pthread_t cp; pthread_create(&cp, NULL, cancel_probe, NULL); pthread_detach(cp); }
 
     struct idevicerestore_client_t *c = idevicerestore_client_new();
@@ -232,6 +236,7 @@ int main(int argc, char **argv) {
            fs.accepted, fs.list_devices, fs.connect_restored, fs.connect_other, fs.last_other_port, fs.start_restore, fs.goodbye);
     printf("FAKE data_port_connects=%d data_port_bytes=%d proxy_ctrl=%d proxy_conn=%d proxy_cmd_acked=%d\n", fs.dp_connect, fs.dp_bytes, fs.px_ctrl, fs.px_conn, fs.px_cmd_acked);
     printf("FDS before=%d after=%d (after the extra wait)\n", fds_before, fds_after);
+    printf("REG max_seen: ctrl=%d conn=%d registered_fds=%d | ", g_max_ctrl, g_max_conn, g_max_connfd);
     printf("REG proxy_ctrl_active=%d proxy_conn_active=%d conns_registered=%d THREADS before=%d after=%d\n", hv_reg_active(HV_REG_K_PROXY_CTRL), hv_reg_active(HV_REG_K_PROXY_CONN), hv_reg_conn_count(), thr_before, count_threads());
     printf("THREAD_NEW calls=%d injected_failures=%d joins=%d\n", hv_test_thread_new_calls, hv_test_thread_new_failed, hv_test_thread_join_calls);
     if (fs.late_attempts || !strcmp(g_case, "t1b")) printf("LATE_SEND attempts=%d first rc=%d errno=%d second rc=%d errno=%d (rc 0 = the kernel accepted the bytes; it does not mean the host read them)\n", fs.late_attempts, fs.late_rc1, fs.late_errno1, fs.late_rc2, fs.late_errno2);

@@ -26,12 +26,19 @@
 #include "libimobiledevice/reverse_proxy.h"
 #include "service.h"
 
+struct rp_conn_node;   /* one per connection thread (reverse_proxy.c) */
 struct reverse_proxy_client_private {
 	service_client_t parent;
 	char* label;
 	int type;
 	int protoversion;
 	THREAD_T th_ctrl;
+	/* Henge (I6): thread lifetime. 'stop' is set by client_free (atomic) and tells every thread of this proxy to leave; a connection client points at its control client
+	   through 'root'. th_ctrl is now only ever cleared by client_free after the join. */
+	int stop;
+	struct reverse_proxy_client_private *root;
+	struct rp_conn_node *conns;
+	uint64_t ctrl_gen;
 	uint16_t conn_port;
 	reverse_proxy_log_cb_t log_cb;
 	void* log_cb_user_data;

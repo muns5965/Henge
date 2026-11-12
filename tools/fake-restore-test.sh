@@ -18,6 +18,6 @@ for c in ${CASES:-0 a b c1 c2 c3 d e t5s_bb t5s_fdr t5s_fdr_nr t5a_free t5a_nofr
   echo "=== case $c"
   ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" TSAN_OPTIONS=halt_on_error=0 "$OUT/fd/test_fake_restore" "$c" > "$OUT/fd/case_$c.out" 2> "$OUT/fd/case_$c.log"
   echo "exit=$?"
-  grep -E '^(CASE|BUILD|RETURNED|CLIENT|WAITING|HANG|AT_HANG|RESULT|NETGUARD|FAKE|FDS|THREAD_NEW|LATE_SEND|LEAKCHECK|ENGINE|REG|CONNECT_CANCEL)' "$OUT/fd/case_$c.out"
+  grep -E '^(CASE|BUILD|RETURNED|CLIENT|WAITING|HANG|AT_HANG|RESULT|NETGUARD|FAKE|FDS|THREAD_NEW|LATE_SEND|LEAKCHECK|ENGINE|REG|CONNECT_CANCEL|LIFE)' "$OUT/fd/case_$c.out"
   grep -E 'ERROR: AddressSanitizer|WARNING: ThreadSanitizer|SUMMARY:' "$OUT/fd/case_$c.log" | head -6
 done

@@ -289,7 +289,7 @@ int prompt_user(const char* title, const char* text)
 		fflush(stdin);
 		input[0] = '\0';
 		get_user_input(input, 63, 0);
-		if (global_quit_flag) {
+		if (__atomic_load_n(&global_quit_flag, __ATOMIC_RELAXED)) {
 			result = -1;
 			break;
 		}

@@ -57,6 +57,7 @@ on:
       - tools/ui-runner-vm-build.sh
       - tests/java/**
       - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
+      - android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
@@ -165,6 +166,12 @@ jobs:
           mkdir -p build-java-romslice
           javac -encoding UTF-8 -Xlint:all -d build-java-romslice android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java tests/java/RomSliceTest.java
           java -cp build-java-romslice dev.muns.hengeprobe.RomSliceTest
+
+      - name: "Test the ROM-slice result slot (plain java: generation, the reasons a result is dropped, completion order)"
+        run: |
+          mkdir -p build-java-romslot
+          javac -encoding UTF-8 -Xlint:all -d build-java-romslot android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java tests/java/RomSliceResultSlotTest.java
+          java -cp build-java-romslot dev.muns.hengeprobe.RomSliceResultSlotTest
 
       - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
         run: |

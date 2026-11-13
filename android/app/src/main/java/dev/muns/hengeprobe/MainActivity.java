@@ -72,8 +72,11 @@ public class MainActivity extends Activity {
     private Button romSliceButton, romSliceCopyButton;
     /** One reader for the whole process: its 4 KiB running total restarts with the process. */
     private static final RomSlice ROM_SLICE = RomSlice.forGenuineRom();
-    /** The text the copy button puts on the clipboard: exactly the last successful slice shown on the screen, or null. */
-    private volatile String romSliceCopy;
+    /**
+     * What the ROM-slice screen holds (shown text and copy text) and whether a result from the worker may still be shown: see RomSliceResultSlot.
+     * A field of the activity, so a recreated activity starts empty. Its methods may be called from any thread; the widgets are changed on the UI thread only.
+     */
+    private final RomSliceResultSlot romSliceSlot = new RomSliceResultSlot();
     private Button vmrunVerboseButton;
     private Button installerVerboseButton;
     private Button usbNormalButton;
@@ -167,7 +170,7 @@ public class MainActivity extends Activity {
         TextWatcher dropCopy = new TextWatcher() {   // another address or length: what was shown is no longer what the fields say
             @Override public void beforeTextChanged(CharSequence c, int a, int b, int d) { }
             @Override public void onTextChanged(CharSequence c, int a, int b, int d) { }
-            @Override public void afterTextChanged(Editable e) { invalidateRomSliceCopy(); }
+            @Override public void afterTextChanged(Editable e) { onRomSliceInputChanged(); }
         };
         romSlicePc.addTextChangedListener(dropCopy);
         romSliceLen.addTextChangedListener(dropCopy);
@@ -510,7 +513,7 @@ public class MainActivity extends Activity {
     }
 
     private void setButtons(boolean enabled) {
-        if (!enabled) romSliceCopy = null;   // any run starting replaces what is on the screen: an earlier slice is no longer "what is shown"
+        if (!enabled) romSliceSlot.invalidate(RomSliceResultSlot.Reason.OTHER_RUN_STARTED);   // any run starting replaces what is on the screen: an earlier slice is no longer "what is shown"
         runOnUiThread(() -> {
             // a run starts: bring the result box into view once (the user can scroll away afterwards)
             if (!enabled && pageScroll != null && output != null) pageScroll.post(() -> pageScroll.smoothScrollTo(0, output.getTop()));
@@ -525,7 +528,9 @@ public class MainActivity extends Activity {
             vmrunButton.setEnabled(enabled);
             romDiagButton.setEnabled(enabled);
             romSliceButton.setEnabled(enabled);
-            romSliceCopyButton.setEnabled(enabled && romSliceCopy != null);
+            romSliceCopyButton.setEnabled(enabled && romSliceSlot.copy() != null);
+            romSlicePc.setEnabled(enabled);    // the fields stay as they were while a read runs
+            romSliceLen.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
@@ -854,22 +859,27 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Drops what the copy button would copy (a new read starts, a read failed, or the address/length fields changed). */
-    private void invalidateRomSliceCopy() {
-        romSliceCopy = null;
+    /** The PC or length was edited (UI thread): the result for the old values is wiped, and if it was on the screen a one-line notice replaces it. */
+    private void onRomSliceInputChanged() {
+        boolean wasShown = romSliceSlot.invalidate(RomSliceResultSlot.Reason.INPUT_CHANGED);
         if (romSliceCopyButton != null) romSliceCopyButton.setEnabled(false);
+        if (wasShown) show(ROM_SLICE_STALE_NOTICE);
     }
 
-    /** Reads the slice the two fields name from the app's own ROM copy (and only that one), shows it, and keeps its text for the copy button. */
+    private static final String ROM_SLICE_STALE_NOTICE = "ROM 구간 읽기: PC 또는 길이가 바뀌어 이전 결과를 지웠습니다. 다시 읽어 주세요.\n";
+
+    /**
+     * Reads the slice the two fields name from the app's own ROM copy (and only that one). The worker thread only reads the file and builds the
+     * texts; what is shown, the run state and the buttons are settled on the UI thread, by whether the request is still the current one.
+     */
     private void runRomSlice() {
         if (running) return;
         final String pc = romSlicePc.getText().toString(), len = romSliceLen.getText().toString();
-        invalidateRomSliceCopy();
         running = true;
-        setButtons(false);
+        setButtons(false);                                   // wipes an earlier result ...
+        final long gen = romSliceSlot.begin();               // ... and only then starts this request (the other order would void it)
         new Thread(() -> {
-            String text;
-            String copy = null;
+            String text, copy = null;
             try {
                 File internal = new File(new File(getFilesDir(), "vm"), "AVPBooter.vmapple2.bin");
                 RomSlice.Result r = ROM_SLICE.read(internal, pc, len);
@@ -878,17 +888,22 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 text = "ROM 구간 읽기 오류: " + e + "\n";
             }
-            if (!pc.equals(romSlicePc.getText().toString()) || !len.equals(romSliceLen.getText().toString())) copy = null;   // the fields changed while it ran
-            romSliceCopy = copy;
-            show(text);
-            running = false;
-            setButtons(true);
+            final String screenText = text, copyText = copy;
+            runOnUiThread(() -> {
+                RomSliceResultSlot.Publish p = romSliceSlot.publish(gen, screenText, copyText);
+                if (p == RomSliceResultSlot.Publish.ACCEPTED) show(screenText);
+                else if (p == RomSliceResultSlot.Publish.DISCARDED_NOTICE) show(ROM_SLICE_STALE_NOTICE);
+                if (p != RomSliceResultSlot.Publish.DISCARDED_SILENT) {   // silent: another run or a newer request owns the run state and the buttons
+                    running = false;
+                    setButtons(true);
+                }
+            });
         }).start();
     }
 
     /** Only on the user's tap: puts the last shown slice (request and bytes, no path) on the clipboard. */
     private void copyRomSlice() {
-        String t = romSliceCopy;
+        String t = romSliceSlot.copy();
         if (t == null) return;
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm == null) return;

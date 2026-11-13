@@ -35,8 +35,11 @@ if strings "$B" | grep -Eq -- '--(installer|net|ipsw|ecid|seed|readonly|no-reado
 if command -v "$READELF" >/dev/null 2>&1; then
   need=$($READELF -d "$B" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
   for l in $need; do
-    case $l in libc.so|libc.so.6|libm.so|libm.so.6|libpthread.so.0|libdl.so|libdl.so.2|ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;;
-      liblog.so) ;;   # Android only: host/jit_region.c logs errors to logcat (the engine's own use; logd is a local socket of the system, not a network) *) bad "unexpected shared library: $l";; esac
+    # liblog.so is Android only: host/jit_region.c logs errors to logcat (the engine's own use; logd is a local socket of the system, not a network)
+    case $l in
+      libc.so|libc.so.6|libm.so|libm.so.6|libpthread.so.0|libdl.so|libdl.so.2|ld-linux-aarch64.so.1|ld-linux-x86-64.so.2|liblog.so) ;;
+      *) bad "unexpected shared library: $l";;
+    esac
   done
   if [ -n "${EXPECT_ARCH:-}" ]; then
     m=$($READELF -h "$B" 2>/dev/null | sed -n 's/^ *Machine: *//p')

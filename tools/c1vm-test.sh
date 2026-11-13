@@ -14,7 +14,7 @@
 # Usage: [CC=cc] [ENGINE_DIR=<dir after engine-build.sh + devices-build.sh>] [EXTRA_LIBS=...] [REQUIRE_STRACE=1] tools/c1vm-test.sh <build dir>
 set -u
 cd "$(dirname "$0")/.."
-OUT=${1:?build dir}; CC=${CC:-cc}
+OUT=${1:?build dir}; CC=${CC:-cc}; export CC
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 rc=0
 INC="-Icore -Ihost -Idevices"

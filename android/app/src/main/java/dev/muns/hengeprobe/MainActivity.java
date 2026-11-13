@@ -14,11 +14,15 @@ import android.os.Bundle;
 import android.os.StatFs;
 import android.system.Os;
 import android.system.OsConstants;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -64,6 +68,12 @@ public class MainActivity extends Activity {
     private Button bigVmButton;
     private Button vmrunButton;
     private Button romDiagButton;
+    private EditText romSlicePc, romSliceLen;
+    private Button romSliceButton, romSliceCopyButton;
+    /** One reader for the whole process: its 4 KiB running total restarts with the process. */
+    private static final RomSlice ROM_SLICE = RomSlice.forGenuineRom();
+    /** The text the copy button puts on the clipboard: exactly the last successful slice shown on the screen, or null. */
+    private volatile String romSliceCopy;
     private Button vmrunVerboseButton;
     private Button installerVerboseButton;
     private Button usbNormalButton;
@@ -137,6 +147,39 @@ public class MainActivity extends Activity {
         romDiagButton.setText("ROM 진단 (읽기 전용, 네트워크 없음)");
         romDiagButton.setOnClickListener(v -> runRomDiagnostic());
         done.addView(romDiagButton);
+
+        TextView sliceHelp = new TextView(this);
+        sliceHelp.setText("ROM 구간 읽기: 앱 내부 ROM의 지정한 구간만 화면에 표시합니다 (읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음). PC는 게스트 주소(16진), 길이는 4~512바이트이며 요청 합계는 프로세스당 4096바이트까지입니다.");
+        sliceHelp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(sliceHelp);
+        romSlicePc = new EditText(this);
+        romSlicePc.setHint("PC (16진)");
+        romSlicePc.setText(RomSlice.DEFAULT_PC);
+        romSlicePc.setSingleLine(true);
+        romSlicePc.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        done.addView(romSlicePc);
+        romSliceLen = new EditText(this);
+        romSliceLen.setHint("길이 (바이트)");
+        romSliceLen.setText(RomSlice.DEFAULT_LEN);
+        romSliceLen.setSingleLine(true);
+        romSliceLen.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        done.addView(romSliceLen);
+        TextWatcher dropCopy = new TextWatcher() {   // another address or length: what was shown is no longer what the fields say
+            @Override public void beforeTextChanged(CharSequence c, int a, int b, int d) { }
+            @Override public void onTextChanged(CharSequence c, int a, int b, int d) { }
+            @Override public void afterTextChanged(Editable e) { invalidateRomSliceCopy(); }
+        };
+        romSlicePc.addTextChangedListener(dropCopy);
+        romSliceLen.addTextChangedListener(dropCopy);
+        romSliceButton = new Button(this);
+        romSliceButton.setText("ROM 구간 읽기 (읽기 전용)");
+        romSliceButton.setOnClickListener(v -> runRomSlice());
+        done.addView(romSliceButton);
+        romSliceCopyButton = new Button(this);
+        romSliceCopyButton.setText("표시된 구간 복사");
+        romSliceCopyButton.setEnabled(false);
+        romSliceCopyButton.setOnClickListener(v -> copyRomSlice());
+        done.addView(romSliceCopyButton);
 
         vmrunButton = new Button(this);
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
@@ -467,6 +510,7 @@ public class MainActivity extends Activity {
     }
 
     private void setButtons(boolean enabled) {
+        if (!enabled) romSliceCopy = null;   // any run starting replaces what is on the screen: an earlier slice is no longer "what is shown"
         runOnUiThread(() -> {
             // a run starts: bring the result box into view once (the user can scroll away afterwards)
             if (!enabled && pageScroll != null && output != null) pageScroll.post(() -> pageScroll.smoothScrollTo(0, output.getTop()));
@@ -480,6 +524,8 @@ public class MainActivity extends Activity {
             bigVmButton.setEnabled(enabled);
             vmrunButton.setEnabled(enabled);
             romDiagButton.setEnabled(enabled);
+            romSliceButton.setEnabled(enabled);
+            romSliceCopyButton.setEnabled(enabled && romSliceCopy != null);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
@@ -688,8 +734,10 @@ public class MainActivity extends Activity {
 
     private static final String ROM_URL = "https://updates.cdn-apple.com/2024SummerFCS/fullrestores/062-52859/932E0A8F-6644-4759-82DA-F8FA8DEA806A/UniversalMac_14.6.1_23G93_Restore.ipsw";
     private static final long ROM_BLOCK_OFFSET = 5349700747L;
-    private static final int ROM_BLOCK_LENGTH = 859848, ROM_LENGTH = 214904;
-    private static final String ROM_SHA256 = "fd4973e42e609751830df6f3dd2d2b2ad2309fe38f0ca0f5aba02dcbefe45f91";
+    private static final int ROM_BLOCK_LENGTH = 859848;
+    /** The accepted ROM's size and SHA-256 are defined once, in RomSlice (the slice reader must use the same ones). Same values, same constant types as before. */
+    private static final int ROM_LENGTH = (int) RomSlice.EXPECTED_LENGTH;
+    private static final String ROM_SHA256 = RomSlice.EXPECTED_SHA256;
 
     /** True if the file is exactly the known AVPBooter ROM (size and SHA-256). */
     private static boolean isGenuineRom(File f) {
@@ -804,6 +852,48 @@ public class MainActivity extends Activity {
             running = false;
             setButtons(true);
         }).start();
+    }
+
+    /** Drops what the copy button would copy (a new read starts, a read failed, or the address/length fields changed). */
+    private void invalidateRomSliceCopy() {
+        romSliceCopy = null;
+        if (romSliceCopyButton != null) romSliceCopyButton.setEnabled(false);
+    }
+
+    /** Reads the slice the two fields name from the app's own ROM copy (and only that one), shows it, and keeps its text for the copy button. */
+    private void runRomSlice() {
+        if (running) return;
+        final String pc = romSlicePc.getText().toString(), len = romSliceLen.getText().toString();
+        invalidateRomSliceCopy();
+        running = true;
+        setButtons(false);
+        new Thread(() -> {
+            String text;
+            String copy = null;
+            try {
+                File internal = new File(new File(getFilesDir(), "vm"), "AVPBooter.vmapple2.bin");
+                RomSlice.Result r = ROM_SLICE.read(internal, pc, len);
+                text = RomSlice.screenText(r);
+                copy = RomSlice.copyText(r);
+            } catch (Exception e) {
+                text = "ROM 구간 읽기 오류: " + e + "\n";
+            }
+            if (!pc.equals(romSlicePc.getText().toString()) || !len.equals(romSliceLen.getText().toString())) copy = null;   // the fields changed while it ran
+            romSliceCopy = copy;
+            show(text);
+            running = false;
+            setButtons(true);
+        }).start();
+    }
+
+    /** Only on the user's tap: puts the last shown slice (request and bytes, no path) on the clipboard. */
+    private void copyRomSlice() {
+        String t = romSliceCopy;
+        if (t == null) return;
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) return;
+        cm.setPrimaryClip(ClipData.newPlainText("ROM slice", t));
+        Toast.makeText(this, "표시된 구간을 복사했습니다", Toast.LENGTH_SHORT).show();
     }
 
     /**

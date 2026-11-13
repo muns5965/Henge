@@ -56,6 +56,7 @@ on:
       - tools/check-runner-vm-safe.sh
       - tools/ui-runner-vm-build.sh
       - tests/java/**
+      - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
@@ -158,6 +159,12 @@ jobs:
           mkdir -p build-java-g0
           javac -encoding UTF-8 -d build-java-g0 android/app/src/main/java/dev/muns/hengeprobe/G0Verdict.java tests/java/G0VerdictTest.java
           java -cp build-java-g0 dev.muns.hengeprobe.G0VerdictTest
+
+      - name: "Test the ROM slice reader the app uses (plain java, a synthetic ROM: size/hash gate, bounds, 4 KiB total, no real ROM bytes)"
+        run: |
+          mkdir -p build-java-romslice
+          javac -encoding UTF-8 -Xlint:all -d build-java-romslice android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java tests/java/RomSliceTest.java
+          java -cp build-java-romslice dev.muns.hengeprobe.RomSliceTest
 
       - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
         run: |

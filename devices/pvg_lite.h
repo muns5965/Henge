@@ -65,7 +65,10 @@ void hv_pvg_lite_barrier_stats(HvPvgLite *p, uint64_t out[4]);
 /* The display's shared state page, or NULL before the guest named it. */
 uint8_t *hv_pvg_lite_display_page(HvPvgLite *p);
 void hv_pvg_lite_command(HvPvgLite *p, const uint32_t *command, uint32_t length);
+/* Valid channels are 1 .. 15; anything else is ignored (no stamp, no status bit, no interrupt). */
 void hv_pvg_lite_complete(HvPvgLite *p, uint32_t channel, uint32_t stamp);
+/* How many ignored completions have been logged so far (stops at 8). */
+uint32_t hv_pvg_lite_bad_complete_logged(void);
 
 /* The size macOS is told its screen is. Set before the machine starts; default 1920 x 1080. */
 void hv_pvg_lite_set_mode(uint32_t width, uint32_t height);

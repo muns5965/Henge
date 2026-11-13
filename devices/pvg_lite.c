@@ -360,7 +360,18 @@ uint64_t hv_pvg_lite_task_objects(HvPvgLite *p, uint32_t task) {
 }
 
 /* A stamp Metal finished: the guest sees it and the next poll raises the interrupt. */
+/* A completion for a channel the device does not have (channel 0 is the root ring's, and only 1 .. MAX_CHANNELS-1 are channels; 32 and up would shift past the status word)
+   does nothing: no address into the guest's stamp page, no status bit, no interrupt. The warning is bounded: the counter stops at its limit. */
+#define BAD_COMPLETE_LOG_LIMIT 8
+static _Atomic uint32_t bad_complete_logged;
+uint32_t hv_pvg_lite_bad_complete_logged(void) { return atomic_load(&bad_complete_logged); }
 void hv_pvg_lite_complete(HvPvgLite *p, uint32_t ch, uint32_t stamp) {
+    if (ch == 0 || ch >= MAX_CHANNELS) {
+        uint32_t n = atomic_load(&bad_complete_logged);
+        while (n < BAD_COMPLETE_LOG_LIMIT && !atomic_compare_exchange_weak(&bad_complete_logged, &n, n + 1)) {}
+        if (n < BAD_COMPLETE_LOG_LIMIT) fprintf(stderr, "hengevm: pvg-lite: completion for channel %u ignored (valid: 1..%d)%s\n", ch, MAX_CHANNELS - 1, n + 1 == BAD_COMPLETE_LOG_LIMIT ? "; no more of these are logged" : "");
+        return;
+    }
     uint64_t buf = (uint64_t)reg(p, 0x1030) << 14;
     uint32_t *s = buf ? guest32(p, buf + 4 * ch) : NULL;
     if (s) __atomic_store_n(s, stamp, __ATOMIC_RELEASE);

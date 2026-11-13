@@ -300,6 +300,42 @@ static void s_complete(void) {
     EXPECT(stamp_of(2) == 73, "[correctness] completing after the copies were freed does not need them");
 }
 
+/* ---- completion channel range ---- */
+/* The CANDIDATE circular comparison (not used by the device, which still stores unconditionally: see the [FINDING] above; generation and initial-value rules are unsettled).
+   This only pins the arithmetic of the rule so a later change has a checked starting point. */
+static int stamp_newer(uint32_t old_stamp, uint32_t new_stamp) { uint32_t delta = new_stamp - old_stamp; return delta != 0 && delta < 0x80000000u; }
+
+static void s_chrange(void) {
+    dev_new(1);
+    chan_setup(1, 1); chan_setup(15, 1);
+    /* valid edges: 1 and 15 work as before */
+    int p0 = pends;
+    hv_pvg_lite_complete(dev, 1, 11);
+    hv_pvg_lite_complete(dev, 15, 99);
+    EXPECT(stamp_of(1) == 11 && stamp_of(15) == 99 && Rg(0x1018) == ((1u << 1) | (1u << 15)) && pends == p0 + 2, "chrange: channels 1 and 15 complete as before (stamps 11 and 99, two status bits, two interrupts)");
+    /* everything else changes nothing */
+    uint32_t before[16]; for (int i = 0; i < 16; i++) before[i] = stamp_of(i);
+    uint32_t bad_ch[] = {0, 16, 17, 31, 32, 33, 63, 0x80000000u, 0xffffffffu};
+    int p1 = pends, w1 = wakes, clean = 1;
+    for (unsigned i = 0; i < sizeof bad_ch / sizeof bad_ch[0]; i++) {
+        hv_pvg_lite_complete(dev, bad_ch[i], 0x5a5a5a5a);
+        if (Rg(0x1018) != 0) clean = 0;   /* a status bit would show here (and reading clears it) */
+    }
+    int same = 1; for (int i = 0; i < 16; i++) if (stamp_of(i) != before[i]) same = 0;
+    EXPECT(clean && same && pends == p1 && wakes == w1, "chrange: channels 0, 16, 17, 31, 32, 33, 63, 2^31, 2^32-1: no stamp stored, no status bit, no interrupt, no CPU wake");
+    EXPECT(hv_pvg_lite_bad_complete_logged() <= 8, "chrange: the warning counter stops at its limit (%u)", hv_pvg_lite_bad_complete_logged());
+    for (int i = 0; i < 1000; i++) hv_pvg_lite_complete(dev, 32 + (uint32_t)i, 1);
+    EXPECT(hv_pvg_lite_bad_complete_logged() == 8, "chrange: after 1000 more bad completions the counter is exactly at the limit (8), it did not grow");
+    /* the stamp page's last word is not reachable by a bad channel (16 KB page: 4 * 4095 is the last word; channel 4095 is out of range) */
+    uint32_t last = *(uint32_t *)(pgp(fifo_pn) + 0x3ffc);
+    hv_pvg_lite_complete(dev, 4095, 7);
+    EXPECT(*(uint32_t *)(pgp(fifo_pn) + 0x3ffc) == last, "chrange: channel 4095 (the stamp page's last word) is out of range and not written");
+    /* the candidate circular comparison, as a pure function */
+    EXPECT(stamp_newer(30, 31) && !stamp_newer(30, 30) && !stamp_newer(30, 25), "stamp rule (candidate, not applied): 30->31 newer, 30->30 not, 30->25 not");
+    EXPECT(stamp_newer(0xfffffffeu, 2) && stamp_newer(0xffffffffu, 0), "stamp rule (candidate, not applied): across the wrap, 0xFFFFFFFE->2 and 0xFFFFFFFF->0 are newer");
+    EXPECT(!stamp_newer(0, 0x80000000u) && !stamp_newer(5, 0x80000005u) && stamp_newer(0, 0x7fffffffu), "stamp rule (candidate, not applied): exactly half a turn is refused, one less is newer");
+}
+
 static void s_wrap(void) {
     dev_new(0);
     chan_setup(3, 2);   /* two 16 KB pages = 32 KB ring */
@@ -657,6 +693,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "channel")) s_channel_nometal(), s_channel_backend(), s_bad_channel();
     if (all || !strcmp(sc, "backend")) s_backend();
     if (all || !strcmp(sc, "complete")) s_complete();
+    if (all || !strcmp(sc, "chrange")) s_chrange();
     if (all || !strcmp(sc, "wrap")) s_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();

@@ -216,16 +216,17 @@ static void run(Xfer *x) {
     }
     if (t->type == LIBUSB_TRANSFER_TYPE_CONTROL) {
         struct libusb_control_setup *s = (struct libusb_control_setup *)t->buffer;
-        int r = hv_usb_control(g_usb, s->bmRequestType, s->bRequest, libusb_le16_to_cpu(s->wValue),
-                               libusb_le16_to_cpu(s->wIndex), t->buffer + 8, libusb_le16_to_cpu(s->wLength),
-                               limit ? limit : 60000);
+        int r = hv_usb_control_c(g_usb, s->bmRequestType, s->bRequest, libusb_le16_to_cpu(s->wValue),
+                                 libusb_le16_to_cpu(s->wIndex), t->buffer + 8, libusb_le16_to_cpu(s->wLength),
+                                 limit ? limit : 60000, (volatile int *)&x->cancel);   /* the cancel flag is honoured in strict mode only */
         if (r < 0 && g_log)
             fprintf(stderr, "libusb shim: control request failed below libusb: hv_usb_control returned %d (%s) -> reported as %s\n", r,
                     r == HV_USB_ESTALL ? "the device answered STALL" : r == HV_USB_ETIMEOUT ? "no answer in time" : r == HV_USB_EGONE ? "the guest left the bus" : "an abort/reset/other answer",
                     r == HV_USB_ESTALL ? "STALL" : r == HV_USB_ETIMEOUT ? "TIMED_OUT" : "NO_DEVICE");
         if (r >= 0) complete(x, LIBUSB_TRANSFER_COMPLETED, r); /* data bytes, not counting the setup */
         else complete(x, r == HV_USB_ESTALL ? LIBUSB_TRANSFER_STALL : r == HV_USB_ETIMEOUT ? LIBUSB_TRANSFER_TIMED_OUT
-                                                                                            : LIBUSB_TRANSFER_NO_DEVICE, 0);
+                         : r == HV_USB_ECANCELLED ? LIBUSB_TRANSFER_CANCELLED
+                         : (r == HV_USB_EUNCERTAIN || r == HV_USB_EBUSY || r == HV_USB_EIO) ? LIBUSB_TRANSFER_ERROR : LIBUSB_TRANSFER_NO_DEVICE, 0);
         return;
     }
     uint8_t ep = t->endpoint;

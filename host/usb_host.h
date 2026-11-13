@@ -12,6 +12,22 @@
 #define HV_USB_ESTALL -2
 #define HV_USB_EGONE -3   /* the guest left the bus (rebooting into the next stage) */
 #define HV_USB_EIO -4
+#define HV_USB_ECANCELLED -5   /* strict mode: the caller's cancel flag ended the wait */
+#define HV_USB_EUNCERTAIN -6   /* strict mode: an earlier request on the control endpoint has no settled answer; nothing was sent */
+#define HV_USB_EBUSY -7        /* strict mode: another control request (or a RESET) is in flight; nothing was sent */
+
+/* STRICT control mode (off by default, and nothing in the product turns it on): the virtio-usb messages carry no request number, so after a request that was
+   cancelled or timed out, its answer may still arrive and would be taken for the NEXT request's. In strict mode the control endpoint is CLEAR, PENDING (a request is
+   in flight, or a RESET), or UNCERTAIN (a request was sent and its answer did not settle: timeout, cancel, the connection changed, an answer of an unexpected kind).
+   A new control request or RESET is refused BEFORE anything is sent unless CLEAR. Nothing releases UNCERTAIN except hv_usb_ctrl_reacquire, which no code calls: a late
+   answer, a new session and a RESET do not (nothing here shows that answers cannot cross a session). Requests are serialised by refusing, not by queueing. */
+enum { HV_CTRL_CLEAR = 0, HV_CTRL_PENDING = 1, HV_CTRL_UNCERTAIN = 2, HV_CTRL_RESETTING = 3 };
+void hv_usb_set_strict(HvVirtioUsb *d, int on);
+int hv_usb_ctrl_state(HvVirtioUsb *d);
+void hv_usb_ctrl_reacquire(HvVirtioUsb *d);   /* the future recovery hook: only for a caller that has made sure no answer to an earlier request can still come */
+/* hv_usb_control with a cancel flag (read atomically; honoured in strict mode only). */
+int hv_usb_control_c(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
+                     void *data, uint16_t wLength, int timeout_ms, volatile int *cancel);
 
 int hv_usb_reset(HvVirtioUsb *d, int timeout_ms);
 int hv_usb_control(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,

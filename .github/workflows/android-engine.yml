@@ -45,6 +45,10 @@ on:
       - tools/c1vm-test.sh
       - tools/pvg-test.sh
       - tools/install-plan-test.sh
+      - tools/usb-ctrl-test.sh
+      - tests/test_usb_ctrl.c
+      - devices/virtio_usb.c
+      - host/usb_host.c
       - tools/check-install-plan-isolation.sh
       - tools/check-c13-source.sh
       - tools/check-runner-vm-safe.sh
@@ -245,6 +249,11 @@ jobs:
         run: |
           bash -n tools/pvg-test.sh
           tools/pvg-test.sh build-pvg
+
+      - name: "Test USB strict control path (host/usb_host.c, devices/virtio_usb.c against a FAKE guest; plain and ASan + UBSan; one process and time limit per scenario). Strict mode is off by default and enabled by no product code. SAFE_BLOCKED is not a recovery; nothing about the real ROM or kernel is shown"
+        run: |
+          bash -n tools/usb-ctrl-test.sh
+          tools/usb-ctrl-test.sh build-usbctrl
 
       - name: "Test G2-b: the mock install orchestrator (host/install_plan.c; fake device, fake clock; plain and ASan + UBSan) and its isolation check (no project include, no real names, referenced by nothing but its test). Not connected to any Apple request, device, disk or install path"
         run: |

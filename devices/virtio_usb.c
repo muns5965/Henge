@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #define REQQ 0
 #define RSPQ 1
@@ -171,6 +172,10 @@ int hv_vusb_online(HvVirtioUsb *d, uint32_t *session) {
 }
 
 int hv_vusb_send(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uint32_t len) {
+    return hv_vusb_send_session(d, type, ep, data, len, NULL);
+}
+
+int hv_vusb_send_session(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uint32_t len, uint32_t *session) {
     HvVusbMsg m = {.type = type, .ep = ep, .len = len};
     if (len) {
         m.data = malloc(len);
@@ -181,6 +186,7 @@ int hv_vusb_send(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uin
     pthread_mutex_lock(&d->mu);
     int ok = d->online && d->out_tail - d->out_head < HV_VUSB_RING;
     if (ok) d->out[d->out_tail++ % HV_VUSB_RING] = m;
+    if (ok && session) *session = d->session;
     pthread_mutex_unlock(&d->mu);
     if (!ok) {
         free(m.data);
@@ -227,6 +233,48 @@ int hv_vusb_recv(HvVirtioUsb *d, uint8_t ep, HvVusbMsg *out, int timeout_ms) {
             pthread_mutex_unlock(&d->mu);
             return 0;
         }
+    }
+}
+
+static int64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int hv_vusb_recv_ex(HvVirtioUsb *d, uint8_t ep, int reset_only, HvVusbMsg *out, int timeout_ms, uint32_t session, volatile int *cancel) {
+    int64_t end = mono_ms() + (timeout_ms > 0 ? timeout_ms : 0);
+    pthread_mutex_lock(&d->mu);
+    for (;;) {
+        if (!d->online || d->session != session) {
+            pthread_mutex_unlock(&d->mu);
+            return -1;
+        }
+        for (uint32_t i = d->in_head; i != d->in_tail; i++) {
+            HvVusbMsg *m = &d->in[i % HV_VUSB_RING];
+            if (reset_only ? m->type == HV_VUSB_RSP_RESET : (m->ep == ep && m->type != HV_VUSB_RSP_RESET)) {
+                *out = *m;
+                for (uint32_t j = i; j != d->in_head; j--) d->in[j % HV_VUSB_RING] = d->in[(j - 1) % HV_VUSB_RING];
+                d->in_head++;
+                pthread_mutex_unlock(&d->mu);
+                return 1;
+            }
+        }
+        if (cancel && __atomic_load_n(cancel, __ATOMIC_ACQUIRE)) {
+            pthread_mutex_unlock(&d->mu);
+            return -2;
+        }
+        int64_t left = end - mono_ms();
+        if (left <= 0) {
+            pthread_mutex_unlock(&d->mu);
+            return 0;
+        }
+        int slice = left < 50 ? (int)left : 50;
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        struct timespec until = {now.tv_sec, now.tv_usec * 1000 + (long)slice * 1000000};
+        while (until.tv_nsec >= 1000000000) until.tv_sec++, until.tv_nsec -= 1000000000;
+        pthread_cond_timedwait(&d->cv, &d->mu, &until);   /* a slice: whatever ended it, the loop looks again */
     }
 }
 

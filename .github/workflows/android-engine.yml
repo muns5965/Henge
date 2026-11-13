@@ -43,6 +43,7 @@ on:
       - tools/check-runner-safe.sh
       - tools/ui-runner-build.sh
       - tools/c1vm-test.sh
+      - tools/check-c13-source.sh
       - tools/check-runner-vm-safe.sh
       - tools/ui-runner-vm-build.sh
       - tests/java/**
@@ -134,6 +135,14 @@ jobs:
           mkdir -p build-java
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
+
+      - name: "Test the C1-3 launcher (plain java: VM start is switched off, nothing is spawned) and its source rules"
+        run: |
+          bash -n tools/check-c13-source.sh
+          tools/check-c13-source.sh
+          mkdir -p build-java-c13
+          javac -encoding UTF-8 -d build-java-c13 android/app/src/main/java/dev/muns/hengeprobe/VmRunnerLauncher.java tests/java/VmRunnerLauncherTest.java
+          java -cp build-java-c13 dev.muns.hengeprobe.VmRunnerLauncherTest
 
       - name: "Test the G0 verdict the app shows (plain java; exit code, result lines, final vmrun line, output completeness)"
         run: |

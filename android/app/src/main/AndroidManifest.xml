@@ -21,5 +21,9 @@
             android:name=".DisplayTestActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
+        <!-- C1-3: information screen of the VM runner; starts nothing. Not exported, no Intent extras are read. -->
+        <activity
+            android:name=".VmRunnerActivity"
+            android:exported="false" />
     </application>
 </manifest>

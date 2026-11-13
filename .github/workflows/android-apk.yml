@@ -32,6 +32,9 @@ on:
       - tools/restore-selftest-build.sh
       - tools/vmrun-preflight-build.sh
       - tools/vmrun-install-g0-build.sh
+      - tools/ui-runner-vm-build.sh
+      - tools/check-runner-vm-safe.sh
+      - tools/check-c13-source.sh
       - third_party/idevicerestore/**
       - third_party/usbmuxd/**
       - third_party/libusbmuxd/**
@@ -114,6 +117,10 @@ jobs:
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
             && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"
+          # The C1-3 VM runner (ui_runner_vm, real engine). Shipped, but VmRunnerLauncher.START_ENABLED is false: nothing starts it. NOT optional: a build or static-check failure fails the APK.
+          set -e
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-build.sh build-engine
+          cp build-engine/ui_runner_vm android/app/src/main/jniLibs/arm64-v8a/libuirunnervm.so
           ls -l android/app/src/main/jniLibs/arm64-v8a
 
       - name: Install SDK platform, build tools and CMake
@@ -147,6 +154,11 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle -p android assembleDebug --no-daemon --stacktrace
+
+      - name: C1-3 checks on the sources and the APK (launcher switch off, runner file named only in VmRunnerLauncher, both runners in the APK as AArch64)
+        run: |
+          bash -n tools/check-c13-source.sh
+          READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-c13-source.sh android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Show the APK, its native library and signing certificate
         run: |

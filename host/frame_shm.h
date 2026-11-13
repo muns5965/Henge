@@ -13,8 +13,8 @@
      2. If a process dies while holding the lock (its pid is gone), the next locker takes it over, counts it (`recovered`), and DROPS the picture
         (width = 0: "no frame") because it may be half written. A holder that is alive is never taken over. The command ring cannot be half written (indices move last) but a command being pushed may be lost.
      3. A lock that cannot be taken within HV_SHM_LOCK_MS gives up (returns an error, nothing was touched): neither side can be frozen by the other.
-     4. The guest's own framebuffer is NOT in this file and never leaves the runner: the runner copies it with host/display_buf.h first (that module's contract holds
-        there), then publishes the copy here. The mapped picture is a copy of a copy.
+     4. The guest's own framebuffer is NOT in this file and never leaves the runner: the runner copies it inside host/display_buf.h's pull (that module's contract holds
+        there: the guest pointer lives only in the fetch callback), then publishes its own copy here. The mapped picture is a copy of a copy.
      5. Sizes: the picture is at most HV_SHM_PIXEL_BYTES; a larger one is refused and counted. The ring holds HV_SHM_CMD_SLOTS commands; when it is full the new command
         is dropped and counted (a touch screen can wait, a runner that stalls must not make the app block).
      6. Who writes what: the runner creates the file (hv_shm_create), writes frames, pointer, state and heartbeat, and only pops commands. The app opens it (hv_shm_open),
@@ -68,7 +68,7 @@ typedef struct {
     uint32_t runner_pid;
     uint64_t heartbeat;         /* grows while the runner is alive */
     uint64_t frames, rejected;  /* published, refused */
-    uint64_t cmds_pushed, cmds_applied, cmds_dropped;
+    uint64_t cmds_pushed, cmds_popped, cmds_dropped;   /* popped = taken out of the ring by the runner; NOT "the machine did it" (the runner counts its own calls) */
     uint32_t recovered;         /* times a dead owner's lock was recovered */
     uint32_t width, height;     /* of the picture now held, 0 = none */
 } HvShmStats;

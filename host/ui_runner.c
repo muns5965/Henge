@@ -85,9 +85,9 @@ static void status_line(const char *tag) {
     pthread_mutex_lock(&g_gm);
     typeof(g_guest) gg = g_guest;
     pthread_mutex_unlock(&g_gm);
-    printf("ui_runner %s: pid %d frames %llu published %llu refused %llu cmds applied %llu dropped %llu moves %ld buttons %ld/%ld wheel %ld hwheel %ld keys %ld (last %ld) pointer %d,%d recovered %u%s\n",
+    printf("ui_runner %s: pid %d frames %llu published %llu refused %llu cmds popped %llu dropped %llu moves %ld buttons %ld/%ld wheel %ld hwheel %ld keys %ld (last %ld) pointer %d,%d recovered %u%s\n",
            tag, (int)getpid(), (unsigned long long)atomic_load(&g_frames_made), ok ? (unsigned long long)st.frames : 0ull, ok ? (unsigned long long)st.rejected : 0ull,
-           ok ? (unsigned long long)st.cmds_applied : 0ull, ok ? (unsigned long long)st.cmds_dropped : 0ull, gg.moves, gg.down, gg.up, gg.wheel, gg.hwheel,
+           ok ? (unsigned long long)st.cmds_popped : 0ull, ok ? (unsigned long long)st.cmds_dropped : 0ull, gg.moves, gg.down, gg.up, gg.wheel, gg.hwheel,
            gg.keys, gg.last_key, gg.x, gg.y, ok ? st.recovered : 0u, ok ? "" : " (stats lock not taken)");
     fflush(stdout);
 }

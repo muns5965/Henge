@@ -26,7 +26,7 @@ typedef struct {
     uint32_t width, height;         /* of the picture held; 0 = none */
     uint64_t frame_seq;
     int32_t ptr_valid, ptr_x, ptr_y;
-    uint64_t frames, rejected, cmds_pushed, cmds_applied, cmds_dropped;
+    uint64_t frames, rejected, cmds_pushed, cmds_popped, cmds_dropped;
     uint32_t recovered;
     uint32_t cmd_head, cmd_tail;    /* counted up for ever (unsigned wrap is fine); slot = index % HV_SHM_CMD_SLOTS */
     HvShmCmd cmds[HV_SHM_CMD_SLOTS];
@@ -171,7 +171,7 @@ int hv_shm_pop_cmds(HvShm *s, HvShmCmd *out, int max) {
     while (n < max && s->h->cmd_tail != s->h->cmd_head) {
         out[n++] = s->h->cmds[s->h->cmd_tail % HV_SHM_CMD_SLOTS];
         s->h->cmd_tail++;
-        s->h->cmds_applied++;
+        s->h->cmds_popped++;
     }
     unlock(s);
     return n;
@@ -203,7 +203,7 @@ int hv_shm_stats(HvShm *s, HvShmStats *o) {
     o->heartbeat = __atomic_load_n(&s->h->heartbeat, __ATOMIC_RELAXED);
     if (lock(s) != 0) return -1;
     o->frames = s->h->frames; o->rejected = s->h->rejected;
-    o->cmds_pushed = s->h->cmds_pushed; o->cmds_applied = s->h->cmds_applied; o->cmds_dropped = s->h->cmds_dropped;
+    o->cmds_pushed = s->h->cmds_pushed; o->cmds_popped = s->h->cmds_popped; o->cmds_dropped = s->h->cmds_dropped;
     o->recovered = s->h->recovered; o->width = s->h->width; o->height = s->h->height;
     unlock(s);
     return 0;

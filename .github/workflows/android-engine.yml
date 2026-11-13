@@ -42,6 +42,9 @@ on:
       - tools/c1-test.sh
       - tools/check-runner-safe.sh
       - tools/ui-runner-build.sh
+      - tools/c1vm-test.sh
+      - tools/check-runner-vm-safe.sh
+      - tools/ui-runner-vm-build.sh
       - tests/java/**
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
@@ -221,6 +224,10 @@ jobs:
         run: tools/c0b0-test.sh build-c0
       - name: "Test C1-1, the runner process and the file it shares with the app (plain, ASan+UBSan, TSan; synthetic mode: no VM, no Android, no network): pictures, input, pointer feedback, every stop path, a killed runner, a killed app, dead lock owners; the runner binary is checked for network and VM symbols"
         run: tools/c1-test.sh build-c1
+      - name: "Install strace (for the dynamic safety check of the C1-2 runner)"
+        run: command -v strace >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq strace)
+      - name: "Test C1-2, the runner with the virtual machine in it: Part A (core with a recorder; the runner on a FAKE machine; plain, ASan+UBSan, TSan) and Part B (the runner built against the real engine with a stand-in ROM and blank disks: process test, static safety check, and the same runner under strace with a positive control: no network call, disk and auxiliary storage opened read-only, no other file opened for writing). No guest software runs; no Apple request; not in the APK"
+        run: ENGINE_DIR=build-linux EXTRA_LIBS="-lpthread -lm" REQUIRE_STRACE=1 tools/c1vm-test.sh build-c1vm
 
       - name: "Test G1, the restore tool's signing path through the install entry point (real session, policy and tool; synthetic TLS server on 127.0.0.1 only; refusals, bad replies, timeouts, bad certificate, redirect, unapproved destination; controls for ticket files, device downloads and an unapproved port; no Apple request)"
         run: tools/install-g1-test.sh build-rs

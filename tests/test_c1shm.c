@@ -90,7 +90,7 @@ static void test_basic(void) {
         if (e != 300) wrong++;
     }
     CHECK(wrong == 0, "wraparound keeps order over 1500 commands");
-    hv_shm_stats(b, &s); CHECK(s.cmds_dropped == 100 && s.cmds_pushed == s.cmds_applied, "stats: dropped %llu pushed %llu applied %llu", (unsigned long long)s.cmds_dropped, (unsigned long long)s.cmds_pushed, (unsigned long long)s.cmds_applied);
+    hv_shm_stats(b, &s); CHECK(s.cmds_dropped == 100 && s.cmds_pushed == s.cmds_popped, "stats: dropped %llu pushed %llu popped %llu", (unsigned long long)s.cmds_dropped, (unsigned long long)s.cmds_pushed, (unsigned long long)s.cmds_popped);
     /* pointer and state */
     int px = -1, py = -1;
     CHECK(hv_shm_get_pointer(b, &px, &py) == 0 && px == -1, "no pointer until the runner says so (outputs untouched)");

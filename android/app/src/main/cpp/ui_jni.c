@@ -340,9 +340,9 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSta
         static const char *const sn[] = {"none", "starting", "running", "stopping", "stopped"};
         if (!g_shm) snprintf(runner, sizeof runner, "runner: not attached yet\n");
         else if (!ok) snprintf(runner, sizeof runner, "runner: file lock not taken (%ld failures)\n", g_shm_fail);
-        else snprintf(runner, sizeof runner, "runner pid %u %s heartbeat %llu  published %llu refused %llu  cmds pushed %llu applied %llu dropped %llu  lock recovered %u failed %ld  pointer %s\n",
+        else snprintf(runner, sizeof runner, "runner pid %u %s heartbeat %llu  published %llu refused %llu  cmds pushed %llu popped %llu dropped %llu  lock recovered %u failed %ld  pointer %s\n",
                       rs.runner_pid, rs.state >= 0 && rs.state < 5 ? sn[rs.state] : "?", (unsigned long long)rs.heartbeat, (unsigned long long)rs.frames, (unsigned long long)rs.rejected,
-                      (unsigned long long)rs.cmds_pushed, (unsigned long long)rs.cmds_applied, (unsigned long long)rs.cmds_dropped, rs.recovered, g_shm_fail, g_shm_known ? "known" : "not yet");
+                      (unsigned long long)rs.cmds_pushed, (unsigned long long)rs.cmds_popped, (unsigned long long)rs.cmds_dropped, rs.recovered, g_shm_fail, g_shm_known ? "known" : "not yet");
     }
     snprintf(s, sizeof s,
              "frames %llu (copied), shown %llu, rejected %llu, after close %llu\n"

@@ -197,6 +197,54 @@ static void t_restore_shape(void) {
     EXPECT(v == IP_PLAN_FAILED && r.failed_step == 2 && W.ran[3] == 0 && W.ran[4] == 0 && W.ran[2] == 2, "restore shape: ibec never back: stops at stage 2 after 2 runs; kernel and later never start");
 }
 
+static int g_att[8], g_natt;
+static IpResult run_att(IpEnv *e, int i, int attempt) { (void)e, (void)i; if (g_natt < 8) g_att[g_natt++] = attempt; return IP_AGAIN; }
+static void t_boundaries(void) {
+    IpEnv e; IpReport r; IpVerdict v;
+    /* a callback bug: run returns a value the enum does not have */
+    reset();
+    IpStep p[3] = {STEP("a"), STEP("b"), STEP("c")};
+    p[1].max_attempts = 5; p[1].backoff_ms = 10;
+    W.nscript[1] = 1; W.script[1][0] = (IpResult)99;
+    e = env();
+    v = ip_execute(p, 3, &e, 0, &r);
+    EXPECT(v == IP_PLAN_FAILED && W.ran[1] == 1 && W.ran[2] == 0 && strstr(r.note, "invalid result"), "boundary: an out-of-range result from run is a failure, not a retry (%d run, %s)", W.ran[1], r.note);
+    /* the attempt number run is given counts 1..n */
+    reset(); g_natt = 0;
+    IpStep q[1] = {{"q", run_att, NULL, 4, 0, 0, 0, IP_RECONNECT_FAIL, 0, -1}};
+    e = env();
+    v = ip_execute(q, 1, &e, 0, &r);
+    EXPECT(v == IP_PLAN_FAILED && g_natt == 4 && g_att[0] == 1 && g_att[3] == 4, "boundary: run sees attempt 1..4 (%d calls)", g_natt);
+    /* the budget bounds CALLS, not time: a large backoff costs fake time the budget does not see */
+    reset();
+    IpStep b[1] = {{"slow", run, NULL, 50, 1000, 0, 0, IP_RECONNECT_FAIL, 0, -1}};
+    W.nscript[0] = 8; for (int k = 0; k < 8; k++) W.script[0][k] = IP_AGAIN;
+    e = env();
+    v = ip_execute(b, 1, &e, 100, &r);
+    EXPECT(v == IP_PLAN_OK && r.runs == 9 && W.clock == 8000, "boundary: 9 runs under a budget of 100 cost 8000 ms of fake time: the budget counts calls (%d runs, %d ms), it is no time limit", r.runs, W.clock);
+    /* cancel and budget at the same point: cancel wins */
+    reset(); W.cancel_in_run = 1;
+    IpStep c[3] = {STEP("a"), STEP("b"), STEP("c")};
+    e = env();
+    v = ip_execute(c, 3, &e, 2, &r);
+    EXPECT(v == IP_PLAN_CANCELLED && r.runs == 2, "boundary: cancel set by the run that spends the last budgeted call: cancelled, not budget");
+    /* budget spent inside a goto loop that also needs reconnects */
+    reset();
+    IpStep g[3] = {STEP("a"), STEP("b"), STEP("c")};
+    g[1].await_return = 1; g[1].max_reconnects = 2; g[2].on_fail_goto = 1; script(2, 6, IP_FAILED, IP_FAILED, IP_FAILED);
+    for (int k = 3; k < 6; k++) W.script[2][k] = IP_FAILED;
+    W.reconnect_ok_at[1] = 1;
+    e = env();
+    v = ip_execute(g, 3, &e, 7, &r);
+    EXPECT(v == IP_PLAN_BUDGET && r.runs == 7 && r.rec[1].reconnects <= 2, "boundary: goto + reconnect loop ends at the budget (%d runs); the reconnect count is per entry to the step (%d)", r.runs, r.rec[1].reconnects);
+    /* no trace function, no reconnect function when none is needed */
+    reset();
+    e = env(); e.trace = NULL; e.reconnect = NULL;
+    v = ip_execute(c, 3, &e, 0, &r);
+    EXPECT(v == IP_PLAN_OK, "boundary: trace and reconnect may be NULL when nothing needs them");
+    /* wait has no error return: the only way a wait ends early is the cancel flag, which is already covered; nothing here needs it widened */
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     const char *sc = argc > 1 ? argv[1] : "all";
@@ -208,6 +256,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "optional_goto")) t_optional_goto();
     if (all || !strcmp(sc, "cancel")) t_cancel();
     if (all || !strcmp(sc, "invalid")) t_invalid();
+    if (all || !strcmp(sc, "boundaries")) t_boundaries();
     if (all || !strcmp(sc, "restore_shape")) t_restore_shape();
     printf("%s test_install_plan %s: %d failed\n", bad ? "FAIL" : "PASS", sc, bad);
     return bad ? 1 : 0;

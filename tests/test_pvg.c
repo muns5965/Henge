@@ -249,6 +249,57 @@ static void s_backend(void) {
     EXPECT(hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_NONE && t_created == 0 && stamp_of(2) == 51, "backend table: HV_PVG_NO_METAL means none (not failed): state none, create never called");
 }
 
+/* ---- B1: completion notices and command ownership. Lines tagged [existing] fix what the CURRENT source does (observed, reproducible); [correctness] judges it against the
+   contract stamps need (monotonic, one interrupt per notice, buffer valid until the backend frees it). A [FINDING] is a place where the first does not meet the second:
+   it is recorded here as observed behaviour, not changed. The recorder is not Apple's asynchronous worker: nothing here shows real GPU synchronisation is safe. */
+static uint8_t *held[8]; static uint32_t held_len[8]; static int nheld;
+static void h_submit(HvPvgMetal *m, HvPvgLite *l, uint32_t ch, uint32_t *cmd, uint32_t len) { (void)m, (void)l, (void)ch; if (nheld < 8) { held[nheld] = (uint8_t *)cmd; held_len[nheld++] = len; } else free(cmd); }
+static const HvPvgBackend H_ASYNC = {"async", t_create, h_submit, NULL, NULL, NULL, NULL, NULL, NULL};
+
+static void s_complete(void) {
+    dev_new(1);
+    chan_setup(2, 1); chan_setup(3, 1);
+    int p0 = pends;
+    hv_pvg_lite_complete(dev, 2, 22);
+    hv_pvg_lite_complete(dev, 2, 22);
+    EXPECT(stamp_of(2) == 22 && pends == p0 + 2, "[existing] a duplicate completion: same stamp, and one interrupt per notice (%d)", pends - p0);
+    EXPECT(Rg(0x1018) == 1u << 2 && Rg(0x1018) == 0, "[existing] the status bit is one bit however many notices; reading clears it");
+    hv_pvg_lite_complete(dev, 2, 22);
+    EXPECT(Rg(0x1018) == 1u << 2, "[existing] a notice after the status was read sets the bit again");
+    hv_pvg_lite_complete(dev, 2, 30);
+    hv_pvg_lite_complete(dev, 2, 25);   /* a late, older stamp */
+    EXPECT(stamp_of(2) == 25, "[existing] an older stamp after a newer one replaces it (observed: the stamp goes %u, not kept at 30)", stamp_of(2));
+    printf("[FINDING] [correctness] hv_pvg_lite_complete stores the stamp unconditionally: a late or reversed notice moves a channel's stamp BACKWARD; the guest's wait on stamp 30 would see 25.\n"
+           "          Apple's worker completes in order, so this is not reached today; an asynchronous or multi-queue backend would have to keep order itself (or the device must clamp). Not changed here.\n");
+    hv_pvg_lite_complete(dev, 3, 7);
+    EXPECT(stamp_of(3) == 7 && stamp_of(2) == 25, "[existing] channels' stamps are independent");
+    /* before the guest named the stamp page: nothing to store to */
+    dev_new(1);
+    W(0x1030, 0);
+    int ok = 1; hv_pvg_lite_complete(dev, 2, 5);
+    EXPECT(ok && Rg(0x1018) == 1u << 2, "[existing] with no stamp page named the notice stores nothing but still sets status and interrupt, no crash");
+    /* ownership: the backend holds the copies and frees them LATER; the device must not touch or reuse them */
+    dev_new(0);
+    nheld = 0; t_fail_create = 0;
+    hv_pvg_lite_set_backend(dev, &H_ASYNC);
+    chan_setup(2, 1);
+    uint32_t a[2] = {0xaa, 0xbb};
+    for (int k = 0; k < 4; k++) chan_cmd(2, 0x40 + (uint32_t)k, 60 + (uint32_t)k, a, 8);
+    ring_bell(2);
+    for (int k = 0; k < 4; k++) chan_cmd(2, 0x50 + (uint32_t)k, 70 + (uint32_t)k, a, 8);   /* more traffic while the first four are still held */
+    ring_bell(2);
+    int distinct = 1, intact = nheld == 8;
+    for (int i = 0; i < nheld; i++) {
+        for (int j = i + 1; j < nheld; j++) if (held[i] == held[j]) distinct = 0;
+        uint32_t *c = (uint32_t *)held[i];
+        if (i < nheld && (held_len[i] != 20 || c[0] != (uint32_t)((i < 4 ? 0x40 + i : 0x50 + i - 4)) || c[2] != (uint32_t)(i < 4 ? 60 + i : 70 + i - 4) || c[3] != 0xaa || c[4] != 0xbb)) intact = 0;
+    }
+    EXPECT(distinct && intact, "[correctness] copies handed over are distinct and unchanged while held (8 commands, later traffic did not overwrite earlier ones)");
+    for (int i = 0; i < nheld; i++) free(held[i]);   /* freed exactly once, here; ASan reports a device access or a double free */
+    hv_pvg_lite_complete(dev, 2, 73);
+    EXPECT(stamp_of(2) == 73, "[correctness] completing after the copies were freed does not need them");
+}
+
 static void s_wrap(void) {
     dev_new(0);
     chan_setup(3, 2);   /* two 16 KB pages = 32 KB ring */
@@ -605,6 +656,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "root")) s_root();
     if (all || !strcmp(sc, "channel")) s_channel_nometal(), s_channel_backend(), s_bad_channel();
     if (all || !strcmp(sc, "backend")) s_backend();
+    if (all || !strcmp(sc, "complete")) s_complete();
     if (all || !strcmp(sc, "wrap")) s_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();

@@ -19,7 +19,7 @@ $CC $FL -I$TP/libirecovery/include tests/test_reconnect.c $objs -lpthread -o "$O
 $CC $FL -I$TP/libirecovery/include tests/test_transition.c $objs -lpthread -o "$OUT/test_transition" 2> "$OUT/link_tr.log" || { echo "FAILED  link test_transition"; head -30 "$OUT/link_tr.log"; exit 1; }
 rc=0
 # G2-a: the cancel and timeout contract and a run of transitions (host/restore_transition.c), fake USB only
-for sc in verdict cancel_leave cancel_arrive bound_leave bound_arrive seq_ok seq_stop seq_cancel seq_before seq_begin seq_race race_old check_timeout check_cancel; do
+for sc in verdict cancel_leave cancel_arrive bound_leave bound_arrive seq_ok seq_stop seq_cancel seq_before seq_begin seq_race race_old check_timeout check_cancel check_hang; do
   echo "=== transition scenario $sc"
   timeout 60 "$OUT/test_transition" $sc > "$OUT/tr_$sc.out" 2> "$OUT/tr_$sc.err"; r=$?
   grep -E "^(scenario|PASS|FAIL)" "$OUT/tr_$sc.out" | cut -c1-240

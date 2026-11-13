@@ -19,7 +19,7 @@ for mode in plain asan; do
   $CC $W $F $INC devices/pvg_lite.c tests/test_pvg.c -lpthread -o "$OUT/test_pvg_$mode" 2> "$OUT/pvg_$mode.log" || { echo "FAILED  build ($mode)"; head -40 "$OUT/pvg_$mode.log"; rc=1; continue; }
   # the device has no destroy function and the test makes many: leak checking is off (it would only count those)
   ASAN_OPTIONS=detect_leaks=0 timeout 120 "$OUT/test_pvg_$mode" all > "$OUT/pvg_$mode.out" 2> "$OUT/pvg_$mode.err"; r=$?
-  grep -E "^(FAIL|PASS test_pvg)" "$OUT/pvg_$mode.out"
+  grep -E "^(FAIL|PASS test_pvg|\[FINDING\])" "$OUT/pvg_$mode.out"
   echo "$(grep -c '^PASS' "$OUT/pvg_$mode.out") checks passed, $(grep -c '^FAIL' "$OUT/pvg_$mode.out") failed ($mode)"
   [ $r = 0 ] || { echo "test_pvg ($mode) FAILED (exit $r)"; tail -15 "$OUT/pvg_$mode.err"; rc=1; }
 done

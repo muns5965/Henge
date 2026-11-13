@@ -14,6 +14,7 @@
      race_old       the same bounce observed WITHOUT a baseline taken before it is missed (NO_LEAVE): why the baseline is taken before begin()
      check_timeout  the caller's check runs past its bound: HV_TR_CHECK_TIMEOUT, its answers are not used
      check_cancel   cancel while the check runs: a check that honours the flag returns early, the stage is CANCELLED, quickly
+     check_hang     (isolated child) a check that never returns: the parent times only after the child entered check(), shows hv_transition_run() does not return (LIMIT_REPRODUCED), SIGKILLs and reaps (CHILD_REAPED); not a safe-end claim
      verdict        the pure verdict function with the cancelled flag and the check bound
    Exit 0 when the scenario produced what it expects. */
 #define main irecv_test_main
@@ -23,6 +24,8 @@
 #include "../host/restore_transition.h"
 #include <libirecovery.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 static int msnow(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int)(t.tv_sec * 1000 + t.tv_nsec / 1000000); }
 
@@ -30,6 +33,7 @@ static int bad;
 #define EXPECT(cond, ...) do { int ok_ = !!(cond); printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); printf("\n"); if (!ok_) bad++; } while (0)
 
 static volatile int g_cancel;
+static int g_hang_fd = -1;
 static uint64_t g_ecid = 0x2d2a8d94f32ba4d2ull;
 
 /* ---- single transitions ---- */
@@ -102,6 +106,7 @@ static int step_begin(int stage, void *user) {
 }
 static void step_check(int stage, HvTrObs *o, const HvTrCheckCtx *ctx, void *user) {
     (void)stage; (void)user;
+    if (R.check_mode == 3) { if (write(g_hang_fd, "x", 1) != 1) _exit(3); for (;;) usleep(10000); }   /* enters the check, then never returns and ignores cancel */
     if (R.check_mode == 1) { usleep(600000); o->opened = 1; o->mode = 0x1227; o->old_io_failed = 1; return; }
     if (R.check_mode == 2) {
         int t = msnow();
@@ -138,6 +143,7 @@ static void run(const char *sc) {
     if (!strcmp(sc, "seq_race")) { R.bounce_in_begin = 1; want_fast0 = 1; }
     if (!strcmp(sc, "check_timeout")) { R.check_mode = 1; sp[0].check_ms = 200; want = HV_TR_CHECK_TIMEOUT, want_stage = 0, want_done = 0; begun_expect[1] = begun_expect[2] = 0; }
     if (!strcmp(sc, "check_cancel")) { R.check_mode = 2; sp[0].check_ms = 3000; R.plans[0] = (Plan){50, 100, 350}; want = HV_TR_CANCELLED, want_stage = 0, want_done = 0; begun_expect[1] = begun_expect[2] = 0; }
+    if (!strcmp(sc, "check_hang_run")) { R.check_mode = 3; sp[0].check_ms = 200; }
     int opened = irecv_open_with_ecid_and_attempts(&R.cur, g_ecid, 3) == IRECV_E_SUCCESS;
     EXPECT(opened, "the first client opened");
     if (!opened) return;
@@ -177,6 +183,43 @@ static void verdict(void) {
 int main(int argc, char **argv) {
     const char *sc = argc > 1 ? argv[1] : "seq_ok";
     if (!strcmp(sc, "verdict")) { verdict(); return bad ? 1 : 0; }
+    if (!strcmp(sc, "check_hang")) {
+        /* The LIMIT of the current structure, in an isolated child: a check() that never returns also never lets hv_transition_run() return, and a cancel flag it does not read
+           cannot end it. The parent starts timing only after the child SAYS it is inside check(), then kills and reaps it. This shows the limit is reproducible; it does NOT
+           show hv_transition_run() can end safely when a check hangs, nor that killing a process stops anything inside a real VM. */
+        int fds[2];
+        EXPECT(pipe(fds) == 0, "pipe");
+        pid_t pid = fork();
+        if (pid == 0) {   /* a fresh process image: the parent may already hold library state or threads that a bare fork would leave half-alive */
+            close(fds[0]);
+            char fdn[16]; snprintf(fdn, sizeof fdn, "%d", fds[1]); setenv("HV_HANG_FD", fdn, 1);
+            alarm(60);
+            execl("/proc/self/exe", argv[0], "check_hang_run", (char *)NULL);
+            _exit(4);
+        }
+        else {
+            close(fds[1]);
+            char c = 0; int entered = 0, waited = 0;
+            while (waited < 8000 && !entered) {   /* the child must reach check() within 8 s (it runs a real stage 0 first) */
+                int st; if (waitpid(pid, &st, WNOHANG) == pid) { printf("FAIL the child ended before it entered check() (status %x)\n", st); return 1; }
+                struct timespec ts = {0, 20 * 1000000}; nanosleep(&ts, NULL); waited += 20;
+                int fl = 0; (void)fl;
+                fd_set rf; FD_ZERO(&rf); FD_SET(fds[0], &rf); struct timeval tv = {0, 0};
+                if (select(fds[0] + 1, &rf, NULL, NULL, &tv) > 0 && read(fds[0], &c, 1) == 1) entered = 1;
+            }
+            EXPECT(entered, "check_hang: the child entered check() (signalled after %d ms)", waited);
+            int alive = 1, t = 0, st = 0;
+            while (entered && t < 1500) { struct timespec ts = {0, 50 * 1000000}; nanosleep(&ts, NULL); t += 50; if (waitpid(pid, &st, WNOHANG) == pid) { alive = 0; break; } }
+            EXPECT(entered && alive, "LIMIT_REPRODUCED check_hang: 1500 ms after entering check() (7x its 200 ms bound) hv_transition_run() has not returned, and nothing in it can end the check");
+            kill(pid, SIGKILL);
+            pid_t r = waitpid(pid, &st, 0);
+            EXPECT(r == pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL, "CHILD_REAPED check_hang: SIGKILL sent, the child was reaped with the signal status");
+            printf("note: neither line above says hv_transition_run() ends safely on a hung check(); that is not implemented (it needs the check to be bounded below, in the USB calls).\n");
+            printf("%s scenario check_hang\n", bad ? "FAIL" : "PASS");
+            return bad ? 1 : 0;
+        }
+    }
+    if (getenv("HV_HANG_FD")) g_hang_fd = atoi(getenv("HV_HANG_FD"));
     g_sc = sc;
     g_dev_ecid = g_ecid;
     g_u = calloc(1, sizeof *g_u);

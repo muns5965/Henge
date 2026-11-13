@@ -38,7 +38,7 @@ IpVerdict ip_execute(const IpStep *s, int n, IpEnv *e, int max_runs, IpReport *r
         if (cancelled(e)) goto cancel;
         if (st->when && !st->when(e, i)) { rc->state = IP_ST_SKIPPED; tr(e, "%s: skipped", st->name, 0, 0); i++; continue; }
         int max_a = st->max_attempts > 0 ? st->max_attempts : 1, final = 0, failed = 0;
-        rc->attempts = 0;
+        rc->attempts = 0; rc->reconnects = 0;
         while (!final) {
             if (cancelled(e)) goto cancel;
             if (r->runs >= budget) { r->failed_step = i; snprintf(r->note, sizeof r->note, "step %s: the plan's run budget (%d) is spent", st->name, budget); tr(e, "%s: budget", st->name, 0, 0); return r->verdict = IP_PLAN_BUDGET; }
@@ -62,7 +62,9 @@ IpVerdict ip_execute(const IpStep *s, int n, IpEnv *e, int max_runs, IpReport *r
                 if (st->on_reconnect_fail == IP_RECONNECT_FAIL) { failed = 1; final = 1; snprintf(r->note, sizeof r->note, "step %s: the device did not come back", st->name); break; }
                 res = IP_AGAIN;   /* retry the step */
             }
-            if (res == IP_FAILED) { failed = 1; final = 1; snprintf(r->note, sizeof r->note, "step %s: failed", st->name); break; }
+            if (res != IP_AGAIN) {   /* IP_FAILED, or a value the enum does not have: a callback bug is a failure, never a retry */
+                if (res != IP_FAILED) tr(e, "%s: invalid result from run, treated as failed", st->name, 0, 0);
+                 failed = 1; final = 1; snprintf(r->note, sizeof r->note, res == IP_FAILED ? "step %s: failed" : "step %s: run returned an invalid result", st->name); break; }
             /* IP_AGAIN */
             if (rc->attempts >= max_a) { failed = 1; final = 1; snprintf(r->note, sizeof r->note, "step %s: still not done after %d run(s)", st->name, rc->attempts); break; }
             e->wait(e, st->backoff_ms);

@@ -23,7 +23,8 @@ SYMS=$($NM -D "$B" 2>/dev/null; $NM "$B" 2>/dev/null)
 x=$(echo "$SYMS" | grep -E ' [UuTtWwVv] (socket|connect|bind|listen|accept|accept4|send|sendto|sendmsg|recv|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyname2|getnameinfo|dlopen|execv|execve|execvp|execl|execlp|fork|vfork|system|popen|posix_spawn|socketpair)(@.*)?$')
 [ -z "$x" ] || { bad "network / process-start symbols:"; echo "$x"; }
 # 2
-x=$(echo "$SYMS" | grep -Ei ' [A-Za-z] [A-Za-z_0-9]*(tss_|irecv|restore_|idevice|libusb|hv_install|hv_g0|hv_g1|curl_|mbedtls|slirp|hv_net_guard|hv_dnload|hv_urlasset)')
+# (restore_ only at the start of a name: enter.S has a local label Lrestore_host that is not the restore stack)
+x=$(echo "$SYMS" | grep -Ei -e ' [A-Za-z] [A-Za-z_0-9]*(tss_|irecv|idevice|libusb|hv_install|hv_g0|hv_g1|curl_|mbedtls|slirp|hv_net_guard|hv_dnload|hv_urlasset)' -e ' [A-Za-z] (hv_)?restore_')
 [ -z "$x" ] || { bad "restore / TSS / USB-host / network code in the symbol table:"; echo "$x" | head; }
 # 3
 if strings "$B" | grep -q 'HV-TEST-FAKE-MACHINE'; then bad "the test-only fake machine is in this binary"; fi

@@ -55,6 +55,8 @@ typedef struct {
 } HvCtrlRecord;
 int hv_libusb_ctrl_count(void);
 int hv_libusb_data_transfer_count(void); /* bulk/interrupt/isochronous transfers submitted through the API so far (firmware goes out this way; control requests are counted above) */
+/* device references that submitted transfers took and gave back; returns the difference (0 when every transfer has completed). For tests. */
+int hv_libusb_xfer_dev_refs(int *acquired, int *released);
 int hv_libusb_open_handles(void);          /* device handles opened and not yet closed */
 int hv_libusb_handles_opened_total(void);  /* handles opened so far */
 int hv_libusb_hotplug_live(void);          /* hotplug callbacks registered and not yet deregistered (the restore tool's device-event subscription) */

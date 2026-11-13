@@ -21,9 +21,9 @@ for mode in plain asan; do
   done
   if [ -x "$OUT/test_shim_ctrl_$mode" ]; then
     echo "=== shim transfers over strict control ($mode)"
-    for sc in sync cancel_run cancel_queued race sync_timeout legacy lifetime close; do
+    for sc in sync cancel_run cancel_queued race sync_timeout legacy lifetime close_run close_queued close_done dup submit_fail cbfree balance; do
       ASAN_OPTIONS=detect_leaks=0 timeout 100 "$OUT/test_shim_ctrl_$mode" $sc > "$OUT/sh_${mode}_$sc.out" 2> "$OUT/sh_${mode}_$sc.err"; r=$?
-      grep -E "^(FAIL|PASS|KNOWN_RISK)" "$OUT/sh_${mode}_$sc.out" | cut -c1-300
+      grep -E "^(FAIL|PASS)" "$OUT/sh_${mode}_$sc.out" | cut -c1-300
       if [ $r = 124 ]; then echo "HUNG shim scenario $sc ($mode)"; rc=1
       elif [ $r != 0 ]; then echo "SHIM SCENARIO $sc FAILED ($mode, exit $r)"; tail -14 "$OUT/sh_${mode}_$sc.err"; rc=1; fi
     done

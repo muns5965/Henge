@@ -162,11 +162,23 @@ static void refresh(void) {
 
 /* ---- transfers ---- */
 
+/* OWNERSHIP. A submitted transfer holds one reference on its device (x->dev), taken in libusb_submit_transfer and given back in complete(), BEFORE the completion is reported
+   (the callback, or the wake of a synchronous caller, may free the transfer, so nothing of the Xfer is read after that point; `inflight` is cleared first so the callback may
+   resubmit). The worker therefore never reads the transfer's dev_handle after submission: a handle closed while the transfer is queued or running does not matter to it.
+   What this does NOT cover: submitting on a handle that another thread is closing at that moment (the caller must not), and the caller's own buffer, which stays the caller's. */
 typedef struct Xfer {
     struct libusb_transfer *t;
     int cancel;
+    int inflight;                  /* one unfinished submission at most (atomic) */
+    struct libusb_device *dev;     /* the reference this submission holds */
     struct Xfer *next;
 } Xfer;
+static int g_xdev_acq, g_xdev_rel;   /* device references taken / given back by transfers (atomic), for the tests' balance check */
+int hv_libusb_xfer_dev_refs(int *acquired, int *released) {
+    *acquired = __atomic_load_n(&g_xdev_acq, __ATOMIC_ACQUIRE);
+    *released = __atomic_load_n(&g_xdev_rel, __ATOMIC_ACQUIRE);
+    return *acquired - *released;
+}
 
 typedef struct Worker {
     pthread_t th;
@@ -187,12 +199,20 @@ static Xfer *g_active[32]; /* the transfer each worker is running, for cancel */
 static void sync_cb(struct libusb_transfer *t);
 
 static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
-    x->t->status = st;
-    x->t->actual_length = actual;
+    struct libusb_transfer *t = x->t;
+    struct libusb_device *dv = x->dev;
+    x->dev = NULL;
+    t->status = st;
+    t->actual_length = actual;
+    if (dv) {
+        __atomic_add_fetch(&g_xdev_rel, 1, __ATOMIC_ACQ_REL);
+        dev_unref(dv);   /* may free the device: nothing below reads it */
+    }
     /* Synchronous calls may come from inside a callback (usbmuxd sets the
        configuration from one), so they must not wait for the event loop. */
-    if (x->t->callback == sync_cb) {
-        sync_cb(x->t);
+    if (t->callback == sync_cb) {
+        __atomic_store_n(&x->inflight, 0, __ATOMIC_RELEASE);
+        sync_cb(t);   /* the caller may free the transfer from here on */
         return;
     }
     pthread_mutex_lock(&g_done_mu);
@@ -208,7 +228,7 @@ static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
 /* Run one transfer synchronously, in slices so a cancel is noticed. */
 static void run(Xfer *x) {
     struct libusb_transfer *t = x->t;
-    struct libusb_device *d = t->dev_handle->dev;
+    struct libusb_device *d = x->dev;   /* the submission's own reference, not the handle */
     int slice = 200, waited = 0, limit = t->timeout ? (int)t->timeout : 0;
     if (d->gone) {
         complete(x, LIBUSB_TRANSFER_NO_DEVICE, 0);
@@ -386,8 +406,19 @@ int hv_libusb_data_transfer_count(void) { return __atomic_load_n(&g_data_xfers, 
 int libusb_submit_transfer(struct libusb_transfer *t) {
     if (t->type != LIBUSB_TRANSFER_TYPE_CONTROL) __atomic_add_fetch(&g_data_xfers, 1, __ATOMIC_ACQ_REL);
     pthread_once(&g_workers_once, workers_init);
-    if (!t->dev_handle || t->dev_handle->dev->gone) return LIBUSB_ERROR_NO_DEVICE;
+    if (!t->dev_handle) return LIBUSB_ERROR_NO_DEVICE;
     Xfer *x = xfer_of(t);
+    int zero = 0;
+    if (!__atomic_compare_exchange_n(&x->inflight, &zero, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return LIBUSB_ERROR_BUSY;   /* the same transfer, still unfinished */
+    struct libusb_device *dv = libusb_ref_device(t->dev_handle->dev);
+    __atomic_add_fetch(&g_xdev_acq, 1, __ATOMIC_ACQ_REL);
+    if (dv->gone) {   /* nothing was queued: give back what was taken */
+        __atomic_add_fetch(&g_xdev_rel, 1, __ATOMIC_ACQ_REL);
+        dev_unref(dv);
+        __atomic_store_n(&x->inflight, 0, __ATOMIC_RELEASE);
+        return LIBUSB_ERROR_NO_DEVICE;
+    }
+    x->dev = dv;
     x->cancel = 0;
     x->next = NULL;
     int ix = t->type == LIBUSB_TRANSFER_TYPE_CONTROL ? 0 : ep_index(t->endpoint);
@@ -421,6 +452,7 @@ static void drain_completions(void) {
         if (!x) break;
         struct libusb_transfer *t = x->t;
         int free_it = (t->flags & LIBUSB_TRANSFER_FREE_TRANSFER) != 0;
+        __atomic_store_n(&x->inflight, 0, __ATOMIC_RELEASE);   /* before the callback, which may resubmit or free */
         if (t->callback) t->callback(t);
         if (free_it) libusb_free_transfer(t);
     }

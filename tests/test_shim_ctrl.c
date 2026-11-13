@@ -2,7 +2,8 @@
    What it shows: the cancel flag of a libusb transfer reaches the strict wait; a queued transfer that is cancelled sends nothing; each transfer is completed exactly once;
    the user's buffer is not written by a cancelled transfer; a transfer object freed right after its callback (and a synchronous caller's wait object) are not touched by the worker
    afterwards (ASan is the check for that, and says nothing about accesses it cannot see). Verdict tags as in tests/test_usb_ctrl.c: SAFE_BLOCKED is not a recovery.
-   "KNOWN_RISK" lines reproduce a hazard that is NOT fixed (libusb_close with a transfer still queued); they never fail the run, only a hang or a harness error does.
+   The close_* scenarios close the handle with transfers outstanding: since a submission holds its own device reference the worker no longer reads the handle (this was a
+   reproduced use-after-free before). Not covered: a submit racing the close of the same handle (the caller's contract), and the caller's buffers.
    Scenario in argv[1], or "all". One process per scenario in tools/usb-ctrl-test.sh. */
 #define _GNU_SOURCE 1
 #include <libusb-1.0/libusb.h>
@@ -86,8 +87,18 @@ static void setup(int strict, int delay_ms) {
     if (n < 1 || libusb_open(l[0], &g_h) != 0) { printf("FAIL harness: no device through the shim (n=%zd)\n", n); exit(2); }
     g_list = l;
 }
+static void balance(const char *what) {   /* every device reference a transfer took was given back; separate from the callback counts each scenario checks */
+    int a = 0, r = 0, d = hv_libusb_xfer_dev_refs(&a, &r);
+    EXPECT(d == 0, "refs(%s): transfers took %d device reference(s) and gave back %d (difference %d)", what, a, r, d);
+}
 static void teardown(void) {
+    balance("end");
     libusb_close(g_h);
+    libusb_free_device_list(g_list, 1);
+    g_stop = 1; pthread_join(g_th, NULL);
+}
+static void teardown_closed(void) {   /* the handle was closed by the scenario */
+    balance("end");
     libusb_free_device_list(g_list, 1);
     g_stop = 1; pthread_join(g_th, NULL);
 }
@@ -217,29 +228,140 @@ static void s_lifetime(void) {
     teardown();
 }
 
-static void s_close(void) {   /* KNOWN_RISK: the shim does not wait for transfers before libusb_close */
-    fflush(stdout);
-    pid_t p = fork();
-    if (p == 0) {
-        alarm(20);
-        setup(1, -1);
-        Job *a = job_new(10000), *b = job_new(10000);
-        libusb_submit_transfer(a->t);
-        usleep(100000);
-        libusb_submit_transfer(b->t);        /* B waits behind A */
-        usleep(50000);
-        libusb_close(g_h);                   /* the handle goes while B still points at it */
-        libusb_cancel_transfer(a->t);        /* A ends, the worker takes B and reads B's handle */
-        pump(a, 1, 2000);
-        usleep(300000);
-        _exit(0);
+/* ---- closing the handle with transfers outstanding. The worker must not read the closed handle (the submission holds the device). Not covered, and not tested: a submit
+   racing the close of the very handle it uses (the caller's contract). ---- */
+static void s_close_run(void) {
+    setup(1, -1);
+    Job *a = job_new(10000);
+    libusb_submit_transfer(a->t);
+    usleep(120000);                    /* A is running in the worker, waiting */
+    libusb_close(g_h);
+    libusb_cancel_transfer(a->t);
+    pump(a, 1, 3000);
+    EXPECT(a->calls == 1 && a->status == LIBUSB_TRANSFER_CANCELLED, "close(running): the handle was closed under a running transfer; it still ended once, CANCELLED (calls %d, status %d)", a->calls, a->status);
+    pump_for(200);
+    EXPECT(a->calls == 1, "close(running): no second notice");
+    job_free(a);
+    teardown_closed();
+}
+static void s_close_queued(void) {
+    setup(1, -1);
+    Job *a = job_new(10000), *b = job_new(10000);
+    libusb_submit_transfer(a->t);
+    usleep(100000);
+    libusb_submit_transfer(b->t);      /* B waits behind A */
+    usleep(50000);
+    libusb_close(g_h);                 /* the handle goes while B still points at it */
+    libusb_cancel_transfer(a->t);      /* A ends; the worker takes B, which no longer reads the handle */
+    pump(a, 1, 3000); pump(b, 1, 3000);
+    EXPECT(a->calls == 1 && a->status == LIBUSB_TRANSFER_CANCELLED, "close(queued): A ended once, CANCELLED");
+    EXPECT(b->calls == 1 && (b->status == LIBUSB_TRANSFER_ERROR || b->status == LIBUSB_TRANSFER_CANCELLED), "close(queued): B, queued behind it, also ended exactly once (status %d: strict refuses it after A's UNCERTAIN) and nothing crashed", b->status);
+    EXPECT(g_probe_seen == 1, "close(queued): B was not sent (ROM saw %d)", g_probe_seen);
+    pump_for(200);
+    EXPECT(a->calls == 1 && b->calls == 1, "close(queued): no second notice");
+    job_free(a); job_free(b);
+    teardown_closed();
+}
+static void s_close_done(void) {
+    setup(1, 0);
+    int bad_n = 0;
+    for (int i = 0; i < 40; i++) {
+        Job *j = job_new(2000);
+        libusb_submit_transfer(j->t);
+        pump(j, 1, 3000);
+        if (j->calls != 1 || j->status != LIBUSB_TRANSFER_COMPLETED) bad_n++;
+        job_free(j);
     }
-    int st = 0, waited = 0;
-    while (waitpid(p, &st, WNOHANG) == 0 && waited < 30000) { usleep(10000); waited += 10; }
-    if (waited >= 30000) { kill(p, SIGKILL); waitpid(p, &st, 0); EXPECT(0, "close: HUNG: the child did not end in 30 s"); return; }
-    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) printf("KNOWN_RISK close: libusb_close with a transfer still queued: the child ended normally (a plain build does not show the access; not a safety result)\n");
-    else printf("KNOWN_RISK close: libusb_close with a transfer still queued: the child ended abnormally (status %d): the hazard is REPRODUCED and NOT fixed; the contract is that the caller closes a handle only with none of its transfers outstanding\n", st);
-    EXPECT(1, "close: the risk run ended within its limit (a reproduction, not a pass of the hazard)");
+    uint8_t b = 0;
+    int r = libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 1000);
+    libusb_close(g_h);                 /* straight after a synchronous call returned */
+    EXPECT(bad_n == 0 && r == 1, "close(done): 40 async and one sync transfer, then the handle closed right after: %d wrong, sync %d", bad_n, r);
+    teardown_closed();
+}
+
+/* ---- submission corner cases ---- */
+static void s_dup(void) {
+    setup(1, -1);
+    Job *a = job_new(10000);
+    EXPECT(libusb_submit_transfer(a->t) == 0, "dup: first submit accepted");
+    usleep(80000);
+    int r = libusb_submit_transfer(a->t);
+    EXPECT(r == LIBUSB_ERROR_BUSY, "dup: the same transfer submitted again while unfinished is refused (BUSY, %d), so its device reference cannot be overwritten", r);
+    libusb_cancel_transfer(a->t);
+    pump(a, 1, 3000);
+    EXPECT(a->calls == 1, "dup: one notice for the one accepted submission (%d)", a->calls);
+    balance("after dup");
+    EXPECT(libusb_submit_transfer(a->t) == 0, "dup: after it ended, the same object can be submitted again");
+    libusb_cancel_transfer(a->t);
+    pump(a, 2, 3000);
+    EXPECT(a->calls == 2, "dup: and it completes once more (%d)", a->calls);
+    job_free(a);
+    teardown();
+}
+static void s_submit_fail(void) {
+    setup(1, 0);
+    hv_vusb_set_online(g_u, 0);
+    pump_for(100);                     /* the event loop notices: the device is gone */
+    Job *a = job_new(1000);
+    int r = libusb_submit_transfer(a->t);
+    EXPECT(r == LIBUSB_ERROR_NO_DEVICE && a->calls == 0, "submit_fail: submit for a gone device is refused (NO_DEVICE, %d), no notice", r);
+    balance("after refused submit");
+    EXPECT(libusb_submit_transfer(a->t) == LIBUSB_ERROR_NO_DEVICE, "submit_fail: the refusal released the in-flight mark: a second try is refused for the same reason, not BUSY");
+    job_free(a);
+    teardown();
+}
+static void cb_free(struct libusb_transfer *t) {   /* the callback frees its own transfer */
+    Job *j = t->user_data;
+    j->status = t->status;
+    __atomic_add_fetch(&j->calls, 1, __ATOMIC_ACQ_REL);
+    libusb_free_transfer(t);
+    j->t = NULL;
+}
+static void s_cbfree(void) {
+    setup(1, 0);
+    int wrong = 0;
+    for (int i = 0; i < 40; i++) {      /* (1) freed inside the callback by the callback itself */
+        Job *j = job_new(2000);
+        j->t->callback = cb_free;
+        libusb_submit_transfer(j->t);
+        pump(j, 1, 3000);
+        if (j->calls != 1 || j->status != LIBUSB_TRANSFER_COMPLETED || j->t) wrong++;
+        free(j);
+    }
+    for (int i = 0; i < 40; i++) {      /* (2) freed by the shim after the callback, through the FREE_TRANSFER flag (no free in the callback) */
+        Job *j = job_new(2000);
+        j->t->flags |= LIBUSB_TRANSFER_FREE_TRANSFER;
+        libusb_submit_transfer(j->t);
+        pump(j, 1, 3000);
+        if (j->calls != 1 || j->status != LIBUSB_TRANSFER_COMPLETED) wrong++;
+        free(j);                         /* the Job is ours; the transfer was freed by the shim */
+    }
+    EXPECT(wrong == 0, "cbfree: 40 transfers freed inside their own callback and 40 through FREE_TRANSFER: %d wrong (each notice once; the sanitizer reports no access after free)", wrong);
+    teardown();
+}
+static void s_balance(void) {
+    setup(1, 100);
+    uint8_t b = 0;
+    Job *a = job_new(5000), *q = job_new(5000), *c = job_new(5000);
+    libusb_submit_transfer(a->t);                  /* completes at 100 ms */
+    libusb_submit_transfer(q->t);                  /* queued behind it, cancelled before it runs */
+    libusb_cancel_transfer(q->t);
+    pump(a, 1, 3000); pump(q, 1, 3000);
+    EXPECT(a->calls == 1 && q->calls == 1 && q->status == LIBUSB_TRANSFER_CANCELLED && g_probe_seen == 1, "balance: A completed once, the queued one was cancelled once and never sent (calls %d/%d, ROM saw %d)", a->calls, q->calls, g_probe_seen);
+    balance("completed + queued-cancelled");
+    libusb_submit_transfer(c->t);
+    usleep(60000);
+    libusb_cancel_transfer(c->t);
+    pump(c, 1, 3000);
+    while (g_rom_busy) usleep(1000);
+    balance("running-cancelled");
+    libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 100);   /* refused by strict (UNCERTAIN or answered), either way it ends once */
+    balance("sync");
+    int acq = 0, rel = 0;
+    hv_libusb_xfer_dev_refs(&acq, &rel);
+    EXPECT(acq >= 4, "balance: the counters actually counted (%d acquired)", acq);
+    job_free(a); job_free(q); job_free(c);
+    teardown();
 }
 
 int main(int argc, char **argv) {
@@ -253,7 +375,13 @@ int main(int argc, char **argv) {
     else if (!strcmp(sc, "sync_timeout")) s_sync_timeout();
     else if (!strcmp(sc, "legacy")) s_legacy();
     else if (!strcmp(sc, "lifetime")) s_lifetime();
-    else if (!strcmp(sc, "close")) s_close();
+    else if (!strcmp(sc, "close_run")) s_close_run();
+    else if (!strcmp(sc, "close_queued")) s_close_queued();
+    else if (!strcmp(sc, "close_done")) s_close_done();
+    else if (!strcmp(sc, "dup")) s_dup();
+    else if (!strcmp(sc, "submit_fail")) s_submit_fail();
+    else if (!strcmp(sc, "cbfree")) s_cbfree();
+    else if (!strcmp(sc, "balance")) s_balance();
     else { printf("FAIL unknown scenario %s\n", sc); return 2; }
     printf("%s test_shim_ctrl %s: %d failed\n", bad ? "FAIL" : "PASS", sc, bad);
     return bad ? 1 : 0;

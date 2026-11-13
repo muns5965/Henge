@@ -1,15 +1,17 @@
 #!/bin/bash
-# C1-2: the STATIC half of the VM runner's safety contract (the dynamic half is tools/c1vm-test.sh: strace over a real run). Checks a BUILT host/ui_runner_vm and the sources.
+# C1-2: the STATIC half of the VM runner's safety contract (the dynamic half is tools/c1vm-test.sh: strace over real runs).
+# It is a check against FORBIDDEN symbols and strings, an allow-list of shared LIBRARIES, and rules on the SOURCE. It is not an allow-list of imported functions: a function that is
+# not on the forbidden list passes. Checks a BUILT host/ui_runner_vm and the sources.
 # The runner links the virtual machine, so the symbol check of tools/check-runner-safe.sh (no hv_vm_* at all) cannot apply. What can still be required:
 #   binary  1. no network or process-start import (socket, connect, ..., fork, exec*, system, popen, dlopen)
 #           2. nothing of the restore stack, TSS, libirecovery, libusb, install, curl, TLS, user-mode network (slirp) or the connection policy in the symbol tables
 #           3. none of the test-only fake machine (tests/vm_fake.c) and no option string that would loosen the settings
-#           4. shared libraries: only the C library, the math library and the thread / loader libraries
+#           4. shared libraries: only the C library, the math library and the thread / loader libraries (allow-list); with EXPECT_ARCH set (AArch64) the ELF machine type
 #   source  5. the four settings are assigned in ONE place (hv_runner_make_config, host/runner_vm_core.c), as 1 / 1 / 0 / 0, and nowhere in host/ui_runner_vm.c
 #           6. the settings are checked (hv_runner_config_ok) before the machine is created, there is one hv_vm_create call, and its argument is the checked structure
 #           7. the options the program accepts are exactly the allowed list; it sets no environment variable (it only removes HV_* ones)
 # What this cannot show: that the engine does not reach the network or write a file by some other path. That is what the strace run is for.
-# Usage: [NM=nm] [READELF=readelf] tools/check-runner-vm-safe.sh <ui_runner_vm binary>
+# Usage: [NM=nm] [READELF=readelf] [EXPECT_ARCH=AArch64] tools/check-runner-vm-safe.sh <ui_runner_vm binary>
 cd "$(dirname "$0")/.." || exit 1
 B=${1:?runner binary}
 [ -f "$B" ] || { echo "FAIL no such file: $B"; exit 1; }
@@ -33,8 +35,13 @@ if strings "$B" | grep -Eq -- '--(installer|net|ipsw|ecid|seed|readonly|no-reado
 if command -v "$READELF" >/dev/null 2>&1; then
   need=$($READELF -d "$B" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
   for l in $need; do
-    case $l in libc.so|libc.so.6|libm.so|libm.so.6|libpthread.so.0|libdl.so|libdl.so.2|ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;; *) bad "unexpected shared library: $l";; esac
+    case $l in libc.so|libc.so.6|libm.so|libm.so.6|libpthread.so.0|libdl.so|libdl.so.2|ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;;
+      liblog.so) ;;   # Android only: host/jit_region.c logs errors to logcat (the engine's own use; logd is a local socket of the system, not a network) *) bad "unexpected shared library: $l";; esac
   done
+  if [ -n "${EXPECT_ARCH:-}" ]; then
+    m=$($READELF -h "$B" 2>/dev/null | sed -n 's/^ *Machine: *//p')
+    case "$m" in *"$EXPECT_ARCH"*) ;; *) bad "ELF machine is '$m', expected $EXPECT_ARCH";; esac
+  fi
 else echo "note: no readelf; shared libraries not checked"; fi
 
 # 5
@@ -55,6 +62,9 @@ n=$(grep -cE '^[[:space:]]*HvVmConfig ' $R); [ "$n" = 1 ] || bad "$R: exactly on
 l1=$(grep -n 'hv_runner_make_config(&cfg' $R | head -1 | cut -d: -f1); l2=$(grep -n 'hv_runner_config_ok(&cfg' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_create(&cfg' $R | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l3" ]; } || bad "$R: make_config, then config_ok, then hv_vm_create is the order required (lines '$l1' '$l2' '$l3')"
 grep -q 'hv_runner_scrub_env' $R || bad "$R: the HV_* scrub is missing"
+grep -q 'scrubbed < 0' $R || bad "$R: a failed scrub (result < 0) must stop the run"
+n=$(grep -cE '(^|[^a-z_])unsetenv[[:space:]]*\(' $R); [ "$n" = 0 ] || bad "$R calls unsetenv itself (the scrub is in $C)"
+l5=$(grep -n 'scrubbed < 0' $R | head -1 | cut -d: -f1); { [ -n "$l5" ] && [ "$l5" -lt "$l3" ]; } || bad "$R: the scrub result must be checked before hv_vm_create"
 l4=$(grep -n 'hv_runner_scrub_env(' $R | head -1 | cut -d: -f1); { [ -n "$l4" ] && [ "$l4" -lt "$l3" ]; } || bad "$R: the scrub must come before hv_vm_create"
 grep -q 'bd->vusb' $R || bad "$R: the check that the machine has no USB device port is missing"
 # 7

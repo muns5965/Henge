@@ -292,18 +292,64 @@ static void test_config(void) {
     CHECK(hv_runner_config_ok(&c, why, sizeof why) == -1, "zero sizes: refused");
 }
 
+static int unset_fail_one(const char *n) { return !strcmp(n, "HV_FAIL") ? -1 : unsetenv(n); }          /* says no for one name */
+static int unset_lie_one(const char *n) { return !strcmp(n, "HV_LIE") ? 0 : unsetenv(n); }              /* says yes and does nothing for one name */
+static int unset_rc_but_removed(const char *n) { unsetenv(n); return -1; }                                // removes it and still reports an error
+static int unset_fail_all(const char *n) { (void)n; return -1; }
+static void clear_hv(void) { HvEnvOps real = {unsetenv}; hv_runner_scrub_env_ops(&real, NULL, 0, NULL, 0); }
 static void test_env(void) {
-    char names[256];
-    setenv("HV_RUN_INSTALLER", "1,1", 1); setenv("HV_USB_ON_NORMAL", "1", 1); setenv("HV_RAM_FILE", "/nonexistent/x", 1); setenv("HV_VUSB_PROBE", "1", 1); setenv("HVX_NOT", "keep", 1); setenv("MYHV_OK", "keep", 1);
-    int n = hv_runner_scrub_env(names, sizeof names);
+    char names[256], left[256];
+    setenv("HV_RUN_INSTALLER", "1,1", 1); setenv("HV_USB_ON_NORMAL", "1", 1); setenv("HV_RAM_FILE", "/nonexistent/SECRETVAL", 1); setenv("HV_VUSB_PROBE", "1", 1); setenv("HVX_NOT", "keep", 1); setenv("MYHV_OK", "keep", 1);
+    int n = hv_runner_scrub_env(names, sizeof names, left, sizeof left);
     CHECK(n == 4, "four HV_* variables removed (%d)", n);
-    CHECK(strstr(names, "HV_RUN_INSTALLER") && strstr(names, "HV_USB_ON_NORMAL") && strstr(names, "HV_RAM_FILE") && strstr(names, "HV_VUSB_PROBE") && !strchr(names, '='), "names listed, no values: %s", names);
-    CHECK(!getenv("HV_RUN_INSTALLER") && !getenv("HV_USB_ON_NORMAL") && !getenv("HV_RAM_FILE") && !getenv("HV_VUSB_PROBE"), "they are gone");
+    CHECK(strstr(names, "HV_RUN_INSTALLER") && strstr(names, "HV_USB_ON_NORMAL") && strstr(names, "HV_RAM_FILE") && strstr(names, "HV_VUSB_PROBE") && !strchr(names, '=') && !strstr(names, "SECRETVAL"), "names listed, no values: %s", names);
+    CHECK(!getenv("HV_RUN_INSTALLER") && !getenv("HV_USB_ON_NORMAL") && !getenv("HV_RAM_FILE") && !getenv("HV_VUSB_PROBE") && left[0] == 0, "they are gone, nothing left");
     CHECK(getenv("HVX_NOT") && getenv("MYHV_OK"), "names that only look similar stay (HVX_NOT, MYHV_OK)");
-    CHECK(hv_runner_scrub_env(NULL, 0) == 0, "second pass: nothing left");
+    CHECK(hv_runner_scrub_env(NULL, 0, NULL, 0) == 0, "second pass: nothing to remove, clean (0)");
     for (int i = 0; i < 300; i++) { char nm[32]; snprintf(nm, sizeof nm, "HV_MANY_%d", i); setenv(nm, "1", 1); }
-    CHECK(hv_runner_scrub_env(NULL, 0) == 300, "300 variables (more than one pass takes) all removed");
+    CHECK(hv_runner_scrub_env(NULL, 0, NULL, 0) == 300, "300 variables all removed");
     CHECK(!getenv("HV_MANY_299") && !getenv("HV_MANY_0"), "the first and the last are gone");
+
+    /* the removal fails: the environment is NOT clean and the answer says so (-1), with the name that is left and never a value */
+    HvEnvOps failing = {unset_fail_one}, lying = {unset_lie_one}, allfail = {unset_fail_all};
+    setenv("HV_A", "1", 1); setenv("HV_FAIL", "SECRETVAL", 1); setenv("HV_B", "1", 1);
+    n = hv_runner_scrub_env_ops(&failing, names, sizeof names, left, sizeof left);
+    CHECK(n == -1 && !strcmp(left, "HV_FAIL") && !strstr(left, "SECRETVAL") && !strchr(left, '='), "unsetenv fails for one name: -1, left = '%s'", left);
+    CHECK(strstr(names, "HV_A") && strstr(names, "HV_B") && !getenv("HV_A") && !getenv("HV_B") && getenv("HV_FAIL"), "the others were still removed (%s), the one that failed is still there", names);
+    clear_hv();
+    /* unsetenv says yes and the variable is still there: caught by looking again */
+    setenv("HV_LIE", "SECRETVAL", 1); setenv("HV_C", "1", 1);
+    n = hv_runner_scrub_env_ops(&lying, names, sizeof names, left, sizeof left);
+    CHECK(n == -1 && !strcmp(left, "HV_LIE") && !strstr(names, "HV_LIE"), "unsetenv lies for one name: -1, left = '%s', not counted as removed ('%s')", left, names);
+    clear_hv();
+    /* unsetenv reports an error although the variable is gone: still not trusted (an error from the call is an error) */
+    HvEnvOps rcbad = {unset_rc_but_removed};
+    setenv("HV_Z", "1", 1);
+    n = hv_runner_scrub_env_ops(&rcbad, names, sizeof names, left, sizeof left);
+    CHECK(n == -1 && !strcmp(left, "HV_Z") && names[0] == 0, "unsetenv reports an error but the variable is gone: -1 all the same ('%s')", left);
+    clear_hv();
+    /* the failing one in the middle of many, and a second failing one after it */
+    for (int i = 0; i < 50; i++) { char nm[32]; snprintf(nm, sizeof nm, "HV_M_%d", i); setenv(nm, "1", 1); if (i == 20) setenv("HV_FAIL", "1", 1); }
+    n = hv_runner_scrub_env_ops(&failing, names, 4096 > sizeof names ? sizeof names : 4096, left, sizeof left);
+    int still = 0; for (int i = 0; i < 50; i++) { char nm[32]; snprintf(nm, sizeof nm, "HV_M_%d", i); still += getenv(nm) != NULL; }
+    CHECK(n == -1 && still == 0 && !strcmp(left, "HV_FAIL"), "50 + one failing: all 50 removed, only HV_FAIL left ('%s')", left);
+    clear_hv();
+    setenv("HV_X", "1", 1); setenv("HV_Y", "1", 1);
+    n = hv_runner_scrub_env_ops(&allfail, names, sizeof names, left, sizeof left);
+    CHECK(n == -1 && strstr(left, "HV_X") && strstr(left, "HV_Y") && names[0] == 0, "every removal fails: -1, both left, none counted as removed");
+    clear_hv();
+    /* a name too long to handle is not skipped silently */
+    char longname[300]; memset(longname, 'Q', sizeof longname); memcpy(longname, "HV_", 3); longname[299] = 0;
+    setenv(longname, "1", 1);
+    n = hv_runner_scrub_env(names, sizeof names, left, sizeof left);
+    CHECK(n == -1 && left[0] != 0, "a name too long to handle: -1 ('%.30s')", left);
+    unsetenv(longname);
+    CHECK(hv_runner_scrub_env(names, sizeof names, left, sizeof left) == 0, "clean again afterwards");
+    /* small output buffers do not overflow or change the answer */
+    setenv("HV_LONGER_NAME_ONE", "1", 1); setenv("HV_LONGER_NAME_TWO", "1", 1);
+    char tiny[8];
+    n = hv_runner_scrub_env(tiny, sizeof tiny, tiny, 0);
+    CHECK(n == 2 && strlen(tiny) < sizeof tiny, "tiny buffers: still 2 removed, no overflow");
 }
 
 /* ---- the disk layer's refusal (what readonly_storage = 1 turns on) ---- */

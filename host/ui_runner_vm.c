@@ -97,8 +97,13 @@ int main(int argc, char **argv) {
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    char names[512];
-    int scrubbed = hv_runner_scrub_env(names, sizeof names);
+    char names[512], left[512];
+    int scrubbed = hv_runner_scrub_env(names, sizeof names, left, sizeof left);
+    if (scrubbed < 0) {   /* an HV_* variable could not be removed or is still there: the engine might read it (installer boot, RAM file, USB probe): no machine */
+        fprintf(stderr, "ui_runner_vm: the environment is not clean, HV_* variable(s) left: %s\n", left[0] ? left : "(unknown)");
+        printf("ui_runner_vm RESULT: FAILED, HV_* variable(s) could not be removed: %s\n", left[0] ? left : "(unknown)");
+        return 1;
+    }
 
     HvVmConfig cfg;
     hv_runner_make_config(&cfg, rom, disk, aux, (uint64_t)(ram_mb < 0 ? 0 : ram_mb), (int)cpus, (size_t)(jit_mb < 0 ? 0 : jit_mb));

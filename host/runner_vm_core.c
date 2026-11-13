@@ -161,27 +161,48 @@ void hv_runner_config_line(const HvVmConfig *c, char *out, size_t cap) {
              (unsigned long long)c->ram_mb, c->ncpus, c->jit_bytes >> 20, (unsigned long long)c->aux_offset);
 }
 
-int hv_runner_scrub_env(char *names, size_t cap) {
-    int total = 0, n;
-    if (names && cap) names[0] = 0;
-    do {   /* a pass takes at most 256 names; go again until none is left */
-        char *found[256];
-        n = 0;
-        for (char **e = environ; e && *e && n < 256; e++)
-            if (!strncmp(*e, "HV_", 3)) {
-                const char *eq = strchr(*e, '=');
-                size_t len = eq ? (size_t)(eq - *e) : strlen(*e);
-                char *nm = malloc(len + 1);
-                if (!nm) continue;
-                memcpy(nm, *e, len); nm[len] = 0;
-                found[n++] = nm;
-            }
-        for (int i = 0; i < n; i++) {
-            if (names && cap > strlen(names) + strlen(found[i]) + 2) { if (names[0]) strcat(names, ","); strcat(names, found[i]); }
-            unsetenv(found[i]);
-            free(found[i]);
-        }
-        total += n;
-    } while (n == 256);
-    return total;
+#define ENV_NAME_MAX 200
+static int real_unset(const char *name) { return unsetenv(name); }
+static void add_name(char *list, size_t cap, const char *name) {
+    if (!list || !cap) return;
+    size_t have = strlen(list), need = strlen(name) + (have ? 1 : 0) + 1;
+    if (have + need > cap) return;
+    if (have) list[have++] = ',';
+    strcpy(list + have, name);
+}
+/* the skip-th "HV_" entry of the environment (0 = first), its name copied into buf; 1 found, 0 none, -1 name too long */
+static int nth_hv(int skip, char *buf) {
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, "HV_", 3)) continue;
+        if (skip-- > 0) continue;
+        const char *eq = strchr(*e, '=');
+        size_t len = eq ? (size_t)(eq - *e) : strlen(*e);
+        if (len >= ENV_NAME_MAX) return -1;
+        memcpy(buf, *e, len); buf[len] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+int hv_runner_scrub_env_ops(const HvEnvOps *ops, char *removed, size_t rcap, char *left, size_t lcap) {
+    if (removed && rcap) removed[0] = 0;
+    if (left && lcap) left[0] = 0;
+    int n = 0, stuck = 0, bad = 0;
+    for (int guard = 0; guard < 100000; guard++) {
+        char name[ENV_NAME_MAX];
+        int f = nth_hv(stuck, name);       /* the first not yet tried-and-failed: every earlier HV_ entry is one that stayed */
+        if (f == 0) break;
+        if (f < 0) { bad = 1; stuck++; add_name(left, lcap, "(a name too long to handle)"); continue; }
+        if (ops->unset(name) == 0 && !getenv(name)) { n++; add_name(removed, rcap, name); }
+        else { bad = 1; stuck++; add_name(left, lcap, name); }
+    }
+    char name[ENV_NAME_MAX];
+    int again = nth_hv(0, name);           /* the second look: whatever the removals said, is anything still there? */
+    if (again != 0) { bad = 1; if (again > 0 && left && !strstr(left, name)) add_name(left, lcap, name); }
+    return bad ? -1 : n;
+}
+
+int hv_runner_scrub_env(char *removed, size_t rcap, char *left, size_t lcap) {
+    static const HvEnvOps real = {real_unset};
+    return hv_runner_scrub_env_ops(&real, removed, rcap, left, lcap);
 }

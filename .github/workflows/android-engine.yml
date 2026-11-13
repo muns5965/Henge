@@ -269,6 +269,12 @@ jobs:
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/vmrun-tss-build.sh build-android
       - name: Build the C1-1 runner for Android and check the binary (no network or VM symbols)
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-android-runner
+      - name: "Build the C1-2 VM runner for Android (NDK compile + link against the Android engine objects, ELF machine / library / forbidden-symbol checks; NOT run, NOT packed into the APK)"
+        run: |
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-build.sh build-android
+          "$T/llvm-readelf" -h build-android/ui_runner_vm | grep -E "Class|Machine|Type"
+          "$T/llvm-readelf" -d build-android/ui_runner_vm | grep NEEDED
       - name: Build the IPSW downloader for Android (link only; shipped configuration)
         run: CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/ipswdl-build.sh build-android-dl
       - name: Build the whole restore stack for Android (integrated link of idevicerestore + usbmuxd + libirecovery + libtatsu + libzip + self-test)

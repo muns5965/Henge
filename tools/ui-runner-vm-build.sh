@@ -2,6 +2,7 @@
 # C1-2: builds the VM runner (host/ui_runner_vm.c) against the REAL engine: the objects tools/engine-build.sh and tools/devices-build.sh left in <engine dir>
 # (the engine, the device models, host/vm.c with its portable stand-ins). Then the static safety check (tools/check-runner-vm-safe.sh). Linux arm64 / Android arm64 only
 # (the engine's assembly is arm64). Not packed into the APK: this is a CI binary for now.
+# EXPECT_ARCH defaults to AArch64 (the ELF machine the static check requires).
 # Usage: CC=<compiler> [NM=<nm>] [READELF=<readelf>] [EXTRA_LIBS=...] [PF_THREADLIB="" on Android: bionic has no libpthread] tools/ui-runner-vm-build.sh <engine dir> [<output dir>]
 set -u
 cd "$(dirname "$0")/.."
@@ -24,4 +25,5 @@ if $CC $CF $objs $vobjs $eobjs $dobjs ${EXTRA_LDFLAGS:-} ${EXTRA_LIBS:-} -lm ${P
 else
   echo "FAILED  link ui_runner_vm"; grep -o "undefined reference to .*" "$OUT/uirvm/link.log" | sort -u | head -30; head -30 "$OUT/uirvm/link.log" | cut -c1-200; exit 1
 fi
-tools/check-runner-vm-safe.sh "$OUT/ui_runner_vm"
+file "$OUT/ui_runner_vm" 2>/dev/null || true
+EXPECT_ARCH=${EXPECT_ARCH-AArch64} tools/check-runner-vm-safe.sh "$OUT/ui_runner_vm"

@@ -30,6 +30,7 @@ static void msleep(int ms) { struct timespec t = {ms / 1000, (ms % 1000) * 10000
 static const char *g_bin;
 static char g_dir[160];
 static char g_rom[200], g_disk[200], g_aux[200], g_shm[200];
+static const char *g_trace_out, *g_trace_filter;   /* C1VM_TRACE_OUT / C1VM_TRACE_FILTER: run the traced scenario only, the runner under strace (tools/c1vm-test.sh) */
 
 /* ---- files ---- */
 static int make_sparse(const char *p, off_t n) { int fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0600); if (fd < 0) return -1; int r = ftruncate(fd, n); close(fd); return r; }
@@ -63,7 +64,7 @@ static Proc spawn(const char *const *argv) {
     int pin[2], pout[2];
     if (pipe(pin) || pipe(pout)) return r;
     pid_t pid = fork();
-    if (pid == 0) { dup2(pin[0], 0); dup2(pout[1], 1); dup2(pout[1], 2); close(pin[0]); close(pin[1]); close(pout[0]); close(pout[1]); execv(argv[0], (char *const *)argv); _exit(127); }
+    if (pid == 0) { dup2(pin[0], 0); dup2(pout[1], 1); dup2(pout[1], 2); close(pin[0]); close(pin[1]); close(pout[0]); close(pout[1]); execvp(argv[0], (char *const *)argv); _exit(127); }
     close(pin[0]); close(pout[1]);
     r.pid = pid; r.in = pin[1]; r.out = pout[0];
     fcntl(r.out, F_SETFL, O_NONBLOCK);
@@ -99,7 +100,12 @@ static int parse_line(const char *text, const char *tag, Line *o) {
 }
 
 static Proc start_runner(const char *const *extra) {
-    const char *argv[32]; int n = 0;
+    const char *argv[48]; int n = 0;
+    char filter[400];
+    if (g_trace_out) {
+        snprintf(filter, sizeof filter, "trace=%s", g_trace_filter);
+        argv[n++] = "strace"; argv[n++] = "-f"; argv[n++] = "-qq"; argv[n++] = "-s"; argv[n++] = "300"; argv[n++] = "-e"; argv[n++] = filter; argv[n++] = "-o"; argv[n++] = g_trace_out;
+    }
     argv[n++] = g_bin; argv[n++] = "--shm"; argv[n++] = g_shm; argv[n++] = "--rom"; argv[n++] = g_rom; argv[n++] = "--disk"; argv[n++] = g_disk; argv[n++] = "--aux"; argv[n++] = g_aux;
     argv[n++] = "--ram-mb"; argv[n++] = "256"; argv[n++] = "--jit-mb"; argv[n++] = "64"; argv[n++] = "--cpus"; argv[n++] = "2";
     for (int i = 0; extra && extra[i]; i++) argv[n++] = extra[i];
@@ -109,11 +115,19 @@ static Proc start_runner(const char *const *extra) {
 static void fresh_files(void) { unlink(g_shm); make_sparse(g_disk, 16 << 20); make_aux(g_aux); make_rom(g_rom); }
 
 /* ---- scenarios ---- */
+/* the runner's own pid: its process when run directly, else (under strace) the pid it prints */
+static pid_t runner_pid(Proc *p) {
+    if (!g_trace_out) return p->pid;
+    if (!wait_for(p, "started pid ", 60)) return -1;
+    const char *q = strstr(p->buf, "started pid ");
+    return (pid_t)atoi(q + strlen("started pid "));
+}
+
 static void test_life_and_input(void) {
     printf("-- life and input\n");
     Proc p = start_runner(NULL);
     CHECK(p.pid > 0, "spawned");
-    HvShm *app = open_running(p.pid, 30);
+    HvShm *app = open_running(runner_pid(&p), 60);
     CHECK(app != NULL, "the runner made the shared file and reached RUNNING");
     if (!app) { double t; int c = finish(&p, 5, &t); printf("   output:\n%s\n   exit %d\n", p.buf, c); return; }
     CHECK(wait_for(&p, "started pid", 5) && wait_for(&p, "config (the structure passed to hv_vm_create):", 5), "it announced itself and the structure it passes to hv_vm_create");
@@ -202,6 +216,14 @@ static void test_refusals(void) {
         double t; int code = finish(&p, 10, &t);
         CHECK(code == 1 && strstr(p.buf, "the settings were refused") != NULL && access(g_shm, F_OK) != 0, "%s %s: settings refused, exit 1, no shared file (got %d)", bad[i][0], bad[i][1], code);
     }
+    /* an HV_ variable that cannot be handled (name too long) is not skipped: no machine, exit 1, no shared file */
+    { fresh_files(); char longname[300]; memset(longname, 'Q', sizeof longname); memcpy(longname, "HV_", 3); longname[299] = 0;
+      setenv(longname, "SECRETVAL", 1);
+      Proc p = start_runner(NULL);
+      unsetenv(longname);
+      double t; int code = finish(&p, 15, &t);
+      CHECK(code == 1 && strstr(p.buf, "the environment is not clean") != NULL && strstr(p.buf, "SECRETVAL") == NULL, "an HV_ variable that cannot be handled: exit 1, 'not clean', no value printed (got %d)", code);
+      CHECK(access(g_shm, F_OK) != 0, "and no shared file was made (no machine)"); }
     /* a disk that does not exist: the machine cannot be made; the file says STOPPED */
     { fresh_files(); unlink(g_disk); Proc p = start_runner(NULL); double t; int code = finish(&p, 15, &t);
       CHECK(code == 1 && strstr(p.buf, "the machine could not be made") != NULL, "a missing disk: exit 1, 'could not be made' (got %d)", code);
@@ -235,13 +257,23 @@ int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: test_c1vm_proc <ui_runner_vm binary>\n"); return 2; }
     g_bin = argv[1];
     const char *t = getenv("TMPDIR");
-    snprintf(g_dir, sizeof g_dir, "%s/c1vmp_XXXXXX", t && *t ? t : "/tmp");
-    if (!mkdtemp(g_dir)) { perror("mkdtemp"); return 1; }
+    const char *fixed = getenv("C1VM_DIR");
+    g_trace_out = getenv("C1VM_TRACE_OUT"); g_trace_filter = getenv("C1VM_TRACE_FILTER");
+    if (g_trace_out && (!g_trace_filter || !fixed)) { fprintf(stderr, "C1VM_TRACE_OUT needs C1VM_TRACE_FILTER and C1VM_DIR\n"); return 2; }
+    if (fixed) snprintf(g_dir, sizeof g_dir, "%s", fixed);
+    else {
+        snprintf(g_dir, sizeof g_dir, "%s/c1vmp_XXXXXX", t && *t ? t : "/tmp");
+        if (!mkdtemp(g_dir)) { perror("mkdtemp"); return 1; }
+    }
     snprintf(g_rom, sizeof g_rom, "%s/rom.bin", g_dir); snprintf(g_disk, sizeof g_disk, "%s/blank_disk.img", g_dir);
     snprintf(g_aux, sizeof g_aux, "%s/blank_aux.img", g_dir); snprintf(g_shm, sizeof g_shm, "%s/ui.shm", g_dir);
     signal(SIGPIPE, SIG_IGN);
     fresh_files();
     test_life_and_input();
+    if (g_trace_out) {   /* the traced run: the one scenario with input, nothing else (the analysis of the trace is in tools/c1vm-test.sh) */
+        printf("c1vm_proc (traced): %d checks, %d failures\n", checks, failures);
+        return failures != 0;
+    }
     test_stops();
     test_refusals();
     test_env();
@@ -254,8 +286,7 @@ int main(int argc, char **argv) {
     FileId d2, a2; file_id(g_disk, &d2); file_id(g_aux, &a2);
     CHECK(same_id(&id_disk0, &d2), "the disk image: same bytes, size and time stamp");
     CHECK(same_id(&id_aux0, &a2), "the auxiliary storage: same bytes, size and time stamp");
-    char cmd[300]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0) printf("(could not remove %s)\n", g_dir);
+    if (!fixed) { char cmd[300]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir); if (system(cmd) != 0) printf("(could not remove %s)\n", g_dir); }
     printf("c1vm_proc: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

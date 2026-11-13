@@ -6,8 +6,9 @@
 #   pointer path, the settings, the HV_* scrub, the loop, every way of stopping, the exit codes). It says NOTHING about the engine.
 #
 # PART B, only when an engine build dir is given and the machine is arm64 (the engine runs arm64 code natively): the runner built against the REAL engine
-#   (tools/ui-runner-vm-build.sh, with the static safety check), the process test against it with a stand-in ROM, and the dynamic safety check: the same runner under strace,
-#   which must show no network call, one program start, the disk and the auxiliary storage opened read-only, and no file opened for writing but the shared file.
+#   (tools/ui-runner-vm-build.sh, with the static safety check: forbidden symbols and strings, a shared-library allow-list and source rules; NOT a complete import allow-list), the process test against it with a stand-in ROM, and the dynamic safety check: the same runner under strace,
+#   which must show no network call, one program start, the disk and the auxiliary storage opened read-only, and no file opened for writing but the shared file. Once for a timed
+#   run with no input and once for the process test's scenario with input commands pushed through the ring. Both only describe the paths those runs took.
 #   The sanitizers are NOT used for Part B (the JIT and the sanitizer runtimes are not known to coexist); that limit is reported, not hidden.
 #   A control program that does exactly the forbidden things is traced and analysed first; if the analysis does not flag it, Part B fails (a blind tracer proves nothing).
 #
@@ -49,13 +50,6 @@ for mode in ${MODES:-plain asan tsan}; do
   [ -s "$OUT/c1vm_proc_$mode.err" ] && { echo "unexpected stderr output (process test, $mode)"; head -10 "$OUT/c1vm_proc_$mode.err"; rc=1; }
 done
 
-# the static check on the fake build must FAIL, and only because of the marker (the check works and the fake cannot be shipped by mistake)
-if [ -x "$OUT/runner_fake_plain" ]; then
-  if tools/check-runner-vm-safe.sh "$OUT/runner_fake_plain" > "$OUT/static_on_fake.out" 2>&1; then echo "FAILED the static check passed a binary with the fake machine in it"; rc=1
-  elif grep -q "fake machine is in this binary" "$OUT/static_on_fake.out"; then echo "ok  the static check refuses a binary with the fake machine in it"
-  else echo "FAILED the static check failed for another reason:"; cat "$OUT/static_on_fake.out"; rc=1; fi
-fi
-
 # ---------------------------------------------------------------- strace helpers
 # analyse <trace> <shm path> <disk> <aux>   prints one line per finding group and returns the number of VIOLATIONS
 analyse() {
@@ -82,6 +76,32 @@ analyse() {
 }
 strace_class() { if strace -e trace=%network true >/dev/null 2>&1; then echo "%network"; else echo "network"; fi; }
 
+FILTER_BASE="execve,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,truncate,mkdir,mkdirat,rmdir,symlink,symlinkat,link,linkat"
+traced_input_run() {   # <runner> <label>: the process test's life scenario (13 input commands through the ring) with the runner under strace, then the analysis
+  local R=$1 L=$2; local D=$T/driven_$L
+  rm -rf "$D"; mkdir -p "$D"
+  if ! C1VM_DIR="$D" C1VM_TRACE_OUT="$T/driven_$L.trace" C1VM_TRACE_FILTER="$(strace_class),$FILTER_BASE" "$OUT/c1vm_proc_plain" "$R" > "$T/driven_$L.out" 2>&1; then
+    echo "FAILED the traced scenario with input ($L)"; grep -E "^(FAIL|--)" "$T/driven_$L.out" | head -20; return 1
+  fi
+  tail -1 "$T/driven_$L.out"
+  analyse "$T/driven_$L.trace" "$D/ui.shm" "$D/blank_disk.img" "$D/blank_aux.img" > "$T/driven_$L.analysis" 2>&1; local ar=$?
+  cat "$T/driven_$L.analysis"
+  if [ $ar = 0 ]; then echo "ok  [$L, with input] no network call, one program start, disk and auxiliary storage opened read-only, nothing but the shared file opened for writing"; return 0
+  else echo "FAILED [$L, with input] the dynamic safety check found $ar violation(s)"; return 1; fi
+}
+T=$OUT/strace; mkdir -p "$T"
+if [ -x "$OUT/runner_fake_plain" ] && command -v strace >/dev/null 2>&1; then
+  echo "=== strace over the fake-machine runner with input (checks the analysis and the traced scenario; says nothing about the engine)"
+  traced_input_run "$OUT/runner_fake_plain" fake || rc=1
+fi
+
+# the static check on the fake build must FAIL, and only because of the marker (the check works and the fake cannot be shipped by mistake)
+if [ -x "$OUT/runner_fake_plain" ]; then
+  if tools/check-runner-vm-safe.sh "$OUT/runner_fake_plain" > "$OUT/static_on_fake.out" 2>&1; then echo "FAILED the static check passed a binary with the fake machine in it"; rc=1
+  elif grep -q "fake machine is in this binary" "$OUT/static_on_fake.out"; then echo "ok  the static check refuses a binary with the fake machine in it"
+  else echo "FAILED the static check failed for another reason:"; cat "$OUT/static_on_fake.out"; rc=1; fi
+fi
+
 echo "######## PART B: the real engine (arm64 only)"
 if [ -z "${ENGINE_DIR:-}" ]; then echo "not run: no ENGINE_DIR given"
 elif [ "$(uname -m)" != "aarch64" ] && [ "$(uname -m)" != "arm64" ]; then echo "not run: this machine is $(uname -m), the engine runs arm64 code natively"
@@ -98,9 +118,8 @@ else
     if ! command -v strace >/dev/null 2>&1; then
       echo "strace is not installed"; [ "${REQUIRE_STRACE:-0}" = 1 ] && rc=1
     else
-      T=$OUT/strace; rm -rf "$T"; mkdir -p "$T"
       NETCLS=$(strace_class)
-      TRACE="-f -qq -s 300 -e trace=$NETCLS,execve,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,truncate,mkdir,mkdirat,rmdir,symlink,symlinkat,link,linkat"
+      TRACE="-f -qq -s 300 -e trace=$NETCLS,$FILTER_BASE"
       $CC -O1 -o "$T/control" tests/strace_control.c 2> "$T/control.build.log" || { echo "FAILED build of the strace control"; head "$T/control.build.log"; rc=1; }
       if [ -x "$T/control" ]; then
         # the control: must be flagged (network, a writable path that is not the allowed one, an unlink, a second program)
@@ -130,6 +149,8 @@ PY
         cat "$T/runner.analysis"
         if [ $ar = 0 ]; then echo "ok  no network call, one program start, disk and auxiliary storage opened read-only, nothing but the shared file opened for writing"
         else echo "FAILED the dynamic safety check found $ar violation(s)"; rc=1; fi
+        echo "-- the real runner under strace, with input commands:"
+        traced_input_run "$OUT/ui_runner_vm" real || rc=1
         sha256sum -c "$D/before.sha" > "$T/after.out" 2>&1 && echo "ok  the disk image and the auxiliary storage still have the checksums they had before the run" || { echo "FAILED the disk files changed:"; cat "$T/after.out"; rc=1; }
       fi
     fi

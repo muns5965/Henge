@@ -9,7 +9,7 @@
 
    THE SAFETY SETTINGS. hv_runner_make_config fills the HvVmConfig that is passed to hv_vm_create; read-only storage, no network, no installer boot, no identity (ECID and seed
    0) and no host-provided JIT memory are set there and nowhere else. hv_runner_config_ok re-checks the finished structure and the runner refuses to create the machine when
-   it fails; hv_runner_config_line prints the fields of that same structure. hv_runner_scrub_env removes every HV_* variable first: the engine reads some of them to turn on an
+   it fails; hv_runner_config_line prints the fields of that same structure. hv_runner_scrub_env removes every HV_* variable first, checks that none is left, and the runner stops if one is: the engine reads some of them to turn on an
    installer boot (HV_RUN_INSTALLER, HV_USB_ON_NORMAL), a RAM file (HV_RAM_FILE) or the USB probe (HV_VUSB_PROBE), none of which this runner may ever do.
 
    THE COUNTERS. They say what the runner OBSERVED, not what the guest did:
@@ -81,8 +81,13 @@ int hv_runner_config_ok(const HvVmConfig *c, char *why, size_t cap);
 /* The fields of the structure that is about to be passed to hv_vm_create, as one line "readonly_storage=1 no_net=1 ..."; paths are not included. The ECID and the seed are
    printed only as "identity=none" (they are 0 here, and an identity is never printed). */
 void hv_runner_config_line(const HvVmConfig *c, char *out, size_t cap);
-/* Removes every environment variable whose name starts with HV_. Returns how many; their names (not values) go into names, comma separated, if not NULL. */
-int hv_runner_scrub_env(char *names, size_t cap);
+/* Removes every environment variable whose name starts with HV_, then looks at the environment again. Returns how many were removed, or -1 when the environment is NOT clean:
+   a name too long to handle, an unsetenv that failed, or an HV_ variable still there afterwards (even if unsetenv said it worked). The runner refuses to create the machine
+   on -1. removed and left receive the NAMES (never the values), comma separated, if not NULL; left lists what is still there. No memory is allocated. */
+int hv_runner_scrub_env(char *removed, size_t rcap, char *left, size_t lcap);
+/* The same through a table, so a test can make the removal fail or lie. The runner itself calls hv_runner_scrub_env only. */
+typedef struct { int (*unset)(const char *name); } HvEnvOps;
+int hv_runner_scrub_env_ops(const HvEnvOps *ops, char *removed, size_t rcap, char *left, size_t lcap);
 
 /* The command rules, for tests: 1 valid, 0 not. */
 int hv_runner_cmd_valid(const HvShmCmd *c);

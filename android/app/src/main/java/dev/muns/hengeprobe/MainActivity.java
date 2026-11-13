@@ -871,6 +871,11 @@ public class MainActivity extends Activity {
     /**
      * Reads the slice the two fields name from the app's own ROM copy (and only that one). The worker thread only reads the file and builds the
      * texts; what is shown, the run state and the buttons are settled on the UI thread, by whether the request is still the current one.
+     *
+     * Contract this relies on (keep it true when adding code): every path that starts a run checks "if (running) return;" before it sets
+     * running and calls setButtons(false), so no other run can start while a slice request is in flight; and a slice request calls
+     * publish() exactly once. So DISCARDED_SILENT does not occur on the normal path; if it ever does, the request leaves running and the
+     * buttons to whoever owns them.
      */
     private void runRomSlice() {
         if (running) return;

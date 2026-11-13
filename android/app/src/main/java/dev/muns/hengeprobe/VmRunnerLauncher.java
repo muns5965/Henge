@@ -41,26 +41,27 @@ public final class VmRunnerLauncher {
 
     public static boolean startEnabled() { return START_ENABLED; }
 
-    /** The command the runner would get: fixed, from typed arguments only; the safety settings are not options (they are inside the runner). */
-    static List<String> buildCommand(File nativeLibDir, File shm, File rom, File disk) {
+    /** The command the runner would get: all four options host/ui_runner_vm.c requires (--shm --rom --disk --aux), from typed arguments only; the safety settings are not options (they are inside the runner). */
+    static List<String> buildCommand(File nativeLibDir, File shm, File rom, File disk, File aux) {
         List<String> c = new ArrayList<>();
         c.add(new File(nativeLibDir, LIB_NAME).getPath());
         c.add("--shm"); c.add(shm.getPath());
         c.add("--rom"); c.add(rom.getPath());
         c.add("--disk"); c.add(disk.getPath());
+        c.add("--aux"); c.add(aux.getPath());
         return c;
     }
 
-    public static Result start(File nativeLibDir, File shm, File rom, File disk) {
-        return startWith(REAL, nativeLibDir, shm, rom, disk);
+    public static Result start(File nativeLibDir, File shm, File rom, File disk, File aux) {
+        return startWith(REAL, nativeLibDir, shm, rom, disk, aux);
     }
 
     /** The switch is looked at first, immediately before any process could be made. */
-    static Result startWith(Spawner spawner, File nativeLibDir, File shm, File rom, File disk) {
+    static Result startWith(Spawner spawner, File nativeLibDir, File shm, File rom, File disk, File aux) {
         if (!START_ENABLED) return new Result(false, REFUSAL, null);
-        if (nativeLibDir == null || shm == null || rom == null || disk == null) return new Result(false, "경로가 지정되지 않았습니다", null);
+        if (nativeLibDir == null || shm == null || rom == null || disk == null || aux == null) return new Result(false, "경로가 지정되지 않았습니다", null);
         try {
-            return new Result(true, "started", spawner.spawn(buildCommand(nativeLibDir, shm, rom, disk)));
+            return new Result(true, "started", spawner.spawn(buildCommand(nativeLibDir, shm, rom, disk, aux)));
         } catch (IOException e) {
             return new Result(false, "프로세스 시작 실패: " + e.getMessage(), null);
         }

@@ -19,6 +19,11 @@ x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep 
 x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity creates a process:"; echo "$x"; }
 x=$(grep -nE 'getIntent|getExtra|getStringExtra|getBooleanExtra' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity reads the Intent:"; echo "$x"; }
 grep -A3 'VmRunnerActivity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerActivity must be exported=false"
+# the contract with the native runner: the options host/ui_runner_vm.c requires (from its own "are required" message) must be exactly the options buildCommand adds
+R=host/ui_runner_vm.c
+nat=$(grep -o '"ui_runner_vm: [^"]*are required' $R | grep -o -- '--[a-z-]*' | sort | tr '\n' ' ')
+jav=$(grep -o 'c.add("--[a-z-]*")' $L | grep -o -- '--[a-z-]*' | sort | tr '\n' ' ')
+{ [ -n "$nat" ] && [ "$nat" = "$jav" ]; } || bad "runner requires '$nat' but VmRunnerLauncher.buildCommand adds '$jav'"
 # the APK, when given: both runners in it, both AArch64
 if [ -n "${1:-}" ]; then
   A=$1; RE=${READELF:-readelf}; T=$(mktemp -d)
@@ -28,5 +33,5 @@ if [ -n "${1:-}" ]; then
   done
   rm -rf "$T"
 fi
-[ $fail = 0 ] && echo "OK  C1-3 source rules: START_ENABLED once and false, one ProcessBuilder after the check, runner file named only in VmRunnerLauncher, the info screen starts no process${1:+, APK has both runners (AArch64)}"
+[ $fail = 0 ] && echo "OK  C1-3 source rules: START_ENABLED once and false, one ProcessBuilder after the check, the options match what ui_runner_vm requires, runner file named only in VmRunnerLauncher, the info screen starts no process${1:+, APK has both runners (AArch64)}"
 exit $fail

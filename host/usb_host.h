@@ -14,6 +14,7 @@
 #define HV_USB_EIO -4
 #define HV_USB_ECANCELLED -5   /* strict mode: the caller's cancel flag ended the wait */
 #define HV_USB_EUNCERTAIN -6   /* strict mode: an earlier request on the control endpoint has no settled answer; nothing was sent */
+#define HV_USB_ESTATE -8       /* strict mode: the call does not apply in the control endpoint's present state; nothing changed */
 #define HV_USB_EBUSY -7        /* strict mode: another control request (or a RESET) is in flight; nothing was sent */
 
 /* STRICT control mode (off by default, and nothing in the product turns it on): the virtio-usb messages carry no request number, so after a request that was
@@ -22,9 +23,14 @@
    A new control request or RESET is refused BEFORE anything is sent unless CLEAR. Nothing releases UNCERTAIN except hv_usb_ctrl_reacquire, which no code calls: a late
    answer, a new session and a RESET do not (nothing here shows that answers cannot cross a session). Requests are serialised by refusing, not by queueing. */
 enum { HV_CTRL_CLEAR = 0, HV_CTRL_PENDING = 1, HV_CTRL_UNCERTAIN = 2, HV_CTRL_RESETTING = 3 };
-void hv_usb_set_strict(HvVirtioUsb *d, int on);
+/* Changes the mode. Applied only when no control request or RESET is inside hv_usb_control_c / hv_usb_reset (either mode) and the endpoint is CLEAR; otherwise refused with
+   HV_USB_EBUSY (a call in flight) or HV_USB_EUNCERTAIN (an unsettled request), and nothing changes. Meant for set-up, before the first request. Returns 0 when applied. */
+int hv_usb_set_strict(HvVirtioUsb *d, int on);
 int hv_usb_ctrl_state(HvVirtioUsb *d);
-void hv_usb_ctrl_reacquire(HvVirtioUsb *d);   /* the future recovery hook: only for a caller that has made sure no answer to an earlier request can still come */
+/* The future recovery hook. It only REFUSES wrong calls; it does not show that a release is safe: whoever calls it must have made sure no answer to an earlier request can still
+   come (nothing here can show that). Refused, with nothing changed: HV_USB_EBUSY while a control request or RESET is in flight or any caller is still inside a control call;
+   HV_USB_ESTATE when the endpoint is not UNCERTAIN. Returns 0 when it released. */
+int hv_usb_ctrl_reacquire(HvVirtioUsb *d);
 /* hv_usb_control with a cancel flag (read atomically; honoured in strict mode only). */
 int hv_usb_control_c(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                      void *data, uint16_t wLength, int timeout_ms, volatile int *cancel);

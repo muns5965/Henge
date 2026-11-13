@@ -47,6 +47,8 @@ on:
       - tools/install-plan-test.sh
       - tools/usb-ctrl-test.sh
       - tests/test_usb_ctrl.c
+      - tests/test_shim_ctrl.c
+      - host/libusb_shim.c
       - devices/virtio_usb.c
       - host/usb_host.c
       - tools/check-install-plan-isolation.sh
@@ -250,7 +252,7 @@ jobs:
           bash -n tools/pvg-test.sh
           tools/pvg-test.sh build-pvg
 
-      - name: "Test USB strict control path (host/usb_host.c, devices/virtio_usb.c against a FAKE guest; plain and ASan + UBSan; one process and time limit per scenario). Strict mode is off by default and enabled by no product code. SAFE_BLOCKED is not a recovery; nothing about the real ROM or kernel is shown"
+      - name: "Test USB strict control path (host/usb_host.c, devices/virtio_usb.c, host/libusb_shim.c transfers against a FAKE guest/ROM; plain and ASan + UBSan; one process and time limit per scenario). Strict mode is off by default and enabled by no product code. SAFE_BLOCKED is not a recovery; nothing about the real ROM or kernel is shown"
         run: |
           bash -n tools/usb-ctrl-test.sh
           tools/usb-ctrl-test.sh build-usbctrl

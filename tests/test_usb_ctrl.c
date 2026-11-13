@@ -34,6 +34,7 @@ static int msnow(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts)
 /* ---- the fake guest ---- */
 typedef struct { int delay_ms; int type; uint8_t byte; int bounce; } Act;   /* type 0: no answer; bounce: leave and come back before answering */
 static HvVirtioUsb *g_u;
+static int g_realtime_cv;   /* a creator that does its own pthread_cond_init(NULL): cmono stays 0 */
 static Act g_prog[16]; static int g_nprog;
 static volatile int g_nreq, g_stop, g_taken_reset;
 static pthread_t g_th;
@@ -55,9 +56,9 @@ static void *guest(void *arg) {
 static void dev_new(int strict, const Act *prog, int n) {
     g_u = calloc(1, sizeof *g_u);
     pthread_mutex_init(&g_u->mu, NULL);
-    pthread_cond_init(&g_u->cv, NULL);
+    if (g_realtime_cv) pthread_cond_init(&g_u->cv, NULL); else hv_vusb_cv_init(g_u);
     hv_vusb_set_online(g_u, 1);
-    hv_usb_set_strict(g_u, strict);
+    if (hv_usb_set_strict(g_u, strict) != 0) { printf("FAIL set_strict at set-up refused\n"); bad++; }
     g_nprog = n; for (int i = 0; i < n; i++) g_prog[i] = prog[i];
     g_nreq = 0; g_stop = 0; g_taken_reset = 0;
     pthread_create(&g_th, NULL, guest, NULL);
@@ -243,6 +244,92 @@ static void s_cleanup(void) {   /* no answer ever: UNCERTAIN stays, and the tear
     EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN && took < 500, "cleanup: with no answer coming, UNCERTAIN is just a value: going offline and stopping the guest took %d ms (synthetic objects only; says nothing about the whole host)", took);
 }
 
+
+static void *rstcall(void *a) { (void)a; g_res[1] = hv_usb_reset(g_u, 2000); return NULL; }
+static void s_contract(void) {
+    uint8_t b;
+    /* CLEAR: nothing to reacquire */
+    dev_new(1, NULL, 0);
+    uint32_t g0 = g_u->cgen;
+    EXPECT(hv_usb_ctrl_reacquire(g_u) == HV_USB_ESTATE && g_u->cgen == g0 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR, "contract: reacquire in CLEAR is refused (ESTATE), generation untouched");
+    EXPECT(g_u->cbusy == 0, "contract: no call is counted inside when none runs");
+    dev_end();
+    /* PENDING: neither reacquire nor a mode change; the request still gets its own answer */
+    Act p[] = {{300, HV_VUSB_RSP_DATA, 0x51, 0}};
+    dev_new(1, p, 1);
+    pthread_t t;
+    pthread_create(&t, NULL, conc, (void *)0);
+    usleep(80000);
+    uint32_t g1 = g_u->cgen;
+    EXPECT(hv_usb_ctrl_reacquire(g_u) == HV_USB_EBUSY && g_u->cgen == g1, "contract: reacquire while PENDING is refused (EBUSY), generation untouched");
+    EXPECT(hv_usb_set_strict(g_u, 0) == HV_USB_EBUSY && g_u->cstrict == 1, "contract: set_strict while PENDING is refused (EBUSY), mode unchanged");
+    pthread_join(t, NULL);
+    EXPECT(g_res[0] == 1 && g_resb[0] == 0x51 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && g_u->cbusy == 0, "contract: the request in flight got its own answer after the refused calls (%d %02x), nothing left counted", g_res[0], g_resb[0]);
+    dev_end();
+    /* RESETTING */
+    Act q[] = {{300, HV_VUSB_RSP_RESET, 0, 0}};
+    dev_new(1, q, 1);
+    pthread_create(&t, NULL, rstcall, NULL);
+    usleep(80000);
+    EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_RESETTING && hv_usb_ctrl_reacquire(g_u) == HV_USB_EBUSY && hv_usb_set_strict(g_u, 0) == HV_USB_EBUSY, "contract: during a RESET both reacquire and set_strict are refused (EBUSY)");
+    pthread_join(t, NULL);
+    EXPECT(g_res[1] == 0 && g_u->cbusy == 0, "contract: the RESET itself finished normally (%d)", g_res[1]);
+    dev_end();
+    /* UNCERTAIN: the mode cannot be turned off from under it; the one allowed release works and is the only way */
+    Act none[] = {{0, 0, 0, 0}};
+    dev_new(1, none, 1);
+    EXPECT(ctl(&b, 80, NULL) == HV_USB_ETIMEOUT && hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN, "contract: set-up for UNCERTAIN");
+    EXPECT(hv_usb_set_strict(g_u, 0) == HV_USB_EUNCERTAIN && g_u->cstrict == 1, "contract: set_strict in UNCERTAIN is refused (EUNCERTAIN): strict cannot be dropped to forget an unsettled request");
+    EXPECT(hv_usb_ctrl_reacquire(g_u) == 0 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR, "contract: reacquire in UNCERTAIN with no call inside releases (SAFE_RECOVERED only in the test's sense: the caller vouches for isolation, nothing here shows it)");
+    EXPECT(hv_usb_set_strict(g_u, 0) == 0 && g_u->cstrict == 0 && hv_usb_set_strict(g_u, 1) == 0 && g_u->cstrict == 1, "contract: from CLEAR with nothing inside, the mode can be changed");
+    dev_end();
+    /* a legacy call in flight: CLEAR alone does not mean idle */
+    Act lp[] = {{300, HV_VUSB_RSP_DATA, 0x52, 0}};
+    dev_new(0, lp, 1);
+    pthread_create(&t, NULL, conc, (void *)0);
+    usleep(80000);
+    EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && hv_usb_set_strict(g_u, 1) == HV_USB_EBUSY && g_u->cstrict == 0, "contract: a legacy call in flight (state still CLEAR): set_strict is refused (EBUSY): the mode is not switched under it");
+    pthread_join(t, NULL);
+    EXPECT(g_res[0] == 1 && g_resb[0] == 0x52 && hv_usb_set_strict(g_u, 1) == 0, "contract: the legacy call kept its own answer; after it left, the mode can change");
+    dev_end();
+}
+
+static HvVirtioUsb *g_su; static volatile int g_sstop, g_sbad;
+static void *flip(void *a) { (void)a; int i = 0; while (!g_sstop) { hv_usb_set_strict(g_su, i++ & 1); if (hv_usb_ctrl_state(g_su) == HV_CTRL_UNCERTAIN && !g_su->cstrict) g_sbad++; usleep(300); } return NULL; }
+static void *callr(void *a) { (void)a; uint8_t b; while (!g_sstop) { int r = hv_usb_control_c(g_su, 0x80, 6, 0x100, 0, &b, 1, 15, NULL); if (r > 1 || r < -8) g_sbad++; if (r == HV_USB_EUNCERTAIN) hv_usb_ctrl_reacquire(g_su); } return NULL; }
+static void s_modeflip(void) {   /* set_strict and control calls racing: the mode is read once per call; ASan finds anything worse */
+    Act none[] = {{0, 0, 0, 0}};
+    dev_new(1, none, 1);
+    g_su = g_u; g_sstop = 0; g_sbad = 0;
+    pthread_t t[3];
+    pthread_create(&t[0], NULL, flip, NULL); pthread_create(&t[1], NULL, callr, NULL); pthread_create(&t[2], NULL, callr, NULL);
+    sleep(2);
+    g_sstop = 1;
+    for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+    EXPECT(g_sbad == 0 && g_u->cbusy == 0, "modeflip: 2 s of mode changes against control calls: no result outside the defined codes, strict never dropped while UNCERTAIN, nothing left counted inside (%d odd, cbusy %d)", g_sbad, g_u->cbusy);
+    dev_end();
+}
+
+static void s_clock(void) {
+    for (int rt = 0; rt < 2; rt++) {
+        g_realtime_cv = rt;
+        Act none[] = {{0, 0, 0, 0}};
+        dev_new(0, none, 1);
+        EXPECT(rt || g_u->cmono == 1, "clock(%s): the condvar clock flag is as the creator made it (cmono=%d; 1 = monotonic)", rt ? "realtime fallback" : "monotonic", g_u->cmono);
+        EXPECT(!rt || g_u->cmono == 0, "clock(%s): a creator that does its own init keeps cmono=0", rt ? "realtime fallback" : "monotonic");
+        uint8_t b;
+        int t0 = msnow(), r = ctl(&b, 150, NULL), took = msnow() - t0;   /* the legacy hv_vusb_recv path */
+        EXPECT(r == HV_USB_ETIMEOUT && took >= 120 && took < 700, "clock(%s): the legacy wait ends at its timeout: %d ms (%d)", rt ? "realtime fallback" : "monotonic", took, r);
+        dev_end();
+        g_realtime_cv = 0;
+        dev_new(1, none, 1);
+        t0 = msnow(); r = ctl(&b, 130, NULL); took = msnow() - t0;       /* hv_vusb_recv_ex */
+        EXPECT(r == HV_USB_ETIMEOUT && took >= 100 && took < 700, "clock(%s): the strict wait ends at its timeout: %d ms (%d)", rt ? "realtime fallback" : "monotonic", took, r);
+        dev_end();
+    }
+    EXPECT(1, "clock: a wall-clock jump cannot be made here: not shown that a jump leaves the waits alone (the strict deadline is monotonic; with cmono=1 so is each slice)");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     alarm(150);
@@ -258,6 +345,9 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "session")) s_session();
     if (all || !strcmp(sc, "locks")) s_locks();
     if (all || !strcmp(sc, "cleanup")) s_cleanup();
+    if (all || !strcmp(sc, "contract")) s_contract();
+    if (all || !strcmp(sc, "modeflip")) s_modeflip();
+    if (all || !strcmp(sc, "clock")) s_clock();
     printf("%s test_usb_ctrl %s: %d failed\n", bad ? "FAIL" : "PASS", sc, bad);
     return bad ? 1 : 0;
 }

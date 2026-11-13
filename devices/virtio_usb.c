@@ -153,7 +153,7 @@ HvVirtioUsb *hv_virtio_usb_create(HvMachine *m, HvPcie *bus) {
     d->vio.notify = notify;
     d->log = getenv("HV_VUSB_LOG") != NULL;
     pthread_mutex_init(&d->mu, NULL);
-    pthread_cond_init(&d->cv, NULL);
+    hv_vusb_cv_init(d);
     int slot = hv_pcie_attach(bus, &d->vio.pci);
     if (slot < 0) {
         free(d);
@@ -206,11 +206,40 @@ int hv_vusb_send_in(HvVirtioUsb *d, uint8_t ep, uint32_t len) {
     return ok ? 0 : -1;
 }
 
+void hv_vusb_cv_init(HvVirtioUsb *d) {
+#if !defined(__APPLE__)
+    pthread_condattr_t a;
+    if (pthread_condattr_init(&a) == 0) {
+        if (pthread_condattr_setclock(&a, CLOCK_MONOTONIC) == 0 && pthread_cond_init(&d->cv, &a) == 0) {
+            d->cmono = 1;
+            pthread_condattr_destroy(&a);
+            return;
+        }
+        pthread_condattr_destroy(&a);
+    }
+#endif
+    pthread_cond_init(&d->cv, NULL);
+    d->cmono = 0;
+}
+
+/* An absolute time `ms` from now on the clock d->cv waits on. */
+static struct timespec cv_until(const HvVirtioUsb *d, int ms) {
+    struct timespec t;
+    if (d->cmono) {
+        clock_gettime(CLOCK_MONOTONIC, &t);
+    } else {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        t.tv_sec = now.tv_sec, t.tv_nsec = now.tv_usec * 1000;
+    }
+    t.tv_sec += ms / 1000;
+    t.tv_nsec += (long)(ms % 1000) * 1000000;
+    while (t.tv_nsec >= 1000000000) t.tv_sec++, t.tv_nsec -= 1000000000;
+    return t;
+}
+
 int hv_vusb_recv(HvVirtioUsb *d, uint8_t ep, HvVusbMsg *out, int timeout_ms) {
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    struct timespec until = {now.tv_sec + timeout_ms / 1000, now.tv_usec * 1000 + (long)(timeout_ms % 1000) * 1000000};
-    if (until.tv_nsec >= 1000000000) until.tv_sec++, until.tv_nsec -= 1000000000;
+    struct timespec until = cv_until(d, timeout_ms);
     pthread_mutex_lock(&d->mu);
     uint32_t session = d->session;
     for (;;) {
@@ -270,10 +299,7 @@ int hv_vusb_recv_ex(HvVirtioUsb *d, uint8_t ep, int reset_only, HvVusbMsg *out, 
             return 0;
         }
         int slice = left < 50 ? (int)left : 50;
-        struct timeval now;
-        gettimeofday(&now, NULL);
-        struct timespec until = {now.tv_sec, now.tv_usec * 1000 + (long)slice * 1000000};
-        while (until.tv_nsec >= 1000000000) until.tv_sec++, until.tv_nsec -= 1000000000;
+        struct timespec until = cv_until(d, slice);
         pthread_cond_timedwait(&d->cv, &d->mu, &until);   /* a slice: whatever ended it, the loop looks again */
     }
 }

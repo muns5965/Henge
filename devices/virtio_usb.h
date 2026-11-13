@@ -58,8 +58,13 @@ typedef struct HvVirtioUsb {
     /* The control endpoint's state (host/usb_host.c; all zero = the legacy behaviour, nothing tracked): see hv_usb_set_strict. Guarded by usb_host.c's own mutex, never by mu. */
     int cstrict, cstate;
     uint32_t cgen;
+    int cbusy;                     /* control/RESET calls inside hv_usb_control_c / hv_usb_reset (both modes) */
+    int cmono;                     /* cv was initialised on CLOCK_MONOTONIC (hv_vusb_cv_init); zero = realtime, as pthread_cond_init(NULL) makes it */
 } HvVirtioUsb;
 
+/* Initialise d->cv on the monotonic clock where the platform can (not Apple: no pthread_condattr_setclock), and record which, so the timed waits use the same one. A creator that
+   calls pthread_cond_init(&d->cv, NULL) itself keeps the old realtime behaviour (cmono = 0). */
+void hv_vusb_cv_init(HvVirtioUsb *d);
 HvVirtioUsb *hv_virtio_usb_create(HvMachine *m, HvPcie *bus);
 /* CPU thread (board tick): move queued requests into guest buffers. */
 void hv_virtio_usb_poll(HvVirtioUsb *d);

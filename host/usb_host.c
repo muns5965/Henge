@@ -41,11 +41,15 @@ int64_t hv_usb_wait_online(HvVirtioUsb *d, int timeout_ms) {
    state check, reservation, queueing and the settling transition, and is NOT held while waiting for an answer. Each transition is made by the request's own caller. */
 static pthread_mutex_t g_cmu = PTHREAD_MUTEX_INITIALIZER;
 
-void hv_usb_set_strict(HvVirtioUsb *d, int on) {
+int hv_usb_set_strict(HvVirtioUsb *d, int on) {
     pthread_mutex_lock(&g_cmu);
-    d->cstrict = on;
-    d->cstate = HV_CTRL_CLEAR;
+    int rc = 0;
+    if (d->cbusy > 0) rc = HV_USB_EBUSY;
+    else if (d->cstate == HV_CTRL_UNCERTAIN) rc = HV_USB_EUNCERTAIN;
+    else if (d->cstate != HV_CTRL_CLEAR) rc = HV_USB_EBUSY;
+    else d->cstrict = on != 0;
     pthread_mutex_unlock(&g_cmu);
+    return rc;
 }
 int hv_usb_ctrl_state(HvVirtioUsb *d) {
     pthread_mutex_lock(&g_cmu);
@@ -53,10 +57,27 @@ int hv_usb_ctrl_state(HvVirtioUsb *d) {
     pthread_mutex_unlock(&g_cmu);
     return s;
 }
-void hv_usb_ctrl_reacquire(HvVirtioUsb *d) {
+int hv_usb_ctrl_reacquire(HvVirtioUsb *d) {
     pthread_mutex_lock(&g_cmu);
-    d->cstate = HV_CTRL_CLEAR;
-    d->cgen++;
+    int rc = 0;
+    if (d->cbusy > 0 || d->cstate == HV_CTRL_PENDING || d->cstate == HV_CTRL_RESETTING) rc = HV_USB_EBUSY;
+    else if (d->cstate != HV_CTRL_UNCERTAIN) rc = HV_USB_ESTATE;
+    else d->cstate = HV_CTRL_CLEAR, d->cgen++;
+    pthread_mutex_unlock(&g_cmu);
+    return rc;
+}
+
+/* Every control / RESET call is counted while it is inside, and reads the mode once, at entry: set_strict cannot change the mode under a call. */
+static int call_enter(HvVirtioUsb *d) {
+    pthread_mutex_lock(&g_cmu);
+    int strict = d->cstrict;
+    d->cbusy++;
+    pthread_mutex_unlock(&g_cmu);
+    return strict;
+}
+static void call_leave(HvVirtioUsb *d) {
+    pthread_mutex_lock(&g_cmu);
+    d->cbusy--;
     pthread_mutex_unlock(&g_cmu);
 }
 
@@ -132,8 +153,7 @@ static int reset_strict(HvVirtioUsb *d, int timeout_ms) {
     return out;
 }
 
-int hv_usb_reset(HvVirtioUsb *d, int timeout_ms) {
-    if (d->cstrict) return reset_strict(d, timeout_ms);
+static int reset_legacy(HvVirtioUsb *d, int timeout_ms) {
     if (hv_vusb_send(d, HV_VUSB_REQ_RESET, 0, NULL, 0) != 0) return HV_USB_EGONE;
     HvVusbMsg m;
     int r = hv_vusb_recv(d, 0xff, &m, timeout_ms);
@@ -144,14 +164,19 @@ int hv_usb_reset(HvVirtioUsb *d, int timeout_ms) {
     return ok ? 0 : HV_USB_EIO;
 }
 
+int hv_usb_reset(HvVirtioUsb *d, int timeout_ms) {
+    int strict = call_enter(d);
+    int r = strict ? reset_strict(d, timeout_ms) : reset_legacy(d, timeout_ms);
+    call_leave(d);
+    return r;
+}
+
 int hv_usb_control(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                    void *data, uint16_t wLength, int timeout_ms) {
     return hv_usb_control_c(d, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout_ms, NULL);
 }
 
-int hv_usb_control_c(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
-                     void *data, uint16_t wLength, int timeout_ms, volatile int *cancel) {
-    if (d->cstrict) return ctrl_strict(d, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout_ms, cancel);
+static int ctrl_legacy(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex, void *data, uint16_t wLength, int timeout_ms) {
     int in = (bmRequestType & 0x80) != 0;
     uint32_t len = 8 + (in ? 0 : wLength);
     uint8_t *req = malloc(len);
@@ -167,6 +192,15 @@ int hv_usb_control_c(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, ui
     r = wait_ep(d, 0, in ? data : NULL, in ? wLength : 0, timeout_ms);
     if (r < 0) return r;
     return in ? r : wLength;
+}
+
+int hv_usb_control_c(HvVirtioUsb *d, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
+                     void *data, uint16_t wLength, int timeout_ms, volatile int *cancel) {
+    int strict = call_enter(d);
+    int r = strict ? ctrl_strict(d, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout_ms, cancel)
+                   : ctrl_legacy(d, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout_ms);
+    call_leave(d);
+    return r;
 }
 
 int hv_usb_bulk(HvVirtioUsb *d, uint8_t ep, void *data, uint32_t len, int timeout_ms) {

@@ -10,7 +10,11 @@
      seq_cancel     cancel during stage 1: CANCELLED at stage 1; stage 2 is not started
      seq_before     cancel set before the run: stage 0 is not started
      seq_begin      stage 1's transfer cannot be started: BEGIN_FAILED at stage 1, stage 2 not started
-     verdict        the pure verdict function with the cancelled flag
+     seq_race       stage 0's transfer start itself bounces the device (leave and return before begin() returns): still seen, because the session was taken before
+     race_old       the same bounce observed WITHOUT a baseline taken before it is missed (NO_LEAVE): why the baseline is taken before begin()
+     check_timeout  the caller's check runs past its bound: HV_TR_CHECK_TIMEOUT, its answers are not used
+     check_cancel   cancel while the check runs: a check that honours the flag returns early, the stage is CANCELLED, quickly
+     verdict        the pure verdict function with the cancelled flag and the check bound
    Exit 0 when the scenario produced what it expects. */
 #define main irecv_test_main
 #include "test_irecv.c"
@@ -44,6 +48,22 @@ static void *actor(void *arg) {
     return NULL;
 }
 
+static void race_old(void) {
+    HvTrSpec sp = {300, 300, 0x1227, 0x1283};
+    HvTrObs o;
+    char note[240];
+    uint32_t base = 0;
+    hv_vusb_online(g_u, &base);                  /* the baseline the run takes before the transfer is started */
+    hv_vusb_set_online(g_u, 0); hv_vusb_set_online(g_u, 1);   /* the transfer's start bounces the device */
+    memset(&o, 0, sizeof o);
+    hv_transition_observe_c(g_u, &sp, NULL, &o);   /* looks at the session only now: the bounce is already in it */
+    int v1 = hv_transition_verdict(&o, &sp, note, sizeof note);
+    EXPECT(v1 == HV_TR_NO_LEAVE, "race_old: an observation that starts after the bounce misses it (%s)", hv_transition_name(v1));
+    memset(&o, 0, sizeof o);
+    hv_transition_observe_b(g_u, &sp, NULL, base, &o);   /* the same bounce against the earlier baseline */
+    EXPECT(o.left && o.arrived && o.fast, "race_old: against a baseline taken before it, the bounce is seen (left %d, arrived %d, fast %d)", o.left, o.arrived, o.fast);
+}
+
 static void single(const char *sc) {
     HvTrSpec sp = {3000, 3000, 0x1227, 0x1283};
     Plan p = {-1, -1, -1};
@@ -69,18 +89,26 @@ static void single(const char *sc) {
 }
 
 /* ---- runs ---- */
-typedef struct { int begun[4]; int fail_begin; irecv_client_t cur; Plan plans[4]; pthread_t th[4]; int started[4]; int cancel_in_stage; } Run;
+typedef struct { int begun[4]; int fail_begin; irecv_client_t cur; Plan plans[4]; pthread_t th[4]; int started[4]; int bounce_in_begin; int check_mode; } Run;   /* check_mode: 0 normal, 1 sleeps 600 ms ignoring its bound, 2 polls cancel until the deadline */
 static Run R;
 static int step_begin(int stage, void *user) {
     (void)user;
     R.begun[stage]++;
     if (stage == R.fail_begin) return -1;
+    if (stage == 0 && R.bounce_in_begin) { hv_vusb_set_online(g_u, 0); hv_vusb_set_online(g_u, 1); return 0; }   /* leave and return inside the start */
     pthread_create(&R.th[stage], NULL, actor, &R.plans[stage]);
     R.started[stage] = 1;
     return 0;
 }
-static void step_check(int stage, HvTrObs *o, void *user) {
+static void step_check(int stage, HvTrObs *o, const HvTrCheckCtx *ctx, void *user) {
     (void)stage; (void)user;
+    if (R.check_mode == 1) { usleep(600000); o->opened = 1; o->mode = 0x1227; o->old_io_failed = 1; return; }
+    if (R.check_mode == 2) {
+        int t = msnow();
+        while (msnow() - t < ctx->deadline_ms && !(ctx->cancel && __atomic_load_n(ctx->cancel, __ATOMIC_ACQUIRE))) usleep(2000);
+        o->opened = 1; o->mode = 0x1227; o->old_io_failed = 1;
+        return;
+    }
     irecv_client_t nw = NULL;
     o->opened = irecv_open_with_ecid_and_attempts(&nw, g_ecid, 2) == IRECV_E_SUCCESS;
     if (o->opened) { int m = 0; irecv_get_mode(nw, &m); o->mode = m; }
@@ -98,7 +126,7 @@ static void run(const char *sc) {
     R.fail_begin = -1;
     for (int i = 0; i < 4; i++) R.plans[i] = (Plan){-1, -1, -1};
     HvTrSpec sp[3] = {{2000, 2000, 0x1227, 0x1283}, {2000, 2000, 0x1227, 0x1283}, {2000, 2000, 0x1227, 0x1283}};
-    int want = HV_TR_OK, want_stage = -1, want_done = 3;
+    int want = HV_TR_OK, want_stage = -1, want_done = 3, want_fast0 = 0;
     int begun_expect[3] = {1, 1, 1};
     R.plans[0] = (Plan){50, 250, -1};
     R.plans[1] = (Plan){50, 50, -1};     /* back at once: seen as one look */
@@ -107,6 +135,9 @@ static void run(const char *sc) {
     if (!strcmp(sc, "seq_cancel")) { R.plans[1] = (Plan){50, -1, 400}; want = HV_TR_CANCELLED, want_stage = 1, want_done = 1; begun_expect[2] = 0; }
     if (!strcmp(sc, "seq_before")) { __atomic_store_n(&g_cancel, 1, __ATOMIC_RELEASE); want = HV_TR_CANCELLED, want_stage = 0, want_done = 0; begun_expect[0] = begun_expect[1] = begun_expect[2] = 0; }
     if (!strcmp(sc, "seq_begin")) { R.fail_begin = 1; want = HV_TR_BEGIN_FAILED, want_stage = 1, want_done = 1; begun_expect[2] = 0; }
+    if (!strcmp(sc, "seq_race")) { R.bounce_in_begin = 1; want_fast0 = 1; }
+    if (!strcmp(sc, "check_timeout")) { R.check_mode = 1; sp[0].check_ms = 200; want = HV_TR_CHECK_TIMEOUT, want_stage = 0, want_done = 0; begun_expect[1] = begun_expect[2] = 0; }
+    if (!strcmp(sc, "check_cancel")) { R.check_mode = 2; sp[0].check_ms = 3000; R.plans[0] = (Plan){50, 100, 350}; want = HV_TR_CANCELLED, want_stage = 0, want_done = 0; begun_expect[1] = begun_expect[2] = 0; }
     int opened = irecv_open_with_ecid_and_attempts(&R.cur, g_ecid, 3) == IRECV_E_SUCCESS;
     EXPECT(opened, "the first client opened");
     if (!opened) return;
@@ -117,6 +148,9 @@ static void run(const char *sc) {
     int v = hv_transition_run(g_u, sp, 3, &g_cancel, &steps, NULL, &out, note, sizeof note);
     printf("scenario %s: run %s after %d ms, %d stage(s) done, failed stage %d -- %s\n", sc, hv_transition_name(v), msnow() - t0, out.stages_done, out.failed_stage, note);
     for (int i = 0; i < 4; i++) if (R.started[i]) pthread_join(R.th[i], NULL);
+    if (!strcmp(sc, "check_cancel")) EXPECT(msnow() - t0 < 900, "scenario check_cancel: the run ended soon after the cancel, not at the check's 3 s deadline (%d ms)", msnow() - t0);
+    if (!strcmp(sc, "check_timeout")) EXPECT(strstr(note, "took") != NULL, "scenario check_timeout: the sentence names the overrun");
+    (void)want_fast0;
     EXPECT(v == want && out.verdict == want, "scenario %s verdict is %s", sc, hv_transition_name(want));
     EXPECT(out.failed_stage == want_stage && out.stages_done == want_done, "scenario %s: failed stage %d, stages done %d", sc, want_stage, want_done);
     for (int i = 0; i < 3; i++) EXPECT(R.begun[i] == begun_expect[i], "scenario %s: stage %d transfer started %d time(s) (expected %d)", sc, i, R.begun[i], begun_expect[i]);
@@ -132,6 +166,11 @@ static void verdict(void) {
     EXPECT(hv_transition_verdict(&o, &sp, n, sizeof n) == HV_TR_CANCELLED, "cancelled wins over an otherwise good observation");
     o.left = 0; o.arrived = 0;
     EXPECT(hv_transition_verdict(&o, &sp, n, sizeof n) == HV_TR_CANCELLED, "cancelled is not NO_LEAVE");
+    o.cancelled = 0; o.left = 1; o.arrived = 1;
+    o.check_took_ms = 4999; EXPECT(hv_transition_verdict(&o, &sp, n, sizeof n) == HV_TR_OK, "a check of 4999 ms is within the default bound (5000)");
+    o.check_took_ms = 5001; EXPECT(hv_transition_verdict(&o, &sp, n, sizeof n) == HV_TR_CHECK_TIMEOUT, "a check of 5001 ms is over the default bound");
+    sp.check_ms = 100; o.check_took_ms = 101; EXPECT(hv_transition_verdict(&o, &sp, n, sizeof n) == HV_TR_CHECK_TIMEOUT, "a check over the spec's own bound (100 ms)");
+    EXPECT(!strcmp(hv_transition_name(HV_TR_CHECK_TIMEOUT), "check_timeout"), "name of check_timeout");
     EXPECT(!strcmp(hv_transition_name(HV_TR_CANCELLED), "cancelled") && !strcmp(hv_transition_name(HV_TR_BEGIN_FAILED), "begin_failed"), "names");
 }
 
@@ -147,7 +186,8 @@ int main(int argc, char **argv) {
     pthread_create(&rt, NULL, rom, NULL);
     hv_vusb_set_online(g_u, 1);
     hv_libusb_shim_attach(g_u);
-    if (!strncmp(sc, "seq_", 4)) run(sc);
+    if (!strcmp(sc, "race_old")) { irecv_client_t c0 = NULL; EXPECT(irecv_open_with_ecid_and_attempts(&c0, g_ecid, 3) == IRECV_E_SUCCESS, "the first client opened"); race_old(); }
+    else if (!strncmp(sc, "seq_", 4) || !strncmp(sc, "check_", 6)) run(sc);
     else {
         irecv_client_t c = NULL;
         EXPECT(irecv_open_with_ecid_and_attempts(&c, g_ecid, 3) == IRECV_E_SUCCESS, "the first client opened");

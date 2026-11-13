@@ -13,8 +13,13 @@ static int stop_now(volatile int *cancel) { return cancel && __atomic_load_n(can
 void hv_transition_observe(HvVirtioUsb *usb, const HvTrSpec *spec, HvTrObs *o) { hv_transition_observe_c(usb, spec, NULL, o); }
 
 void hv_transition_observe_c(HvVirtioUsb *usb, const HvTrSpec *spec, volatile int *cancel, HvTrObs *o) {
-    uint32_t s0 = 0, s = 0;
+    uint32_t s0 = 0;
     hv_vusb_online(usb, &s0);
+    hv_transition_observe_b(usb, spec, cancel, s0, o);
+}
+
+void hv_transition_observe_b(HvVirtioUsb *usb, const HvTrSpec *spec, volatile int *cancel, uint32_t s0, HvTrObs *o) {
+    uint32_t s = 0;
     int t0 = now_ms(), on;
     o->left = o->arrived = o->fast = o->cancelled = 0;
     o->left_after_ms = o->arrived_after_ms = 0;
@@ -41,6 +46,8 @@ int hv_transition_verdict(const HvTrObs *o, const HvTrSpec *spec, char *note, in
     if (o->cancelled) FAIL(HV_TR_CANCELLED, "cancelled by the caller while waiting for the device (not a finding about the device)");
     if (!o->left) FAIL(HV_TR_NO_LEAVE, "the device did not leave the bus within %d ms after the transfer (the transfer function returning is not the device switching stages)", spec->leave_ms);
     if (!o->arrived) FAIL(HV_TR_NO_ARRIVE, "the device left (after %d ms) and did not come back within %d ms", o->left_after_ms, spec->arrive_ms);
+    {   int bound = spec->check_ms > 0 ? spec->check_ms : HV_TR_CHECK_DEFAULT_MS;
+        if (o->check_took_ms > bound) FAIL(HV_TR_CHECK_TIMEOUT, "the check on the returned device took %d ms, over its bound of %d ms (its result is not used)", o->check_took_ms, bound); }
     if (!o->opened) FAIL(HV_TR_OPEN_FAILED, "the device came back but a new client could not be opened on it");
     if (o->mode < spec->mode_lo || o->mode > spec->mode_hi) FAIL(HV_TR_BAD_MODE, "the new device reports product id 0x%04x, outside the accepted 0x%04x-0x%04x", o->mode, spec->mode_lo, spec->mode_hi);
     if (o->old_io_hung) FAIL(HV_TR_OLD_HANDLE_HUNG, "an operation on the old client did not return: the old handle must fail, not wait");
@@ -61,6 +68,7 @@ const char *hv_transition_name(int r) {
     case HV_TR_OLD_HANDLE_HUNG: return "old_handle_hung";
     case HV_TR_CANCELLED: return "cancelled";
     case HV_TR_BEGIN_FAILED: return "begin_failed";
+    case HV_TR_CHECK_TIMEOUT: return "check_timeout";
     }
     return "?";
 }
@@ -72,10 +80,18 @@ int hv_transition_run(HvVirtioUsb *usb, const HvTrSpec *specs, int n, volatile i
         char one[200];
         int v;
         if (stop_now(cancel)) { out->verdict = HV_TR_CANCELLED, out->failed_stage = i; snprintf(note, (size_t)cap, "stage %d: cancelled before it started", i); return HV_TR_CANCELLED; }
+        uint32_t base = 0;
+        hv_vusb_online(usb, &base);   /* before the transfer is started: a leave and return inside begin() still show as a changed session */
         if (steps->begin(i, user) != 0) { out->verdict = HV_TR_BEGIN_FAILED, out->failed_stage = i; snprintf(note, (size_t)cap, "stage %d: the transfer could not be started", i); return HV_TR_BEGIN_FAILED; }
         HvTrObs o; memset(&o, 0, sizeof o);
-        hv_transition_observe_c(usb, &specs[i], cancel, &o);
-        if (o.arrived && !o.cancelled) steps->check(i, &o, user);
+        hv_transition_observe_b(usb, &specs[i], cancel, base, &o);
+        if (o.arrived && !o.cancelled) {
+            HvTrCheckCtx ctx = {cancel, specs[i].check_ms > 0 ? specs[i].check_ms : HV_TR_CHECK_DEFAULT_MS};
+            int t = now_ms();
+            steps->check(i, &o, &ctx, user);
+            o.check_took_ms = now_ms() - t;
+            if (stop_now(cancel)) o.cancelled = 1;
+        }
         v = hv_transition_verdict(&o, &specs[i], one, sizeof one);
         if (v != HV_TR_OK) { out->verdict = v, out->failed_stage = i; snprintf(note, (size_t)cap, "stage %d: %s", i, one); return v; }
         out->stages_done++;

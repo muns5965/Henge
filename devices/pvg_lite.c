@@ -76,6 +76,8 @@ struct HvPvgLite {
     double last_tally;
     _Atomic(HvPvgMetal *) metal; /* release-published after the cached layer is applied */
     int metal_tried;
+    const HvPvgBackend *be;   /* never NULL after create: Apple's table unless set_backend replaced it */
+    int be_state;
     uint32_t stamps_pending; /* channels Metal finished, for the next poll */
 };
 
@@ -99,14 +101,23 @@ static void do_root(HvPvgLite *p) {
     uint32_t off = reg(p, 0x1010), size = reg(p, 0x1004), wp = reg(p, 0x1008);
     if (!buf || size <= off) return;
     uint32_t ring = size - off;
+    /* The pointers are free-running 32-bit counters. What is pending is wp - rp; a guest that never has more than the ring's worth in flight keeps it <= ring. More than that,
+       or a command that is not entirely inside what is pending, is not a command: the rest is dropped, so the walk below always ends (each step moves rp by >= 12 and never past wp). */
+    if ((uint32_t)(wp - p->root_rp) > ring) {
+        fprintf(stderr, "hengevm: pvg-lite: root ring: %x bytes pending in a %x-byte ring; dropped\n", (unsigned)(wp - p->root_rp), ring);
+        p->root_rp = wp;
+        return;
+    }
     while (p->root_rp != wp) {
-        uint32_t at = p->root_rp % ring, hdr[3];
-        for (int i = 0; i < 3; i++) {
-            uint32_t *w = guest32(p, buf + off + (at + 4u * i) % ring);
-            hdr[i] = w ? *w : 0;
-        }
-        if (hdr[1] < 12 || hdr[1] > ring) {
-            fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x\n", hdr[0], hdr[1]);
+        uint32_t pending = wp - p->root_rp;
+        uint32_t at = p->root_rp % ring, hdr[3] = {0, 0, 0};
+        if (pending >= 12)
+            for (int i = 0; i < 3; i++) {
+                uint32_t *w = guest32(p, buf + off + (at + 4u * i) % ring);
+                hdr[i] = w ? *w : 0;
+            }
+        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending) {
+            fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x (%x bytes pending)\n", hdr[0], hdr[1], pending);
             p->root_rp = wp;
             break;
         }
@@ -361,6 +372,29 @@ void hv_pvg_lite_complete(HvPvgLite *p, uint32_t ch, uint32_t stamp) {
     if (p->m->ncpus == 1) hv_machine_wake(p->m);
 }
 
+const HvPvgBackend *hv_pvg_apple_backend(void) {
+    static const HvPvgBackend apple = {"apple", hv_pvg_metal_create, hv_pvg_metal_submit, hv_pvg_metal_snapshot, hv_pvg_metal_frame,
+                                       hv_pvg_metal_unmap, hv_pvg_metal_cursor_moved, hv_pvg_metal_set_layer, hv_pvg_metal_gpu_frames};
+    return &apple;
+}
+
+int hv_pvg_lite_set_backend(HvPvgLite *p, const HvPvgBackend *backend) {
+    if (!p || !backend || !backend->create || !backend->submit) return -1;
+    os_unfair_lock_lock(&p->layer_lock);
+    int ok = !p->metal_tried;
+    if (ok) p->be = backend;
+    os_unfair_lock_unlock(&p->layer_lock);
+    return ok ? 0 : -1;
+}
+
+int hv_pvg_lite_backend_state(HvPvgLite *p) {
+    if (!p) return HV_PVG_BACKEND_NOT_TRIED;
+    os_unfair_lock_lock(&p->layer_lock);
+    int st = p->be_state;
+    os_unfair_lock_unlock(&p->layer_lock);
+    return st;
+}
+
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer) {
     if (!p) return;
     CFTypeRef retained = layer ? CFRetain(layer) : NULL;
@@ -369,7 +403,7 @@ void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer) {
     p->layer = retained;
     p->layer_set = 1;
     HvPvgMetal *metal = atomic_load_explicit(&p->metal, memory_order_acquire);
-    if (metal) hv_pvg_metal_set_layer(metal, layer);
+    if (metal && p->be->set_layer) p->be->set_layer(metal, layer);
     os_unfair_lock_unlock(&p->layer_lock);
     if (previous) CFRelease(previous);
 }
@@ -379,15 +413,15 @@ void hv_pvg_lite_barrier_stats(HvPvgLite *p, uint64_t out[4]) {
 }
 
 uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p) {
-    return p && p->metal ? hv_pvg_metal_gpu_frames(p->metal) : 0;
+    return p && p->metal && p->be->gpu_frames ? p->be->gpu_frames(p->metal) : 0;
 }
 
 int hv_pvg_lite_snapshot(HvPvgLite *p, uint8_t *bgra, uint32_t width, uint32_t height) {
-    return p && p->metal ? hv_pvg_metal_snapshot(p->metal, bgra, width, height) : -1;
+    return p && p->metal && p->be->snapshot ? p->be->snapshot(p->metal, bgra, width, height) : -1;
 }
 
 int hv_pvg_lite_frame(HvPvgLite *p, const uint8_t **pixels, uint32_t *width, uint32_t *height) {
-    return p && p->metal ? hv_pvg_metal_frame(p->metal, pixels, width, height) : -1;
+    return p && p->metal && p->be->frame ? p->be->frame(p->metal, pixels, width, height) : -1;
 }
 
 static void tally_object(HvPvgLite *p, uint32_t task, uint32_t ref, const char *why) {
@@ -512,6 +546,7 @@ static void channel_command(HvPvgLite *p, const uint32_t *table, uint32_t size, 
     if (op == 0x43 && p->tally) tally_exec(p, table, size, rd, hdr[1], skip);
     if (p->metal) return; /* in order, on its worker */
     if (op != 1 && op != 2 && op != 8) return;
+    if (op == 8 && n < 40) return;   /* as in hv_pvg_lite_command: a swap is 10 words; a shorter one is refused, not padded with zeros */
     memset(args, 0, sizeof args);
     ring_read(p, table, size, rd + 12 + skip, args, n);
     if (op == 1) display_set_page(p, (uint64_t)args[1] << 14);
@@ -538,7 +573,7 @@ void hv_pvg_lite_command(HvPvgLite *p, const uint32_t *cmd, uint32_t len) {
     const uint32_t *args = (const uint32_t *)((const uint8_t *)cmd + 12 + skip);
     if (op == 1 && n >= 8) display_set_page(p, (uint64_t)args[1] << 14);
     else if (op == 2 && n >= 8) display_ack(p, args[1]);
-    else if (op == 8 && n >= 16) display_swap(p, (uint64_t)args[3] << 32 | args[2], args);
+    else if (op == 8 && n >= 40) display_swap(p, (uint64_t)args[3] << 32 | args[2], args);   /* display_swap reads 10 words: a shorter swap is not one (it used to read past the command) */
 }
 
 static void do_channel(HvPvgLite *p, uint32_t ch) {
@@ -555,15 +590,21 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
     p->draining |= 1u << ch;
     uint32_t size = pages << 14, wr = __atomic_load_n(&rec[0], __ATOMIC_ACQUIRE), rd = rec[1], last = 0;
     int any = 0;
+    /* As for the root ring: free-running counters, wr - rd is what is pending; more than the ring holds, or a command that does not fit in what is pending, drops the rest. */
+    if ((uint32_t)(wr - rd) > size) {
+        fprintf(stderr, "hengevm: pvg-lite: channel %u: %x bytes pending in a %x-byte ring; dropped\n", ch, (unsigned)(wr - rd), size);
+        rd = wr;
+    }
     while (rd != wr) {
-        uint32_t hdr[3];
-        for (int i = 0; i < 3; i++) {
-            uint32_t at = (rd + 4u * i) % size;
-            uint32_t *w = guest32(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
-            hdr[i] = w ? *w : 0;
-        }
-        if (hdr[1] < 12 || hdr[1] > size) {
-            fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x\n", ch, hdr[0], hdr[1], rd);
+        uint32_t pending = wr - rd, hdr[3] = {0, 0, 0};
+        if (pending >= 12)
+            for (int i = 0; i < 3; i++) {
+                uint32_t at = (rd + 4u * i) % size;
+                uint32_t *w = guest32(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
+                hdr[i] = w ? *w : 0;
+            }
+        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending) {
+            fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x (%x bytes pending)\n", ch, hdr[0], hdr[1], rd, pending);
             rd = wr;
             break;
         }
@@ -580,8 +621,10 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
         os_unfair_lock_lock(&p->layer_lock);
         if (!p->metal_tried) {
             p->metal_tried = 1;
-            HvPvgMetal *metal = getenv("HV_PVG_NO_METAL") ? NULL : hv_pvg_metal_create(p);
-            if (metal && p->layer_set) hv_pvg_metal_set_layer(metal, (void *)p->layer);
+            int none = getenv("HV_PVG_NO_METAL") != NULL;
+            HvPvgMetal *metal = none ? NULL : p->be->create(p);
+            p->be_state = none ? HV_PVG_BACKEND_NONE : metal ? HV_PVG_BACKEND_OK : HV_PVG_BACKEND_FAILED;
+            if (metal && p->layer_set && p->be->set_layer) p->be->set_layer(metal, (void *)p->layer);
             atomic_store_explicit(&p->metal, metal, memory_order_release);
         }
         os_unfair_lock_unlock(&p->layer_lock);
@@ -618,7 +661,7 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
         if (p->metal) {
             uint32_t *copy = malloc(hdr[1]);
             ring_read(p, table, size, rd, copy, hdr[1]);
-            hv_pvg_metal_submit(p->metal, p, ch, copy, hdr[1]);
+            p->be->submit(p->metal, p, ch, copy, hdr[1]);
         } else {
             last = hdr[2], any = 1;
         }
@@ -656,7 +699,7 @@ static void do_mapper(HvPvgLite *p) {
         uint64_t ring = p->io_regs[0], size = p->io_regs[0x8 / 8], want = p->io_regs[0x18 / 8];
         for (uint64_t i = p->io_regs[0x20 / 8]; i < want && size; i++) {
             uint32_t *e = hv_phys_ptr(p->m, ring + (i % size) * 16, 16);
-            if (e && e[0] == 2) hv_pvg_metal_unmap(p->metal, e[1]);
+            if (e && e[0] == 2 && p->be->unmap) p->be->unmap(p->metal, e[1]);
         }
     }
     p->io_regs[0x20 / 8] = p->io_regs[0x18 / 8];
@@ -709,7 +752,7 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     } else if (p->log && off != 0x1020) {
         fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
     }
-    if (off == 0x1220 && p->metal) hv_pvg_metal_cursor_moved(p->metal); /* the display's doorbell: the pointer moved */
+    if (off == 0x1220 && p->metal && p->be->cursor_moved) p->be->cursor_moved(p->metal); /* the display's doorbell: the pointer moved */
 }
 
 static uint64_t iosfc_read(void *opaque, uint64_t off, unsigned size) {
@@ -730,6 +773,7 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     HvPvgLite *p = calloc(1, sizeof *p);
     p->layer_lock = OS_UNFAIR_LOCK_INIT;
     atomic_init(&p->metal, NULL);
+    p->be = hv_pvg_apple_backend();
     p->m = m;
     p->gic = gic;
     p->gfx_irq = gfx_irq;

@@ -36,6 +36,28 @@ void hv_pvg_metal_cursor_moved(HvPvgMetal *m);
 /* Frames go to this CAMetalLayer from now on, drawn by the GPU. Any thread. */
 void hv_pvg_metal_set_layer(HvPvgMetal *m, void *layer);
 uint64_t hv_pvg_metal_gpu_frames(HvPvgMetal *m);
+/* The function table between the device and whatever draws (B1-b). The device speaks the guest's protocol; the backend is handed what was drawn-for and runs it.
+   Ownership: `command` passed to submit is a malloc'd copy that belongs to the backend from the call on; it frees it (or hands it on) exactly once, on any thread.
+   Order: submit is called in the order the device accepted the commands (barriers already honoured); the backend completes work in that order and reports each
+   stamp with hv_pvg_lite_complete(). `create` and `submit` are required, everything else may be NULL (then: nothing happens / -1 / 0). `create` returning NULL is
+   a failed backend, which is not the same as no backend: see hv_pvg_lite_backend_state. The default is Apple's: pvg_metal.m, or host/pvg_metal_stub.c where there is no Metal. */
+typedef struct HvPvgBackend {
+    const char *name;
+    HvPvgMetal *(*create)(HvPvgLite *lite);
+    void (*submit)(HvPvgMetal *m, HvPvgLite *lite, uint32_t channel, uint32_t *command, uint32_t length);
+    int (*snapshot)(HvPvgMetal *m, uint8_t *bgra, uint32_t width, uint32_t height);
+    int (*frame)(HvPvgMetal *m, const uint8_t **pixels, uint32_t *width, uint32_t *height);
+    void (*unmap)(HvPvgMetal *m, uint32_t mapping);
+    void (*cursor_moved)(HvPvgMetal *m);
+    void (*set_layer)(HvPvgMetal *m, void *layer);
+    uint64_t (*gpu_frames)(HvPvgMetal *m);
+} HvPvgBackend;
+enum { HV_PVG_BACKEND_NOT_TRIED = 0, HV_PVG_BACKEND_NONE = 1, HV_PVG_BACKEND_FAILED = 2, HV_PVG_BACKEND_OK = 3 };
+const HvPvgBackend *hv_pvg_apple_backend(void);
+/* Before the first channel command only (the backend is made lazily on it). Returns 0, or -1 for a table without create/submit or when it is too late. */
+int hv_pvg_lite_set_backend(HvPvgLite *p, const HvPvgBackend *backend);
+/* NOT_TRIED until the first channel command; NONE if HV_PVG_NO_METAL is set; FAILED if create returned NULL; OK otherwise. */
+int hv_pvg_lite_backend_state(HvPvgLite *p);
 void hv_pvg_lite_task_pages(HvPvgLite *p, uint32_t task, uint64_t first, uint64_t n, uint32_t *out);
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer);
 uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p);

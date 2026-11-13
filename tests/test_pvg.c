@@ -187,6 +187,68 @@ static void s_channel_backend(void) {
     EXPECT(cursor_moves == 1, "backend: the display doorbell tells the backend the pointer moved");
 }
 
+/* ---- B1-b: the function table ---- */
+static int t_created, t_subs, t_order[16], t_unmaps, t_fail_create, t_cursor;
+static int t_inst;
+static HvPvgMetal *t_create(HvPvgLite *l) { (void)l; t_created++; return t_fail_create ? NULL : (HvPvgMetal *)&t_inst; }
+static void t_submit(HvPvgMetal *m, HvPvgLite *l, uint32_t ch, uint32_t *cmd, uint32_t len) {
+    (void)m, (void)l, (void)ch, (void)len;
+    if (t_subs < 16) t_order[t_subs] = (int)cmd[2];
+    t_subs++;
+    free(cmd);   /* ownership: the backend frees the copy, once */
+}
+static void t_unmap(HvPvgMetal *m, uint32_t id) { (void)m, (void)id; t_unmaps++; }
+static void t_cur(HvPvgMetal *m) { (void)m; t_cursor++; }
+static const HvPvgBackend T_FULL = {"test", t_create, t_submit, NULL, NULL, t_unmap, t_cur, NULL, NULL};
+
+static void s_backend(void) {
+    const HvPvgBackend *ap = hv_pvg_apple_backend();
+    EXPECT(ap && !strcmp(ap->name, "apple") && ap->create == hv_pvg_metal_create && ap->submit == hv_pvg_metal_submit && ap->frame == hv_pvg_metal_frame && ap->snapshot == hv_pvg_metal_snapshot &&
+           ap->unmap == hv_pvg_metal_unmap && ap->cursor_moved == hv_pvg_metal_cursor_moved && ap->set_layer == hv_pvg_metal_set_layer && ap->gpu_frames == hv_pvg_metal_gpu_frames,
+           "backend table: the default is the existing link functions, unchanged");
+    dev_new(0);
+    EXPECT(hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_NOT_TRIED, "backend table: not tried before the first channel command");
+    HvPvgBackend bad1 = T_FULL, bad2 = T_FULL;
+    bad1.create = NULL; bad2.submit = NULL;
+    EXPECT(hv_pvg_lite_set_backend(dev, NULL) == -1 && hv_pvg_lite_set_backend(dev, &bad1) == -1 && hv_pvg_lite_set_backend(dev, &bad2) == -1 && hv_pvg_lite_set_backend(NULL, &T_FULL) == -1,
+           "backend table: a table without create or submit is refused");
+    t_created = t_subs = t_unmaps = t_fail_create = t_cursor = 0;
+    EXPECT(hv_pvg_lite_set_backend(dev, &T_FULL) == 0, "backend table: accepted before the first command");
+    chan_setup(2, 1);
+    uint32_t a[1] = {1};
+    chan_cmd(2, 0x43, 31, a, 4); chan_cmd(2, 0x44, 32, a, 4); chan_cmd(2, 0x45, 33, a, 4);
+    ring_bell(2);
+    EXPECT(t_created == 1 && created == 0 && nsubs == 0, "backend table: created once, and the default functions were not touched (%d, %d, %d)", t_created, created, nsubs);
+    EXPECT(t_subs == 3 && t_order[0] == 31 && t_order[1] == 32 && t_order[2] == 33, "backend table: three commands, in order (%d: %d %d %d)", t_subs, t_order[0], t_order[1], t_order[2]);
+    EXPECT(hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_OK, "backend table: state ok");
+    EXPECT(stamp_of(2) == 0 && Rg(0x1018) == 0, "backend table: no stamp before the backend completes, as with Apple's");
+    hv_pvg_lite_complete(dev, 2, 33);
+    EXPECT(stamp_of(2) == 33 && Rg(0x1018) == 1u << 2, "backend table: complete() reports the stamp the same way");
+    EXPECT(hv_pvg_lite_gpu_frames(dev) == 0 && hv_pvg_lite_snapshot(dev, NULL, 0, 0) == -1, "backend table: an absent optional function means 0 / -1, not a crash");
+    const uint8_t *px; uint32_t w, h;
+    EXPECT(hv_pvg_lite_frame(dev, &px, &w, &h) == -1, "backend table: absent frame() is -1");
+    W(0x1220, 1); hv_pvg_lite_set_layer(dev, NULL);
+    EXPECT(t_cursor == 1, "backend table: the optional cursor function is called");
+    EXPECT(hv_pvg_lite_set_backend(dev, ap) == -1 && hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_OK, "backend table: too late to replace once the first command created one");
+    /* a backend whose create fails: not the same as none */
+    dev_new(0);
+    t_created = t_subs = t_fail_create = 0; t_fail_create = 1;
+    hv_pvg_lite_set_backend(dev, &T_FULL);
+    chan_setup(2, 1);
+    chan_cmd(2, 0x43, 41, a, 4); chan_cmd(2, 0x43, 42, a, 4);
+    ring_bell(2);
+    EXPECT(hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_FAILED && t_created == 1, "backend table: create returned NULL: state failed, tried once");
+    EXPECT(t_subs == 0 && rd_ptr(2) == chs[2].wr && stamp_of(2) == 42, "backend table: failed backend: commands are still consumed and completed (stamp %u)", stamp_of(2));
+    chan_cmd(2, 0x43, 43, a, 4); ring_bell(2);
+    EXPECT(t_created == 1 && stamp_of(2) == 43, "backend table: create is not retried on every command");
+    /* none by choice */
+    dev_new(1);
+    t_created = 0;
+    hv_pvg_lite_set_backend(dev, &T_FULL);
+    chan_setup(2, 1); chan_cmd(2, 0x43, 51, a, 4); ring_bell(2);
+    EXPECT(hv_pvg_lite_backend_state(dev) == HV_PVG_BACKEND_NONE && t_created == 0 && stamp_of(2) == 51, "backend table: HV_PVG_NO_METAL means none (not failed): state none, create never called");
+}
+
 static void s_wrap(void) {
     dev_new(0);
     chan_setup(3, 2);   /* two 16 KB pages = 32 KB ring */
@@ -375,7 +437,7 @@ static void s_task(void) {
 }
 
 /* ---- random content in well-formed rings: must not crash (ASan / UBSan builds are what makes this mean something). The commands are chained from the start of the
-   ring and the write pointer is the end of the chain: a pointer the walk can never reach is the separate KNOWN-ISSUE probe below, so it is kept out of here. ---- */
+   ring and the write pointer is the end of the chain: a pointer the walk can never reach is covered by s_ring below, so the chains here are kept simple. ---- */
 static uint64_t rs = 0x9e3779b97f4a7c15ull;
 static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return (uint32_t)(rs >> 16); }
 static uint32_t noise0;
@@ -405,6 +467,10 @@ static void s_fuzz(int iters) {
             __atomic_store_n(&rec(c)[0], total, __ATOMIC_RELEASE);
         }
         { uint32_t total = 0; while (total < 0x4000 - 256 && rnd() % 40) { uint32_t words = 3 + rnd() % 14, w[17]; fuzz_cmd(w, words); for (uint32_t i = 0; i < words * 4; i++) *(pgp(fifo_pn + 1) + (total + i)) = ((uint8_t *)w)[i]; total += words * 4; } root_wp = total; W(0x1008, total); }
+        if (it % 2) {   /* arbitrary pointers: the walk must end whatever they are */
+            for (int c = 1; c < 6; c++) __atomic_store_n(&rec(c)[0], rnd() & 1 ? rnd() : rnd() % 0x8000, __ATOMIC_RELEASE);
+            W(0x1008, rnd() & 1 ? rnd() : rnd() % 0x8000);
+        }
         for (int k = 0; k < 8; k++) { (void)Rg(0x100c); W(0x1020, 1 + rnd() % 6); hv_pvg_lite_poll(dev); (void)Rg(0x1018); }
         { uint32_t cmdw[64] = {0}; fuzz_cmd(cmdw, 16); hv_pvg_lite_command(dev, cmdw, 64); }   /* a buffer with slack: the short-command over-read has its own probe */
         ios_w(ios_o, 0x1000, RB + (rnd() % 0x1000) * 16ull, 8); ios_w(ios_o, 0x1008, rnd() % 64, 8); ios_w(ios_o, 0x1010, RB + (rnd() % 0x800) * 4ull, 8);
@@ -415,75 +481,118 @@ static void s_fuzz(int iters) {
         (void)hv_pvg_lite_task_page(dev, rnd() % 600, ((uint64_t)rnd() << 8) | rnd() % 256);
         if (nsubs) for (int i = 0; i < nsubs && i < 8; i++) hv_pvg_lite_complete(dev, (uint32_t)subs[i].ch, 1 + rnd() % 100);
     }
-    EXPECT(1, "fuzz: %d random commands in well-formed rings (even/odd runs without/with a backend), no crash", iters);
+    EXPECT(1, "fuzz: %d random commands, odd runs also with arbitrary pointers (even/odd NO_METAL/backend alternate separately), no crash and no loop", iters);
 }
 
-/* A write pointer that does not fall on a command boundary, behind a ring full of well-formed 16-byte commands (16 divides the ring, so the walk is periodic): the device never sees rd == wr. Run in a child with
-   a timer. KNOWN ISSUE until devices/pvg_lite.c compares with a signed distance instead of "!=": the result is printed, and only STRICT=1 makes it a failure. */
-static int hang_probe(int root, uint32_t wp) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        alarm(3);
-        dev_new(1);
-        if (root) {
-            for (int i = 0; i < 0x4000 / 16; i++) { uint32_t w[4] = {0x77, 16, 1, 0}; memcpy(pgp(fifo_pn + 1) + 16 * i, w, 16); }
-            W(0x1008, wp);
-            (void)Rg(0x100c);
-        } else {
-            chan_setup(2, 1);
-            for (int i = 0; i < 0x4000 / 16; i++) { uint32_t w[4] = {0x77, 16, 1, 0}; memcpy(ring_at(2, 16 * i), w, 16); }
-            __atomic_store_n(&rec(2)[0], wp, __ATOMIC_RELEASE);
-            ring_bell(2);
-        }
-        _exit(0);
+/* ---- pointers that do not describe whole commands. The walk used to compare "rd != wr" for equality, so a write pointer off a command boundary behind a ring of
+   well-formed commands was never reached (a loop the guest controls). It now takes only commands that lie entirely inside wr - rd and drops the rest. ---- */
+static void fill16(int root) {   /* a ring full of 16-byte commands: 16 divides the ring, so the walk is periodic */
+    for (int i = 0; i < 0x4000 / 16; i++) {
+        uint32_t w[4] = {0x77, 16, (uint32_t)(i + 1), 0};
+        memcpy(root ? pgp(fifo_pn + 1) + 16 * i : ring_at(2, 16 * i), w, 16);
     }
+}
+/* Runs one case in a child with a timer: a regression back to a loop fails here instead of hanging the job. Returns 1 when the child finished. */
+static int finishes(void (*fn)(int), int arg) {
+    pid_t pid = fork();
+    if (pid == 0) { alarm(5); fn(arg); _exit(0); }
     int stt = 0;
     waitpid(pid, &stt, 0);
-    return WIFSIGNALED(stt) && WTERMSIG(stt) == SIGALRM;
+    return WIFEXITED(stt) && WEXITSTATUS(stt) == 0;
 }
-static void s_hang(void) {
-    int strict = getenv("STRICT") != NULL;
-    for (int root = 0; root < 2; root++) {   /* control: the same ring with a pointer ON a boundary must return, or the probe proves nothing */
-        EXPECT(!hang_probe(root, 32), "pointer on a command boundary (%s ring, control): the device returns", root ? "root" : "channel");
-        int hung = hang_probe(root, 17);
-        if (!hung) EXPECT(1, "pointer off a command boundary (%s ring): the device returns", root ? "root" : "channel");
-        else if (strict) EXPECT(0, "pointer off a command boundary (%s ring): the device does not return (3 s) -- STRICT", root ? "root" : "channel");
-        else printf("KNOWN-ISSUE pointer off a command boundary (%s ring): the device does not return within 3 s (a guest-controlled loop; not counted as a failure unless STRICT=1)\n", root ? "root" : "channel");
+static void walk_periodic(int root) {
+    dev_new(1);
+    if (!root) chan_setup(2, 1);
+    fill16(root);
+    if (root) { W(0x1008, 17); (void)Rg(0x100c); } else { __atomic_store_n(&rec(2)[0], 17u, __ATOMIC_RELEASE); ring_bell(2); }
+}
+static void walk_aligned(int root) {   /* control: the same ring, a pointer on a boundary */
+    dev_new(1);
+    if (!root) chan_setup(2, 1);
+    fill16(root);
+    if (root) { W(0x1008, 32); (void)Rg(0x100c); } else { __atomic_store_n(&rec(2)[0], 32u, __ATOMIC_RELEASE); ring_bell(2); }
+}
+static void s_ring(void) {
+    for (int root = 0; root < 2; root++) {
+        const char *n = root ? "root" : "channel";
+        EXPECT(finishes(walk_aligned, root), "%s ring: a pointer on a command boundary returns (control)", n);
+        EXPECT(finishes(walk_periodic, root), "%s ring: a pointer off a command boundary (17, behind 16-byte commands) returns", n);
     }
+    /* channel ring cases, in process (the global timer catches a loop) */
+    dev_new(0); chan_setup(2, 1); fill16(0);
+    __atomic_store_n(&rec(2)[0], 17u, __ATOMIC_RELEASE); ring_bell(2);
+    EXPECT(nsubs == 1 && subs[0].len == 16 && rd_ptr(2) == 17, "channel ring: pointer 17 behind 16-byte commands: the first whole command is delivered, the 1 byte left is dropped (rd %u)", rd_ptr(2));
+    dev_new(0); chan_setup(2, 1);
+    chan_raw(2, 0x40, 16, 1, (uint32_t[]){0}, 4, 16);
+    __atomic_store_n(&rec(2)[0], 21u, __ATOMIC_RELEASE);   /* one command and 5 bytes: less than a header */
+    ring_bell(2);
+    EXPECT(nsubs == 1 && rd_ptr(2) == 21, "channel ring: 5 bytes after a command (less than a header) are dropped, the command before them is delivered");
+    dev_new(0); chan_setup(2, 1);
+    chan_raw(2, 0x40, 64, 1, (uint32_t[]){0}, 4, 32);   /* the header says 64 bytes, 32 are pending */
+    ring_bell(2);
+    EXPECT(nsubs == 0 && rd_ptr(2) == 32, "channel ring: a command longer than what is pending is dropped, not delivered");
+    dev_new(0); chan_setup(2, 1);
+    chan_raw(2, 0x40, 16, 1, (uint32_t[]){0}, 4, 16);
+    __atomic_store_n(&rec(2)[0], 0x4000u + 100u, __ATOMIC_RELEASE);   /* more pending than the ring holds */
+    ring_bell(2);
+    EXPECT(nsubs == 0 && rd_ptr(2) == 0x4000u + 100u, "channel ring: more pending than the ring holds: everything is dropped (rd %u)", rd_ptr(2));
+    dev_new(0); chan_setup(2, 1);
+    rec(2)[1] = 0xffffffd0u; chs[2].wr = 0xffffffd0u; __atomic_store_n(&rec(2)[0], 0xffffffd0u, __ATOMIC_RELEASE);
+    for (int k = 0; k < 4; k++) chan_cmd(2, 0x40, (uint32_t)(60 + k), (uint32_t[5]){0}, 20);   /* 4 x 32 bytes: crosses 2^32 */
+    ring_bell(2);
+    EXPECT(nsubs == 4 && rd_ptr(2) == chs[2].wr && chs[2].wr < 0x100, "channel ring: the counters wrap past 2^32 (rd %x, wr %x), all 4 commands delivered", rd_ptr(2), chs[2].wr);
+    /* root ring */
+    dev_new(1);
+    root_cmd(0x3b, 12, 0x201, NULL, 0);
+    uint32_t good = (uint32_t)Rg(0x100c);
+    W(0x1008, root_wp + 5);   /* 5 bytes: less than a header */
+    EXPECT((uint32_t)Rg(0x100c) == root_wp + 5 && good == 12 && stamp_of(0) == 0x201, "root ring: 5 bytes after a good command are dropped, the command before them was done");
+    dev_new(1);
+    { uint32_t *r = (uint32_t *)pgp(fifo_pn + 1); r[0] = 0x3b, r[1] = 64, r[2] = 0x202; root_wp = 32; W(0x1008, root_wp); }   /* the header says 64, 32 are pending */
+    EXPECT((uint32_t)Rg(0x100c) == 32 && stamp_of(0) == 0, "root ring: a command longer than what is pending is dropped (no stamp)");
+    dev_new(1);
+    W(0x1008, 0x4000u + 100u);
+    EXPECT((uint32_t)Rg(0x100c) == 0x4000u + 100u && stamp_of(0) == 0, "root ring: more pending than the ring holds: dropped");
+    dev_new(1);
+    W(0x1008, 0xfffffff0u);   /* a 'negative' distance */
+    EXPECT((uint32_t)Rg(0x100c) == 0xfffffff0u, "root ring: a huge pending count is dropped at once");
 }
 
-/* hv_pvg_lite_command (the backend's entry for display ops) accepts an op 8 swap with 16 bytes of arguments, but display_swap reads 40 (10 words). The command buffer the
-   backend passes is exactly the length of the command, so a short swap reads up to 24 bytes past it and copies them into the guest's display page (+0xf90). Shown by
-   putting the command at the very end of a page that is followed by a protected one. KNOWN ISSUE: printed, and only STRICT=1 makes it a failure. */
-static int swap_probe(uint32_t arg_bytes) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        alarm(5);
-        dev_new(1);
-        uint32_t dpn = alloc_page();
-        uint32_t c1[5] = {1, 20, 1, 0, dpn};
-        hv_pvg_lite_command(dev, c1, 20);
-        long pgsz = sysconf(_SC_PAGESIZE);
-        uint8_t *m = mmap(NULL, 2 * pgsz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (m == MAP_FAILED || mprotect(m + pgsz, pgsz, PROT_NONE) != 0) _exit(3);
-        uint32_t len = 12 + arg_bytes;
-        uint32_t *cmd = (uint32_t *)(m + pgsz - len);
-        memset(cmd, 0, len);
-        cmd[0] = 8, cmd[1] = len, cmd[2] = 5;
-        hv_pvg_lite_command(dev, cmd, len);
-        _exit(0);
-    }
-    int stt = 0;
-    waitpid(pid, &stt, 0);
-    return WIFEXITED(stt) && WEXITSTATUS(stt) == 0 ? 0 : 1;   /* 1: it did not survive */
+/* A swap is 10 words (40 bytes of arguments). A shorter one is refused on both paths; before, hv_pvg_lite_command accepted 16 bytes and display_swap read 40. */
+static void swap_at_page_end(int arg_bytes) {
+    dev_new(1);
+    uint32_t dpn = alloc_page();
+    uint32_t c1[5] = {1, 20, 1, 0, dpn};
+    hv_pvg_lite_command(dev, c1, 20);
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uint8_t *m = mmap(NULL, 2 * pgsz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED || mprotect(m + pgsz, pgsz, PROT_NONE) != 0) _exit(3);
+    uint32_t len = 12 + (uint32_t)arg_bytes;
+    uint32_t *cmd = (uint32_t *)(m + pgsz - len);   /* ends exactly where the protected page begins */
+    memset(cmd, 0, len);
+    cmd[0] = 8, cmd[1] = len, cmd[2] = 5, cmd[5] = 0x77;
+    hv_pvg_lite_command(dev, cmd, len);
+    uint32_t swaps = *(uint32_t *)(pgp(dpn) + 0xf98);
+    if ((arg_bytes >= 40) != (swaps == 1)) _exit(4);   /* a full swap counts, a short one does not */
 }
 static void s_swap(void) {
-    int strict = getenv("STRICT") != NULL;
-    EXPECT(swap_probe(40) == 0, "swap with the full 40 bytes of arguments at the end of a page (control): survives");
-    int over = swap_probe(16);
-    if (!over) EXPECT(1, "swap with 16 bytes of arguments at the end of a page: survives");
-    else if (strict) EXPECT(0, "swap with 16 bytes of arguments reads past the command -- STRICT");
-    else printf("KNOWN-ISSUE hv_pvg_lite_command: a swap with only 16 bytes of arguments reads 40 (display_swap), i.e. up to 24 bytes past the command (not counted as a failure unless STRICT=1)\n");
+    EXPECT(finishes(swap_at_page_end, 40), "swap with all 40 bytes of arguments at the end of a page is applied");
+    EXPECT(finishes(swap_at_page_end, 16), "swap with 16 bytes of arguments at the end of a page: refused, nothing read past the command");
+    EXPECT(finishes(swap_at_page_end, 36), "swap with 36 bytes (one word short): refused");
+    /* the channel path (no backend) refuses short swaps too, and still applies a full one */
+    hv_pvg_lite_set_mode(800, 600);
+    dev_new(1);
+    chan_setup(4, 1);
+    uint32_t dpn = alloc_page();
+    uint32_t a1[2] = {0, dpn};
+    chan_cmd(4, 1, 41, a1, 8); ring_bell(4);
+    uint32_t a8[10] = {0, 0, 0x1234, 0x5, 0, 0, 0, 0, 3, 0xabcd};
+    chan_cmd(4, 8, 42, a8, 16); ring_bell(4);
+    EXPECT(*(uint32_t *)(pgp(dpn) + 0xf98) == 0, "swap on the channel path with 16 bytes: refused (no swap counted)");
+    chan_cmd(4, 8, 43, a8, 40); ring_bell(4);
+    EXPECT(*(uint32_t *)(pgp(dpn) + 0xf98) == 1 && *(uint32_t *)(pgp(dpn) + 0xfb0) == 0x1234, "swap on the channel path with 40 bytes: applied");
+    EXPECT(stamp_of(4) == 43, "the refused command was still consumed and stamped, the ring went on");
+    hv_pvg_lite_set_mode(1920, 1080);
 }
 
 int main(int argc, char **argv) {
@@ -492,14 +601,16 @@ int main(int argc, char **argv) {
     if (!ram) return 2;
     const char *sc = argc > 1 ? argv[1] : "all";
     int all = !strcmp(sc, "all");
+    alarm(120);   /* a loop in the device must fail the run, not hang it */
     if (all || !strcmp(sc, "root")) s_root();
     if (all || !strcmp(sc, "channel")) s_channel_nometal(), s_channel_backend(), s_bad_channel();
+    if (all || !strcmp(sc, "backend")) s_backend();
     if (all || !strcmp(sc, "wrap")) s_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();
     if (all || !strcmp(sc, "mapper")) s_mapper(), s_task();
     if (all || !strcmp(sc, "fuzz")) s_fuzz(argc > 2 ? atoi(argv[2]) : 400);
-    if (all || !strcmp(sc, "hang")) s_hang();
+    if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();
     printf("%s test_pvg %s\n", bad ? "FAIL" : "PASS", sc);
     return bad ? 1 : 0;

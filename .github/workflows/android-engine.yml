@@ -44,6 +44,8 @@ on:
       - tools/ui-runner-build.sh
       - tools/c1vm-test.sh
       - tools/pvg-test.sh
+      - tools/install-plan-test.sh
+      - tools/check-install-plan-isolation.sh
       - tools/check-c13-source.sh
       - tools/check-runner-vm-safe.sh
       - tools/ui-runner-vm-build.sh
@@ -243,6 +245,11 @@ jobs:
         run: |
           bash -n tools/pvg-test.sh
           tools/pvg-test.sh build-pvg
+
+      - name: "Test G2-b: the mock install orchestrator (host/install_plan.c; fake device, fake clock; plain and ASan + UBSan) and its isolation check (no project include, no real names, referenced by nothing but its test). Not connected to any Apple request, device, disk or install path"
+        run: |
+          bash -n tools/install-plan-test.sh tools/check-install-plan-isolation.sh
+          tools/install-plan-test.sh build-ip
 
       - name: "Test G1, the restore tool's signing path through the install entry point (real session, policy and tool; synthetic TLS server on 127.0.0.1 only; refusals, bad replies, timeouts, bad certificate, redirect, unapproved destination; controls for ticket files, device downloads and an unapproved port; no Apple request)"
         run: tools/install-g1-test.sh build-rs

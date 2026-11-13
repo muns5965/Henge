@@ -18,6 +18,8 @@
 
 #include "../host/usb_host.h"
 
+#define RD(x) __atomic_load_n(&(x), __ATOMIC_SEQ_CST)
+#define ST(x, v) __atomic_store_n(&(x), (v), __ATOMIC_SEQ_CST)
 static int bad;
 #define EXPECT(cond, ...) do { int ok_ = !!(cond); printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); printf("\n"); fflush(stdout); if (!ok_) bad++; } while (0)
 
@@ -35,15 +37,15 @@ static int msnow(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts)
 
 /* ---- the fake ROM: answers the shim's enumeration, and the vendor IN request 0xA0 as the scenario says ---- */
 static HvVirtioUsb *g_u;
-static volatile int g_stop;
-static volatile int g_probe_seen;     /* vendor 0xA0 requests the ROM took */
-static volatile int g_rom_busy;       /* the ROM is in the middle of a delayed answer */
+static int g_stop;
+static int g_probe_seen;     /* vendor 0xA0 requests the ROM took */
+static int g_rom_busy;       /* the ROM is in the middle of a delayed answer */
 static int g_delay_ms = -1;           /* answer to 0xA0 after this long; -1: never */
 static uint8_t g_ansbyte = 0xA1;
 static pthread_t g_th;
 static void *rom(void *arg) {
     (void)arg;
-    while (!g_stop) {
+    while (!RD(g_stop)) {
         HvVusbMsg m;
         if (!hv_vusb_take_request(g_u, &m)) { usleep(300); continue; }
         if (m.type == HV_VUSB_REQ_RESET) { hv_vusb_put_response(g_u, HV_VUSB_RSP_RESET, 0, NULL, 0); free(m.data); continue; }
@@ -59,11 +61,11 @@ static void *rom(void *arg) {
             __atomic_add_fetch(&g_probe_seen, 1, __ATOMIC_ACQ_REL);
             int dl = g_delay_ms;
             if (dl >= 0) {
-                g_rom_busy = 1;
+                ST(g_rom_busy, 1);
                 int t0 = msnow();
-                while (!g_stop && msnow() - t0 < dl) usleep(500);
+                while (!RD(g_stop) && msnow() - t0 < dl) usleep(500);
                 hv_vusb_put_response(g_u, HV_VUSB_RSP_DATA, 0, &g_ansbyte, 1);
-                g_rom_busy = 0;
+                ST(g_rom_busy, 0);
             }
         }
         free(m.data);
@@ -74,7 +76,7 @@ static void *rom(void *arg) {
 static libusb_device_handle *g_h;
 static libusb_device **g_list;
 static void setup(int strict, int delay_ms) {
-    g_delay_ms = delay_ms; g_stop = 0; g_probe_seen = 0; g_rom_busy = 0;
+    g_delay_ms = delay_ms; ST(g_stop, 0); ST(g_probe_seen, 0); ST(g_rom_busy, 0);
     g_u = calloc(1, sizeof *g_u);
     pthread_mutex_init(&g_u->mu, NULL);
     hv_vusb_cv_init(g_u);
@@ -95,12 +97,12 @@ static void teardown(void) {
     balance("end");
     libusb_close(g_h);
     libusb_free_device_list(g_list, 1);
-    g_stop = 1; pthread_join(g_th, NULL);
+    ST(g_stop, 1); pthread_join(g_th, NULL);
 }
 static void teardown_closed(void) {   /* the handle was closed by the scenario */
     balance("end");
     libusb_free_device_list(g_list, 1);
-    g_stop = 1; pthread_join(g_th, NULL);
+    ST(g_stop, 1); pthread_join(g_th, NULL);
 }
 
 /* ---- transfers with a callback that counts ---- */
@@ -139,7 +141,7 @@ static void s_cancel_run(void) {
     pump(j, 1, 3000);
     int took = msnow() - t0;
     EXPECT(j->calls == 1 && j->status == LIBUSB_TRANSFER_CANCELLED && took < 700, "cancel(running): libusb_cancel_transfer reached the strict wait: callback once, CANCELLED, %d ms (the transfer timeout was 10000)", took);
-    EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN && g_probe_seen == 1, "SAFE_BLOCKED cancel(running): the sent request is unsettled: UNCERTAIN (not a recovery); the ROM saw 1 request");
+    EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN && RD(g_probe_seen) == 1, "SAFE_BLOCKED cancel(running): the sent request is unsettled: UNCERTAIN (not a recovery); the ROM saw 1 request");
     EXPECT(j->buf[8] == 0xEE, "cancel(running): the user's buffer was not written (%02x)", j->buf[8]);
     pump_for(300);
     EXPECT(j->calls == 1, "cancel(running): still exactly one completion notice after 300 ms more of event handling (%d)", j->calls);
@@ -159,7 +161,7 @@ static void s_cancel_queued(void) {
     pump(a, 1, 3000); pump(b, 1, 3000);
     EXPECT(a->calls == 1 && a->status == LIBUSB_TRANSFER_CANCELLED, "cancel(queued): A (running) CANCELLED once");
     EXPECT(b->calls == 1 && b->status == LIBUSB_TRANSFER_CANCELLED, "cancel(queued): B (waiting in the queue) CANCELLED once");
-    EXPECT(g_probe_seen == 1, "cancel(queued): B never reached the guest: the ROM saw %d request(s), not 2", g_probe_seen);
+    EXPECT(RD(g_probe_seen) == 1, "cancel(queued): B never reached the guest: the ROM saw %d request(s), not 2", RD(g_probe_seen));
     pump_for(200);
     EXPECT(a->calls == 1 && b->calls == 1, "cancel(queued): no second notice later");
     job_free(a); job_free(b);
@@ -182,7 +184,7 @@ static void s_race(void) {
         else if (j->status == LIBUSB_TRANSFER_CANCELLED && j->buf[8] == 0xEE && st == HV_CTRL_UNCERTAIN) canc++;
         else incons++;
         job_free(j);
-        while (g_rom_busy) usleep(1000);
+        while (RD(g_rom_busy)) usleep(1000);
         usleep(5000);
         hv_vusb_flush(g_u);                        /* drop an answer the cancelled request left, as a CALLER vouching for isolation must */
         if (st == HV_CTRL_UNCERTAIN) hv_usb_ctrl_reacquire(g_u);
@@ -197,7 +199,7 @@ static void s_sync_timeout(void) {
     int t0 = msnow(), r = libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 150), took = msnow() - t0;
     EXPECT(r == LIBUSB_ERROR_TIMEOUT && took >= 100 && took < 900, "sync: no answer: the caller returns after %d ms with TIMEOUT (%d), after the worker is done with its wait object", took, r);
     int r2 = libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 500);
-    EXPECT(r2 == LIBUSB_ERROR_IO && g_probe_seen == 1 && hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN, "SAFE_BLOCKED sync: the next transfer fails at once (IO) and is not sent: the ROM saw %d request", g_probe_seen);
+    EXPECT(r2 == LIBUSB_ERROR_IO && RD(g_probe_seen) == 1 && hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN, "SAFE_BLOCKED sync: the next transfer fails at once (IO) and is not sent: the ROM saw %d request", RD(g_probe_seen));
     teardown();
 }
 
@@ -206,7 +208,7 @@ static void s_legacy(void) {
     uint8_t b = 0;
     int r = libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 100);
     int r2 = libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 1500);
-    EXPECT(r == LIBUSB_ERROR_TIMEOUT && g_probe_seen == 2, "legacy (strict off, the default): the shim behaves as before: the second request IS sent after a timeout (%d, ROM saw %d)", r, g_probe_seen);
+    EXPECT(r == LIBUSB_ERROR_TIMEOUT && RD(g_probe_seen) == 2, "legacy (strict off, the default): the shim behaves as before: the second request IS sent after a timeout (%d, ROM saw %d)", r, RD(g_probe_seen));
     EXPECT(r2 == 1 && g_u->cstrict == 0 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR, "legacy: no state is tracked (%d)", r2);
     teardown();
 }
@@ -256,7 +258,7 @@ static void s_close_queued(void) {
     pump(a, 1, 3000); pump(b, 1, 3000);
     EXPECT(a->calls == 1 && a->status == LIBUSB_TRANSFER_CANCELLED, "close(queued): A ended once, CANCELLED");
     EXPECT(b->calls == 1 && (b->status == LIBUSB_TRANSFER_ERROR || b->status == LIBUSB_TRANSFER_CANCELLED), "close(queued): B, queued behind it, also ended exactly once (status %d: strict refuses it after A's UNCERTAIN) and nothing crashed", b->status);
-    EXPECT(g_probe_seen == 1, "close(queued): B was not sent (ROM saw %d)", g_probe_seen);
+    EXPECT(RD(g_probe_seen) == 1, "close(queued): B was not sent (ROM saw %d)", RD(g_probe_seen));
     pump_for(200);
     EXPECT(a->calls == 1 && b->calls == 1, "close(queued): no second notice");
     job_free(a); job_free(b);
@@ -347,13 +349,13 @@ static void s_balance(void) {
     libusb_submit_transfer(q->t);                  /* queued behind it, cancelled before it runs */
     libusb_cancel_transfer(q->t);
     pump(a, 1, 3000); pump(q, 1, 3000);
-    EXPECT(a->calls == 1 && q->calls == 1 && q->status == LIBUSB_TRANSFER_CANCELLED && g_probe_seen == 1, "balance: A completed once, the queued one was cancelled once and never sent (calls %d/%d, ROM saw %d)", a->calls, q->calls, g_probe_seen);
+    EXPECT(a->calls == 1 && q->calls == 1 && q->status == LIBUSB_TRANSFER_CANCELLED && RD(g_probe_seen) == 1, "balance: A completed once, the queued one was cancelled once and never sent (calls %d/%d, ROM saw %d)", a->calls, q->calls, RD(g_probe_seen));
     balance("completed + queued-cancelled");
     libusb_submit_transfer(c->t);
     usleep(60000);
     libusb_cancel_transfer(c->t);
     pump(c, 1, 3000);
-    while (g_rom_busy) usleep(1000);
+    while (RD(g_rom_busy)) usleep(1000);
     balance("running-cancelled");
     libusb_control_transfer(g_h, 0xC0, 0xA0, 0, 0, &b, 1, 100);   /* refused by strict (UNCERTAIN or answered), either way it ends once */
     balance("sync");

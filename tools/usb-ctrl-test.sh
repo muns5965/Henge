@@ -8,8 +8,8 @@ OUT=${1:?build dir}; CC=${CC:-gcc}
 mkdir -p "$OUT"
 W="-std=gnu11 -D_GNU_SOURCE -g -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-result -Wno-unused-function -Icore -Ihost -Idevices -Ithird_party -Ithird_party/libusb-1.0"
 rc=0
-for mode in plain asan; do
-  F="-O1"; [ $mode = asan ] && F="-O1 -fsanitize=address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+for mode in ${MODES:-plain asan}; do   # MODES=tsan adds/chooses ThreadSanitizer (not part of CI)
+  F="-O1"; [ $mode = tsan ] && F="-O1 -fsanitize=thread -fno-omit-frame-pointer"; [ $mode = asan ] && F="-O1 -fsanitize=address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
   $CC $W $F devices/virtio_usb.c host/usb_host.c tests/test_usb_ctrl.c -lpthread -o "$OUT/test_usb_ctrl_$mode" 2> "$OUT/uc_$mode.log" || { echo "FAILED build ($mode)"; head -30 "$OUT/uc_$mode.log"; rc=1; continue; }
   $CC $W $F -Wno-missing-field-initializers devices/virtio_usb.c host/usb_host.c host/libusb_shim.c tests/test_shim_ctrl.c -lpthread -o "$OUT/test_shim_ctrl_$mode" 2> "$OUT/sh_$mode.log" || { echo "FAILED build shim test ($mode)"; head -30 "$OUT/sh_$mode.log"; rc=1; }
   echo "=== usb control ($mode)"

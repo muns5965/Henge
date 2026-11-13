@@ -15,6 +15,8 @@
 
 #include "../host/usb_host.h"
 
+#define RD(x) __atomic_load_n(&(x), __ATOMIC_SEQ_CST)
+#define ST(x, v) __atomic_store_n(&(x), (v), __ATOMIC_SEQ_CST)
 static int bad;
 #define EXPECT(cond, ...) do { int ok_ = !!(cond); printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); printf("\n"); if (!ok_) bad++; } while (0)
 
@@ -36,19 +38,19 @@ typedef struct { int delay_ms; int type; uint8_t byte; int bounce; } Act;   /* t
 static HvVirtioUsb *g_u;
 static int g_realtime_cv;   /* a creator that does its own pthread_cond_init(NULL): cmono stays 0 */
 static Act g_prog[16]; static int g_nprog;
-static volatile int g_nreq, g_stop, g_taken_reset;
+static int g_nreq, g_stop, g_taken_reset;
 static pthread_t g_th;
 static void *guest(void *arg) {
     (void)arg;
-    while (!g_stop) {
+    while (!RD(g_stop)) {
         HvVusbMsg m;
         if (!hv_vusb_take_request(g_u, &m)) { usleep(500); continue; }
         int k = __atomic_fetch_add(&g_nreq, 1, __ATOMIC_ACQ_REL);
-        if (m.type == HV_VUSB_REQ_RESET) g_taken_reset++;
+        if (m.type == HV_VUSB_REQ_RESET) __atomic_add_fetch(&g_taken_reset, 1, __ATOMIC_SEQ_CST);
         free(m.data);
         Act a = k < g_nprog ? g_prog[k] : (Act){0, m.type == HV_VUSB_REQ_RESET ? HV_VUSB_RSP_RESET : HV_VUSB_RSP_DATA, 0x77, 0};
         if (a.bounce) { hv_vusb_set_online(g_u, 0); hv_vusb_set_online(g_u, 1); }
-        if (a.delay_ms) { int t0 = msnow(); while (!g_stop && msnow() - t0 < a.delay_ms) usleep(1000); }
+        if (a.delay_ms) { int t0 = msnow(); while (!RD(g_stop) && msnow() - t0 < a.delay_ms) usleep(1000); }
         if (a.type) hv_vusb_put_response(g_u, (uint8_t)a.type, 0, &a.byte, a.type == HV_VUSB_RSP_DATA ? 1 : 0);
     }
     return NULL;
@@ -60,10 +62,10 @@ static void dev_new(int strict, const Act *prog, int n) {
     hv_vusb_set_online(g_u, 1);
     if (hv_usb_set_strict(g_u, strict) != 0) { printf("FAIL set_strict at set-up refused\n"); bad++; }
     g_nprog = n; for (int i = 0; i < n; i++) g_prog[i] = prog[i];
-    g_nreq = 0; g_stop = 0; g_taken_reset = 0;
+    ST(g_nreq, 0); ST(g_stop, 0); ST(g_taken_reset, 0);
     pthread_create(&g_th, NULL, guest, NULL);
 }
-static void dev_end(void) { g_stop = 1; pthread_join(g_th, NULL); }
+static void dev_end(void) { ST(g_stop, 1); pthread_join(g_th, NULL); }
 static int ctl(uint8_t *b, int timeout, volatile int *cancel) { return hv_usb_control_c(g_u, 0x80, 6, 0x100, 0, b, 1, timeout, cancel); }
 
 static void s_basic(void) {
@@ -84,13 +86,13 @@ static void s_timeout(void) {   /* A is never answered in time; the late answer 
     uint8_t b = 0;
     int t0 = msnow(), r = ctl(&b, 120, NULL), took = msnow() - t0;
     EXPECT(r == HV_USB_ETIMEOUT && took >= 100 && took < 600 && hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN, "timeout: A times out after %d ms; the endpoint is UNCERTAIN", took);
-    int sent = g_nreq;
+    int sent = RD(g_nreq);
     r = ctl(&b, 500, NULL);
-    EXPECT(r == HV_USB_EUNCERTAIN && g_nreq == sent, "SAFE_BLOCKED timeout: B is refused before anything is sent (%d), the guest saw no new request", r);
+    EXPECT(r == HV_USB_EUNCERTAIN && RD(g_nreq) == sent, "SAFE_BLOCKED timeout: B is refused before anything is sent (%d), the guest saw no new request", r);
     usleep(600000);   /* A's late answer is in the ring by now */
     r = ctl(&b, 500, NULL);
     EXPECT(r == HV_USB_EUNCERTAIN && b == 0 && hv_usb_ctrl_state(g_u) == HV_CTRL_UNCERTAIN, "SAFE_BLOCKED timeout: after A's late answer arrived, B is still refused and got no data (b=%02x); the late answer does not release UNCERTAIN", b);
-    EXPECT(hv_usb_reset(g_u, 300) == HV_USB_EUNCERTAIN && g_taken_reset == 0, "SAFE_BLOCKED timeout: RESET is refused in UNCERTAIN too, none reached the guest");
+    EXPECT(hv_usb_reset(g_u, 300) == HV_USB_EUNCERTAIN && RD(g_taken_reset) == 0, "SAFE_BLOCKED timeout: RESET is refused in UNCERTAIN too, none reached the guest");
     hv_vusb_set_online(g_u, 0); hv_vusb_set_online(g_u, 1);
     EXPECT(ctl(&b, 300, NULL) == HV_USB_EUNCERTAIN, "SAFE_BLOCKED timeout: a new session does not release it either");
     hv_usb_ctrl_reacquire(g_u);
@@ -110,20 +112,20 @@ static void s_legacy(void) {   /* the same sequence without strict mode: the haz
     dev_end();
 }
 
-static volatile int *g_race_c;
+static int *g_race_c;
 static int g_race_delay;
-static void *race_setter(void *a) { (void)a; usleep((useconds_t)g_race_delay * 1000); *g_race_c = 1; return NULL; }
+static void *race_setter(void *a) { (void)a; usleep((useconds_t)RD(g_race_delay) * 1000); __atomic_store_n(g_race_c, 1, __ATOMIC_SEQ_CST); return NULL; }
 static void s_cancel(void) {
-    volatile int c = 1;
+    int c = 1;
     Act none[] = {{0, 0, 0, 0}};
     dev_new(1, none, 1);
     uint8_t b;
-    EXPECT(ctl(&b, 1000, &c) == HV_USB_ECANCELLED && g_nreq == 0 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR, "cancel: set before the request: nothing sent, CLEAR kept");
+    EXPECT(ctl(&b, 1000, &c) == HV_USB_ECANCELLED && RD(g_nreq) == 0 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR, "cancel: set before the request: nothing sent, CLEAR kept");
     dev_end();
     dev_new(1, none, 1);
     c = 0;
     pthread_t t;
-    g_race_c = &c; g_race_delay = 100;
+    g_race_c = &c; ST(g_race_delay, 100);
     pthread_create(&t, NULL, race_setter, NULL);
     int t0 = msnow(), r = ctl(&b, 5000, &c), took = msnow() - t0;
     pthread_join(t, NULL);
@@ -135,10 +137,10 @@ static void s_cancel(void) {
 static void s_race(void) {   /* the answer and the cancel at (nearly) the same time: whichever settles first, the state and the result agree */
     int done = 0, canc = 0, incons = 0;
     for (int i = 0; i < 40; i++) {
-        volatile int c = 0;
+        int c = 0;
         Act p[] = {{60, HV_VUSB_RSP_DATA, 0x42, 0}};
         dev_new(1, p, 1);
-        g_race_c = &c; g_race_delay = 30 + i * 2;
+        g_race_c = &c; ST(g_race_delay, 30 + i * 2);
         pthread_t t;
         pthread_create(&t, NULL, race_setter, NULL);
         uint8_t b = 0;
@@ -154,7 +156,7 @@ static void s_race(void) {   /* the answer and the cancel at (nearly) the same t
 }
 
 static int g_res[2]; static uint8_t g_resb[2];
-static void *conc(void *a) { long i = (long)a; uint8_t b = 0; g_res[i] = hv_usb_control_c(g_u, 0x80, 6, 0x100, 0, &b, 1, 2000, NULL); g_resb[i] = b; return NULL; }
+static void *conc(void *a) { long i = (long)a; uint8_t b = 0; int rr_ = hv_usb_control_c(g_u, 0x80, 6, 0x100, 0, &b, 1, 2000, NULL); ST(g_resb[i], b); ST(g_res[i], rr_); return NULL; }
 static void s_concurrent(void) {
     Act p[] = {{250, HV_VUSB_RSP_DATA, 0x31, 0}, {0, HV_VUSB_RSP_DATA, 0x32, 0}};
     dev_new(1, p, 2);
@@ -163,8 +165,8 @@ static void s_concurrent(void) {
     usleep(50000);
     pthread_create(&t[1], NULL, conc, (void *)1);
     pthread_join(t[0], NULL); pthread_join(t[1], NULL);
-    EXPECT(g_res[0] == 1 && g_resb[0] == 0x31, "concurrent: the first caller got its own answer (31): %d %02x", g_res[0], g_resb[0]);
-    EXPECT(g_res[1] == HV_USB_EBUSY && g_nreq == 1, "concurrent: the second was refused while the first was in flight and was never sent (%d, guest saw %d request)", g_res[1], g_nreq);
+    EXPECT(RD(g_res[0]) == 1 && RD(g_resb[0]) == 0x31, "concurrent: the first caller got its own answer (31): %d %02x", RD(g_res[0]), RD(g_resb[0]));
+    EXPECT(RD(g_res[1]) == HV_USB_EBUSY && RD(g_nreq) == 1, "concurrent: the second was refused while the first was in flight and was never sent (%d, guest saw %d request)", RD(g_res[1]), RD(g_nreq));
     dev_end();
 }
 
@@ -174,9 +176,9 @@ static void s_reset(void) {
     pthread_t t;
     pthread_create(&t, NULL, conc, (void *)0);   /* a control request in flight */
     usleep(60000);
-    EXPECT(hv_usb_reset(g_u, 300) == HV_USB_EBUSY && g_taken_reset == 0, "reset: refused while a control request is in flight; none reached the guest");
+    EXPECT(hv_usb_reset(g_u, 300) == HV_USB_EBUSY && RD(g_taken_reset) == 0, "reset: refused while a control request is in flight; none reached the guest");
     pthread_join(t, NULL);
-    EXPECT(g_res[0] == 1 && g_resb[0] == 0x21, "reset: the control request still got its own answer");
+    EXPECT(RD(g_res[0]) == 1 && RD(g_resb[0]) == 0x21, "reset: the control request still got its own answer");
     EXPECT(hv_usb_reset(g_u, 1000) == 0, "reset: now (CLEAR) a RESET goes through and takes the RESET answer");
     dev_end();
     /* a RESET answer that comes while a control request waits is not its answer */
@@ -201,7 +203,7 @@ static void s_session(void) {
     uint8_t b;
     hv_vusb_set_online(g_u, 0);
     int r = ctl(&b, 300, NULL);
-    EXPECT(r == HV_USB_EGONE && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && g_nreq == 0, "session: offline: refused at the queue, nothing was queued, CLEAR (%d)", r);
+    EXPECT(r == HV_USB_EGONE && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && RD(g_nreq) == 0, "session: offline: refused at the queue, nothing was queued, CLEAR (%d)", r);
     dev_end();
     /* the connection changes while A waits: reported as gone at once, not as a timeout; and the endpoint is UNCERTAIN across the new session */
     Act bnc[] = {{0, 0, 0, 1}};   /* the guest takes the request, leaves and comes back, answers nothing */
@@ -215,18 +217,18 @@ static void s_session(void) {
 }
 
 static HvVirtioUsb *g_hu;
-static volatile int g_hstop;
-static void *hammer_ctl(void *a) { (void)a; uint8_t b; while (!g_hstop) { hv_usb_control_c(g_hu, 0x80, 6, 0x100, 0, &b, 1, 40, NULL); hv_usb_ctrl_reacquire(g_hu); } return NULL; }
-static void *hammer_reset(void *a) { (void)a; while (!g_hstop) { hv_usb_reset(g_hu, 40); hv_usb_ctrl_reacquire(g_hu); } return NULL; }
-static void *hammer_session(void *a) { (void)a; while (!g_hstop) { hv_vusb_set_online(g_hu, 0); usleep(2000); hv_vusb_set_online(g_hu, 1); usleep(3000); } return NULL; }
+static int g_hstop;
+static void *hammer_ctl(void *a) { (void)a; uint8_t b; while (!RD(g_hstop)) { hv_usb_control_c(g_hu, 0x80, 6, 0x100, 0, &b, 1, 40, NULL); hv_usb_ctrl_reacquire(g_hu); } return NULL; }
+static void *hammer_reset(void *a) { (void)a; while (!RD(g_hstop)) { hv_usb_reset(g_hu, 40); hv_usb_ctrl_reacquire(g_hu); } return NULL; }
+static void *hammer_session(void *a) { (void)a; while (!RD(g_hstop)) { hv_vusb_set_online(g_hu, 0); usleep(2000); hv_vusb_set_online(g_hu, 1); usleep(3000); } return NULL; }
 static void s_locks(void) {
     dev_new(1, NULL, 0);
-    g_hu = g_u; g_hstop = 0;
+    g_hu = g_u; ST(g_hstop, 0);
     pthread_t t[5];
     pthread_create(&t[0], NULL, hammer_ctl, NULL); pthread_create(&t[1], NULL, hammer_ctl, NULL);
     pthread_create(&t[2], NULL, hammer_reset, NULL); pthread_create(&t[3], NULL, hammer_session, NULL);
     sleep(2);
-    g_hstop = 1;
+    ST(g_hstop, 1);
     for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
     EXPECT(1, "locks: 2 s of control requests, RESETs, reacquires and session changes from 4 threads ended without a deadlock (the script's timeout would call it HUNG)");
     dev_end();
@@ -245,7 +247,7 @@ static void s_cleanup(void) {   /* no answer ever: UNCERTAIN stays, and the tear
 }
 
 
-static void *rstcall(void *a) { (void)a; g_res[1] = hv_usb_reset(g_u, 2000); return NULL; }
+static void *rstcall(void *a) { (void)a; ST(g_res[1], hv_usb_reset(g_u, 2000)); return NULL; }
 static void s_contract(void) {
     uint8_t b;
     /* CLEAR: nothing to reacquire */
@@ -260,11 +262,11 @@ static void s_contract(void) {
     pthread_t t;
     pthread_create(&t, NULL, conc, (void *)0);
     usleep(80000);
-    uint32_t g1 = g_u->cgen;
-    EXPECT(hv_usb_ctrl_reacquire(g_u) == HV_USB_EBUSY && g_u->cgen == g1, "contract: reacquire while PENDING is refused (EBUSY), generation untouched");
+    /* the generation is not read here (the worker writes it under usb_host.c's lock): a refusal that bumped it would show below, as the request in flight failing with EIO */
+    EXPECT(hv_usb_ctrl_reacquire(g_u) == HV_USB_EBUSY, "contract: reacquire while PENDING is refused (EBUSY)");
     EXPECT(hv_usb_set_strict(g_u, 0) == HV_USB_EBUSY && g_u->cstrict == 1, "contract: set_strict while PENDING is refused (EBUSY), mode unchanged");
     pthread_join(t, NULL);
-    EXPECT(g_res[0] == 1 && g_resb[0] == 0x51 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && g_u->cbusy == 0, "contract: the request in flight got its own answer after the refused calls (%d %02x), nothing left counted", g_res[0], g_resb[0]);
+    EXPECT(RD(g_res[0]) == 1 && RD(g_resb[0]) == 0x51 && hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && g_u->cbusy == 0, "contract: the request in flight got its own answer after the refused calls (%d %02x), so the generation was not touched; nothing left counted", RD(g_res[0]), RD(g_resb[0]));
     dev_end();
     /* RESETTING */
     Act q[] = {{300, HV_VUSB_RSP_RESET, 0, 0}};
@@ -273,7 +275,7 @@ static void s_contract(void) {
     usleep(80000);
     EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_RESETTING && hv_usb_ctrl_reacquire(g_u) == HV_USB_EBUSY && hv_usb_set_strict(g_u, 0) == HV_USB_EBUSY, "contract: during a RESET both reacquire and set_strict are refused (EBUSY)");
     pthread_join(t, NULL);
-    EXPECT(g_res[1] == 0 && g_u->cbusy == 0, "contract: the RESET itself finished normally (%d)", g_res[1]);
+    EXPECT(RD(g_res[1]) == 0 && g_u->cbusy == 0, "contract: the RESET itself finished normally (%d)", RD(g_res[1]));
     dev_end();
     /* UNCERTAIN: the mode cannot be turned off from under it; the one allowed release works and is the only way */
     Act none[] = {{0, 0, 0, 0}};
@@ -290,23 +292,23 @@ static void s_contract(void) {
     usleep(80000);
     EXPECT(hv_usb_ctrl_state(g_u) == HV_CTRL_CLEAR && hv_usb_set_strict(g_u, 1) == HV_USB_EBUSY && g_u->cstrict == 0, "contract: a legacy call in flight (state still CLEAR): set_strict is refused (EBUSY): the mode is not switched under it");
     pthread_join(t, NULL);
-    EXPECT(g_res[0] == 1 && g_resb[0] == 0x52 && hv_usb_set_strict(g_u, 1) == 0, "contract: the legacy call kept its own answer; after it left, the mode can change");
+    EXPECT(RD(g_res[0]) == 1 && RD(g_resb[0]) == 0x52 && hv_usb_set_strict(g_u, 1) == 0, "contract: the legacy call kept its own answer; after it left, the mode can change");
     dev_end();
 }
 
-static HvVirtioUsb *g_su; static volatile int g_sstop, g_sbad;
-static void *flip(void *a) { (void)a; int i = 0; while (!g_sstop) { hv_usb_set_strict(g_su, i++ & 1); if (hv_usb_ctrl_state(g_su) == HV_CTRL_UNCERTAIN && !g_su->cstrict) g_sbad++; usleep(300); } return NULL; }
-static void *callr(void *a) { (void)a; uint8_t b; while (!g_sstop) { int r = hv_usb_control_c(g_su, 0x80, 6, 0x100, 0, &b, 1, 15, NULL); if (r > 1 || r < -8) g_sbad++; if (r == HV_USB_EUNCERTAIN) hv_usb_ctrl_reacquire(g_su); } return NULL; }
+static HvVirtioUsb *g_su; static int g_sstop, g_sbad;
+static void *flip(void *a) { (void)a; int i = 0; while (!RD(g_sstop)) { hv_usb_set_strict(g_su, i++ & 1); if (hv_usb_ctrl_state(g_su) == HV_CTRL_UNCERTAIN && !g_su->cstrict) __atomic_add_fetch(&g_sbad, 1, __ATOMIC_SEQ_CST); usleep(300); } return NULL; }
+static void *callr(void *a) { (void)a; uint8_t b; while (!RD(g_sstop)) { int r = hv_usb_control_c(g_su, 0x80, 6, 0x100, 0, &b, 1, 15, NULL); if (r > 1 || r < -8) __atomic_add_fetch(&g_sbad, 1, __ATOMIC_SEQ_CST); if (r == HV_USB_EUNCERTAIN) hv_usb_ctrl_reacquire(g_su); } return NULL; }
 static void s_modeflip(void) {   /* set_strict and control calls racing: the mode is read once per call; ASan finds anything worse */
     Act none[] = {{0, 0, 0, 0}};
     dev_new(1, none, 1);
-    g_su = g_u; g_sstop = 0; g_sbad = 0;
+    g_su = g_u; ST(g_sstop, 0); ST(g_sbad, 0);
     pthread_t t[3];
     pthread_create(&t[0], NULL, flip, NULL); pthread_create(&t[1], NULL, callr, NULL); pthread_create(&t[2], NULL, callr, NULL);
     sleep(2);
-    g_sstop = 1;
+    ST(g_sstop, 1);
     for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
-    EXPECT(g_sbad == 0 && g_u->cbusy == 0, "modeflip: 2 s of mode changes against control calls: no result outside the defined codes, strict never dropped while UNCERTAIN, nothing left counted inside (%d odd, cbusy %d)", g_sbad, g_u->cbusy);
+    EXPECT(RD(g_sbad) == 0 && g_u->cbusy == 0, "modeflip: 2 s of mode changes against control calls: no result outside the defined codes, strict never dropped while UNCERTAIN, nothing left counted inside (%d odd, cbusy %d)", RD(g_sbad), g_u->cbusy);
     dev_end();
 }
 

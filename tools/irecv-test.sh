@@ -16,7 +16,15 @@ for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/sr
 done
 $CC $FL tests/test_irecv.c $objs -lpthread -o "$OUT/test_irecv" 2> "$OUT/link.log" || { echo "FAILED  link"; head -30 "$OUT/link.log"; exit 1; }
 $CC $FL -I$TP/libirecovery/include tests/test_reconnect.c $objs -lpthread -o "$OUT/test_reconnect" 2> "$OUT/link_rc.log" || { echo "FAILED  link test_reconnect"; head -30 "$OUT/link_rc.log"; exit 1; }
+$CC $FL -I$TP/libirecovery/include tests/test_transition.c $objs -lpthread -o "$OUT/test_transition" 2> "$OUT/link_tr.log" || { echo "FAILED  link test_transition"; head -30 "$OUT/link_tr.log"; exit 1; }
 rc=0
+# G2-a: the cancel and timeout contract and a run of transitions (host/restore_transition.c), fake USB only
+for sc in verdict cancel_leave cancel_arrive bound_leave bound_arrive seq_ok seq_stop seq_cancel seq_before seq_begin; do
+  echo "=== transition scenario $sc"
+  timeout 60 "$OUT/test_transition" $sc > "$OUT/tr_$sc.out" 2> "$OUT/tr_$sc.err"; r=$?
+  grep -E "^(scenario|PASS|FAIL)" "$OUT/tr_$sc.out" | cut -c1-240
+  [ $r = 0 ] || { echo "TRANSITION SCENARIO $sc FAILED (exit $r)"; tail -15 "$OUT/tr_$sc.err"; rc=1; }
+done
 for sc in verdict normal nodisc noreturn fast enumfail; do
   echo "=== reconnect scenario $sc"
   HV_LIBUSB_LOG=1 timeout 60 "$OUT/test_reconnect" $sc > "$OUT/rc_$sc.out" 2> "$OUT/rc_$sc.err"; r=$?

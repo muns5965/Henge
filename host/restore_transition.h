@@ -28,12 +28,27 @@ typedef struct {
     int mode;                        /* its product id (valid when opened) */
     int old_io_failed;               /* an operation on the OLD client failed (it must) instead of working or hanging */
     int old_io_hung;                 /* an operation on the OLD client did not return in time */
+    int cancelled;                   /* the wait was ended by the caller's cancel flag (not by a bound): nothing else in this observation is a finding */
 } HvTrObs;
 
-enum { HV_TR_OK = 0, HV_TR_NO_LEAVE, HV_TR_NO_ARRIVE, HV_TR_OPEN_FAILED, HV_TR_BAD_MODE, HV_TR_OLD_HANDLE_USABLE, HV_TR_OLD_HANDLE_HUNG };
+enum { HV_TR_OK = 0, HV_TR_NO_LEAVE, HV_TR_NO_ARRIVE, HV_TR_OPEN_FAILED, HV_TR_BAD_MODE, HV_TR_OLD_HANDLE_USABLE, HV_TR_OLD_HANDLE_HUNG, HV_TR_CANCELLED, HV_TR_BEGIN_FAILED };
 
 /* Fills the first part of o (left/arrived/fast). */
 void hv_transition_observe(HvVirtioUsb *usb, const HvTrSpec *spec, HvTrObs *o);
+/* The same, ended early (o->cancelled = 1, within a few ms) when *cancel turns non-zero. cancel may be NULL. A cancel is not a failure of the device and is never
+   reported as NO_LEAVE / NO_ARRIVE. */
+void hv_transition_observe_c(HvVirtioUsb *usb, const HvTrSpec *spec, volatile int *cancel, HvTrObs *o);
+
+/* A run of consecutive transitions (iBSS, iBEC, the restore ramdisk ... each leaves the bus and comes back as a new device). The transfers themselves and the new
+   client are the caller's: begin() starts stage i's transfer (0 = started), check() runs after the device is back and fills opened / mode / old_io_*. The run stops
+   at the first stage that is not OK, with its number; later stages are NOT started. *cancel is looked at before each stage and during each wait. */
+typedef struct {
+    int (*begin)(int stage, void *user);
+    void (*check)(int stage, HvTrObs *o, void *user);
+} HvTrSteps;
+typedef struct { int stages_done; int failed_stage; /* -1 when all passed */ int verdict; } HvTrRun;
+/* Returns the verdict of the run (HV_TR_OK when every stage passed), the sentence for the failing stage in note. */
+int hv_transition_run(HvVirtioUsb *usb, const HvTrSpec *specs, int n, volatile int *cancel, const HvTrSteps *steps, void *user, HvTrRun *out, char *note, int cap);
 /* Pure. Returns HV_TR_OK or the first failure, with a sentence in note. */
 int hv_transition_verdict(const HvTrObs *o, const HvTrSpec *spec, char *note, int cap);
 const char *hv_transition_name(int r);

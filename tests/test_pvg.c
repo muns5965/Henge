@@ -394,6 +394,37 @@ static void s_root_wrap(void) {
     EXPECT((uint32_t)Rg(0x100c) == root_wp, "root wrap: the ring pointer advanced by exactly the command's length across the wrap");
 }
 
+/* The channel-ring counterpart of s_root_wrap(): a header word straddling not the ring's logical end,
+   but a 16KB page-table boundary inside it (do_channel()'s `table[]` indirection, not a flat buffer).
+   A 2-page (32 KB) channel ring is used so the straddle happens mid-ring, away from the ring-size wrap
+   s_root_wrap() already covers -- this exercises ring_read()'s per-page re-indexing on its own. Same
+   positioning trick as root: force a resync to an off-4-byte rd via a garbage "pending" region, land
+   the stamp word (the one value read back whole via stamp_of()) exactly across table[0]'s last bytes
+   and table[1]'s first bytes, with a value whose 4 bytes are all different and non-zero. */
+static void s_channel_wrap(void) {
+    dev_new(1);   /* HV_PVG_NO_METAL: stamp is stored straight from hdr[2], not via a backend round trip */
+    chan_setup(2, 2);
+    /* chan_setup() allocates table[0] and table[1] back to back, so a buggy flat 4-byte read that
+       spills past table[0]'s page would, by sheer accident of this test harness's allocator, land on
+       table[1]'s actual first bytes anyway -- proving nothing. Re-point table[1] at a page allocated
+       after a filler, so it is NOT adjacent to table[0]; a spillover read then lands on the filler's
+       untouched (zero) bytes instead of the real continuation, same as it would on arbitrary unrelated
+       guest memory in general. */
+    (void)alloc_page();   /* filler: pushes the next allocation away from table[0] */
+    ((uint32_t *)pgp(chs[2].table_pn))[1] = alloc_page();
+    chs[2].wr = 16375;   /* same offset as s_root_wrap: stamp word at +8 = 16383, 1 byte before table[0]
+                             ends, straddling to table[1] offsets 0..2 */
+    __atomic_store_n(&rec(2)[0], chs[2].wr, __ATOMIC_RELEASE);
+    ring_bell(2);   /* rd=0, wr=16375: 16375 zero "pending" bytes, fails the length check on the first
+                        word, resyncs rd = wr = 16375 -- off the 4-byte boundary, without a real command */
+    EXPECT(rd_ptr(2) == chs[2].wr, "channel wrap: rd resynced to the deliberately page-straddling wp (%u)", chs[2].wr);
+    chan_cmd(2, 0x43, 0x87654321, NULL, 0);   /* op, len at rd+0/+4 (within table[0], no straddle);
+                                                  stamp at rd+8 = 16383, straddling to table[1] offsets 0..2 */
+    ring_bell(2);
+    EXPECT(stamp_of(2) == 0x87654321, "channel wrap: a stamp word straddling the channel ring's page-table boundary (bytes at table[0]+16383, table[1]+0,1,2) is read correctly, not corrupted by whatever follows table[0]'s page in guest memory (stamp_of = %x)", stamp_of(2));
+    EXPECT(rd_ptr(2) == chs[2].wr, "channel wrap: the channel's read pointer advanced by exactly the command's length across the page boundary");
+}
+
 static void s_bad_channel(void) {
     dev_new(0);
     chan_setup(2, 1);
@@ -806,7 +837,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "backend")) s_backend();
     if (all || !strcmp(sc, "complete")) s_complete();
     if (all || !strcmp(sc, "chrange")) s_chrange();
-    if (all || !strcmp(sc, "wrap")) s_wrap(), s_root_wrap();
+    if (all || !strcmp(sc, "wrap")) s_wrap(), s_root_wrap(), s_channel_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();
     if (all || !strcmp(sc, "mapper")) s_mapper(), s_task(), s_len_checks();

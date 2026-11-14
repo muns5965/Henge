@@ -10,32 +10,38 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Finds where the boot ROM could produce a given 32-bit value: as raw data bytes, or as an adjacent MOVZ+MOVK instruction pair that
- * builds it. Plain Java, no Android classes, so it has a JVM test.
+ * Finds where the boot ROM could produce a given 32-bit value: as raw data bytes, as a single MOVZ or MOVN instruction that makes it
+ * alone, or as an adjacent MOVZ+MOVK instruction pair that builds it. Plain Java, no Android classes, so it has a JVM test.
  *
- * Two independent, read-only searches over the app's own ROM copy (same file-checking discipline as RomBranchFinder/AddrRefFinder: size
- * checked before allocating, the whole file read into one buffer, SHA-256 taken over that same buffer, both searches run over that same
- * buffer). Neither search returns ROM bytes, so RomSlice's 4096-byte quota is not drawn on.
+ * Three independent, read-only searches over the app's own ROM copy (same file-checking discipline as RomBranchFinder/AddrRefFinder:
+ * size checked before allocating, the whole file read into one buffer, SHA-256 taken over that same buffer, every search runs over that
+ * same buffer). None of the searches return ROM bytes, so RomSlice's 4096-byte quota is not drawn on.
  *
  * Search 1 (raw data): every byte offset (not just 4-aligned; data is not necessarily instruction-aligned) whose next 4 bytes, read
  * little-endian, equal the target's low 32 bits. A hit here means the ROM HOLDS that value at that offset — it says nothing about
  * whether any code reads it, or whether the match is just a coincidence of unrelated bytes.
  *
- * Search 2 (instruction pair): every 4-byte aligned word i where word[i] is MOVZ Rd,#imm16{,lsl #(16*hw)} and word[i+1] is
- * MOVK Rd,#imm16{,lsl #(16*hw)} — same Rd, hw of each in {0,1}, and the two hw different from each other. This is the one shape the
- * search looks for: an immediately adjacent MOVZ-then-MOVK pair building one register. MOVZ always zeroes the whole register first, so
- * only its own immediate (at its hw) and MOVK's immediate (at its hw) can be set; with hw restricted to {0,1} the result is always in
- * 0..0xffffffff, which is why this model cannot reach a target above 32 bits (reported as a known limitation, not a silent zero).
+ * Search 2 (single instruction): every 4-byte aligned word that is a MOVZ or MOVN Rd,#imm16{,lsl #(16*hw)}, hw in {0,1}, whose value
+ * ALONE equals the target's low 32 bits. MOVZ zeroes the whole register before placing imm16 at its hw, so this only matches when the
+ * other 16-bit half of the target is already zero; MOVN sets the register to the one's complement of imm16<<(16*hw), so this only
+ * matches when the target's other half is already all-ones (0xffff) under that same masking.
  *
- * What a hit from either search is NOT:
- *   - a confirmed caller: the ROM can build the same value with MOVN, ORR, ADD, a memory load, a non-adjacent MOVZ/MOVK pair (something,
- *     even a NOP, between them), or a conditional branch that only ever executes one of the two instructions — none of that is looked for;
- *   - proof the code runs: data can accidentally carry the MOVZ/MOVK bit pattern, and a found pair may sit on a path that never executes.
+ * Search 3 (instruction pair): every 4-byte aligned word i where word[i] is MOVZ Rd,#imm16{,lsl #(16*hw)} and word[i+1] is
+ * MOVK Rd,#imm16{,lsl #(16*hw)} — same Rd, hw of each in {0,1}, and the two hw different from each other. This is the one two-instruction
+ * shape the search looks for: an immediately adjacent MOVZ-then-MOVK pair building one register. With hw restricted to {0,1} the result
+ * is always in 0..0xffffffff, which is why this model cannot reach a target above 32 bits (reported as a known limitation, not a silent zero).
+ *
+ * What a hit from any search is NOT:
+ *   - a confirmed caller: the ROM can build the same value with ORR, ADD, a memory load, a non-adjacent MOVZ/MOVK pair (something, even a
+ *     NOP, between them), a dynamic value computed at run time (read from hardware, then combined with a constant), or a conditional
+ *     branch that only ever executes one of two instructions — none of that is looked for;
+ *   - proof the code runs: data can accidentally carry one of these bit patterns, and a found instruction may sit on a path that never executes.
  */
 public final class ConstFinder {
     public static final int MAX_SHOWN = 32;
     public static final String DEFAULT_TARGET = "0x40200003";
 
+    private static final int MOVN_MASK = 0x7F800000, MOVN_VAL = 0x12800000;
     private static final int MOVZ_MASK = 0x7F800000, MOVZ_VAL = 0x52800000;
     private static final int MOVK_MASK = 0x7F800000, MOVK_VAL = 0x72800000;
 
@@ -49,6 +55,20 @@ public final class ConstFinder {
     public static final class Literal {
         public final long pc;
         Literal(long pc) { this.pc = pc; }
+    }
+
+    /** One MOVZ or MOVN instruction that alone builds the target's low 32 bits. */
+    public static final class Solo {
+        public final long pc;
+        public final int reg;
+        public final boolean isX;
+        public final boolean isMovn;   // false: MOVZ, true: MOVN
+        Solo(long pc, int reg, boolean isX, boolean isMovn) {
+            this.pc = pc;
+            this.reg = reg;
+            this.isX = isX;
+            this.isMovn = isMovn;
+        }
     }
 
     /** One (MOVZ, MOVK) pair on the same register that together build the target's low 32 bits. */
@@ -72,6 +92,8 @@ public final class ConstFinder {
         public String sha256;
         public int literalTotal;
         public final List<Literal> literalShown = new ArrayList<>();
+        public int soloTotal;
+        public final List<Solo> soloShown = new ArrayList<>();
         public int pairTotal;
         public final List<Pair> pairsShown = new ArrayList<>();
         public String message() { return ConstFinder.message(status); }
@@ -123,6 +145,7 @@ public final class ConstFinder {
         r.sha256 = sha;
         if (!sha.equals(expectSha)) return fail(r, Status.HASH_MISMATCH);
         scanLiteral(rom, RomSlice.BASE, target, r);
+        scanSolo(rom, RomSlice.BASE, target, r);
         scanPairs(rom, RomSlice.BASE, target, r);
         return r;
     }
@@ -135,6 +158,26 @@ public final class ConstFinder {
             if (w != want) continue;
             r.literalTotal++;
             if (r.literalShown.size() < MAX_SHOWN) r.literalShown.add(new Literal(base + off));
+        }
+    }
+
+    /** Every 4-byte aligned word that is a MOVZ or MOVN, hw in {0,1}, whose value alone (nothing else combined) equals target's low 32 bits. */
+    static void scanSolo(byte[] rom, long base, long target, Result r) {
+        int want = (int) target;
+        int words = rom.length / 4;
+        for (int i = 0; i < words; i++) {
+            int w = word(rom, i * 4);
+            boolean isMovn = (w & MOVN_MASK) == MOVN_VAL;
+            if (!isMovn && (w & MOVZ_MASK) != MOVZ_VAL) continue;
+            int hw = (w >>> 21) & 3;
+            if (hw > 1) continue;   // only the low-32-bit shapes this model covers; see the class comment
+            int imm = (w >>> 5) & 0xFFFF;
+            int value = isMovn ? ~(imm << (hw * 16)) : (imm << (hw * 16));
+            if (value != want) continue;
+            int reg = w & 31;
+            boolean isX = ((w >>> 31) & 1) != 0;
+            r.soloTotal++;
+            if (r.soloShown.size() < MAX_SHOWN) r.soloShown.add(new Solo(base + 4L * i, reg, isX, isMovn));
         }
     }
 
@@ -195,7 +238,7 @@ public final class ConstFinder {
 
     /** What the screen shows: the verdict, the target, both searches' hits and what neither search can say. */
     public static String screenText(Result r) {
-        StringBuilder sb = new StringBuilder("상수 생성 검색 (원시 4바이트 + 인접 MOVZ→MOVK, 읽기 전용, VM 실행 없음)\n");
+        StringBuilder sb = new StringBuilder("상수 생성 검색 (원시 4바이트 + MOVZ/MOVN 단독 + 인접 MOVZ→MOVK, 읽기 전용, VM 실행 없음)\n");
         if (r.fileSize >= 0) sb.append("파일 크기: ").append(r.fileSize).append(" 바이트\n");
         if (r.sha256 != null) {
             sb.append("SHA-256: ").append(r.sha256).append('\n');
@@ -208,9 +251,10 @@ public final class ConstFinder {
         }
         appendResult(sb, r);
         sb.append("※ 검색 1(원시 바이트)의 결과는 '그 위치에 그 값이 데이터로 있다'는 뜻일 뿐이며, 코드가 그 값을 만든다는 증거가 아닙니다. 우연한 일치일 수 있습니다.\n");
-        sb.append("※ 검색 2(명령어 쌍)는 서로 바로 붙어 있는 MOVZ→MOVK 한 쌍만 찾습니다. 둘 사이에 다른 명령(NOP 포함)이 있거나, MOVN·ORR·ADD·메모리 로드로 값을 만들거나, "
-                + "조건 분기로 둘 중 하나만 실행되는 경우는 찾지 못합니다. 데이터가 우연히 같은 비트 패턴을 가질 수도 있어 '명령어 쌍 후보'일 뿐 실행 확정이 아닙니다.\n");
-        if (r.targetAbove32) sb.append("※ 대상 값이 32비트를 넘어 이 명령어 쌍 모델로는 만들 수 없습니다 (검색 2는 항상 0건입니다). 검색 1만 유효합니다.\n");
+        sb.append("※ 검색 2(MOVZ/MOVN 단독)는 그 한 명령어만으로 값 전체가 만들어지는 경우만 찾습니다 (상대쪽 16비트가 0이거나 모두 1이어야 함).\n");
+        sb.append("※ 검색 3(MOVZ→MOVK 쌍)은 서로 바로 붙어 있는 한 쌍만 찾습니다. 둘 사이에 다른 명령(NOP 포함)이 있거나, ORR·ADD·메모리 로드·실행 중 계산된 값으로 조합되거나, "
+                + "조건 분기로 둘 중 하나만 실행되는 경우는 찾지 못합니다. 데이터가 우연히 같은 비트 패턴을 가질 수도 있어 모든 검색이 '후보'일 뿐 실행 확정이 아닙니다.\n");
+        if (r.targetAbove32) sb.append("※ 대상 값이 32비트를 넘어 이 명령어 모델로는 만들 수 없습니다 (검색 2·3은 항상 0건입니다). 검색 1만 유효합니다.\n");
         return sb.toString();
     }
 
@@ -233,10 +277,20 @@ public final class ConstFinder {
             sb.append('\n');
             for (Literal l : r.literalShown) sb.append(String.format(Locale.ROOT, "  0x%x\n", l.pc));
         }
-        if (r.pairTotal == 0) {
-            sb.append("검색 2 (인접 MOVZ→MOVK 쌍): 0건\n");
+        if (r.soloTotal == 0) {
+            sb.append("검색 2 (MOVZ/MOVN 단독): 0건\n");
         } else {
-            sb.append("검색 2 (인접 MOVZ→MOVK 쌍): 총 ").append(r.pairTotal).append("건");
+            sb.append("검색 2 (MOVZ/MOVN 단독): 총 ").append(r.soloTotal).append("건");
+            if (r.soloTotal > r.soloShown.size()) sb.append(" 중 ").append(r.soloShown.size()).append("건 표시");
+            sb.append('\n');
+            for (Solo s : r.soloShown) {
+                sb.append(String.format(Locale.ROOT, "  0x%x  (%s, %s%d)\n", s.pc, s.isMovn ? "MOVN" : "MOVZ", s.isX ? "x" : "w", s.reg));
+            }
+        }
+        if (r.pairTotal == 0) {
+            sb.append("검색 3 (인접 MOVZ→MOVK 쌍): 0건\n");
+        } else {
+            sb.append("검색 3 (인접 MOVZ→MOVK 쌍): 총 ").append(r.pairTotal).append("건");
             if (r.pairTotal > r.pairsShown.size()) sb.append(" 중 ").append(r.pairsShown.size()).append("건 표시");
             sb.append('\n');
             for (Pair p : r.pairsShown) {

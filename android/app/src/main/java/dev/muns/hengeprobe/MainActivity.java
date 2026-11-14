@@ -226,9 +226,10 @@ public class MainActivity extends Activity {
         done.addView(romAddrButton);
 
         TextView constHelp = new TextView(this);
-        constHelp.setText("상수 생성 검색: 앱 내부 ROM 전체에서 지정한 32비트 값을 두 가지 방식으로 찾습니다 — (1) 그 값이 리틀엔디안 4바이트 데이터로 그대로 있는 위치, "
-                + "(2) 서로 바로 붙은 MOVZ→MOVK 명령어 쌍이 같은 레지스터에 그 값을 만드는 위치 (읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음, ROM 바이트는 표시하지 않음). "
-                + "둘 다 후보이며 실행 확정이 아닙니다. 명령어 쌍 검색은 바로 붙은 두 명령만 보며, 사이에 다른 명령이 있거나 MOVN·ORR·ADD·메모리 로드로 만든 값, 조건 분기로 나뉜 경로는 찾지 못합니다.");
+        constHelp.setText("상수 생성 검색: 앱 내부 ROM 전체에서 지정한 32비트 값을 세 가지 방식으로 찾습니다 — (1) 그 값이 리틀엔디안 4바이트 데이터로 그대로 있는 위치, "
+                + "(2) MOVZ 또는 MOVN 한 명령어만으로 그 값 전체가 만들어지는 위치, (3) 서로 바로 붙은 MOVZ→MOVK 명령어 쌍이 같은 레지스터에 그 값을 만드는 위치 "
+                + "(읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음, ROM 바이트는 표시하지 않음). 셋 다 후보이며 실행 확정이 아닙니다. "
+                + "명령어 검색은 바로 붙은 명령만 보며, 사이에 다른 명령이 있거나 ORR·ADD·메모리 로드·실행 중 계산된 값으로 만든 경우, 조건 분기로 나뉜 경로는 찾지 못합니다.");
         constHelp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         done.addView(constHelp);
         romConstTarget = new EditText(this);

@@ -57,21 +57,75 @@ static void diag_probe_hook(HvCpu *cpu) {
             (unsigned long long)cpu->x[1], (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], cpu->diag_hits);
 }
 
-/* Installs the probe if HV_DIAG_PROBE=1, right after hv_vm_create() and before hv_vm_start().
+/* HV_DIAG_PROBE_CALLER=1: a second, read-only bring-up aid narrowing WHICH of three known
+   call sites (their return addresses: 0x10cbe0 / 0x10d150 / 0x10dfa0) actually reaches the
+   shared validation routine at 0x10c51c, and what mismatch at its 0x10c590 comparison
+   (orr w0,w8,#2 path -> 0x40200003) looks like at runtime. Same read-only guarantee as
+   HV_DIAG_PROBE above: no guest register, PC or memory is touched, only this cpu's own
+   diag_last_pc/lr/x0 and diag_hits fields (core/cpu.h) are written, and only on the cpu that hit the
+   address. Mutually exclusive with HV_DIAG_PROBE -- see diag_probe_install() below. */
+static void diag_probe_caller_hook(HvCpu *cpu) {
+    HvMachine *m = cpu->m;
+    cpu->diag_last_pc = cpu->pc;
+    cpu->diag_last_lr = cpu->x[30];
+    cpu->diag_last_x0 = cpu->x[0];
+    cpu->diag_hits++;
+    if (cpu->pc == m->stop_pc) {
+        /* Point A, 0x10c51c: the validation routine's entry. x4 is the caller's expected
+           value (not compared until point B, much later); x5/x6 are the caller's other
+           options. lr says which of the three known call sites got here. */
+        fprintf(stderr,
+                "vmrun: diag probe-caller cpu%u A pc=10c51c lr=%llx x0=%llx x1=%llx x2=%llx x3=%llx x4=%llx x5=%llx x6=%llx hit#%u\n",
+                cpu->index, (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0],
+                (unsigned long long)cpu->x[1], (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3],
+                (unsigned long long)cpu->x[4], (unsigned long long)cpu->x[5], (unsigned long long)cpu->x[6],
+                cpu->diag_hits);
+    } else {
+        /* Point B, 0x10c590: right before "cmp w0, w24" executes, so both registers still
+           hold exactly what the ROM is about to compare -- neither this hook nor the engine
+           touches them first. The ROM's compare is 32-bit (w0/w24), so the mismatch test
+           mirrors that width rather than comparing the full 64-bit x[] (whose upper half the
+           ROM never looks at and could disagree with). x21 is logged as-is, unread: this
+           probe observes registers only, it does not add a new guest-memory read path. */
+        uint32_t actual = (uint32_t)cpu->x[0];
+        uint32_t expected = (uint32_t)cpu->x[24];
+        fprintf(stderr,
+                "vmrun: diag probe-caller cpu%u B pc=10c590 x21=%llx actual(w0)=%x expected(w24)=%x mismatch=%d hit#%u\n",
+                cpu->index, (unsigned long long)cpu->x[21], actual, expected, actual != expected, cpu->diag_hits);
+    }
+}
+
+/* Installs whichever probe is requested, right after hv_vm_create() and before hv_vm_start().
    Refuses (prints why, changes nothing) rather than overwrite a stop_hook some other debug
    feature already set -- this build has none of those, but the shared engine does, so this
-   stays defensive. */
-static void diag_probe_maybe_install(void) {
-    if (!getenv("HV_DIAG_PROBE")) return;
+   stays defensive. HV_DIAG_PROBE and HV_DIAG_PROBE_CALLER share the engine's only two stop_pc
+   slots, so both set at once is refused outright rather than silently preferring one: that
+   would hide a user mistake as a working run. Either way normal guest boot proceeds --
+   refusing a diagnostic request never blocks it. */
+static void diag_probe_install(void) {
+    int basic = getenv("HV_DIAG_PROBE") != NULL;
+    int caller = getenv("HV_DIAG_PROBE_CALLER") != NULL;
+    if (!basic && !caller) return;
     HvMachine *vm = hv_vm_machine();
     if (vm->stop_hook) {
-        fprintf(stderr, "vmrun: HV_DIAG_PROBE set, but a stop hook is already installed; not overwriting it\n");
+        fprintf(stderr, "vmrun: HV_DIAG_PROBE/HV_DIAG_PROBE_CALLER set, but a stop hook is already installed; not overwriting it\n");
         return;
     }
-    vm->stop_pc = 0x103894;
-    vm->stop_pc2 = 0x10389c;
-    vm->stop_hook = diag_probe_hook;
-    fprintf(stderr, "vmrun: diag probe installed at 0x103894 / 0x10389c\n");
+    if (basic && caller) {
+        fprintf(stderr, "vmrun: HV_DIAG_PROBE and HV_DIAG_PROBE_CALLER are both set; refusing to install either (pick one) -- normal boot continues\n");
+        return;
+    }
+    if (basic) {
+        vm->stop_pc = 0x103894;
+        vm->stop_pc2 = 0x10389c;
+        vm->stop_hook = diag_probe_hook;
+        fprintf(stderr, "vmrun: diag probe installed at 0x103894 / 0x10389c\n");
+    } else {
+        vm->stop_pc = 0x10c51c;
+        vm->stop_pc2 = 0x10c590;
+        vm->stop_hook = diag_probe_caller_hook;
+        fprintf(stderr, "vmrun: diag probe-caller installed at 0x10c51c / 0x10c590\n");
+    }
 }
 
 /* Samples of CPU 0 taken from this thread while it runs on another. The fields are read one by one without a lock,
@@ -296,7 +350,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("vmrun created in %.0f ms\n", (now() - t0) * 1e3);
-    diag_probe_maybe_install();
+    diag_probe_install();
 #ifdef HV_TSS_PROBE
     if (tss_probe) {
         HvVmapple *bd2 = hv_vm_board();

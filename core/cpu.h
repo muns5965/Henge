@@ -167,14 +167,24 @@ typedef struct HvCpu {
     int off;                 /* PSCI: powered off (a secondary not started yet, or CPU_OFF) until CPU_ON */
     int parked_off;          /* off, and its thread is waiting (so CPU_ON may reset it) */
 
-    /* HV_DIAG_PROBE (vmrun only, see host/vmrun.c): this CPU's own last hit of either
-       m->stop_pc or m->stop_pc2. Written only by this CPU's own dispatcher (the stop_hook
-       runs on the CPU that reached the address), so no other CPU or thread may read or
-       write these outside that same guarantee; psci() reads them only for the CPU that is
-       itself making the PSCI call. diag_hits == 0: no hit yet, the other fields are unset. */
+    /* HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER (vmrun only, see host/vmrun.c, mutually exclusive):
+       this CPU's own last hit of either m->stop_pc or m->stop_pc2, whichever of the two probes
+       is installed. Written only by this CPU's own dispatcher (the stop_hook runs on the CPU
+       that reached the address), so no other CPU or thread may read or write these outside that
+       same guarantee; psci() reads them only for the CPU that is itself making the PSCI call.
+       diag_hits == 0: no hit yet, the other fields are unset. Both probes share these same
+       fields rather than adding new ones, so psci()'s SYSTEM_RESET report needs no changes for
+       either -- but diag_last_x0's meaning then depends on which probe is active: under
+       HV_DIAG_PROBE it is the code passed to the ROM's log function; under HV_DIAG_PROBE_CALLER
+       it is whatever x0 held at the last of its two addresses (0x10c51c's own x0, or 0x10c590's
+       pre-comparison "actual" value) -- and since the probes' two addresses differ, diag_last_pc
+       alone says which one and, for HV_DIAG_PROBE_CALLER, which of its two points. Also, the
+       *last* hit is not guaranteed to be point B: a run can reach SYSTEM_RESET without ever
+       getting past point A, or after further unrelated diag hits -- read the probe's own
+       immediate stderr lines for the actual sequence, not just this summary. */
     uint64_t diag_last_pc;   /* which of stop_pc/stop_pc2 was hit */
     uint64_t diag_last_lr;   /* that cpu's x[30] at the hit */
-    uint64_t diag_last_x0;   /* that cpu's x[0] at the hit (named for the register, not "code": its meaning as a diagnostic value is not yet confirmed) */
+    uint64_t diag_last_x0;   /* that cpu's x[0] at the hit -- meaning depends on which probe is active, see above */
     uint32_t diag_hits;
 } HvCpu;
 

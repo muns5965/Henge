@@ -140,11 +140,14 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
     case 0x84000006: return 2;                               /* MIGRATE_INFO_TYPE: no trusted OS */
     case 0x84000008:                                         /* SYSTEM_OFF */
     case 0x84000009:                                         /* SYSTEM_RESET */
-        /* HV_DIAG_PROBE (vmrun only, see host/vmrun.c diag_probe_maybe_install): report only
-           THIS cpu's own last hit of the probe, if it ever had one (diag_hits == 0: none --
-           nothing is printed, so this line is silent whenever the probe was never installed
-           or never fired, same as today). This is not "the VM's last diagnostic value": another
-           cpu may have hit the probe too, and this does not look at it. */
+        /* HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER (vmrun only, see host/vmrun.c diag_probe_install,
+           mutually exclusive): report only THIS cpu's own last hit of whichever probe is
+           active, if it ever had one (diag_hits == 0: none -- nothing is printed, so this line
+           is silent whenever neither probe was installed or it never fired, same as today).
+           This is not "the VM's last diagnostic value": another cpu may have hit the probe too,
+           and this does not look at it; nor is it guaranteed to be HV_DIAG_PROBE_CALLER's point
+           B specifically (see core/cpu.h diag_last_x0) -- it is just whichever of the active
+           probe's addresses this cpu last reached. */
         if ((uint32_t)fn == 0x84000009 && cpu->diag_hits)
             fprintf(stderr, "hengevm: SYSTEM_RESET requested by cpu%u, whose last diag-probe hit (of %u) was pc=%llx lr=%llx x0=%llx\n",
                     cpu->index, cpu->diag_hits, (unsigned long long)cpu->diag_last_pc,

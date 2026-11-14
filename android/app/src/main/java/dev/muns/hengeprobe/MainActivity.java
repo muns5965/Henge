@@ -96,6 +96,7 @@ public class MainActivity extends Activity {
     private Button usbNormalButton;
     private Button usbProbeButton;
     private CheckBox diagProbeCheckBox;   // read (not consumed) by runVmrun; applies only to the normal-boot family below it, never to installer/restore/tss/g0/irecv/dnload modes
+    private CheckBox diagProbeCallerCheckBox;   // same contract as diagProbeCheckBox, for HV_DIAG_PROBE_CALLER instead; mutually exclusive with it at the engine level (host/vmrun.c diag_probe_install refuses both), not enforced here -- checking both just shows the engine's own conflict message in the run's output
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -256,6 +257,11 @@ public class MainActivity extends Activity {
         diagProbeCheckBox.setText("진단 프로브 켜기 (HV_DIAG_PROBE=1, 읽기 전용, 일반 부팅류에만 적용 — 설치기/복원/TSS/G0/irecv/dnload 모드는 항상 꺼짐)");
         diagProbeCheckBox.setChecked(false);
         done.addView(diagProbeCheckBox);
+
+        diagProbeCallerCheckBox = new CheckBox(this);
+        diagProbeCallerCheckBox.setText("호출자 진단 켜기 (HV_DIAG_PROBE_CALLER=1, 읽기 전용, 일반 부팅류에만 적용 — 위 진단 프로브와 동시에 켜면 엔진이 둘 다 설치하지 않고 충돌 메시지만 출력, 부팅은 정상 진행)");
+        diagProbeCallerCheckBox.setChecked(false);
+        done.addView(diagProbeCallerCheckBox);
 
         vmrunButton = new Button(this);
         vmrunButton.setText("ROM 일반 부팅 시험 (vmrun, 30초)");
@@ -628,6 +634,7 @@ public class MainActivity extends Activity {
             usbProbeButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
             diagProbeCheckBox.setEnabled(enabled);   // read fresh by the next runVmrun call; disabling it mid-run only prevents changing it, never clears it
+            diagProbeCallerCheckBox.setEnabled(enabled);   // same contract as diagProbeCheckBox above
         });
     }
 
@@ -1204,9 +1211,10 @@ public class MainActivity extends Activity {
         final boolean g0 = g0Mode;
         g0Mode = false;
         final boolean irecv = irecvIn;
-        // HV_DIAG_PROBE (host/vmrun.c diag_probe_maybe_install): read-only diagnostic logging, normal-boot family only.
-        // Read here (not consumed/cleared, unlike the one-shot mode flags above) so the checkbox reflects "next normal-boot run", not "next run of any kind".
+        // HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER (host/vmrun.c diag_probe_install): read-only diagnostic logging, normal-boot family only.
+        // Read here (not consumed/cleared, unlike the one-shot mode flags above) so each checkbox reflects "next normal-boot run", not "next run of any kind".
         final boolean diag = !installer && !tss && !pf && !g0 && !irecv && !dnload && diagProbeCheckBox != null && diagProbeCheckBox.isChecked();
+        final boolean diagCaller = !installer && !tss && !pf && !g0 && !irecv && !dnload && diagProbeCallerCheckBox != null && diagProbeCallerCheckBox.isChecked();
         if (running) return;
         running = true;
         setButtons(false);
@@ -1260,6 +1268,8 @@ public class MainActivity extends Activity {
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
                     acc.append(g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbP ? "모드: 일반 부팅 + USB 프로브 (시험, installer=0, --usb-probe로 리셋·디스크립터 조회 수행, log=3, 5초)\n" : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     if (diag) acc.append("진단: HV_DIAG_PROBE=1 (읽기 전용, 이 실행에만 적용)\n");
+                    if (diagCaller) acc.append("진단: HV_DIAG_PROBE_CALLER=1 (읽기 전용, 이 실행에만 적용)\n");
+                    if (diag && diagCaller) acc.append("주의: 두 진단을 동시에 켰습니다 — 엔진이 둘 다 설치하지 않고 충돌 메시지만 출력합니다 (부팅은 정상 진행).\n");
                     Long vmEcid = null;
                     if (g0 && !cfg.containsKey("ecid") && !new File(priv, VmEcid.FILE).isFile()) {
                         acc.append("이 VM의 ECID 파일이 아직 없습니다. G0은 ECID를 만들지 않습니다. 먼저 설치기 부팅 시험을 한 번 실행하세요. 아무것도 하지 않았습니다.\n");
@@ -1290,11 +1300,14 @@ public class MainActivity extends Activity {
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
                     pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
                     if (usbN) pb.environment().put("HV_USB_ON_NORMAL", "1"); // this one run only; the engine's default boot is unchanged
-                    // HV_DIAG_PROBE: read-only diagnostic logging (host/vmrun.c diag_probe_maybe_install). diag is already false for
-                    // installer/restore/TSS/G0/irecv/dnload runs regardless of the checkbox (computed above). Explicitly removed when off,
-                    // in case this process ever inherited one from its own environment.
+                    // HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER: read-only diagnostic logging (host/vmrun.c diag_probe_install). Both are already
+                    // false for installer/restore/TSS/G0/irecv/dnload runs regardless of either checkbox (computed above). Each is explicitly
+                    // removed when off, in case this process ever inherited one from its own environment. Checking both at once is not blocked
+                    // here: the engine itself refuses to install either and prints a conflict message instead (acc already warned about this above).
                     if (diag) pb.environment().put("HV_DIAG_PROBE", "1");
                     else pb.environment().remove("HV_DIAG_PROBE");
+                    if (diagCaller) pb.environment().put("HV_DIAG_PROBE_CALLER", "1");
+                    else pb.environment().remove("HV_DIAG_PROBE_CALLER");
                     Process p = pb.start();
                     // Output handling: the reader never stops reading (a full pipe would stall vmrun). It keeps (a) text: every line except the high-volume
                     // trace kinds, which the summaries below scan, (b) the last 200 lines of everything for the screen, (c) the whole output in a log file

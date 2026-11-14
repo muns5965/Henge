@@ -94,16 +94,24 @@ static const uint32_t device_info[][2] = {
 
 static uint32_t *guest32(HvPvgLite *p, uint64_t pa) { return hv_phys_ptr(p->m, pa, 4); }
 
-/* Reads a little-endian 32-bit value at a guest physical address this device cannot assume is 4-byte
-   aligned (a ring position after a bad-command resync can land on any byte: see do_root()/do_channel()).
-   guest32()+a uint32_t* dereference would be undefined behavior there; this reads four individually
-   1-byte-aligned bytes and assembles them by hand, which is well defined regardless of pa's alignment
-   and produces exactly the value an aligned load would have, since the machine is little-endian
-   throughout. Missing memory (out of bounds) reads as 0, same as guest32()'s existing NULL check did. */
-static uint32_t guest32_val(HvPvgLite *p, uint64_t pa) {
-    uint8_t *b = hv_phys_ptr(p->m, pa, 4);
-    if (!b) return 0;
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+/* Reads a little-endian 32-bit value at a root-ring logical offset (do_root() only). `at` has already
+   been wrapped once by the caller for the word as a whole (at % ring), but a plain guest32()-style
+   uint32_t* dereference from that single physical address would (a) be undefined behavior in C if the
+   address is not 4-byte aligned -- a ring position after a bad-command resync can land on any byte --
+   and (b) take 4 CONSECUTIVE bytes from that one address, which is wrong if the word straddles the
+   ring's end: those bytes would spill past it into whatever guest memory happens to follow, instead of
+   wrapping back to the ring's start. This instead wraps each of the 4 bytes individually at the ring
+   boundary and assembles them by hand -- well defined for any address, and exactly as ring_read()
+   already does for payload copies, instead of once for the whole word. *ok is set to 0 (and the
+   corresponding byte treated as missing, reading as 0) if any of the 4 bytes falls outside guest RAM. */
+static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t ring, uint32_t at, int *ok) {
+    uint8_t v[4];
+    for (int i = 0; i < 4; i++) {
+        uint8_t *b = hv_phys_ptr(p->m, buf + off + (uint64_t)((at + (uint32_t)i) % ring), 1);
+        if (!b) *ok = 0;
+        v[i] = b ? *b : 0;
+    }
+    return (uint32_t)v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
 }
 
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
@@ -124,7 +132,7 @@ static void do_root(HvPvgLite *p) {
         uint32_t pending = wp - p->root_rp;
         uint32_t at = p->root_rp % ring, hdr[3] = {0, 0, 0};
         if (pending >= 12)
-            for (int i = 0; i < 3; i++) hdr[i] = guest32_val(p, buf + off + (at + 4u * i) % ring);
+            for (int i = 0; i < 3; i++) { int ok = 1; hdr[i] = root_ring32(p, buf, off, ring, at + 4u * i, &ok); }
         if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x (%x bytes pending)\n", hdr[0], hdr[1], pending);
             p->root_rp = wp;
@@ -132,16 +140,14 @@ static void do_root(HvPvgLite *p) {
         }
         if (p->log) fprintf(stderr, "hengevm: pvg-lite: root op %x len %x stamp %x\n", hdr[0], hdr[1], hdr[2]);
         if ((hdr[0] & 0xffff) == 0x38 && hdr[1] >= 28) {
-            uint64_t id_pa = buf + off + (at + 12) % ring, page_pa = buf + off + (at + 24) % ring;
-            if (hv_phys_ptr(p->m, id_pa, 4) && hv_phys_ptr(p->m, page_pa, 4)) {
-                uint32_t id = guest32_val(p, id_pa), page = guest32_val(p, page_pa);
-                if (id >> 1 < 512) p->task_root[id >> 1] = page;
-            }
+            int ok = 1;
+            uint32_t id = root_ring32(p, buf, off, ring, at + 12, &ok), page = root_ring32(p, buf, off, ring, at + 24, &ok);
+            if (ok && id >> 1 < 512) p->task_root[id >> 1] = page;
         }
         if ((hdr[0] & 0xffff) == 0x3a && hdr[1] >= 24) {
-            uint64_t count_pa = buf + off + (at + 12) % ring, page_pa = buf + off + (at + 20) % ring;
-            if (hv_phys_ptr(p->m, count_pa, 4) && hv_phys_ptr(p->m, page_pa, 4)) {
-                uint32_t count = guest32_val(p, count_pa), page = guest32_val(p, page_pa);
+            int ok = 1;
+            uint32_t count = root_ring32(p, buf, off, ring, at + 12, &ok), page = root_ring32(p, buf, off, ring, at + 20, &ok);
+            if (ok) {
                 uint32_t *dst = hv_phys_ptr(p->m, (uint64_t)page << 14, sizeof device_info);
                 if (dst) {
                     uint32_t n = sizeof device_info / sizeof device_info[0];
@@ -627,8 +633,13 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
         uint32_t pending = wr - rd, hdr[3] = {0, 0, 0};
         if (pending >= 12)
             for (int i = 0; i < 3; i++) {
-                uint32_t at = (rd + 4u * i) % size;
-                hdr[i] = guest32_val(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
+                /* ring_read(), not a single (at>>14, at&0x3fff) split: that assumes the word never
+                   straddles a boundary, but the channel table's per-16KB-page indirection can be
+                   crossed by a 4-byte read near offset 0x3ffe. ring_read() already wraps and
+                   re-indexes through the table one byte at a time, same as for payload copies. */
+                uint8_t b4[4];
+                ring_read(p, table, size, rd + 4u * i, b4, 4);
+                hdr[i] = (uint32_t)b4[0] | (uint32_t)b4[1] << 8 | (uint32_t)b4[2] << 16 | (uint32_t)b4[3] << 24;
             }
         if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x (%x bytes pending)\n", ch, hdr[0], hdr[1], rd, pending);

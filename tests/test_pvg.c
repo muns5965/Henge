@@ -90,10 +90,14 @@ static HvPvgLite *dev_new(int no_metal) {
 
 /* Byte-wise stores (not a uint32_t* dereference): root_wp is a free-running counter the s_len_checks()
    unaligned-length cases deliberately drive off a 4-byte boundary, same as chan_raw() below already
-   does for the channel ring, so this has to tolerate writing at an odd address itself. */
+   does for the channel ring, so this has to tolerate writing at an odd address itself. Each of the 4
+   bytes wraps the 0x4000 (ring size) boundary on its own, the way a real guest's ring writer would:
+   a single (at % 0x4000) then four consecutive bytes from there would spill past the ring's end into
+   whatever follows it (here, root_pn's page) instead of wrapping back to its start, for any at within
+   3 bytes of the end -- this is the write-side counterpart of the read-side bug fixed in pvg_lite.c. */
 static void root_w32(uint32_t at, uint32_t v) {
-    uint8_t *b = pgp(fifo_pn) + 0x4000 + (at % 0x4000);
-    b[0] = (uint8_t)v, b[1] = (uint8_t)(v >> 8), b[2] = (uint8_t)(v >> 16), b[3] = (uint8_t)(v >> 24);
+    uint8_t *base = pgp(fifo_pn) + 0x4000;
+    for (int i = 0; i < 4; i++) base[(at + (uint32_t)i) % 0x4000] = (uint8_t)(v >> (8 * i));
 }
 static void root_cmd(uint32_t op, uint32_t len, uint32_t stamp, const uint32_t *pl, int n) {
     uint32_t w[3] = {op, len, stamp};
@@ -367,6 +371,27 @@ static void s_wrap(void) {
     }
     EXPECT(okc && total == 36, "wrap: 36 commands of 4 KB through a 32 KB ring arrive intact and in order (crossing page boundaries and the end)");
     EXPECT(chs[3].wr > 4 * 0x8000 && rd_ptr(3) == chs[3].wr, "wrap: the pointers ran past the ring size several times and ended equal (wr %u)", chs[3].wr);
+}
+
+/* A header word straddling the *root* ring's end: all three header words start at root_rp + a multiple
+   of 4, which never straddles a 4-byte-aligned ring size (16384) UNLESS root_rp itself is off the
+   4-byte boundary already -- exactly the state a bad-command resync can leave it in (see
+   s_len_checks()). This reaches that state directly (see below), then puts the stamp word (the one
+   value this device hands back unmodified and in full, via stamp_of()) right across the wrap, with a
+   value whose four bytes are all different and non-zero (0x12345678), so that misreading even one of
+   them -- not just losing the whole word to zero -- is guaranteed to show up as a mismatch. */
+static void s_root_wrap(void) {
+    dev_new(1);
+    root_wp = 16375;   /* root_rp + 8 (the stamp word) == 16383, 1 byte before the ring's end */
+    W(0x1008, root_wp);   /* wp - root_rp(0) = 16375, not an overflow; the walk from rp=0 finds 16375
+                              zero "pending" bytes, fails the length check on the very first word, and
+                              resyncs root_rp = wp = 16375 directly -- off the 4-byte boundary, as
+                              intended, without needing a real bad command to get there */
+    EXPECT((uint32_t)Rg(0x100c) == 16375, "root wrap: root_rp resynced to the deliberately non-4-aligned wp (16375)");
+    root_cmd(0x56, 12, 0x12345678, NULL, 0);   /* op, len at root_rp+0/+4 (no straddle); stamp at
+                                                   root_rp+8 = 16383, straddling to ring offsets 0..2 */
+    EXPECT(stamp_of(0) == 0x12345678, "root wrap: a stamp word straddling the ring's end (bytes at 16383,0,1,2) is read correctly, not corrupted by whatever follows the ring in guest memory (stamp_of = %x)", stamp_of(0));
+    EXPECT((uint32_t)Rg(0x100c) == root_wp, "root wrap: the ring pointer advanced by exactly the command's length across the wrap");
 }
 
 static void s_bad_channel(void) {
@@ -781,7 +806,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "backend")) s_backend();
     if (all || !strcmp(sc, "complete")) s_complete();
     if (all || !strcmp(sc, "chrange")) s_chrange();
-    if (all || !strcmp(sc, "wrap")) s_wrap();
+    if (all || !strcmp(sc, "wrap")) s_wrap(), s_root_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();
     if (all || !strcmp(sc, "mapper")) s_mapper(), s_task(), s_len_checks();

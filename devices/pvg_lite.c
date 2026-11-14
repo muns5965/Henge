@@ -116,7 +116,7 @@ static void do_root(HvPvgLite *p) {
                 uint32_t *w = guest32(p, buf + off + (at + 4u * i) % ring);
                 hdr[i] = w ? *w : 0;
             }
-        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending) {
+        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x (%x bytes pending)\n", hdr[0], hdr[1], pending);
             p->root_rp = wp;
             break;
@@ -616,7 +616,7 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
                 uint32_t *w = guest32(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
                 hdr[i] = w ? *w : 0;
             }
-        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending) {
+        if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x (%x bytes pending)\n", ch, hdr[0], hdr[1], rd, pending);
             rd = wr;
             break;

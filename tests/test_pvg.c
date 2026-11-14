@@ -571,6 +571,26 @@ static void s_len_checks(void) {
     EXPECT(hv_pvg_lite_task_objects(dev, 31) == 0, "0x44 len=4 (< 28): not applied, task objects stays 0");
     EXPECT(hv_pvg_lite_task_objects(dev, 32) == 0x3333, "0x44 len=4 followed by a full 0x44: the ring moved on correctly, the next command still applies");
     EXPECT(stamp_of(2) == 6, "0x44 len=4: the short command was still consumed and stamped");
+
+    /* A length that is not a multiple of 4 is rejected outright (ring dropped to wp), same as a too-short
+       or too-long one: it must not be allowed through, since taking it would leave the ring's read
+       position permanently off a 4-byte boundary for every later header word this device reads with
+       guest32()'s uint32_t* dereference. */
+    chan_raw(2, 0x99, 13, 7, NULL, 0, 13);
+    ring_bell(2);
+    uint32_t wr_after_unaligned = chs[2].wr;
+    EXPECT(rd_ptr(2) == wr_after_unaligned, "channel: a non-4-aligned length (13) is rejected, ring dropped to wp");
+    uint32_t full38c[4] = {84, 0, 0, troot};   /* task 42: an id untouched by any earlier check in this function */
+    chan_cmd(2, 0x38, 8, full38c, 16);
+    ring_bell(2);
+    EXPECT(hv_pvg_lite_task_read(dev, 42, 0, buf, 4) == 0, "channel: after the unaligned-length drop, a full command still applies");
+    EXPECT(stamp_of(2) == 8, "channel: after the unaligned-length drop, the ring's read position (and stamps) stayed 4-byte aligned");
+
+    /* The same check, on the root ring. */
+    root_cmd(0x99, 13, 0x201, NULL, 0);
+    EXPECT((uint32_t)Rg(0x100c) == root_wp, "root: a non-4-aligned length (13) is rejected, ring dropped to wp");
+    root_cmd(0x3b, 12, 0x202, NULL, 0);
+    EXPECT((uint32_t)Rg(0x100c) == root_wp && stamp_of(0) == 0x202, "root: after the unaligned-length drop, the ring works again");
 }
 
 /* ---- random content in well-formed rings: must not crash (ASan / UBSan builds are what makes this mean something). The commands are chained from the start of the

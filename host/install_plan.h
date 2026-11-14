@@ -40,11 +40,16 @@ typedef struct {
     int on_fail_goto;                                       /* a failure (not optional) goes back to this step; -1 = end the plan */
 } IpStep;
 
+/* attempts and reconnects are reset to 0 each time this step is (re-)entered (ip_execute's
+   "rc->attempts = 0; rc->reconnects = 0;"), so after on_fail_goto sends execution back to an
+   earlier step, a later re-visit's counts overwrite the ones from an earlier visit: this is
+   the LAST visit's counts, not a running total across every visit. The plan-wide total of
+   every step run, across every step and every visit, is IpReport.runs instead. */
 typedef struct { IpStepState state; int attempts, reconnects; } IpRecord;
 typedef struct {
     IpVerdict verdict;
     int failed_step;       /* -1 when none */
-    int runs;              /* step runs spent against the budget */
+    int runs;              /* step runs spent against the budget, summed over every step and every visit (unlike IpRecord.attempts/reconnects, which are per visit) */
     int steps_done;
     IpRecord rec[16];
     char note[160];

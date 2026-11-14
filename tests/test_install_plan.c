@@ -129,6 +129,7 @@ static void t_optional_goto(void) {
     e = env();
     v = ip_execute(p, 4, &e, 0, &r);
     EXPECT(v == IP_PLAN_OK && W.ran[1] == 2 && W.ran[2] == 2 && W.ran[3] == 2 && W.ran[0] == 1, "goto: a failure sends the plan back to step 1; steps 1-3 ran twice, step 0 once");
+    EXPECT(r.rec[1].attempts == 1 && r.runs == 7, "goto: a revisited step's record is its LAST visit only (1 run), not every visit (W.ran[1] separately shows 2); the plan-wide total (7 = 1+2+2+2) is r.runs instead");
     reset();   /* it never works: the budget ends the loop */
     script(3, 8, IP_FAILED, IP_FAILED, IP_FAILED);
     for (int k = 3; k < 8; k++) W.script[3][k] = IP_FAILED;

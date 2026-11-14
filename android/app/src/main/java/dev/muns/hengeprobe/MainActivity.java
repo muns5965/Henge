@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
     private Button vmrunVerboseButton;
     private Button installerVerboseButton;
     private Button usbNormalButton;
+    private Button usbProbeButton;
     private Button installerButton;
     private File crashFile;
     private File progressFile;
@@ -240,6 +241,18 @@ public class MainActivity extends Activity {
         usbNormalButton.setText("[시험] 일반 부팅 + USB 장치만 노출 (log=3, 3초, 설치기 설정 아님)");
         usbNormalButton.setOnClickListener(v -> { usbNormalMode = true; runVmrun(false); });
         done.addView(usbNormalButton);
+
+        usbProbeButton = new Button(this);
+        usbProbeButton.setText("[시험] 일반 부팅 + USB 프로브 (log=3, 5초, 설치기 설정 아님)");
+        usbProbeButton.setOnClickListener(v -> { usbProbeMode = true; usbNormalMode = true; runVmrun(false); });
+        done.addView(usbProbeButton);
+        final TextView usbProbeNote = new TextView(this);
+        usbProbeNote.setText("위 버튼: 설치기(DFU)로 들어가지 않고 일반 부팅(installer=0) 상태에서 호스트 쪽 USB 프로브 스레드만 추가로 띄웁니다(--usb-probe). "
+                + "이 스레드는 실제로 USB 리셋을 보내고, 장치/구성 디스크립터 조회(GET_DESCRIPTOR), 표준 GET_STATUS·GET_CONFIGURATION을 수행하며, "
+                + "상태가 DFU로 보이면 추가로 GET_STATE·GET_STATUS를 보냅니다. SET_CONFIGURATION, DNLOAD, ABORT, CLRSTATUS는 보내지 않습니다. "
+                + "단순 조회나 무상태 검사가 아니라 실제 USB 제어 전송입니다. 위 '일반 부팅 + USB 장치만 노출' 버튼은 이 버튼과 무관하게 그대로 동작합니다.");
+        usbProbeNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(usbProbeNote);
 
         installerVerboseButton = new Button(this);
         installerVerboseButton.setText("ROM 설치기(DFU) 부팅 + 상세 로그 (log=3, 30초)");
@@ -580,6 +593,7 @@ public class MainActivity extends Activity {
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
+            usbProbeButton.setEnabled(enabled);
             installerButton.setEnabled(enabled);
         });
     }
@@ -1132,6 +1146,8 @@ public class MainActivity extends Activity {
         tssMode = false;
         final boolean usbN = usbNormalMode;
         usbNormalMode = false;
+        final boolean usbP = usbProbeMode;
+        usbProbeMode = false;
         final boolean verbose = verboseMode || usbN;
         verboseMode = false;
         final boolean pf = preflightMode;
@@ -1187,10 +1203,12 @@ public class MainActivity extends Activity {
                     if (g0) { File g0Work = new File(getFilesDir(), "rs_g0"); g0Work.mkdirs(); cmd.add("--install-g0"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g0Work.getAbsolutePath()); }
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
                     if (installer && !pf && !g0) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    else if (usbP && !pf && !g0) cmd.add("--usb-probe"); // new button: installer stays 0; only --usb-probe is added (never --irecv-probe/--dnload-probe/--tss-probe)
                     if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
-                    if (usbN) cfg.put("seconds", "3"); // the normal boot ended after 10 ms; with the USB port it may sit in a polling loop printing ~1M lines/s
+                    if (usbP) cfg.put("seconds", "5"); // same polling-loop risk as usbN, plus a little extra time for the probe's reset+descriptor exchange and any ROM reaction after
+                    else if (usbN) cfg.put("seconds", "3"); // the normal boot ended after 10 ms; with the USB port it may sit in a polling loop printing ~1M lines/s
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
-                    acc.append(g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
+                    acc.append(g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbP ? "모드: 일반 부팅 + USB 프로브 (시험, installer=0, --usb-probe로 리셋·디스크립터 조회 수행, log=3, 5초)\n" : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     Long vmEcid = null;
                     if (g0 && !cfg.containsKey("ecid") && !new File(priv, VmEcid.FILE).isFile()) {
                         acc.append("이 VM의 ECID 파일이 아직 없습니다. G0은 ECID를 만들지 않습니다. 먼저 설치기 부팅 시험을 한 번 실행하세요. 아무것도 하지 않았습니다.\n");
@@ -1231,7 +1249,7 @@ public class MainActivity extends Activity {
                     final boolean[] textFull = {false};
                     final java.util.ArrayList<String> g0Kept = new java.util.ArrayList<>();   // G0 only: the result lines for the verdict, kept apart from text (2 MB cap) and the screen ring
                     final boolean[] g0Overflow = {false};
-                    final RunLog runLog = (tss || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    final RunLog runLog = (tss || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbP ? "normal_usb_probe" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
@@ -1562,6 +1580,7 @@ public class MainActivity extends Activity {
     private boolean tssMode;
     private boolean preflightStageA;
     private boolean usbNormalMode;   // set by the USB-on-normal-boot experiment button; read and cleared by runVmrun
+    private boolean usbProbeMode;    // set by the USB-probe-on-normal-boot button (adds --usb-probe without entering installer); read and cleared by runVmrun
     private boolean verboseMode;     // set by the verbose boot button; read and cleared by runVmrun
     private boolean g0Mode;   // set by the G0 button; read and cleared by runVmrun
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun

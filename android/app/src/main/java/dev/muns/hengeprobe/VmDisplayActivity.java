@@ -26,12 +26,15 @@ import java.util.concurrent.TimeUnit;
 /** [A] The real VM's screen. Unlike DisplayTestActivity (C0+B0: a synthetic picture, no virtual machine), this
  *  screen shows the ACTUAL guest, through the VM runner (host/ui_runner_vm.c) started the one place that is
  *  allowed to: VmRunnerLauncher -- see that class for the compile-time switch that keeps starting it refused in
- *  this build, checked before it touches a file or a process; this screen exists to exercise everything around
- *  that -- layout, shutdown, the shared-memory attach/pid-parsing -- without starting a VM. Enabling that switch
- *  is a separate change with its own approval.
+ *  this build. onCreate() checks that switch BEFORE anything else -- before nativeStart(), before reading or
+ *  validating the ROM/disk/aux paths, before touching any file -- so a blocked build only ever shows the
+ *  refusal text and does nothing further; this screen exists to exercise everything around an actual start --
+ *  layout, shutdown, the shared-memory attach/pid-parsing -- without starting a VM. Enabling that switch is a
+ *  separate change with its own approval.
  *
- *  ROM/disk/aux: this screen does not look for them, default them, or create them. All three must be given as
- *  explicit Intent extra paths ("rom", "disk", "aux"); if any is missing, VmRunnerLauncher.start() is never called.
+ *  ROM/disk/aux: this screen does not default or create them. All three must be given as explicit Intent extra
+ *  paths ("rom", "disk", "aux") and must already exist; if any is missing or does not exist, VmRunnerLauncher.start()
+ *  is never called and nativeStart() never runs.
  *
  *  Rendering reuses the exact native pipeline DisplayTestActivity's runner mode (C1-1) uses -- same shared file
  *  protocol (host/frame_shm.h), same JNI entry points (see android/app/src/main/cpp/ui_jni.c's impl_* functions,
@@ -105,6 +108,29 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         status.setText("[A] VM display (real guest). Starting...");
         root.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         setContentView(root);
+
+        // The launcher's switch is checked FIRST, before nativeStart() or any file access: when VM execution
+        // is blocked there is nothing to display and nothing to prepare, so neither should happen. An earlier
+        // version called nativeStart() (and, once paths were given, prepared the shared-memory directory)
+        // unconditionally; caught in review, fixed by moving every native/file step behind this check and the
+        // path checks below, in that order.
+        if (!VmRunnerLauncher.startEnabled()) {
+            status.setText("vm display: " + VmRunnerLauncher.REFUSAL);
+            return;
+        }
+        String romPath = getIntent().getStringExtra("rom");
+        String diskPath = getIntent().getStringExtra("disk");
+        String auxPath = getIntent().getStringExtra("aux");
+        if (romPath == null || diskPath == null || auxPath == null) {
+            status.setText("vm display: rom/disk/aux가 모두 Intent extra로 전달되지 않아 시작하지 않습니다");
+            return;
+        }
+        File romFile = new File(romPath), diskFile = new File(diskPath), auxFile = new File(auxPath);
+        if (!romFile.isFile() || !diskFile.isFile() || !auxFile.isFile()) {
+            status.setText("vm display: rom/disk/aux 중 존재하지 않는 경로가 있어 시작하지 않습니다");
+            return;
+        }
+
         int r = nativeStart();
         if (r < 0) {
             status.setText("nativeStart failed (" + r + (r == -2 ? ": the previous screen is still being closed, try again in a moment" : "") + ")");
@@ -112,29 +138,31 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         }
         started = true;
         nativeUseRunner(true);   // this screen only ever shows the shared-file source; there is no synthetic fallback
-        startVmRunner();
+        startVmRunner(romFile, diskFile, auxFile);
     }
 
-    /** Reads the three required paths, asks VmRunnerLauncher to start the VM runner, and (if it actually did)
-     *  reads its output and attaches to its shared file -- same pattern as DisplayTestActivity.startRunnerProcess(),
-     *  but through VmRunnerLauncher (the only place allowed to create this process) instead of a direct
-     *  process-start call, and with explicit required paths instead of none. */
-    private void startVmRunner() {
-        String romPath = getIntent().getStringExtra("rom");
-        String diskPath = getIntent().getStringExtra("disk");
-        String auxPath = getIntent().getStringExtra("aux");
-        if (romPath == null || diskPath == null || auxPath == null) {
-            runnerLine = "vm runner: rom/disk/aux가 모두 Intent extra로 전달되지 않아 시작하지 않습니다";
-            return;
-        }
+    /** Reached only once VmRunnerLauncher.startEnabled() and the three paths above were already confirmed, and
+     *  nativeStart() already succeeded. Prepares the shared-memory directory, asks VmRunnerLauncher to start the
+     *  VM runner, and (if it actually did) reads its output and attaches to its shared file -- same pattern as
+     *  DisplayTestActivity.startRunnerProcess(), but through VmRunnerLauncher (the only place allowed to create
+     *  this process) instead of a direct process-start call.
+     *
+     *  Left for later, since this build never reaches this method (startEnabled() is false): confirming no
+     *  earlier VM process still holds the shared-memory file before deleting it below. Today that delete only
+     *  guards against an earlier run's leftover file being mistaken for this one's (by pid, once attached) --
+     *  same as DisplayTestActivity's synthetic-runner path already does -- not against one still being live. */
+    private void startVmRunner(File romFile, File diskFile, File auxFile) {
         final File nativeLibDir = new File(getApplicationInfo().nativeLibraryDir);
         final File dir = new File(getFilesDir(), "vm1");
         final File shm = new File(dir, "vm.shm");
         dir.mkdirs();
         shm.delete();   // a file left by an earlier run must not be mistaken for this one's
-        VmRunnerLauncher.Result res = VmRunnerLauncher.start(nativeLibDir, shm, new File(romPath), new File(diskPath), new File(auxPath));
+        VmRunnerLauncher.Result res = VmRunnerLauncher.start(nativeLibDir, shm, romFile, diskFile, auxFile);
         if (!res.started) {
-            runnerLine = "vm runner: " + res.reason;   // in this build, always VmRunnerLauncher.REFUSAL (its switch is off)
+            // nativeStart() already ran (started == true): give back what it took before leaving.
+            runnerLine = "vm runner: " + res.reason;
+            releaseNative();
+            started = false;
             return;
         }
         vmStarted = true;
@@ -211,16 +239,25 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         dead = true;
         if (started) {
             started = false;
-            nativeClose();
-            if (stopRender()) {
-                nativeDestroy();
-                if (vmStarted) stopVmRunner();
-            } else {
-                Log.w(TAG, "the render thread did not end within 2 s; the native buffers are freed when it does");
-                if (vmStarted) stopVmRunner();
-            }
+            releaseNative();
+            if (vmStarted) stopVmRunner();
         }
         super.onDestroy();
+    }
+
+    /** nativeClose() (no more frames in), the render thread stopped AND CONFIRMED ended, then nativeDestroy()
+     *  (host/render_gate.h: freeing is given to one caller only). Used both here and by startVmRunner() above,
+     *  for the case where nativeStart() already ran but VmRunnerLauncher.start() then failed regardless (never
+     *  reached in this build, since startEnabled() is false; kept for when that switch is eventually turned on). */
+    private void releaseNative() {
+        nativeClose();
+        if (stopRender()) {
+            nativeDestroy();
+        } else {
+            // The thread is still inside a native call. Nothing is freed and no new thread is started; the
+            // thread frees when it ends (see startRender()'s own nativeDestroy() at its loop's end).
+            Log.w(TAG, "the render thread did not end within 2 s; the native buffers are freed when it does");
+        }
     }
 
     private void startRender() {

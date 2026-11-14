@@ -523,6 +523,56 @@ static void s_task(void) {
     EXPECT(hv_pvg_lite_task_read(dev, 5, 0, buf, 4) == -1, "task: a depth of 0 is refused");
 }
 
+/* 0x38 and 0x44 each read a fixed number of argument bytes (16, 28) regardless of how much
+   the command itself declares. A command shorter than that must not be read at all: nothing
+   it names is in range yet, so reading past it would pull in whatever follows in the ring
+   (the next command's bytes, at the time this was written). */
+static void s_len_checks(void) {
+    dev_new(1);   /* no metal backend: stamps are written synchronously, as in swap_at_page_end */
+    chan_setup(2, 1);
+
+    /* A valid one-level task root (as in s_task), reused as the target of every 0x38 below:
+       a successful task_read/task_page proves task_root was actually set to it. */
+    uint32_t troot = alloc_page(), tab = alloc_page(), d0 = alloc_page();
+    ((uint32_t *)pgp(troot))[0] = tab; ((uint32_t *)pgp(troot))[1] = 1;
+    ((uint32_t *)pgp(tab))[0] = d0;
+
+    /* 0x38, full 16 bytes (task 20 >> 1 = 10): applied, as s_task already relies on. */
+    uint32_t full38[4] = {20, 0, 0, troot};
+    chan_cmd(2, 0x38, 1, full38, 16);
+    ring_bell(2);
+    uint8_t buf[4];
+    EXPECT(hv_pvg_lite_task_read(dev, 10, 0, buf, 4) == 0, "0x38 len=16: task root applied");
+
+    /* 0x38, 8 bytes (short of the 16 it reads): must not be applied, and must not read into
+       the next command's bytes in the ring. Task 22 >> 1 = 11 must stay unset. */
+    uint32_t short38[2] = {22, 0};
+    chan_cmd(2, 0x38, 2, short38, 8);
+    uint32_t full38b[4] = {24, 0, 0, troot};   /* task 12: would be misread as task 22's tail if 0x38 over-read */
+    chan_cmd(2, 0x38, 3, full38b, 16);
+    ring_bell(2);
+    EXPECT(hv_pvg_lite_task_read(dev, 11, 0, buf, 4) == -1, "0x38 len=8 (< 16): not applied, task root stays unset");
+    EXPECT(hv_pvg_lite_task_read(dev, 12, 0, buf, 4) == 0, "0x38 len=8 followed by a full 0x38: the ring moved on correctly, the next command still applies");
+    EXPECT(stamp_of(2) == 3, "0x38 len=8: the short command was still consumed and stamped (ring position untouched by the length check)");
+
+    /* 0x44, full 28 bytes (task 30): applied. */
+    uint32_t full44[7] = {30, 0x1111, 0, 0x2222, 0, 0, 0};
+    chan_cmd(2, 0x44, 4, full44, 28);
+    ring_bell(2);
+    EXPECT(hv_pvg_lite_task_objects(dev, 30) == 0x1111, "0x44 len=28: task objects applied");
+
+    /* 0x44, 4 bytes (short of the 28 it reads, as tests/test_pvg.c's own backend-order test at
+       "chan_cmd(2, 0x44, 32, a, 4)" already sends without checking this). Task 31 must stay 0. */
+    uint32_t short44[1] = {31};
+    chan_cmd(2, 0x44, 5, short44, 4);
+    uint32_t full44b[7] = {32, 0x3333, 0, 0x4444, 0, 0, 0};   /* would be misread as task 31's tail if 0x44 over-read */
+    chan_cmd(2, 0x44, 6, full44b, 28);
+    ring_bell(2);
+    EXPECT(hv_pvg_lite_task_objects(dev, 31) == 0, "0x44 len=4 (< 28): not applied, task objects stays 0");
+    EXPECT(hv_pvg_lite_task_objects(dev, 32) == 0x3333, "0x44 len=4 followed by a full 0x44: the ring moved on correctly, the next command still applies");
+    EXPECT(stamp_of(2) == 6, "0x44 len=4: the short command was still consumed and stamped");
+}
+
 /* ---- random content in well-formed rings: must not crash (ASan / UBSan builds are what makes this mean something). The commands are chained from the start of the
    ring and the write pointer is the end of the chain: a pointer the walk can never reach is covered by s_ring below, so the chains here are kept simple. ---- */
 static uint64_t rs = 0x9e3779b97f4a7c15ull;
@@ -697,7 +747,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "wrap")) s_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();
-    if (all || !strcmp(sc, "mapper")) s_mapper(), s_task();
+    if (all || !strcmp(sc, "mapper")) s_mapper(), s_task(), s_len_checks();
     if (all || !strcmp(sc, "fuzz")) s_fuzz(argc > 2 ? atoi(argv[2]) : 400);
     if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();

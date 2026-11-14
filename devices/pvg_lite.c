@@ -541,11 +541,13 @@ static void channel_command(HvPvgLite *p, const uint32_t *table, uint32_t size, 
     uint32_t n = hdr[1] > 12 + skip ? hdr[1] - 12 - skip : 0;
     if (n > sizeof args) n = sizeof args;
     if (op == 0x38) {
+        if (n < 16) return;   /* shorter than its own fixed arguments: not read, nothing updated (as with the op==8 swap below) */
         ring_read(p, table, size, rd + 12 + skip, args, 16);
         if (args[0] >> 1 < 512) p->task_root[args[0] >> 1] = args[3];
         return;
     }
     if (op == 0x44) {
+        if (n < 28) return;   /* shorter than its own fixed arguments: not read, nothing updated */
         ring_read(p, table, size, rd + 12 + skip, args, 28);
         if (args[0] < 512) {
             p->task_objects[args[0]] = (uint64_t)args[2] << 32 | args[1];

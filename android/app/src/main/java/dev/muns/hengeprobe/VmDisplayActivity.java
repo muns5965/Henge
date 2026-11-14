@@ -239,8 +239,17 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         dead = true;
         if (started) {
             started = false;
-            releaseNative();
+            // Order matters: stopVmRunner() calls nativeRunnerAppClose() SYNCHRONOUSLY (the actual "quit"
+            // send and exit wait run in their own thread afterward, but the app-closing notice itself does
+            // not), so calling it before releaseNative() guarantees that notice is set on the shared file
+            // while g_shm still exists. releaseNative() -> nativeDestroy() NULLs and closes g_shm; the
+            // previous order let that happen first, so the notice silently found no g_shm to set it on.
+            // This only fixes the notice's OWN delivery order -- it says nothing about whether the VM
+            // process has actually read that flag or exited, which stays a background concern (A-4,
+            // unchanged) and an actual-run question, not a memory-safety one (stopVmRunner()'s background
+            // thread only touches the Java Process object, never g_shm or any other native resource).
             if (vmStarted) stopVmRunner();
+            releaseNative();
         }
         super.onDestroy();
     }
@@ -296,9 +305,15 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         return true;
     }
 
-    @Override public void surfaceCreated(SurfaceHolder h) { nativeSetSurface(h.getSurface()); surfaceReady = true; startRender(); }
-    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { nativeSetView(w, hh); }
-    @Override public void surfaceDestroyed(SurfaceHolder h) { surfaceReady = false; stopRender(); nativeSetSurface(null); }
+    // Guarded by `started`, not by any assumption about Surface-vs-nativeStart() timing (nativeStart() runs
+    // synchronously inside onCreate(), before any Surface callback can fire, in ordinary Android lifecycle
+    // order -- see review discussion): when onCreate() left `started` false (VM execution blocked, paths
+    // missing/invalid, or nativeStart() itself failed), there is no native pipeline to hand a Surface to, so
+    // these callbacks must not call into it regardless of why. The Java-side state (surfaceReady, the render
+    // thread) is still tracked unconditionally; only the native calls are skipped.
+    @Override public void surfaceCreated(SurfaceHolder h) { surfaceReady = true; if (started) nativeSetSurface(h.getSurface()); startRender(); }
+    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { if (started) nativeSetView(w, hh); }
+    @Override public void surfaceDestroyed(SurfaceHolder h) { surfaceReady = false; stopRender(); if (started) nativeSetSurface(null); }
 
     private void handleTouch(MotionEvent e) {
         if (!started || dead) return;

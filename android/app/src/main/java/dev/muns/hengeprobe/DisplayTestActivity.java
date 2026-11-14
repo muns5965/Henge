@@ -193,14 +193,19 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
         dead = true;
         if (started) {
             started = false;
+            // Order matters (see VmDisplayActivity.onDestroy() for the full reasoning): stopRunnerProcess()
+            // calls nativeRunnerAppClose() SYNCHRONOUSLY (only the "quit" send and exit wait run in their own
+            // thread afterward), so it must run before nativeDestroy() below NULLs and closes g_shm -- the
+            // previous order (runner notified only after nativeDestroy()) let the notice silently find no
+            // g_shm to set it on. This is about the notice's own delivery order, not about whether the
+            // runner has actually read it or exited, which the background wait below still handles.
+            if (runnerMode) stopRunnerProcess();
             nativeClose();                       // 1. the buffer takes no more frames, no new render enters
             if (stopRender()) {                  // 2. the render thread is confirmed ended
                 nativeDestroy();                 // 3. free (the right is given to one caller only)
-                if (runnerMode) stopRunnerProcess();   // 4. the runner: after the app has let go of its file
             } else {
                 // The thread is still inside a native call. Nothing is freed and no new thread is started; the thread frees when it ends.
                 Log.w(TAG, "the render thread did not end within 2 s; the native buffers are freed when it does");
-                if (runnerMode) stopRunnerProcess();   // the runner is stopped anyway: it does not depend on the render thread
             }
         }
         super.onDestroy();
@@ -244,9 +249,12 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
         return true;
     }
 
-    @Override public void surfaceCreated(SurfaceHolder h) { nativeSetSurface(h.getSurface()); surfaceReady = true; startRender(); }
-    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { nativeSetView(w, hh); }
-    @Override public void surfaceDestroyed(SurfaceHolder h) { surfaceReady = false; stopRender(); nativeSetSurface(null); }
+    // Guarded by `started` (see VmDisplayActivity's identical callbacks for the full reasoning): when
+    // nativeStart() failed, there is no native pipeline to hand a Surface to. Java-side state (surfaceReady,
+    // the render thread) is still tracked unconditionally; only the native calls are skipped.
+    @Override public void surfaceCreated(SurfaceHolder h) { surfaceReady = true; if (started) nativeSetSurface(h.getSurface()); startRender(); }
+    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { if (started) nativeSetView(w, hh); }
+    @Override public void surfaceDestroyed(SurfaceHolder h) { surfaceReady = false; stopRender(); if (started) nativeSetSurface(null); }
 
     private void handleTouch(MotionEvent e) {
         if (!started || dead) return;

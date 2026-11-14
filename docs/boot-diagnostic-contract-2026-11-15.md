@@ -67,20 +67,40 @@ boot/DFU resets. Do not read a nonzero `reset_why` entry as evidence about boot 
 investigated and retracted once as a hypothesis for a different question, and the same mistake is possible
 here.
 
+**Known gap (C-2, flagged in review, not fixed here)**: `hv_vm_reason_name()` gives only a coarse category
+(halt / wfi-with-nothing-to-wake-it / unsupported / fault-on-the-exception-vector / other) for why a run
+ended. It is NOT a program counter and does not say which ROM function or boot stage the guest reached —
+category and location are different questions, and this stage's signal only answers the first one. Narrowing
+"a fault happened" down to a ROM address or function would need separate instrumentation (reading the
+guest's PC at the point of the exit, and matching it against whatever ROM disassembly/address analysis
+exists) that this document does not have and is not claiming exists. Where such a ROM analysis is available,
+cross-referencing it against an observed exit PC is a reasonable next step for whoever holds that analysis,
+but it is a separate, unimplemented capability, not something this stage's existing counters already give.
+
 ### 3. Guest frame existence
 
 **Asks**: has the guest produced anything `hv_vm_boot_display()` (`host/vm.c`) can call a frame yet?
 
 **Signal**: `HvRunnerStats.display_present` / `display_absent` (`host/runner_vm_core.h`, filled by
 `fetch_cb()` in `host/runner_vm_core.c`), visible today via the `"status"` stdin command's printed line
-(`host/ui_runner_vm.c`'s `status_line()`): `"display present %llu absent %llu"`. This single pair already
-tells apart the two sources `hv_vm_boot_display()` tries, in order:
+(`host/ui_runner_vm.c`'s `status_line()`): `"display present %llu absent %llu"`. `hv_vm_boot_display()`
+(`host/vm.c`) tries two sources, in order, before returning present/absent to this counter:
 - A PVG-drawn frame (`hv_pvg_lite_frame()`) — present once the GPU ring protocol (this session's B-track) has
   actually produced output.
 - Failing that, a `boot_args` scan of guest RAM (rate-limited to once every 2 s; see `host/vm.c`'s
   `last_scan` guard) — present once iBoot has written its early framebuffer descriptor. A `display_absent`
   count that is merely "still climbing" in the first couple of seconds of a cold boot is not yet a failure —
   the 2 s scan limit means an early poll can legitimately find nothing before the next scan runs.
+
+**Known gap (C-1, flagged in review, not fixed here — this is a documentation limitation, not a feature that
+exists today)**: `display_present`/`display_absent` is a single present-or-not counter. `hv_vm_boot_display()`
+does not report back, and `fetch_cb()` does not record, WHICH of the two sources above actually produced a
+present frame — a `display_present` count climbing is consistent with either a PVG frame or a `boot_args`-
+found one, and this stage's signal cannot tell them apart. If that distinction turns out to matter during an
+actual boot trial (e.g., to know whether the GPU ring path is contributing anything yet, versus the guest
+only ever being seen through the early `boot_args` framebuffer), `hv_vm_boot_display()` would need to expose
+which path it took as a separate output field — nothing today does this, and this document does not claim
+otherwise.
 
 **A nonzero `call_errors`** at this stage (same stats struct) is a THIRD outcome, distinct from both present
 and absent: `fetch_cb()`'s own bounds check rejected what `hv_vm_boot_display()` returned (bad dimensions,

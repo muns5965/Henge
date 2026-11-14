@@ -166,6 +166,16 @@ typedef struct HvCpu {
     int halted;              /* SYSTEM_OFF / SYSTEM_RESET / guest panic: the machine stops */
     int off;                 /* PSCI: powered off (a secondary not started yet, or CPU_OFF) until CPU_ON */
     int parked_off;          /* off, and its thread is waiting (so CPU_ON may reset it) */
+
+    /* HV_DIAG_PROBE (vmrun only, see host/vmrun.c): this CPU's own last hit of either
+       m->stop_pc or m->stop_pc2. Written only by this CPU's own dispatcher (the stop_hook
+       runs on the CPU that reached the address), so no other CPU or thread may read or
+       write these outside that same guarantee; psci() reads them only for the CPU that is
+       itself making the PSCI call. diag_hits == 0: no hit yet, the other fields are unset. */
+    uint64_t diag_last_pc;   /* which of stop_pc/stop_pc2 was hit */
+    uint64_t diag_last_lr;   /* that cpu's x[30] at the hit */
+    uint64_t diag_last_x0;   /* that cpu's x[0] at the hit (named for the register, not "code": its meaning as a diagnostic value is not yet confirmed) */
+    uint32_t diag_hits;
 } HvCpu;
 
 #define HV_CPU_X(n)        ((n) * 8)

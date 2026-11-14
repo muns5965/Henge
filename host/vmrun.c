@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 #include "vm.h"
+#include "machine.h"
+#include "cpu.h"
 #ifdef HV_IRECV_PROBE
 #include "irecv_probe.h"
 #include "dnload_probe.h"
@@ -35,6 +37,42 @@ static void on_exit_cb(int reason) {
     __atomic_store_n(&exited, 1, __ATOMIC_SEQ_CST);
 }
 #define EXITED() __atomic_load_n(&exited, __ATOMIC_SEQ_CST)
+
+/* HV_DIAG_PROBE=1: a read-only bring-up aid for one boot investigation (two fixed guest
+   PCs believed to be a diagnostic logger). Off by default; when unset this file's behavior
+   is unchanged. stop_pc/stop_pc2 are themselves plain HvMachine fields (core/machine.h),
+   and core/translate.c already forces a block boundary at each of them, so the dispatcher
+   is guaranteed to call this hook there (core/dispatch.c) rather than ever translate past it
+   inline. This only runs on the CPU that reached the address, so it only ever writes that
+   same cpu's own diag_last_* fields (core/cpu.h) -- no lock, no cross-CPU access, and no
+   guest-visible state (registers, PC, return values) is touched. */
+static void diag_probe_hook(HvCpu *cpu) {
+    const char *which = cpu->pc == cpu->m->stop_pc ? "0x103894" : "0x10389c";
+    cpu->diag_last_pc = cpu->pc;
+    cpu->diag_last_lr = cpu->x[30];
+    cpu->diag_last_x0 = cpu->x[0];
+    cpu->diag_hits++;
+    fprintf(stderr, "vmrun: diag probe cpu%u pc=%s lr=%llx x0=%llx x1=%llx x2=%llx x3=%llx hit#%u\n",
+            cpu->index, which, (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0],
+            (unsigned long long)cpu->x[1], (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], cpu->diag_hits);
+}
+
+/* Installs the probe if HV_DIAG_PROBE=1, right after hv_vm_create() and before hv_vm_start().
+   Refuses (prints why, changes nothing) rather than overwrite a stop_hook some other debug
+   feature already set -- this build has none of those, but the shared engine does, so this
+   stays defensive. */
+static void diag_probe_maybe_install(void) {
+    if (!getenv("HV_DIAG_PROBE")) return;
+    HvMachine *vm = hv_vm_machine();
+    if (vm->stop_hook) {
+        fprintf(stderr, "vmrun: HV_DIAG_PROBE set, but a stop hook is already installed; not overwriting it\n");
+        return;
+    }
+    vm->stop_pc = 0x103894;
+    vm->stop_pc2 = 0x10389c;
+    vm->stop_hook = diag_probe_hook;
+    fprintf(stderr, "vmrun: diag probe installed at 0x103894 / 0x10389c\n");
+}
 
 /* Samples of CPU 0 taken from this thread while it runs on another. The fields are read one by one without a lock,
    so a sample can mix two moments (a torn read); treat each line as approximate. A "change" is logged whenever the
@@ -258,6 +296,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("vmrun created in %.0f ms\n", (now() - t0) * 1e3);
+    diag_probe_maybe_install();
 #ifdef HV_TSS_PROBE
     if (tss_probe) {
         HvVmapple *bd2 = hv_vm_board();

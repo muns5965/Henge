@@ -94,6 +94,18 @@ static const uint32_t device_info[][2] = {
 
 static uint32_t *guest32(HvPvgLite *p, uint64_t pa) { return hv_phys_ptr(p->m, pa, 4); }
 
+/* Reads a little-endian 32-bit value at a guest physical address this device cannot assume is 4-byte
+   aligned (a ring position after a bad-command resync can land on any byte: see do_root()/do_channel()).
+   guest32()+a uint32_t* dereference would be undefined behavior there; this reads four individually
+   1-byte-aligned bytes and assembles them by hand, which is well defined regardless of pa's alignment
+   and produces exactly the value an aligned load would have, since the machine is little-endian
+   throughout. Missing memory (out of bounds) reads as 0, same as guest32()'s existing NULL check did. */
+static uint32_t guest32_val(HvPvgLite *p, uint64_t pa) {
+    uint8_t *b = hv_phys_ptr(p->m, pa, 4);
+    if (!b) return 0;
+    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+}
+
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
 
 static void do_root(HvPvgLite *p) {
@@ -112,10 +124,7 @@ static void do_root(HvPvgLite *p) {
         uint32_t pending = wp - p->root_rp;
         uint32_t at = p->root_rp % ring, hdr[3] = {0, 0, 0};
         if (pending >= 12)
-            for (int i = 0; i < 3; i++) {
-                uint32_t *w = guest32(p, buf + off + (at + 4u * i) % ring);
-                hdr[i] = w ? *w : 0;
-            }
+            for (int i = 0; i < 3; i++) hdr[i] = guest32_val(p, buf + off + (at + 4u * i) % ring);
         if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x (%x bytes pending)\n", hdr[0], hdr[1], pending);
             p->root_rp = wp;
@@ -123,16 +132,22 @@ static void do_root(HvPvgLite *p) {
         }
         if (p->log) fprintf(stderr, "hengevm: pvg-lite: root op %x len %x stamp %x\n", hdr[0], hdr[1], hdr[2]);
         if ((hdr[0] & 0xffff) == 0x38 && hdr[1] >= 28) {
-            uint32_t *id = guest32(p, buf + off + (at + 12) % ring), *page = guest32(p, buf + off + (at + 24) % ring);
-            if (id && page && *id >> 1 < 512) p->task_root[*id >> 1] = *page;
+            uint64_t id_pa = buf + off + (at + 12) % ring, page_pa = buf + off + (at + 24) % ring;
+            if (hv_phys_ptr(p->m, id_pa, 4) && hv_phys_ptr(p->m, page_pa, 4)) {
+                uint32_t id = guest32_val(p, id_pa), page = guest32_val(p, page_pa);
+                if (id >> 1 < 512) p->task_root[id >> 1] = page;
+            }
         }
         if ((hdr[0] & 0xffff) == 0x3a && hdr[1] >= 24) {
-            uint32_t *count = guest32(p, buf + off + (at + 12) % ring), *page = guest32(p, buf + off + (at + 20) % ring);
-            uint32_t *dst = page ? hv_phys_ptr(p->m, (uint64_t)*page << 14, sizeof device_info) : NULL;
-            if (dst && count) {
-                uint32_t n = sizeof device_info / sizeof device_info[0];
-                memcpy(dst, device_info, sizeof device_info);
-                if (p->log) fprintf(stderr, "hengevm: pvg-lite: device info: %u keys (asked %u)\n", n, *count);
+            uint64_t count_pa = buf + off + (at + 12) % ring, page_pa = buf + off + (at + 20) % ring;
+            if (hv_phys_ptr(p->m, count_pa, 4) && hv_phys_ptr(p->m, page_pa, 4)) {
+                uint32_t count = guest32_val(p, count_pa), page = guest32_val(p, page_pa);
+                uint32_t *dst = hv_phys_ptr(p->m, (uint64_t)page << 14, sizeof device_info);
+                if (dst) {
+                    uint32_t n = sizeof device_info / sizeof device_info[0];
+                    memcpy(dst, device_info, sizeof device_info);
+                    if (p->log) fprintf(stderr, "hengevm: pvg-lite: device info: %u keys (asked %u)\n", n, count);
+                }
             }
         }
         p->root_rp += hdr[1];
@@ -613,8 +628,7 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
         if (pending >= 12)
             for (int i = 0; i < 3; i++) {
                 uint32_t at = (rd + 4u * i) % size;
-                uint32_t *w = guest32(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
-                hdr[i] = w ? *w : 0;
+                hdr[i] = guest32_val(p, ((uint64_t)table[at >> 14] << 14) + (at & 0x3fff));
             }
         if (pending < 12 || hdr[1] < 12 || hdr[1] > pending || (hdr[1] & 3)) {
             fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x (%x bytes pending)\n", ch, hdr[0], hdr[1], rd, pending);

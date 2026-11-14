@@ -88,10 +88,17 @@ static HvPvgLite *dev_new(int no_metal) {
     return dev;
 }
 
+/* Byte-wise stores (not a uint32_t* dereference): root_wp is a free-running counter the s_len_checks()
+   unaligned-length cases deliberately drive off a 4-byte boundary, same as chan_raw() below already
+   does for the channel ring, so this has to tolerate writing at an odd address itself. */
+static void root_w32(uint32_t at, uint32_t v) {
+    uint8_t *b = pgp(fifo_pn) + 0x4000 + (at % 0x4000);
+    b[0] = (uint8_t)v, b[1] = (uint8_t)(v >> 8), b[2] = (uint8_t)(v >> 16), b[3] = (uint8_t)(v >> 24);
+}
 static void root_cmd(uint32_t op, uint32_t len, uint32_t stamp, const uint32_t *pl, int n) {
     uint32_t w[3] = {op, len, stamp};
-    for (int i = 0; i < 3; i++) *(uint32_t *)(pgp(fifo_pn) + 0x4000 + (root_wp + 4u * i) % 0x4000) = w[i];
-    for (int i = 0; i < n; i++) *(uint32_t *)(pgp(fifo_pn) + 0x4000 + (root_wp + 12u + 4u * i) % 0x4000) = pl[i];
+    for (int i = 0; i < 3; i++) root_w32(root_wp + 4u * i, w[i]);
+    for (int i = 0; i < n; i++) root_w32(root_wp + 12u + 4u * i, pl[i]);
     root_wp += len;
     W(0x1008, root_wp);
 }
@@ -573,33 +580,32 @@ static void s_len_checks(void) {
     EXPECT(stamp_of(2) == 6, "0x44 len=4: the short command was still consumed and stamped");
 
     /* A length that is not a multiple of 4 is rejected outright (ring dropped to wp), same as a too-short
-       or too-long one: it must not be allowed through, since a run of such lengths would otherwise drift
-       the ring's read position off a 4-byte boundary, one odd length at a time, for every later header
-       word this device reads with guest32()'s uint32_t* dereference. This does NOT make the ring's read
-       position 4-byte aligned going forward: the drop itself sets rd (or root_rp) to wp/wr, and wp/wr is
-       whatever the guest's register/record says, aligned or not. The checks below show exactly that: the
-       drop stops the drift this specific command would have caused, the ring still processes the next
-       command correctly (reading it at whatever position wp left it, aligned or not: guest32()'s lack of
-       an alignment check means the value comes back right either way on this toolchain/architecture, as
-       confirmed separately with an isolated simulation and a UBSan run), but the position after the drop
-       is left non-4-aligned here on purpose,
-       because wp itself (113) is not a multiple of 4. Whether the device should instead reject or realign
-       an unaligned wp/wr at this point is an open design question, not settled by this test. */
+       or too-long one. The drop itself sets rd (or root_rp) to wp/wr exactly as the guest's register/record
+       says, aligned or not: wp/wr (113 here) is not a multiple of 4, so this is deliberately left
+       non-4-aligned, and that is fine on purpose, not a gap. Earlier, the header/field reads that follow
+       a non-4-aligned position went through guest32()'s uint32_t* dereference, undefined behavior in C for
+       a misaligned address (confirmed separately with an isolated simulation and a UBSan run, and now also
+       directly on this file: building devices/pvg_lite.c + this file with -fsanitize=undefined, instead of
+       tools/pvg-test.sh's own -fno-sanitize=alignment, reports zero alignment findings in pvg_lite.c).
+       guest32_val() replaced that dereference with a byte-wise assembly (always well defined, any address),
+       so a non-4-aligned rd/root_rp is no longer a safety concern: the checks below confirm the ring still
+       reads and advances correctly at that position, not that the position becomes aligned -- it does not,
+       and no longer needs to. */
     chan_raw(2, 0x99, 13, 7, NULL, 0, 13);
     ring_bell(2);
     uint32_t wr_after_unaligned = chs[2].wr;
     EXPECT(rd_ptr(2) == wr_after_unaligned, "channel: a non-4-aligned length (13) is rejected, ring dropped to wp");
-    EXPECT((wr_after_unaligned & 3) != 0, "channel: wp (113) was itself non-4-aligned, so the drop above leaves rd non-4-aligned too -- known open gap, not fixed by the hdr[1]&3 check");
+    EXPECT((wr_after_unaligned & 3) != 0, "channel: wp (113) was itself non-4-aligned, so rd is left non-4-aligned too -- no longer a safety issue now that header/field reads are byte-wise (guest32_val), not a uint32_t* dereference");
     uint32_t full38c[4] = {84, 0, 0, troot};   /* task 42: an id untouched by any earlier check in this function */
     chan_cmd(2, 0x38, 8, full38c, 16);
     ring_bell(2);
-    EXPECT(hv_pvg_lite_task_read(dev, 42, 0, buf, 4) == 0, "channel: after the unaligned-length drop, a full command written at a non-4-aligned ring offset is still read correctly (not proof of alignment, proof unaligned guest32() reads still return the right bytes here)");
+    EXPECT(hv_pvg_lite_task_read(dev, 42, 0, buf, 4) == 0, "channel: after the unaligned-length drop, a full command written at a non-4-aligned ring offset is still read correctly via guest32_val()'s byte-wise assembly");
     EXPECT(stamp_of(2) == 8, "channel: after the unaligned-length drop, the ring keeps advancing and stamping correctly despite staying off a 4-byte boundary");
 
     /* The same check, on the root ring. */
     root_cmd(0x99, 13, 0x201, NULL, 0);
     EXPECT((uint32_t)Rg(0x100c) == root_wp, "root: a non-4-aligned length (13) is rejected, ring dropped to wp");
-    EXPECT((root_wp & 3) != 0, "root: wp (13) was itself non-4-aligned, so the drop above leaves root_rp non-4-aligned too -- same known open gap as the channel ring");
+    EXPECT((root_wp & 3) != 0, "root: wp (13) was itself non-4-aligned, so root_rp is left non-4-aligned too -- no longer a safety issue, same as the channel ring");
     root_cmd(0x3b, 12, 0x202, NULL, 0);
     EXPECT((uint32_t)Rg(0x100c) == root_wp && stamp_of(0) == 0x202, "root: after the unaligned-length drop, the ring keeps working despite staying off a 4-byte boundary");
 }

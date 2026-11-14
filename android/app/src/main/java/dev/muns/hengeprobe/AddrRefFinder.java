@@ -10,9 +10,15 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Finds the places in the boot ROM whose instructions build a given DATA address (a RAM address such as a list head) the way AArch64 code
- * usually does: ADRP for the 4 KiB page, then ADD / LDR / STR with the offset inside the page. Plain Java, no Android classes, so it has a JVM test.
+ * Finds the places in the boot ROM whose instructions build a given address the way AArch64 code usually does. Two independent searches are run
+ * and reported separately (never merged into one count or one list), because they look for two different coding patterns:
  *
+ * The ADR search: every single ADR instruction (not ADRP) whose own PC-relative immediate makes exactly the target in one instruction, with no
+ * second stage, since ADR needs no following ADD/LDR/STR. This is the pattern this ROM uses for a CODE address taken as a plain value, most often
+ * a PAC-signed callback/function pointer to hand to a registration call (adr x16,#func; paciza x16; ...). ADR shares its top bits with ADRP but
+ * clears bit 31 and does not page-align or shift its immediate.
+ *
+ * The ADRP+ADD/LDR/STR search (the original one): for a DATA address (a RAM address such as a list head), built in two steps.
  * Stage 1: every ADRP word whose page is the page of the target (total counted over the whole ROM, the first MAX_SHOWN shown with their
  * destination register).
  * Stage 2: after each such ADRP, the next WINDOW instructions (the 1st to the 8th after it, the 9th is not looked at) are checked for a use of
@@ -67,11 +73,20 @@ public final class AddrRefFinder {
         Use(long adrpPc, long pc, Kind kind, int reg) { this.adrpPc = adrpPc; this.pc = pc; this.kind = kind; this.reg = reg; }
     }
 
+    /** One ADR instruction whose own immediate makes exactly the target. */
+    public static final class AdrUse {
+        public final long pc;
+        public final int reg;
+        AdrUse(long pc, int reg) { this.pc = pc; this.reg = reg; }
+    }
+
     public static final class Result {
         public Status status = Status.OK;
         public long target;
         public long fileSize = -1;
         public String sha256;
+        public int adrTotal;                                    // every ADR that makes exactly the target, shown or not (its own search, see the class comment)
+        public final List<AdrUse> adrShown = new ArrayList<>();
         public int pageTotal;                                   // every ADRP of the target's page in the ROM, shown or not
         public final List<Page> pagesShown = new ArrayList<>();
         public int useTotal, addTotal, ldrTotal, strTotal;      // every (ADRP, instruction, kind) pair
@@ -121,6 +136,7 @@ public final class AddrRefFinder {
         }
         r.sha256 = sha;
         if (!sha.equals(expectSha)) return fail(r, Status.HASH_MISMATCH);
+        scanAdr(rom, RomSlice.BASE, target, r);
         scan(rom, RomSlice.BASE, target, r);
         return r;
     }
@@ -138,6 +154,32 @@ public final class AddrRefFinder {
     }
 
     static boolean isAdrp(int w) { return (w & 0x9f000000) == 0x90000000; }
+
+    /** ADR shares ADRP's immlo/immhi/Rd layout but has bit 31 clear, and its target is not page-aligned or shifted. w must be an ADR. */
+    static boolean isAdr(int w) { return (w & 0x9f000000) == 0x10000000; }
+
+    /** The address an ADR word at pc makes: pc + SignExtend(immhi:immlo), byte-granular (no page mask, no <<12). w must be an ADR. */
+    static long adrTarget(int w, long pc) {
+        int immlo = (w >>> 29) & 3, immhi = (w >>> 5) & 0x7ffff;
+        int imm21 = (immhi << 2) | immlo;
+        imm21 = (imm21 << 11) >> 11;                 // sign-extend 21 bits
+        return pc + (long) imm21;
+    }
+
+    /** Walks every 4-byte aligned word of rom from its first byte (little endian); records every ADR that makes exactly target. One instruction
+     * is the whole address, so there is no second stage and no "same page" grouping the way the ADRP search has. */
+    static void scanAdr(byte[] rom, long base, long target, Result r) {
+        int words = rom.length / 4;
+        for (int i = 0; i < words; i++) {
+            int w = word(rom, i * 4);
+            if (!isAdr(w)) continue;
+            long pc = base + 4L * i;
+            if (adrTarget(w, pc) != target) continue;
+            int reg = w & 31;
+            r.adrTotal++;
+            if (r.adrShown.size() < MAX_SHOWN) r.adrShown.add(new AdrUse(pc, reg));
+        }
+    }
 
     /** Walks every 4-byte aligned word of rom from its first byte (little endian); counts and records as described in the class comment. */
     static void scan(byte[] rom, long base, long target, Result r) {
@@ -245,7 +287,7 @@ public final class AddrRefFinder {
 
     /** What the screen shows: the verdict, the target, both stages (addresses and register numbers only) and what the search cannot say. */
     public static String screenText(Result r) {
-        StringBuilder sb = new StringBuilder("주소 참조 검색 (ADRP + ADD/LDR/STR, 읽기 전용, VM 실행 없음)\n");
+        StringBuilder sb = new StringBuilder("주소 참조 검색 (ADR, 그리고 별도로 ADRP + ADD/LDR/STR, 읽기 전용, VM 실행 없음)\n");
         if (r.fileSize >= 0) sb.append("파일 크기: ").append(r.fileSize).append(" 바이트\n");
         if (r.sha256 != null) {
             sb.append("SHA-256: ").append(r.sha256).append('\n');
@@ -257,8 +299,8 @@ public final class AddrRefFinder {
             return sb.toString();
         }
         appendResult(sb, r);
-        sb.append("※ 구문상 후보입니다. 실제 실행에서 그 레지스터로 그 주소를 만든다는 증거가 아닙니다.\n");
-        sb.append("※ ADRP 뒤 ").append(WINDOW).append("개 명령까지만 봅니다. 분기·호출(B, BL, BR, BLR, RET)에서 멈추고, 조건 분기(B.cond, CBZ, CBNZ, TBZ, TBNZ)는 가로지르므로 건너뛰는 경로의 조합이 섞일 수 있습니다.\n");
+        sb.append("※ 구문상 후보입니다. 실제 실행에서 그 레지스터로 그 주소를 만든다는 증거가 아닙니다. ADR 쪽은 명령어 하나로 주소를 만든다는 것만 보여주며, 그 코드가 실행되거나 결과가 호출된다는 증거는 아닙니다.\n");
+        sb.append("※ ADRP 뒤 ").append(WINDOW).append("개 명령까지만 봅니다. 분기·호출(B, BL, BR, BLR, RET)에서 멈추고, 조건 분기(B.cond, CBZ, CBNZ, TBZ, TBNZ)는 가로지르므로 건너뛰는 경로의 조합이 섞일 수 있습니다. (ADR 쪽은 2단계가 없어 이 항목과 무관합니다.)\n");
         sb.append("※ 기준 레지스터를 MOV·MOVZ·MOVN·MOVK·ADRP·ADD/SUB·LDR로 덮어쓰면 멈춥니다. MOVK에서 멈추는 것은 보수적 규칙이라 그렇게 만든 실제 주소는 놓칠 수 있습니다. 그 밖의 쓰기는 알아보지 않습니다.\n");
         sb.append("※ 해석하지 않는 인코딩(LDUR, pre/post-index, LDRSB·LDRSH·LDRSW, STP, SIMD, 플래그 설정 ADD)은 후보가 되지 않습니다. 0건이어도 그 주소를 쓰는 코드가 없다는 뜻이 아닙니다.\n");
         return sb.toString();
@@ -269,12 +311,20 @@ public final class AddrRefFinder {
         if (r.status != Status.OK) return null;
         StringBuilder sb = new StringBuilder();
         appendResult(sb, r);
-        sb.append("(ADRP+ADD/LDR/STR 구문상 후보. 사용 확정 아님)\n");
+        sb.append("(ADR, 그리고 별도로 ADRP+ADD/LDR/STR 구문상 후보. 사용 확정 아님)\n");
         return sb.toString();
     }
 
     private static void appendResult(StringBuilder sb, Result r) {
         sb.append(String.format(Locale.ROOT, "검색 대상: 0x%x (페이지 0x%x, 페이지 내 0x%x)\n", r.target, r.target & ~0xfffL, r.target & 0xfffL));
+        if (r.adrTotal == 0) {
+            sb.append("ADR 단일 명령 참조: 0건\n");
+        } else {
+            sb.append("ADR 단일 명령 참조: 총 ").append(r.adrTotal).append("건");
+            if (r.adrTotal > r.adrShown.size()) sb.append(" 중 ").append(r.adrShown.size()).append("건 표시");
+            sb.append('\n');
+            for (AdrUse u : r.adrShown) sb.append(String.format(Locale.ROOT, "  0x%x  ADR x%d\n", u.pc, u.reg));
+        }
         if (r.pageTotal == 0) {
             sb.append("1단계 ADRP(같은 페이지): 0건\n");
         } else {

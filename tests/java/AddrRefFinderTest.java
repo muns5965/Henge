@@ -30,6 +30,11 @@ public class AddrRefFinderTest {
         int imm21 = (int) (pages & 0x1fffff);
         return 0x90000000 | (imm21 & 3) << 29 | ((imm21 >> 2) & 0x7ffff) << 5 | rd;
     }
+    // ADR: same immlo/immhi/Rd layout as ADRP, bit 31 clear, target is pc + the signed immediate directly (no page mask, no <<12)
+    static int adr(long pc, int rd, long target) {
+        int imm21 = (int) ((target - pc) & 0x1fffff);
+        return 0x10000000 | (imm21 & 3) << 29 | ((imm21 >> 2) & 0x7ffff) << 5 | rd;
+    }
     static int addImm(int sf, int sh, int imm12, int rn, int rd) { return (sf << 31) | 0x11000000 | sh << 22 | imm12 << 10 | rn << 5 | rd; }
     static int subImm(int sf, int sh, int imm12, int rn, int rd) { return (sf << 31) | 0x51000000 | sh << 22 | imm12 << 10 | rn << 5 | rd; }
     static int addsImm(int imm12, int rn, int rd) { return 0xb1000000 | imm12 << 10 | rn << 5 | rd; }
@@ -134,6 +139,57 @@ public class AddrRefFinderTest {
             r = run(e, "0x70030198");
             check("ADRP in the first word of the ROM is found with its use", r.pageTotal == 1 && r.pagesShown.get(0).pc == pcOf(0) && r.useTotal == 1);
         }
+
+        // --- ADR single-instruction search: its own search, independent of the ADRP+ADD/LDR/STR one above ---
+        check("ADR x16,#target (positive offset) is found", () -> {
+            byte[] d = rom(64);
+            long target = pcOf(10) + 0x1000;
+            put(d, 10, adr(pcOf(10), 16, target));
+            Result r = run(d, "0x" + Long.toHexString(target));
+            return r.status == Status.OK && r.adrTotal == 1 && r.adrShown.get(0).pc == pcOf(10) && r.adrShown.get(0).reg == 16;
+        });
+        check("ADR x0,#target (negative offset) is found", () -> {
+            byte[] d = rom(64);
+            long target = pcOf(40) - 0x2000;
+            put(d, 40, adr(pcOf(40), 0, target));
+            Result r = run(d, "0x" + Long.toHexString(target));
+            return r.status == Status.OK && r.adrTotal == 1 && r.adrShown.get(0).pc == pcOf(40) && r.adrShown.get(0).reg == 0;
+        });
+        check("ADR to a different address is not counted", () -> {
+            byte[] d = rom(64);
+            put(d, 10, adr(pcOf(10), 8, pcOf(10) + 0x100));
+            Result r = run(d, "0x" + Long.toHexString(pcOf(10) + 0x104));
+            return r.status == Status.OK && r.adrTotal == 0;
+        });
+        check("ADRP is never counted as an ADR hit, even for the ADRP+ADD positive-case target", () -> {
+            Result r = run(seq(8, addImm(1, 0, 0x198, 8, 8)), "0x70030198");
+            return r.adrTotal == 0 && r.useTotal == 1;             // ADRP+ADD search still finds its own hit; the ADR search finds none
+        });
+        check("ADR real-ROM cross-check: ADR x16,#0x108374 from pc 0x1071d0 is found (as in the confirmed 0x1071d0 callback)", () -> {
+            long pc = 0x1071d0L, target = 0x108374L;
+            int wIdx = (int) ((pc - BASE) / 4);
+            byte[] d = rom(wIdx + 4);
+            put(d, wIdx, adr(pc, 16, target));
+            Result r = run(d, "0x108374");
+            return r.status == Status.OK && r.adrTotal == 1 && r.adrShown.get(0).pc == pc && r.adrShown.get(0).reg == 16;
+        });
+        check("ADR real-ROM cross-check: ADR x0,#0x12b878 from pc 0x107edc is found (as in the confirmed flag-writer table lookup)", () -> {
+            long pc = 0x107edcL, target = 0x12b878L;
+            int wIdx = (int) ((pc - BASE) / 4);
+            byte[] d = rom(wIdx + 4);
+            put(d, wIdx, adr(pc, 0, target));
+            Result r = run(d, "0x12b878");
+            return r.status == Status.OK && r.adrTotal == 1 && r.adrShown.get(0).pc == pc && r.adrShown.get(0).reg == 0;
+        });
+        check("ADR result is reported in its own section, separate from the ADRP stages", () -> {
+            byte[] d = rom(64);
+            long target = pcOf(10) + 0x1000;
+            put(d, 10, adr(pcOf(10), 16, target));
+            Result r = run(d, "0x" + Long.toHexString(target));
+            String s = AddrRefFinder.screenText(r);
+            return s.contains("ADR 단일 명령 참조: 총 1건") && s.contains("ADR x16") && s.contains("1단계 ADRP(같은 페이지): 0건")
+                    && s.contains("2단계 정밀 후보(ADRP + " + AddrRefFinder.WINDOW + "명령 이내): 0건");
+        });
 
         // --- accepted forms ---
         check("ADRP x8; ADD x8,x8,#0x198 is a use", uses(seq(8, addImm(1, 0, 0x198, 8, 8))) == 1);

@@ -58,6 +58,7 @@ on:
       - tests/java/**
       - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
       - android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java
+      - android/app/src/main/java/dev/muns/hengeprobe/RomBranchFinder.java
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
@@ -172,6 +173,12 @@ jobs:
           mkdir -p build-java-romslot
           javac -encoding UTF-8 -Xlint:all -d build-java-romslot android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java tests/java/RomSliceResultSlotTest.java
           java -cp build-java-romslot dev.muns.hengeprobe.RomSliceResultSlotTest
+
+      - name: "Test the direct-branch search the app uses (plain java, synthetic ROMs: B/BL targets, size/hash gate, totals vs shown, no ROM bytes in the output)"
+        run: |
+          mkdir -p build-java-romfind
+          javac -encoding UTF-8 -Xlint:all -d build-java-romfind android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java android/app/src/main/java/dev/muns/hengeprobe/RomBranchFinder.java tests/java/RomBranchFinderTest.java
+          java -cp build-java-romfind dev.muns.hengeprobe.RomBranchFinderTest
 
       - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
         run: |

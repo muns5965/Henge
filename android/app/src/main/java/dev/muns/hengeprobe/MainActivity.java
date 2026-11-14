@@ -70,10 +70,15 @@ public class MainActivity extends Activity {
     private Button romDiagButton;
     private EditText romSlicePc, romSliceLen;
     private Button romSliceButton, romSliceCopyButton;
+    private EditText romBranchTarget;
+    private Button romBranchButton;
     /** One reader for the whole process: its 4 KiB running total restarts with the process. */
     private static final RomSlice ROM_SLICE = RomSlice.forGenuineRom();
+    /** The direct-branch search keeps no state (it returns addresses only, so it does not draw on the 4 KiB total of the reader). */
+    private static final RomBranchFinder ROM_BRANCH = RomBranchFinder.forGenuineRom();
     /**
-     * What the ROM-slice screen holds (shown text and copy text) and whether a result from the worker may still be shown: see RomSliceResultSlot.
+     * What the ROM-diagnostic result area holds (shown text and copy text; the slice reader and the branch search share it, one result at a time)
+     * and whether a result from the worker may still be shown: see RomSliceResultSlot.
      * A field of the activity, so a recreated activity starts empty. Its methods may be called from any thread; the widgets are changed on the UI thread only.
      */
     private final RomSliceResultSlot romSliceSlot = new RomSliceResultSlot();
@@ -167,10 +172,10 @@ public class MainActivity extends Activity {
         romSliceLen.setSingleLine(true);
         romSliceLen.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         done.addView(romSliceLen);
-        TextWatcher dropCopy = new TextWatcher() {   // another address or length: what was shown is no longer what the fields say
+        TextWatcher dropCopy = new TextWatcher() {   // any diagnostic field edited: what is shown is no longer what the fields say
             @Override public void beforeTextChanged(CharSequence c, int a, int b, int d) { }
             @Override public void onTextChanged(CharSequence c, int a, int b, int d) { }
-            @Override public void afterTextChanged(Editable e) { onRomSliceInputChanged(); }
+            @Override public void afterTextChanged(Editable e) { onRomDiagInputChanged(); }
         };
         romSlicePc.addTextChangedListener(dropCopy);
         romSliceLen.addTextChangedListener(dropCopy);
@@ -178,10 +183,27 @@ public class MainActivity extends Activity {
         romSliceButton.setText("ROM 구간 읽기 (읽기 전용)");
         romSliceButton.setOnClickListener(v -> runRomSlice());
         done.addView(romSliceButton);
+
+        TextView branchHelp = new TextView(this);
+        branchHelp.setText("직접 분기 참조 검색: 앱 내부 ROM 전체에서 지정한 주소로 직접 분기(BL, B)하는 위치의 주소만 찾습니다 (읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음, ROM 바이트는 표시하지 않음). 결과는 호출자 확정이 아닌 후보이며, 간접 호출(BLR)·조건 분기는 찾지 않습니다.");
+        branchHelp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(branchHelp);
+        romBranchTarget = new EditText(this);
+        romBranchTarget.setHint("대상 주소 (16진)");
+        romBranchTarget.setText(RomBranchFinder.DEFAULT_TARGET);
+        romBranchTarget.setSingleLine(true);
+        romBranchTarget.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        romBranchTarget.addTextChangedListener(dropCopy);
+        done.addView(romBranchTarget);
+        romBranchButton = new Button(this);
+        romBranchButton.setText("직접 분기 참조 검색 (읽기 전용)");
+        romBranchButton.setOnClickListener(v -> runRomBranch());
+        done.addView(romBranchButton);
+
         romSliceCopyButton = new Button(this);
-        romSliceCopyButton.setText("표시된 구간 복사");
+        romSliceCopyButton.setText("표시된 결과 복사");
         romSliceCopyButton.setEnabled(false);
-        romSliceCopyButton.setOnClickListener(v -> copyRomSlice());
+        romSliceCopyButton.setOnClickListener(v -> copyRomDiag());
         done.addView(romSliceCopyButton);
 
         vmrunButton = new Button(this);
@@ -513,7 +535,7 @@ public class MainActivity extends Activity {
     }
 
     private void setButtons(boolean enabled) {
-        if (!enabled) romSliceSlot.invalidate(RomSliceResultSlot.Reason.OTHER_RUN_STARTED);   // any run starting replaces what is on the screen: an earlier slice is no longer "what is shown"
+        if (!enabled) romSliceSlot.invalidate(RomSliceResultSlot.Reason.OTHER_RUN_STARTED);   // any run starting replaces what is on the screen: an earlier ROM-diagnostic result is no longer "what is shown"
         runOnUiThread(() -> {
             // a run starts: bring the result box into view once (the user can scroll away afterwards)
             if (!enabled && pageScroll != null && output != null) pageScroll.post(() -> pageScroll.smoothScrollTo(0, output.getTop()));
@@ -529,8 +551,10 @@ public class MainActivity extends Activity {
             romDiagButton.setEnabled(enabled);
             romSliceButton.setEnabled(enabled);
             romSliceCopyButton.setEnabled(enabled && romSliceSlot.copy() != null);
-            romSlicePc.setEnabled(enabled);    // the fields stay as they were while a read runs
+            romBranchButton.setEnabled(enabled);
+            romSlicePc.setEnabled(enabled);    // the fields stay as they were while a read or a search runs
             romSliceLen.setEnabled(enabled);
+            romBranchTarget.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
@@ -859,27 +883,54 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** The PC or length was edited (UI thread): the result for the old values is wiped, and if it was on the screen a one-line notice replaces it. */
-    private void onRomSliceInputChanged() {
+    /**
+     * Any ROM-diagnostic field (PC, length, search target) was edited (UI thread): the result for the old values is wiped whichever request it
+     * belonged to (the two requests share one result area), and if it was on the screen a one-line notice replaces it.
+     */
+    private void onRomDiagInputChanged() {
         boolean wasShown = romSliceSlot.invalidate(RomSliceResultSlot.Reason.INPUT_CHANGED);
         if (romSliceCopyButton != null) romSliceCopyButton.setEnabled(false);
-        if (wasShown) show(ROM_SLICE_STALE_NOTICE);
+        if (wasShown) show(ROM_DIAG_STALE_NOTICE);
     }
 
-    private static final String ROM_SLICE_STALE_NOTICE = "ROM 구간 읽기: PC 또는 길이가 바뀌어 이전 결과를 지웠습니다. 다시 읽어 주세요.\n";
+    private static final String ROM_DIAG_STALE_NOTICE = "진단 입력값이 변경되어 이전 결과를 지웠습니다. 다시 실행해 주십시오.\n";
+
+    /** What a ROM-diagnostic request computes on its worker thread: the screen text and the copy text (null when there is nothing to copy). */
+    private interface RomDiagWork { String[] run(File internalRom); }
 
     /**
      * Reads the slice the two fields name from the app's own ROM copy (and only that one). The worker thread only reads the file and builds the
      * texts; what is shown, the run state and the buttons are settled on the UI thread, by whether the request is still the current one.
-     *
-     * Contract this relies on (keep it true when adding code): every path that starts a run checks "if (running) return;" before it sets
-     * running and calls setButtons(false), so no other run can start while a slice request is in flight; and a slice request calls
-     * publish() exactly once. So DISCARDED_SILENT does not occur on the normal path; if it ever does, the request leaves running and the
-     * buttons to whoever owns them.
      */
     private void runRomSlice() {
         if (running) return;
-        final String pc = romSlicePc.getText().toString(), len = romSliceLen.getText().toString();
+        final String pc = romSlicePc.getText().toString(), len = romSliceLen.getText().toString();   // read on the UI thread
+        startRomDiag("ROM 구간 읽기 오류: ", rom -> {
+            RomSlice.Result r = ROM_SLICE.read(rom, pc, len);
+            return new String[] { RomSlice.screenText(r), RomSlice.copyText(r) };
+        });
+    }
+
+    /**
+     * Searches the whole app-own ROM for direct B/BL branches to the target address in the field and shows their addresses (no ROM bytes). Same
+     * request flow as the slice reader. A refused search and a search with no hit are different results: a refusal shows its reason, no hit shows "0건".
+     */
+    private void runRomBranch() {
+        if (running) return;
+        final String target = romBranchTarget.getText().toString();   // read on the UI thread
+        startRomDiag("직접 분기 참조 검색 오류: ", rom -> {
+            RomBranchFinder.Result r = ROM_BRANCH.find(rom, target);
+            return new String[] { RomBranchFinder.screenText(r), RomBranchFinder.copyText(r) };
+        });
+    }
+
+    /**
+     * The one request flow of the ROM diagnostics (UI thread). Contract this relies on (keep it true when adding code): every path that starts a
+     * run checks "if (running) return;" before it sets running and calls setButtons(false), so no other run can start while a diagnostic request
+     * is in flight; and a request calls publish() exactly once. So DISCARDED_SILENT does not occur on the normal path; if it ever does, the
+     * request leaves running and the buttons to whoever owns them.
+     */
+    private void startRomDiag(final String errorTitle, final RomDiagWork work) {
         running = true;
         setButtons(false);                                   // wipes an earlier result ...
         final long gen = romSliceSlot.begin();               // ... and only then starts this request (the other order would void it)
@@ -887,17 +938,17 @@ public class MainActivity extends Activity {
             String text, copy = null;
             try {
                 File internal = new File(new File(getFilesDir(), "vm"), "AVPBooter.vmapple2.bin");
-                RomSlice.Result r = ROM_SLICE.read(internal, pc, len);
-                text = RomSlice.screenText(r);
-                copy = RomSlice.copyText(r);
+                String[] out = work.run(internal);
+                text = out[0];
+                copy = out[1];
             } catch (Exception e) {
-                text = "ROM 구간 읽기 오류: " + e + "\n";
+                text = errorTitle + e + "\n";
             }
             final String screenText = text, copyText = copy;
             runOnUiThread(() -> {
                 RomSliceResultSlot.Publish p = romSliceSlot.publish(gen, screenText, copyText);
                 if (p == RomSliceResultSlot.Publish.ACCEPTED) show(screenText);
-                else if (p == RomSliceResultSlot.Publish.DISCARDED_NOTICE) show(ROM_SLICE_STALE_NOTICE);
+                else if (p == RomSliceResultSlot.Publish.DISCARDED_NOTICE) show(ROM_DIAG_STALE_NOTICE);
                 if (p != RomSliceResultSlot.Publish.DISCARDED_SILENT) {   // silent: another run or a newer request owns the run state and the buttons
                     running = false;
                     setButtons(true);
@@ -906,14 +957,14 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Only on the user's tap: puts the last shown slice (request and bytes, no path) on the clipboard. */
-    private void copyRomSlice() {
+    /** Only on the user's tap: puts the last shown result (slice bytes or branch addresses, no path) on the clipboard. */
+    private void copyRomDiag() {
         String t = romSliceSlot.copy();
         if (t == null) return;
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm == null) return;
-        cm.setPrimaryClip(ClipData.newPlainText("ROM slice", t));
-        Toast.makeText(this, "표시된 구간을 복사했습니다", Toast.LENGTH_SHORT).show();
+        cm.setPrimaryClip(ClipData.newPlainText("ROM diagnostic", t));
+        Toast.makeText(this, "표시된 결과를 복사했습니다", Toast.LENGTH_SHORT).show();
     }
 
     /**

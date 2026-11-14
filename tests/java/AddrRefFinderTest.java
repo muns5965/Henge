@@ -142,6 +142,19 @@ public class AddrRefFinderTest {
         check("ADRP x8; LDR w0,[x8,#0x198] (32-bit, imm12=0x66) is a use", uses(seq(8, ldrU(2, 0x198 / 4, 8, 0))) == 1);
         check("ADRP x8; STR x0,[x8,#0x198] is a use", uses(seq(8, strU(3, 0x198 / 8, 8, 0))) == 1);
         check("ADRP x8; STR w0,[x8,#0x198] is a use", uses(seq(8, strU(2, 0x198 / 4, 8, 0))) == 1);
+        // real ROM example: 0x1071b8 ADRP x19,#0x7002a000; 0x1071bc LDRB w0,[x19,#0x7da] (size 0, scale 1, imm12 = offset itself)
+        check("ADRP x19; LDRB w0,[x19,#0x7da] (byte, imm12=offset) is a use, kind LDR", () -> {
+            byte[] d = rom(256);
+            long flagTarget = 0x7002a7daL;
+            put(d, 10, adrp(pcOf(10), 19, flagTarget & ~0xfffL));
+            put(d, 11, ldrU(0, (int) (flagTarget & 0xfffL), 19, 0));
+            Result r = run(d, "0x7002a7da");
+            return r.status == Status.OK && r.useTotal == 1 && r.ldrTotal == 1 && r.usesShown.get(0).kind == Kind.LDR;
+        });
+        check("ADRP x8; STRB w9,[x8,#0x198] (byte store) is a use, kind STR", uses(seq(8, strU(0, 0x198, 8, 9))) == 1);
+        check("ADRP x8; LDRH w0,[x8,#0x198] (half-word, imm12=0x198/2) is a use, kind LDR", uses(seq(8, ldrU(1, 0x198 / 2, 8, 0))) == 1);
+        check("ADRP x8; STRH w0,[x8,#0x198] (half-word store) is a use, kind STR", uses(seq(8, strU(1, 0x198 / 2, 8, 0))) == 1);
+        check("LDRB x8,[x8,#0x10] overwrites the tracked register: later ADD excluded", uses(seq(8, ldrU(0, 0x10, 8, 8), addImm(1, 0, 0x198, 8, 9))) == 0);
         {
             Result r = run(seq(8, addImm(1, 0, 0x198, 8, 9), ldrU(3, 0x33, 8, 0), strU(2, 0x66, 8, 1)), "0x70030198");
             check("kinds counted separately", r.useTotal == 3 && r.addTotal == 1 && r.ldrTotal == 1 && r.strTotal == 1);
@@ -168,11 +181,10 @@ public class AddrRefFinderTest {
         check("32-bit ADD is not an address build: no use", uses(seq(8, addImm(0, 0, 0x198, 8, 9))) == 0);
         check("ADDS (flags) is not decoded: no use", uses(seq(8, addsImm(0x198, 8, 9))) == 0);
         check("SUB is not a use", uses(seq(8, subImm(1, 0, 0x198, 8, 9))) == 0);
-        check("LDRB / LDRH / LDRSW (other size or opc) are not decoded", uses(seq(8,
-                0x39400000 | 0x198 << 10 | 8 << 5,                 // LDRB w0,[x8,#0x198]
-                0x79400000 | 0xcc << 10 | 8 << 5,                  // LDRH w0,[x8,#0x198]
-                0xb9800000 | 0x66 << 10 | 8 << 5,                  // LDRSW x0,[x8,#0x198]
-                0x39000000 | 0x198 << 10 | 8 << 5)) == 0);         // STRB w0,[x8,#0x198]
+        // LDRB/LDRH/STRB (opc 0/1) are decoded (see the positive byte/half-word cases above); LDRSB/LDRSH/LDRSW (opc 2/3, sign-extending loads) are not
+        check("LDRSW (size 2, opc 2) is not decoded", uses(seq(8, 0xb9800000 | 0x66 << 10 | 8 << 5)) == 0);          // LDRSW x0,[x8,#0x198]
+        check("LDRSB (size 0, opc 2) is not decoded", uses(seq(8, 0x39800000 | 0x198 << 10 | 8 << 5)) == 0);         // LDRSB x0,[x8,#0x198]
+        check("LDRSH (size 1, opc 2) is not decoded", uses(seq(8, 0x79800000 | 0xcc << 10 | 8 << 5)) == 0);          // LDRSH x0,[x8,#0x198]
         check("PRFM unsigned immediate (size 3, opc 2) is not decoded", uses(seq(8, 0xf9800000 | 0x33 << 10 | 8 << 5)) == 0);
         check("SIMD / FP LDR (V=1) is not decoded", uses(seq(8, ldrU(3, 0x33, 8, 0) | 1 << 26, strU(2, 0x66, 8, 0) | 1 << 26)) == 0);
         check("LDUR / STUR (unscaled, imm9) not decoded", uses(seq(8, 0xf8400000 | (0x198 & 0x1ff) << 12 | 8 << 5, 0xf8000000 | (0x198 & 0x1ff) << 12 | 8 << 5)) == 0);

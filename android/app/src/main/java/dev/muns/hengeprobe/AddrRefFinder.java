@@ -18,18 +18,20 @@ import java.util.Locale;
  * Stage 2: after each such ADRP, the next WINDOW instructions (the 1st to the 8th after it, the 9th is not looked at) are checked for a use of
  * that register that makes exactly the target:
  *   - ADD (immediate, 64 bit, no flags): base register = the ADRP register, offset = imm12 << (12 * sh)
- *   - LDR / STR (unsigned immediate, 32 or 64 bit, general register): base register = the ADRP register, offset = imm12 * access size
+ *   - LDR / STR (unsigned immediate, general register, any of byte/half-word/32-bit/64-bit): base register = the ADRP register,
+ *     offset = imm12 * access size (1, 2, 4 or 8)
  * Per instruction the order is: first the candidate check, then "does this instruction overwrite the ADRP register" (if so, stop looking after it),
  * then "is it a branch or call" (B, BL, BR, BLR, RET: stop). So ADD x8,x8,#off is still a candidate and ends the search, and ADD x9,x8,#off or
  * STR x0,[x8,#off] leave x8 tracked.
  * Overwrites that are recognised (and only these; nothing else is guessed): MOV (ORR Rd,XZR,Rm), MOVZ, MOVN, MOVK, ADRP, ADD/SUB immediate,
- * LDR unsigned immediate with Rt = the register, each in the 32 bit form too (a w write clears the top half). MOVK is a conservative stop: it keeps
- * part of the old value, but nothing guarantees the page is still there, so it ends the search; a real address built that way can be missed.
+ * LDR unsigned immediate (any size) with Rt = the register, each in the 32 bit form too (a w write clears the top half). MOVK is a conservative
+ * stop: it keeps part of the old value, but nothing guarantees the page is still there, so it ends the search; a real address built that way can
+ * be missed.
  *
  * What a hit is: a syntactic candidate. It is NOT proof that the code uses the register that way at run time: conditional branches
  * (B.cond, CBZ, CBNZ, TBZ, TBNZ) are not followed or stopped at, so a pair can be separated by a branch that skips one of them; other
  * writes to the register are not recognised; and the address can also be built another way (a literal pool, MOVZ/MOVK, a pointer passed in a
- * register) which this does not look for. Encodings it does not decode (LDUR, pre/post-index, byte/half-word, LDRSW, STP, SIMD, flag-setting ADD) never
+ * register) which this does not look for. Encodings it does not decode (LDUR, pre/post-index, LDRSB/LDRSH/LDRSW, STP, SIMD, flag-setting ADD) never
  * become candidates. A search with no hit therefore does not mean "nothing uses that address". ADRP with destination 31 (XZR) is counted in
  * stage 1 but not followed.
  *
@@ -171,7 +173,7 @@ public final class AddrRefFinder {
         if (r.usesShown.size() < MAX_SHOWN) r.usesShown.add(u);
     }
 
-    /** ADD (immediate, 64 bit, no flags) or LDR/STR (unsigned immediate, 32/64 bit) from reg that makes exactly target; else null. */
+    /** ADD (immediate, 64 bit, no flags) or LDR/STR (unsigned immediate, any size) from reg that makes exactly target; else null. */
     static Kind candidate(int x, int reg, long target) {
         long inPage = target & 0xfffL;               // the ADRP page is the target's page, so the instruction must add exactly this
         int rn = (x >>> 5) & 31;
@@ -183,7 +185,7 @@ public final class AddrRefFinder {
         }
         if ((x & 0x3f000000) == 0x39000000) {        // load/store register, unsigned immediate, general registers (V = 0)
             int size = x >>> 30, opc = (x >>> 22) & 3;
-            if ((size != 2 && size != 3) || opc > 1) return null;   // only 32/64-bit STR (opc 0) and LDR (opc 1); LDRSW, PRFM and the rest are not decoded
+            if (opc > 1) return null;   // only STR (opc 0) and LDR (opc 1), any size (byte/half-word/32/64-bit); LDRSB/LDRSH/LDRSW, PRFM are not decoded
             long off = (long) imm12 << size;
             if (off != inPage) return null;
             return opc == 0 ? Kind.STR : Kind.LDR;
@@ -198,9 +200,9 @@ public final class AddrRefFinder {
         if ((x & 0x1f800000) == 0x12800000 && ((x >>> 29) & 3) != 1) return rd == reg;       // MOVN (opc 0), MOVZ (2), MOVK (3)
         if (isAdrp(x)) return rd == reg;
         if ((x & 0x7f000000) == 0x11000000 || (x & 0x7f000000) == 0x51000000) return rd == reg;   // ADD / SUB (immediate), no flags
-        if ((x & 0x3f000000) == 0x39000000) {                                                     // LDR unsigned immediate, 32/64 bit, into reg
-            int size = x >>> 30, opc = (x >>> 22) & 3;
-            return (size == 2 || size == 3) && opc == 1 && rd == reg;
+        if ((x & 0x3f000000) == 0x39000000) {                                                     // LDR unsigned immediate, any size, into reg
+            int opc = (x >>> 22) & 3;
+            return opc == 1 && rd == reg;
         }
         return false;
     }
@@ -258,7 +260,7 @@ public final class AddrRefFinder {
         sb.append("※ 구문상 후보입니다. 실제 실행에서 그 레지스터로 그 주소를 만든다는 증거가 아닙니다.\n");
         sb.append("※ ADRP 뒤 ").append(WINDOW).append("개 명령까지만 봅니다. 분기·호출(B, BL, BR, BLR, RET)에서 멈추고, 조건 분기(B.cond, CBZ, CBNZ, TBZ, TBNZ)는 가로지르므로 건너뛰는 경로의 조합이 섞일 수 있습니다.\n");
         sb.append("※ 기준 레지스터를 MOV·MOVZ·MOVN·MOVK·ADRP·ADD/SUB·LDR로 덮어쓰면 멈춥니다. MOVK에서 멈추는 것은 보수적 규칙이라 그렇게 만든 실제 주소는 놓칠 수 있습니다. 그 밖의 쓰기는 알아보지 않습니다.\n");
-        sb.append("※ 해석하지 않는 인코딩(LDUR, pre/post-index, 바이트·하프워드, LDRSW, STP, SIMD, 플래그 설정 ADD)은 후보가 되지 않습니다. 0건이어도 그 주소를 쓰는 코드가 없다는 뜻이 아닙니다.\n");
+        sb.append("※ 해석하지 않는 인코딩(LDUR, pre/post-index, LDRSB·LDRSH·LDRSW, STP, SIMD, 플래그 설정 ADD)은 후보가 되지 않습니다. 0건이어도 그 주소를 쓰는 코드가 없다는 뜻이 아닙니다.\n");
         return sb.toString();
     }
 

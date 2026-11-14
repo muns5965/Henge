@@ -59,6 +59,7 @@ on:
       - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
       - android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java
       - android/app/src/main/java/dev/muns/hengeprobe/RomBranchFinder.java
+      - android/app/src/main/java/dev/muns/hengeprobe/AddrRefFinder.java
       - tools/vmrun-install-g0-build.sh
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
@@ -179,6 +180,12 @@ jobs:
           mkdir -p build-java-romfind
           javac -encoding UTF-8 -Xlint:all -d build-java-romfind android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java android/app/src/main/java/dev/muns/hengeprobe/RomBranchFinder.java tests/java/RomBranchFinderTest.java
           java -cp build-java-romfind dev.muns.hengeprobe.RomBranchFinderTest
+
+      - name: "Test the address-reference search the app uses (plain java: real ADRP/ADD words, 8-instruction window, overwrite and branch stops, supported encodings only, totals vs shown)"
+        run: |
+          mkdir -p build-java-addrref
+          javac -encoding UTF-8 -Xlint:all -d build-java-addrref android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java android/app/src/main/java/dev/muns/hengeprobe/AddrRefFinder.java tests/java/AddrRefFinderTest.java
+          java -cp build-java-addrref dev.muns.hengeprobe.AddrRefFinderTest
 
       - name: Test the USB descriptor parser (synthetic DFU configuration descriptors)
         run: |

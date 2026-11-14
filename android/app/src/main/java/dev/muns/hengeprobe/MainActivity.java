@@ -72,10 +72,14 @@ public class MainActivity extends Activity {
     private Button romSliceButton, romSliceCopyButton;
     private EditText romBranchTarget;
     private Button romBranchButton;
+    private EditText romAddrTarget;
+    private Button romAddrButton;
     /** One reader for the whole process: its 4 KiB running total restarts with the process. */
     private static final RomSlice ROM_SLICE = RomSlice.forGenuineRom();
     /** The direct-branch search keeps no state (it returns addresses only, so it does not draw on the 4 KiB total of the reader). */
     private static final RomBranchFinder ROM_BRANCH = RomBranchFinder.forGenuineRom();
+    /** The address-reference search (ADRP + ADD/LDR/STR) is stateless as well: addresses and register numbers only, no ROM bytes. */
+    private static final AddrRefFinder ROM_ADDR = AddrRefFinder.forGenuineRom();
     /**
      * What the ROM-diagnostic result area holds (shown text and copy text; the slice reader and the branch search share it, one result at a time)
      * and whether a result from the worker may still be shown: see RomSliceResultSlot.
@@ -199,6 +203,22 @@ public class MainActivity extends Activity {
         romBranchButton.setText("직접 분기 참조 검색 (읽기 전용)");
         romBranchButton.setOnClickListener(v -> runRomBranch());
         done.addView(romBranchButton);
+
+        TextView addrHelp = new TextView(this);
+        addrHelp.setText("주소 참조 검색: 앱 내부 ROM 전체에서 지정한 데이터(RAM) 주소를 ADRP로 만드는 위치와, 그 뒤 8개 명령 이내의 ADD·LDR·STR 사용 후보를 찾습니다 (읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음, ROM 바이트는 표시하지 않음). 결과는 구문상 후보이며 실제 사용의 증거가 아닙니다. 분기·호출과 레지스터 덮어쓰기에서 멈추고, 조건 분기는 가로지릅니다.");
+        addrHelp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(addrHelp);
+        romAddrTarget = new EditText(this);
+        romAddrTarget.setHint("대상 주소 (16진)");
+        romAddrTarget.setText(AddrRefFinder.DEFAULT_TARGET);
+        romAddrTarget.setSingleLine(true);
+        romAddrTarget.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        romAddrTarget.addTextChangedListener(dropCopy);
+        done.addView(romAddrTarget);
+        romAddrButton = new Button(this);
+        romAddrButton.setText("주소 참조 검색 (ADRP, 읽기 전용)");
+        romAddrButton.setOnClickListener(v -> runRomAddr());
+        done.addView(romAddrButton);
 
         romSliceCopyButton = new Button(this);
         romSliceCopyButton.setText("표시된 결과 복사");
@@ -552,9 +572,11 @@ public class MainActivity extends Activity {
             romSliceButton.setEnabled(enabled);
             romSliceCopyButton.setEnabled(enabled && romSliceSlot.copy() != null);
             romBranchButton.setEnabled(enabled);
+            romAddrButton.setEnabled(enabled);
             romSlicePc.setEnabled(enabled);    // the fields stay as they were while a read or a search runs
             romSliceLen.setEnabled(enabled);
             romBranchTarget.setEnabled(enabled);
+            romAddrTarget.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
@@ -921,6 +943,19 @@ public class MainActivity extends Activity {
         startRomDiag("직접 분기 참조 검색 오류: ", rom -> {
             RomBranchFinder.Result r = ROM_BRANCH.find(rom, target);
             return new String[] { RomBranchFinder.screenText(r), RomBranchFinder.copyText(r) };
+        });
+    }
+
+    /**
+     * Searches the whole app-own ROM for the ADRP words that build the page of the address in the field and for the ADD/LDR/STR candidates
+     * right after them (addresses and register numbers only, no ROM bytes). Same request flow as the other two; a refusal shows its reason, no hit shows "0건".
+     */
+    private void runRomAddr() {
+        if (running) return;
+        final String target = romAddrTarget.getText().toString();   // read on the UI thread
+        startRomDiag("주소 참조 검색 오류: ", rom -> {
+            AddrRefFinder.Result r = ROM_ADDR.find(rom, target);
+            return new String[] { AddrRefFinder.screenText(r), AddrRefFinder.copyText(r) };
         });
     }
 

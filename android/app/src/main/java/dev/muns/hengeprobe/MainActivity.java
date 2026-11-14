@@ -74,12 +74,16 @@ public class MainActivity extends Activity {
     private Button romBranchButton;
     private EditText romAddrTarget;
     private Button romAddrButton;
+    private EditText romConstTarget;
+    private Button romConstButton;
     /** One reader for the whole process: its 4 KiB running total restarts with the process. */
     private static final RomSlice ROM_SLICE = RomSlice.forGenuineRom();
     /** The direct-branch search keeps no state (it returns addresses only, so it does not draw on the 4 KiB total of the reader). */
     private static final RomBranchFinder ROM_BRANCH = RomBranchFinder.forGenuineRom();
     /** The address-reference search (ADRP + ADD/LDR/STR) is stateless as well: addresses and register numbers only, no ROM bytes. */
     private static final AddrRefFinder ROM_ADDR = AddrRefFinder.forGenuineRom();
+    /** The constant-generation search (raw 4-byte + adjacent MOVZ/MOVK) is stateless too: addresses and register numbers only, no ROM bytes. */
+    private static final ConstFinder ROM_CONST = ConstFinder.forGenuineRom();
     /**
      * What the ROM-diagnostic result area holds (shown text and copy text; the slice reader and the branch search share it, one result at a time)
      * and whether a result from the worker may still be shown: see RomSliceResultSlot.
@@ -220,6 +224,24 @@ public class MainActivity extends Activity {
         romAddrButton.setText("주소 참조 검색 (ADRP, 읽기 전용)");
         romAddrButton.setOnClickListener(v -> runRomAddr());
         done.addView(romAddrButton);
+
+        TextView constHelp = new TextView(this);
+        constHelp.setText("상수 생성 검색: 앱 내부 ROM 전체에서 지정한 32비트 값을 두 가지 방식으로 찾습니다 — (1) 그 값이 리틀엔디안 4바이트 데이터로 그대로 있는 위치, "
+                + "(2) 서로 바로 붙은 MOVZ→MOVK 명령어 쌍이 같은 레지스터에 그 값을 만드는 위치 (읽기 전용, VM 실행·네트워크 없음, 파일 저장 없음, ROM 바이트는 표시하지 않음). "
+                + "둘 다 후보이며 실행 확정이 아닙니다. 명령어 쌍 검색은 바로 붙은 두 명령만 보며, 사이에 다른 명령이 있거나 MOVN·ORR·ADD·메모리 로드로 만든 값, 조건 분기로 나뉜 경로는 찾지 못합니다.");
+        constHelp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(constHelp);
+        romConstTarget = new EditText(this);
+        romConstTarget.setHint("대상 값 (16진, 32비트)");
+        romConstTarget.setText(ConstFinder.DEFAULT_TARGET);
+        romConstTarget.setSingleLine(true);
+        romConstTarget.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        romConstTarget.addTextChangedListener(dropCopy);
+        done.addView(romConstTarget);
+        romConstButton = new Button(this);
+        romConstButton.setText("상수 생성 검색 (읽기 전용)");
+        romConstButton.setOnClickListener(v -> runRomConst());
+        done.addView(romConstButton);
 
         romSliceCopyButton = new Button(this);
         romSliceCopyButton.setText("표시된 결과 복사");
@@ -586,10 +608,12 @@ public class MainActivity extends Activity {
             romSliceCopyButton.setEnabled(enabled && romSliceSlot.copy() != null);
             romBranchButton.setEnabled(enabled);
             romAddrButton.setEnabled(enabled);
+            romConstButton.setEnabled(enabled);
             romSlicePc.setEnabled(enabled);    // the fields stay as they were while a read or a search runs
             romSliceLen.setEnabled(enabled);
             romBranchTarget.setEnabled(enabled);
             romAddrTarget.setEnabled(enabled);
+            romConstTarget.setEnabled(enabled);
             vmrunVerboseButton.setEnabled(enabled);
             installerVerboseButton.setEnabled(enabled);
             usbNormalButton.setEnabled(enabled);
@@ -970,6 +994,20 @@ public class MainActivity extends Activity {
         startRomDiag("주소 참조 검색 오류: ", rom -> {
             AddrRefFinder.Result r = ROM_ADDR.find(rom, target);
             return new String[] { AddrRefFinder.screenText(r), AddrRefFinder.copyText(r) };
+        });
+    }
+
+    /**
+     * Searches the whole app-own ROM for the target 32-bit value as raw little-endian data bytes, and as an adjacent MOVZ→MOVK instruction
+     * pair on one register (addresses and register numbers only, no ROM bytes). Same request flow as the other three; a refusal shows its
+     * reason, no hit shows "0건".
+     */
+    private void runRomConst() {
+        if (running) return;
+        final String target = romConstTarget.getText().toString();   // read on the UI thread
+        startRomDiag("상수 생성 검색 오류: ", rom -> {
+            ConstFinder.Result r = ROM_CONST.find(rom, target);
+            return new String[] { ConstFinder.screenText(r), ConstFinder.copyText(r) };
         });
     }
 

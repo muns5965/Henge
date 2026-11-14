@@ -87,9 +87,18 @@ static int fetch_shm(void *ctx, const uint8_t **px, uint32_t *w, uint32_t *h, ui
     return 0;
 }
 
+/* This module's whole native pipeline (g_gate/g_buf/g_touch/g_shm, all of it) is ONE singleton, used by whichever
+   screen is in front: DisplayTestActivity (C0+B0, synthetic guest, no virtual machine) or VmDisplayActivity (A-track,
+   real VM, see host/ui_runner_vm.c). Both read/write the SAME shared-memory protocol (host/frame_shm.h) on the far
+   end -- the runner process differs (libuirunner.so vs libuirunnervm.so, started by DisplayTestActivity itself vs
+   VmRunnerLauncher respectively), not this side's handling of it. So every impl_* function below is written once and
+   exported under BOTH classes' JNI names (JNI binds by the caller's fully-qualified class name, so a single native
+   method cannot otherwise serve two Java classes). Only nativeStatus differs: the synthetic screen's touch-
+   calibration diagnostics (target/conv/settled) do not apply to a real guest, so VmDisplayActivity gets its own,
+   smaller status text built from the same underlying counters. */
+
 /* 0: built and open. 1: already running. -1: building failed. -2: the previous instance is still closing or being freed (not yet released): nothing was built. */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(JNIEnv *env, jclass cls) {
-    (void)env; (void)cls;
+static jint impl_nativeStart(void) {
     pthread_once(&g_gate_once, gate_init_once);
     int st = hv_gate_begin_start(&g_gate);
     if (st == 0) return 1;
@@ -118,8 +127,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(
 }
 
 /* First step of the shutdown (host/display_buf.h): the buffer stops taking frames and no new render may enter. It does not free anything and is safe to call twice. */
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeClose(JNIEnv *env, jclass cls) {
-    (void)env; (void)cls;
+static void impl_nativeClose(void) {
     pthread_once(&g_gate_once, gate_init_once);
     if (hv_gate_enter(&g_gate)) {          /* the buffer exists while we are inside */
         hv_dispbuf_close(g_buf);           /* waits for a copy in progress */
@@ -130,8 +138,7 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeClose(
 
 /* Last step: frees the buffer and the source picture, only if this call got the right to (host/render_gate.h). 1: freed. 0: a render is still inside, nothing was freed, try again
    (the render thread does, when it ends). -1: not this call's to free (another one has it, or nothing is built). Safe to call from the UI thread and the render thread. */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestroy(JNIEnv *env, jclass cls) {
-    (void)env; (void)cls;
+static jint impl_nativeDestroy(void) {
     pthread_once(&g_gate_once, gate_init_once);
     int r = hv_gate_try_destroy(&g_gate);
     if (r != 1) return r;
@@ -151,8 +158,7 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestro
     return 1;
 }
 
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetSurface(JNIEnv *env, jclass cls, jobject surface) {
-    (void)cls;
+static void impl_nativeSetSurface(JNIEnv *env, jobject surface) {
     pthread_mutex_lock(&g_win_mu);
     if (g_win) { ANativeWindow_release(g_win); g_win = NULL; }
     if (surface) g_win = ANativeWindow_fromSurface(env, surface);
@@ -160,32 +166,29 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetSur
     pthread_mutex_unlock(&g_win_mu);
 }
 
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetView(JNIEnv *env, jclass cls, jfloat w, jfloat h) {
-    (void)env; (void)cls;
+static void impl_nativeSetView(jfloat w, jfloat h) {
     pthread_mutex_lock(&g_mu);
     hv_touch_set_view(&g_touch, 0, 0, w, h);
     g_dg.view_w = w; g_dg.view_h = h;
     pthread_mutex_unlock(&g_mu);
 }
 
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetFeedback(JNIEnv *env, jclass cls, jboolean on) {
-    (void)env; (void)cls;
+static void impl_nativeSetFeedback(jboolean on) {
     pthread_mutex_lock(&g_mu);
     g_feedback = on ? 1 : 0;
     pthread_mutex_unlock(&g_mu);
 }
 
-/* C1-1: switch the screen to the runner's shared file. Call right after nativeStart, before the render thread starts. */
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeUseRunner(JNIEnv *env, jclass cls, jboolean on) {
-    (void)env; (void)cls;
+/* C1-1/A: switch the screen to the runner's shared file (the synthetic runner OR the real VM runner -- same protocol
+   either side of this call). Call right after nativeStart, before the render thread starts. */
+static void impl_nativeUseRunner(jboolean on) {
     pthread_mutex_lock(&g_mu);
     g_want_runner = on ? 1 : 0;
     pthread_mutex_unlock(&g_mu);
 }
 
 /* Opens the runner's file, which must name `pid` (the process the app started; pid <= 0 = any). 0 attached, 1 already attached, -1 no instance is running here (or it is being closed), -2 the file is not there yet or is not a good one (try again). */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeAttachRunner(JNIEnv *env, jclass cls, jstring jpath, jlong pid) {
-    (void)cls;
+static jint impl_nativeAttachRunner(JNIEnv *env, jstring jpath, jlong pid) {
     const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
     if (!path) return -2;
     pthread_mutex_lock(&g_mu);
@@ -207,17 +210,17 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeAttach
 }
 
 /* Tells the runner the app is closing (it then stops by itself; the Activity also sends it "quit"). */
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRunnerAppClose(JNIEnv *env, jclass cls) {
-    (void)env; (void)cls;
+static void impl_nativeRunnerAppClose(void) {
     pthread_mutex_lock(&g_mu);
     if (g_shm) hv_shm_app_close(g_shm);
     pthread_mutex_unlock(&g_mu);
 }
 
-/* One picture: the synthetic guest frame is made, pulled through the contract, and the newest copy is shown. Returns the frame number shown, 0 = nothing new, -1 = closed or not running.
+/* One picture: in synthetic mode (g_want_runner off) a guest frame is made up here; in runner mode (synthetic
+   runner OR real VM, g_want_runner on) it is pulled from the shared file instead -- either way the newest copy is
+   shown. Returns the frame number shown, 0 = nothing new, -1 = closed or not running.
    The whole body, up to the single exit, is between hv_gate_enter and hv_gate_leave: that is what keeps g_buf and g_src alive. */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender(JNIEnv *env, jclass cls) {
-    (void)env; (void)cls;
+static jint impl_nativeRender(void) {
     pthread_once(&g_gate_once, gate_init_once);
     if (!hv_gate_enter(&g_gate)) return -1;
     int result = 0;
@@ -261,8 +264,7 @@ out:
     return result;
 }
 
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(JNIEnv *env, jclass cls, jint action, jint id, jfloat x, jfloat y, jlong t_ms) {
-    (void)env; (void)cls;
+static void impl_nativeTouch(jint action, jint id, jfloat x, jfloat y, jlong t_ms) {
     pthread_mutex_lock(&g_mu);
     hv_touch_event(&g_touch, action, id, x, y, t_ms);
     switch (action) { case HV_TOUCH_DOWN: g_dg.down++; break; case HV_TOUCH_MOVE: g_dg.move++; break; case HV_TOUCH_UP: g_dg.up++; break; case HV_TOUCH_CANCEL: g_dg.cancel++; break; default: break; }
@@ -272,8 +274,7 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(
     pthread_mutex_unlock(&g_mu);
 }
 
-JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(JNIEnv *env, jclass cls, jlong t_ms) {
-    (void)env; (void)cls;
+static void impl_nativeTick(jlong t_ms) {
     pthread_mutex_lock(&g_mu);
     if (g_want_runner) {                                  /* the feedback is the runner's guest pointer, from the shared file */
         int x = 0, y = 0, v = g_shm ? hv_shm_get_pointer(g_shm, &x, &y) : 0;
@@ -291,8 +292,7 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(J
 }
 
 /* 1 when the key was mapped and sent, 0 when it is not a key the guest gets (the caller then handles it itself, e.g. Back). */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) {
-    (void)env; (void)cls;
+static jint impl_nativeKey(jint keycode, jboolean down) {
     uint16_t l = hv_keymap_android(keycode);
     pthread_mutex_lock(&g_mu);
     if (l) sink_key(l, down ? 1 : 0); else g_guest.unmapped_keys++;
@@ -301,13 +301,13 @@ JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKey(JN
 }
 
 /* 1 when the guest gets this key (no event is sent): the caller uses it to swallow Android's key repeats, which the guest makes itself. */
-JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) {
-    (void)env; (void)cls;
+static jint impl_nativeKeyMapped(jint keycode) {
     return hv_keymap_android(keycode) ? 1 : 0;
 }
 
-JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStatus(JNIEnv *env, jclass cls) {
-    (void)cls;
+/* DisplayTestActivity's own status text: synthetic-screen touch-calibration diagnostics (target/conv/settled) on
+   top of the counters impl_status_vm() below also uses. Not meaningful for a real guest -- see that one instead. */
+static jstring impl_nativeStatus(JNIEnv *env) {
     char s[2400], touch[320], err[160], runner[420] = "";
     HvDispStats st = {0};
     pthread_mutex_lock(&g_mu);
@@ -358,3 +358,68 @@ JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSta
     pthread_mutex_unlock(&g_mu);
     return (*env)->NewStringUTF(env, s);
 }
+
+/* VmDisplayActivity's status text: the same frame/runner counters as impl_nativeStatus() above, without the
+   synthetic screen's touch-calibration diagnostics (there is no simulated target to converge on with a real
+   guest). g_guest.x/y is still meaningful here: in runner mode impl_nativeTick() fills it from the shared file's
+   reported pointer position, real or synthetic runner alike. */
+static jstring impl_status_vm(JNIEnv *env) {
+    char s[1024], runner[420] = "";
+    HvDispStats st = {0};
+    pthread_mutex_lock(&g_mu);
+    if (g_buf) hv_dispbuf_stats(g_buf, &st);
+    if (!g_shm) snprintf(runner, sizeof runner, "runner: not attached yet");
+    else {
+        HvShmStats rs; int ok = hv_shm_stats(g_shm, &rs) == 0;
+        static const char *const sn[] = {"none", "starting", "running", "stopping", "stopped"};
+        if (!ok) snprintf(runner, sizeof runner, "runner: file lock not taken (%ld failures)", g_shm_fail);
+        else snprintf(runner, sizeof runner, "runner pid %u %s heartbeat %llu  published %llu refused %llu  cmds pushed %llu popped %llu dropped %llu  lock recovered %u failed %ld  pointer %s",
+                      rs.runner_pid, rs.state >= 0 && rs.state < 5 ? sn[rs.state] : "?", (unsigned long long)rs.heartbeat, (unsigned long long)rs.frames, (unsigned long long)rs.rejected,
+                      (unsigned long long)rs.cmds_pushed, (unsigned long long)rs.cmds_popped, (unsigned long long)rs.cmds_dropped, rs.recovered, g_shm_fail, g_shm_known ? "known" : "not yet");
+    }
+    snprintf(s, sizeof s,
+             "frames %llu (copied), shown %llu, rejected %llu, after close %llu\n"
+             "%s\n"
+             "pointer %d,%d (known: %s)  moves %ld  buttons down %ld up %ld  wheel %ld hwheel %ld  keys %ld unmapped %ld",
+             (unsigned long long)st.frames, (unsigned long long)st.blits, (unsigned long long)st.rejected, (unsigned long long)st.closed_refused,
+             runner, g_guest.x, g_guest.y, g_shm_known ? "yes" : "no", g_guest.moves, g_guest.buttons_down, g_guest.buttons_up,
+             g_guest.wheel, g_guest.hwheel, g_guest.keys, g_guest.unmapped_keys);
+    pthread_mutex_unlock(&g_mu);
+    return (*env)->NewStringUTF(env, s);
+}
+
+/* ---- JNI exports: DisplayTestActivity (synthetic, C0+B0) ---- */
+
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStart(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeStart(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeDestroy(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeDestroy(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetSurface(JNIEnv *env, jclass cls, jobject surface) { (void)cls; impl_nativeSetSurface(env, surface); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetView(JNIEnv *env, jclass cls, jfloat w, jfloat h) { (void)env; (void)cls; impl_nativeSetView(w, h); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeSetFeedback(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeSetFeedback(on); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeUseRunner(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeUseRunner(on); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeAttachRunner(JNIEnv *env, jclass cls, jstring jpath, jlong pid) { (void)cls; return impl_nativeAttachRunner(env, jpath, pid); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRunnerAppClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeRunnerAppClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeRender(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeRender(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTouch(JNIEnv *env, jclass cls, jint action, jint id, jfloat x, jfloat y, jlong t_ms) { (void)env; (void)cls; impl_nativeTouch(action, id, x, y, t_ms); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeTick(JNIEnv *env, jclass cls, jlong t_ms) { (void)env; (void)cls; impl_nativeTick(t_ms); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
+JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_DisplayTestActivity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_nativeStatus(env); }
+
+/* ---- JNI exports: VmDisplayActivity (A-track, real VM) -- same impl_* functions, see the note above nativeStart ---- */
+
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeStart(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeStart(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeDestroy(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeDestroy(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeSetSurface(JNIEnv *env, jclass cls, jobject surface) { (void)cls; impl_nativeSetSurface(env, surface); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeSetView(JNIEnv *env, jclass cls, jfloat w, jfloat h) { (void)env; (void)cls; impl_nativeSetView(w, h); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeSetFeedback(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeSetFeedback(on); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeUseRunner(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeUseRunner(on); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeAttachRunner(JNIEnv *env, jclass cls, jstring jpath, jlong pid) { (void)cls; return impl_nativeAttachRunner(env, jpath, pid); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeRunnerAppClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeRunnerAppClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeRender(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeRender(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeTouch(JNIEnv *env, jclass cls, jint action, jint id, jfloat x, jfloat y, jlong t_ms) { (void)env; (void)cls; impl_nativeTouch(action, id, x, y, t_ms); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeTick(JNIEnv *env, jclass cls, jlong t_ms) { (void)env; (void)cls; impl_nativeTick(t_ms); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
+JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_status_vm(env); }

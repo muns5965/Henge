@@ -151,13 +151,27 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit";
-    char reason_txt[96] = "";
+    char reason_txt[220] = "";
     double tstart = now(), next_frame = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
         if (atomic_load(&g_sig)) { why_stop = "signal"; break; }
         if (hv_shm_app_closed(g_shm)) { why_stop = "app closed"; break; }
-        if (atomic_load(&g_exited)) { snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s)", atomic_load(&g_exit_reason), hv_vm_reason_name(atomic_load(&g_exit_reason))); why_stop = reason_txt; break; }
+        if (atomic_load(&g_exited)) {
+            int er = atomic_load(&g_exit_reason);
+            uint32_t pfn = 0, pcpu = 0; uint64_t ppc = 0, plr = 0;
+            /* hv_vm_psci_halt_info() only ever returns non-zero for a PSCI-triggered halt (SYSTEM_OFF/
+               SYSTEM_RESET -- see core/exception.c's psci()), so its presence alone is the check; no need to
+               separately compare er against HV_EXIT_HALT (whose enum this file does not otherwise need). */
+            if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr))
+                snprintf(reason_txt, sizeof reason_txt,
+                         "the machine stopped itself, reason %d (%s), psci %s (fn=%#x) by cpu%u at pc=%#llx lr=%#llx",
+                         er, hv_vm_reason_name(er), pfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET", pfn, pcpu,
+                         (unsigned long long)ppc, (unsigned long long)plr);
+            else
+                snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s)", er, hv_vm_reason_name(er));
+            why_stop = reason_txt; break;
+        }
         if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; break; }
         struct pollfd p = {0, POLLIN, 0};
         int r = poll(&p, 1, 10);

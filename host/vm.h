@@ -67,6 +67,12 @@ void hv_vm_flush_disks(void);
 /* Writes the devices asked for on the root disk and the auxiliary storage (calls, and those refused). */
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused);
 const char *hv_vm_reason_name(int reason);
+/* Which PSCI call halted the machine (SYSTEM_OFF 0x84000008 or SYSTEM_RESET 0x84000009), and the CPU/PC/LR
+   captured at that call (core/exception.c's psci(), core/machine.h's psci_halt_* fields) -- not reconstructed
+   from CPU state after the fact. Returns 0 (every out-param left untouched) when the machine has not halted
+   via PSCI at all (still running, or stopped some other way: wfi, a fault, hv_vm_stop, a test's own stop_pc).
+   Any out-param may be NULL. Independent of HV_PSCI_LOG and every other HV_* environment variable. */
+int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */
 void hv_vm_key(uint16_t code, int down);

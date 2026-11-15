@@ -128,13 +128,18 @@ static HvCpu *cpu_by_mpidr(HvMachine *m, uint64_t mpidr) {
     return NULL;
 }
 
-/* PSCI 1.0. */
-static uint64_t psci(HvCpu *cpu, uint64_t fn) {
+/* PSCI 1.0. pc is the HVC instruction's own guest address (hv_exception_insn's parameter, the same value its
+   SVC branch uses for "ELR is the next instruction") -- NOT cpu->pc, which the dispatcher only syncs lazily at
+   a block's exit points (core/dispatch.c's helper(): e.g. `cpu->pc = info->pc + 4` only on specific paths) and
+   is therefore stale for most of a block's execution, this call included. Found while adding the psci_halt_*
+   diagnostic below: the existing HV_PSCI_LOG trace line just below had the same staleness already (it used to
+   read cpu->pc here too), so it is corrected at the same time, not left inconsistent with the new record. */
+static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
     static int log = -1;
     if (log < 0) log = getenv("HV_PSCI_LOG") != NULL;
     if (log && ((uint32_t)fn >> 24 == 0x84 || (uint32_t)fn >> 24 == 0xc4))
         fprintf(stderr, "psci %#llx x1 %#llx x2 %#llx x3 %#llx pc %llx\n", (unsigned long long)fn, (unsigned long long)cpu->x[1],
-                (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], (unsigned long long)cpu->pc);
+                (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], (unsigned long long)pc);
     switch ((uint32_t)fn) {
     case 0x84000000: return 0x10000;                         /* PSCI_VERSION: 1.0 */
     case 0x84000006: return 2;                               /* MIGRATE_INFO_TYPE: no trusted OS */
@@ -152,6 +157,23 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
             fprintf(stderr, "hengevm: SYSTEM_RESET requested by cpu%u, whose last diag-probe hit (of %u) was pc=%llx lr=%llx x0=%llx\n",
                     cpu->index, cpu->diag_hits, (unsigned long long)cpu->diag_last_pc,
                     (unsigned long long)cpu->diag_last_lr, (unsigned long long)cpu->diag_last_x0);
+        /* Boot-diagnostic record (docs/boot-diagnostic-contract-2026-11-15.md's stage 2 "known gap C-2"):
+           which PSCI call halted the machine, from which CPU, PC and LR, captured right here rather than
+           read back later. First caller wins (int, not atomic_int, but ncpus is small and HV_EXIT_HALT
+           already stops every CPU right after this, same as the existing psci_halt_valid comment says; a
+           second, near-simultaneous caller losing the race here only means its own record is not the one
+           kept, not a memory-safety issue -- __atomic_compare_exchange_n still makes the choice itself
+           race-free). Independent of HV_PSCI_LOG/HV_* env vars entirely, so ui_runner_vm's environment
+           scrub (host/ui_runner_vm.c's hv_runner_scrub_env) never removes this. */
+        {
+            int expected = 0;
+            if (__atomic_compare_exchange_n(&cpu->m->psci_halt_valid, &expected, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                cpu->m->psci_halt_fn = (uint32_t)fn;
+                cpu->m->psci_halt_cpu = cpu->index;
+                cpu->m->psci_halt_pc = pc;           /* the HVC instruction's own address, not the stale cpu->pc */
+                cpu->m->psci_halt_lr = cpu->x[30];
+            }
+        }
         for (int i = 0; i < cpu->m->ncpus; i++) /* the whole machine stops */
             if (cpu->m->cpus[i]) cpu->m->cpus[i]->halted = (uint32_t)fn == 0x84000008 ? 1 : 2;
         hv_machine_kick_all(cpu->m);
@@ -246,7 +268,7 @@ int hv_exception_insn(HvCpu *cpu, uint32_t insn, uint64_t pc) {
         return 1;
     }
     if (opc == 0 && ll == 2 && cpu->el == 1) { /* HVC: the hypervisor's PSCI and vmapple's PAC calls */
-        cpu->x[0] = psci(cpu, cpu->x[0]);
+        cpu->x[0] = psci(cpu, cpu->x[0], pc);
         if (!cpu->halted && !cpu->off) return 0; /* like a call: the block carries on (xnu makes one per context switch) */
         cpu->pc = pc + 4;
         cpu->exit_reason = cpu->halted ? HV_EXIT_HALT : HV_EXIT_BRANCH; /* CPU_OFF: the dispatcher parks it */

@@ -57,6 +57,11 @@ void hv_vm_stop(void) { atomic_store(&g_stop, 1); }
 void hv_vm_flush_disks(void) {}
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) { *calls = 0; *refused = 0; }
 const char *hv_vm_reason_name(int reason) { (void)reason; return "fake machine stopped"; }
+/* The fake machine never runs guest code, so it never takes a PSCI call either: always "no halt record". */
+int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr) {
+    (void)fn; (void)cpu_index; (void)pc; (void)lr;
+    return 0;
+}
 int hv_vm_boot_display(HvBootDisplay *d) { (void)d; return -1; }
 int hv_vm_pointer(int *x, int *y) { (void)x; (void)y; return -1; }
 void hv_vm_key(uint16_t code, int down) { (void)code; (void)down; atomic_fetch_add(&g_inputs, 1); }

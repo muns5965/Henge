@@ -1,11 +1,14 @@
 # C-track: boot diagnostic contract
 
-Status: design document, no code change. Written ahead of any actual ROM boot attempt, per the review
+Status: written ahead of any actual ROM boot attempt (originally alongside no code change), per the review
 chain's repeated point (most recently documents `c27c6103` and `fcb40083`-adjacent follow-ups): when the
 Apple logo does not appear, "it didn't boot" is not an answer by itself — the contract below is what lets a
 later attempt say *which* of several independent stages failed, instead of guessing from one symptom.
 
-`START_ENABLED` stays false. Nothing here runs a VM; it only says what to look at once one runs.
+`START_ENABLED` is now `true` (flipped after this document was written, with its own review/approval) and a
+first real-device attempt has already happened — see stage 2's update below for the one piece of code this
+contract's own "known gap C-2" led to. This document's five stages are still the frame to read any attempt's
+logs through; only that one gap's status has moved since the line above was first written.
 
 ## The rule that matters most
 
@@ -67,15 +70,19 @@ boot/DFU resets. Do not read a nonzero `reset_why` entry as evidence about boot 
 investigated and retracted once as a hypothesis for a different question, and the same mistake is possible
 here.
 
-**Known gap (C-2, flagged in review, not fixed here)**: `hv_vm_reason_name()` gives only a coarse category
-(halt / wfi-with-nothing-to-wake-it / unsupported / fault-on-the-exception-vector / other) for why a run
-ended. It is NOT a program counter and does not say which ROM function or boot stage the guest reached —
-category and location are different questions, and this stage's signal only answers the first one. Narrowing
-"a fault happened" down to a ROM address or function would need separate instrumentation (reading the
-guest's PC at the point of the exit, and matching it against whatever ROM disassembly/address analysis
-exists) that this document does not have and is not claiming exists. Where such a ROM analysis is available,
-cross-referencing it against an observed exit PC is a reasonable next step for whoever holds that analysis,
-but it is a separate, unimplemented capability, not something this stage's existing counters already give.
+**Known gap (C-2, flagged in review, PARTIALLY closed for the PSCI case)**: `hv_vm_reason_name()` still gives
+only a coarse category (halt / wfi-with-nothing-to-wake-it / unsupported / fault-on-the-exception-vector /
+other) for why a run ended, and for a fault or an unsupported instruction it is still not a program counter —
+that part of the gap is unchanged. For a `"halt"` caused specifically by the guest's own PSCI call
+(`SYSTEM_OFF`/`SYSTEM_RESET`, `core/exception.c`'s `psci()`), the RESULT line now also carries which of the
+two it was, the calling CPU's index, and the PC/LR captured AT the `hvc` instruction itself (`core/machine.h`'s
+`psci_halt_*` fields, read through `host/vm.c`'s `hv_vm_psci_halt_info()`; `host/ui_runner_vm.c`'s and
+`host/vmrun.c`'s RESULT lines both carry it, independent of `HV_PSCI_LOG`/any `HV_*` variable). A `"halt"` with
+no `psci ...` clause in the RESULT line means the machine stopped some other way (`hv_vm_stop`, a test's own
+`stop_pc`) that this record does not cover. This still does not say which ROM FUNCTION or boot stage that PC
+belongs to — matching an observed PC against ROM disassembly/address analysis is, as before, a separate step
+for whoever holds that analysis, not something this field does automatically — and the fault/unsupported
+categories still have no PC captured at all; only the PSCI-halt path got this.
 
 ### 3. Guest frame existence
 
@@ -153,8 +160,8 @@ check against a captured frame (or the screen itself), done only after stages 1-
 
 ## How this gets used
 
-When a limited ROM boot trial is eventually approved, each of the five stages above should be read off in
-order from that single attempt's logs (`ui_runner_vm`'s own stdout plus a `"status"` poll or two, and
+For a limited ROM boot trial -- the first one already happened once, on a real device, right after this
+document was written -- each of the five stages above should be read off in order from that attempt's logs (`ui_runner_vm`'s own stdout plus a `"status"` poll or two, and
 `VmDisplayActivity`'s status text) and reported as pass/fail/not-reached individually — not collapsed into a
 single "did the Apple logo show up" verdict. A failure at stage 1 or 2 means stages 3-5 were never reached and
 say nothing either way; stopping the report at the first failing stage, rather than guessing about the later

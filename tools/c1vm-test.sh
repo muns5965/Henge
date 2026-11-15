@@ -179,6 +179,47 @@ PY
           fi
           wait "$RUNNER_PID" 2>/dev/null || true
         fi
+
+        echo "=== psci probe: SYSTEM_OFF and SYSTEM_RESET captured at the call, never confused with each other (core/exception.c's psci_halt_* record, docs/boot-diagnostic-contract-2026-11-15.md's stage-2 known gap C-2)"
+        if ! tools/build-asm-rom.sh tests/roms/psci_off_probe.S "$T/psci_off.bin" > "$T/psci_off_build.out" 2>&1; then
+          echo "FAILED building the psci-off-probe stand-in ROM"; cat "$T/psci_off_build.out"; rc=1
+        elif ! tools/build-asm-rom.sh tests/roms/psci_reset_probe.S "$T/psci_reset.bin" > "$T/psci_reset_build.out" 2>&1; then
+          echo "FAILED building the psci-reset-probe stand-in ROM"; cat "$T/psci_reset_build.out"; rc=1
+        else
+          PP=$T/psciprobe; rm -rf "$PP"; mkdir -p "$PP"
+          pok=1
+          for kind in off reset; do
+            truncate -s 16M "$PP/${kind}_disk.img"
+            python3 - "$PP/${kind}_aux.img" <<'PY'
+import sys
+hd = bytes([0xa5,0xd5,0xb3,0xfe,0x97,0xad,0x1d,0x27,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0])
+with open(sys.argv[1],'wb') as f:
+    f.write(hd); f.truncate(33570816)
+PY
+            # same reason as the frame-probe run above: stdin must stay open (sleep N |), or ui_runner_vm reads
+            # EOF as "input closed" before the guest's one hvc instruction is even reached.
+            ( sleep 10 | "$OUT/ui_runner_vm" --shm "$PP/$kind.shm" --rom "$T/psci_$kind.bin" --disk "$PP/${kind}_disk.img" --aux "$PP/${kind}_aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 5 > "$PP/$kind.out" 2>&1 )
+          done
+          OFF_LINE=$(grep RESULT "$PP/off.out"); RESET_LINE=$(grep RESULT "$PP/reset.out")
+          echo "off:   $OFF_LINE"; echo "reset: $RESET_LINE"
+          echo "$OFF_LINE" | grep -q 'SYSTEM_OFF (fn=0x84000008)' || { echo "FAILED SYSTEM_OFF probe did not report fn=0x84000008/SYSTEM_OFF"; pok=0; }
+          echo "$OFF_LINE" | grep -q 'cpu0 ' || { echo "FAILED SYSTEM_OFF probe did not report cpu0"; pok=0; }
+          echo "$OFF_LINE" | grep -q 'SYSTEM_RESET\|0x84000009' && { echo "FAILED SYSTEM_OFF probe's RESULT also mentions SYSTEM_RESET/0x84000009"; pok=0; }
+          echo "$RESET_LINE" | grep -q 'SYSTEM_RESET (fn=0x84000009)' || { echo "FAILED SYSTEM_RESET probe did not report fn=0x84000009/SYSTEM_RESET"; pok=0; }
+          echo "$RESET_LINE" | grep -q 'cpu0 ' || { echo "FAILED SYSTEM_RESET probe did not report cpu0"; pok=0; }
+          echo "$RESET_LINE" | grep -qE 'SYSTEM_OFF|0x84000008' && { echo "FAILED SYSTEM_RESET probe's RESULT also mentions SYSTEM_OFF/0x84000008"; pok=0; }
+          # pc must land inside this tiny ROM's own code (VMAPPLE_FIRMWARE=0x100000, the hvc is a few
+          # instructions in -- well under +0x1000), proving it is the HVC's own address, not some unrelated value.
+          for kind in off reset; do
+            line=$(grep RESULT "$PP/$kind.out")
+            pc=$(echo "$line" | grep -oE 'pc=0x[0-9a-f]+' | cut -d= -f2)
+            if [ -z "$pc" ] || [ $(( pc )) -lt $(( 0x100000 )) ] || [ $(( pc )) -ge $(( 0x101000 )) ]; then
+              echo "FAILED $kind probe: pc '$pc' is not inside the probe ROM's own firmware range"; pok=0
+            fi
+          done
+          if [ $pok = 1 ]; then echo "ok  SYSTEM_OFF and SYSTEM_RESET are each reported with their own function number, cpu and a pc inside the probe ROM, and never with each other's"
+          else echo "-- off runner output:"; cat "$PP/off.out"; echo "-- reset runner output:"; cat "$PP/reset.out"; rc=1; fi
+        fi
       fi
     fi
   fi

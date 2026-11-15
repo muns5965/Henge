@@ -100,6 +100,15 @@ int hv_vm_boot_display(HvBootDisplay *d) {
 }
 void hv_vm_set_poll(void (*poll)(void)) { extra_poll = poll; }
 
+int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr) {
+    if (!__atomic_load_n(&m.psci_halt_valid, __ATOMIC_SEQ_CST)) return 0;
+    if (fn) *fn = m.psci_halt_fn;
+    if (cpu_index) *cpu_index = m.psci_halt_cpu;
+    if (pc) *pc = m.psci_halt_pc;
+    if (lr) *lr = m.psci_halt_lr;
+    return 1;
+}
+
 const char *hv_vm_reason_name(int r) {
     switch (r) {
     case HV_EXIT_HALT: return "halt";

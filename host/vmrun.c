@@ -437,8 +437,19 @@ int main(int argc, char **argv) {
     }
     hv_vm_flush_disks();
     if (EXITED()) {
-        printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s)\n", by_us ? "by vmrun's time limit" : "by the guest/engine",
-               now() - t1, exit_reason, hv_vm_reason_name(exit_reason));
+        uint32_t pfn = 0, pcpu = 0; uint64_t ppc = 0, plr = 0;
+        /* Same psci_halt_* record ui_runner_vm.c's RESULT line now carries (core/exception.c's psci(),
+           host/vm.c's hv_vm_psci_halt_info()) -- this engine is shared, so a SYSTEM_OFF/SYSTEM_RESET halt is
+           captured the same way whichever program ran it. Independent of --psci-log/HV_PSCI_LOG: that flag
+           only turns on a trace of EVERY PSCI call as it happens, which stays exactly as it was; this is the
+           separate, always-on record of just the one call that actually halted the machine, if any did. */
+        if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr))
+            printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s), psci %s (fn=%#x) by cpu%u at pc=%#llx lr=%#llx\n",
+                   by_us ? "by vmrun's time limit" : "by the guest/engine", now() - t1, exit_reason, hv_vm_reason_name(exit_reason),
+                   pfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET", pfn, pcpu, (unsigned long long)ppc, (unsigned long long)plr);
+        else
+            printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s)\n", by_us ? "by vmrun's time limit" : "by the guest/engine",
+                   now() - t1, exit_reason, hv_vm_reason_name(exit_reason));
         return 0;
     }
     printf("vmrun RESULT: FAILED: the machine did not confirm stopping within 5 s of hv_vm_stop\n");

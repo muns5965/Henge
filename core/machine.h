@@ -275,6 +275,17 @@ typedef struct HvMachine {
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
+    /* Diagnostic record of the PSCI call that halted the machine (SYSTEM_OFF or SYSTEM_RESET only -- see
+       core/exception.c's psci()); every other exit reason (wfi, fault, unsupported, a test's own stop) leaves
+       psci_halt_valid 0. Captured AT THE HVC CALL ITSELF, inside psci(), not reconstructed afterward from
+       live CPU state: once one CPU halts the machine, other CPUs' registers can still move before anything
+       reads them back, so this is a snapshot, set exactly once per run (first caller wins, via
+       psci_halt_valid's compare-and-swap) rather than whatever the machine's state happens to be later.
+       Read through host/vm.c's hv_vm_psci_halt_info(). */
+    int psci_halt_valid;
+    uint32_t psci_halt_fn;    /* 0x84000008 (SYSTEM_OFF) or 0x84000009 (SYSTEM_RESET) */
+    uint32_t psci_halt_cpu;   /* the calling CPU's cpu->index */
+    uint64_t psci_halt_pc, psci_halt_lr;
 } HvMachine;
 
 static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {

@@ -152,6 +152,30 @@ PY
         echo "-- the real runner under strace, with input commands:"
         traced_input_run "$OUT/ui_runner_vm" real || rc=1
         sha256sum -c "$D/before.sha" > "$T/after.out" 2>&1 && echo "ok  the disk image and the auxiliary storage still have the checksums they had before the run" || { echo "FAILED the disk files changed:"; cat "$T/after.out"; rc=1; }
+
+        echo "=== frame probe: a picture the real engine actually drew, carried through to the shared file"
+        if ! tools/build-frame-probe-rom.sh "$T/frame_probe.bin" > "$T/frame_probe_build.out" 2>&1; then
+          echo "FAILED building the frame-probe stand-in ROM"; cat "$T/frame_probe_build.out"; rc=1
+        elif ! $CC $W -Ihost -o "$T/frame_probe_check" tests/frame_probe_check.c host/frame_shm.c 2> "$T/frame_probe_check.build.log"; then
+          echo "FAILED building frame_probe_check"; head -20 "$T/frame_probe_check.build.log"; rc=1
+        else
+          FP=$T/frameprobe; rm -rf "$FP"; mkdir -p "$FP"
+          truncate -s 16M "$FP/blank_disk.img"
+          python3 - "$FP/blank_aux.img" <<'PY'
+import sys
+hd = bytes([0xa5,0xd5,0xb3,0xfe,0x97,0xad,0x1d,0x27,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0])
+with open(sys.argv[1],'wb') as f:
+    f.write(hd); f.truncate(33570816)
+PY
+          "$OUT/ui_runner_vm" --shm "$FP/ui.shm" --rom "$T/frame_probe.bin" --disk "$FP/blank_disk.img" --aux "$FP/blank_aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 15 > "$FP/runner.out" 2>&1 &
+          RUNNER_PID=$!
+          if "$T/frame_probe_check" "$FP/ui.shm" 320 200 aabbccdd 20 > "$FP/check.out" 2>&1; then
+            cat "$FP/check.out"; echo "ok  a 320x200 picture the guest code (tests/roms/frame_probe.S) drew reached the shared file with every pixel intact"
+          else
+            echo "FAILED the frame-probe check:"; cat "$FP/check.out"; echo "-- runner output:"; cat "$FP/runner.out"; rc=1
+          fi
+          wait "$RUNNER_PID" 2>/dev/null || true
+        fi
       fi
     fi
   fi

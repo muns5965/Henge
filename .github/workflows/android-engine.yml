@@ -149,7 +149,7 @@ jobs:
           javac -d build-java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmEcidTest.java
           java -cp build-java dev.muns.hengeprobe.VmEcidTest
 
-      - name: "Test the C1-3 launcher (plain java: VM start is switched off, nothing is spawned) and its source rules"
+      - name: "Test the C1-3 launcher (plain java: null/missing paths are refused before any spawn either way; whatever START_ENABLED currently is, startEnabled() agrees) and its source rules"
         run: |
           bash -n tools/check-c13-source.sh
           tools/check-c13-source.sh

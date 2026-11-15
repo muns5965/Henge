@@ -167,7 +167,10 @@ hd = bytes([0xa5,0xd5,0xb3,0xfe,0x97,0xad,0x1d,0x27,1,0,0,0,0,0,0,0,1,0,0,0,0,0,
 with open(sys.argv[1],'wb') as f:
     f.write(hd); f.truncate(33570816)
 PY
-          "$OUT/ui_runner_vm" --shm "$FP/ui.shm" --rom "$T/frame_probe.bin" --disk "$FP/blank_disk.img" --aux "$FP/blank_aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 15 > "$FP/runner.out" 2>&1 &
+          # stdin must stay open past the run, or ui_runner_vm reads EOF as "input closed" and stops before pumping a
+          # single frame (the --seconds timer is what should end this run, the same way the strace helpers above feed it
+          # `sleep N |` rather than leaving stdin at whatever this script's own stdin happens to be).
+          ( sleep 20 | "$OUT/ui_runner_vm" --shm "$FP/ui.shm" --rom "$T/frame_probe.bin" --disk "$FP/blank_disk.img" --aux "$FP/blank_aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 15 > "$FP/runner.out" 2>&1 ) &
           RUNNER_PID=$!
           if "$T/frame_probe_check" "$FP/ui.shm" 320 200 aabbccdd 20 > "$FP/check.out" 2>&1; then
             cat "$FP/check.out"; echo "ok  a 320x200 picture the guest code (tests/roms/frame_probe.S) drew reached the shared file with every pixel intact"

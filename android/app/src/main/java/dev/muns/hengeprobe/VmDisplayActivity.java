@@ -132,8 +132,12 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         }
 
         int r = nativeStart();
-        if (r < 0) {
-            status.setText("nativeStart failed (" + r + (r == -2 ? ": the previous screen is still being closed, try again in a moment" : "") + ")");
+        if (!NativeStart.succeeded(r)) {
+            // r == 1 ("already running") is a failure for THIS caller too: it means the other screen
+            // (DisplayTestActivity) already owns the one native singleton -- this Activity built nothing of
+            // its own and must not touch Surface/runner/native-destroy as if it had. See NativeStart's own
+            // comment for the full reasoning (shared, since the symmetric bug existed in DisplayTestActivity).
+            status.setText("nativeStart failed (" + r + NativeStart.refusalReason(r) + ")");
             return;
         }
         started = true;

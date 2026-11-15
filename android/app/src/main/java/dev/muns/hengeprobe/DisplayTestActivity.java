@@ -97,12 +97,16 @@ public class DisplayTestActivity extends Activity implements SurfaceHolder.Callb
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         status.setPadding(12, 8, 12, 8);
         status.setText("C0+B0 screen test (no virtual machine). Touch: tap = click, hold = right click, two fingers = scroll. Keys: a hardware keyboard.\nTap here to switch the pointer feedback.");
-        status.setOnClickListener(v -> { feedback = !feedback; nativeSetFeedback(feedback); });
+        status.setOnClickListener(v -> { feedback = !feedback; if (started) nativeSetFeedback(feedback); });
         root.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         setContentView(root);
         int r = nativeStart();
-        if (r < 0) status.setText("nativeStart failed (" + r + (r == -2 ? ": the previous screen is still being closed, try again in a moment" : "") + ")");
-        else {
+        // r == 1 ("already running") is a failure for THIS caller too: it means the other screen
+        // (VmDisplayActivity) already owns the one native singleton -- see NativeStart's comment for the
+        // full reasoning (shared, since the symmetric bug existed in VmDisplayActivity).
+        if (!NativeStart.succeeded(r)) {
+            status.setText("nativeStart failed (" + r + NativeStart.refusalReason(r) + ")");
+        } else {
             started = true;
             runnerMode = getIntent().getBooleanExtra("runner", false);
             if (runnerMode) { nativeUseRunner(true); startRunnerProcess(); }

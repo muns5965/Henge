@@ -157,6 +157,12 @@ jobs:
           javac -encoding UTF-8 -d build-java-c13 android/app/src/main/java/dev/muns/hengeprobe/VmRunnerLauncher.java tests/java/VmRunnerLauncherTest.java
           java -cp build-java-c13 dev.muns.hengeprobe.VmRunnerLauncherTest
 
+      - name: "Test the nativeStart() return-value decision both screens share (plain java: r==0 is the only success, r==1/-1/-2 are all failures)"
+        run: |
+          mkdir -p build-java-nstart
+          javac -encoding UTF-8 -d build-java-nstart android/app/src/main/java/dev/muns/hengeprobe/NativeStart.java tests/java/NativeStartTest.java
+          java -cp build-java-nstart dev.muns.hengeprobe.NativeStartTest
+
       - name: "Test the G0 verdict the app shows (plain java; exit code, result lines, final vmrun line, output completeness)"
         run: |
           mkdir -p build-java-g0

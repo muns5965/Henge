@@ -9,7 +9,8 @@ import android.widget.TextView;
 
 /**
  * [C1-3] Information screen for the VM runner. It starts nothing: no button here, no automatic start, and it does not read Intent extras.
- * Starting a process is VmRunnerLauncher's job alone, and in this build that is switched off.
+ * Starting a process is VmRunnerLauncher's job alone; this screen only reports what VmRunnerLauncher.startEnabled()
+ * says in this build, whichever way that switch currently reads.
  */
 public class VmRunnerActivity extends Activity {
     @Override

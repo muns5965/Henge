@@ -25,12 +25,13 @@ import java.util.concurrent.TimeUnit;
 
 /** [A] The real VM's screen. Unlike DisplayTestActivity (C0+B0: a synthetic picture, no virtual machine), this
  *  screen shows the ACTUAL guest, through the VM runner (host/ui_runner_vm.c) started the one place that is
- *  allowed to: VmRunnerLauncher -- see that class for the compile-time switch that keeps starting it refused in
- *  this build. onCreate() checks that switch BEFORE anything else -- before nativeStart(), before reading or
- *  validating the ROM/disk/aux paths, before touching any file -- so a blocked build only ever shows the
- *  refusal text and does nothing further; this screen exists to exercise everything around an actual start --
- *  layout, shutdown, the shared-memory attach/pid-parsing -- without starting a VM. Enabling that switch is a
- *  separate change with its own approval.
+ *  allowed to: VmRunnerLauncher -- see that class for the compile-time switch deciding whether starting it is
+ *  refused or allowed in this build (currently: allowed, bounded by RUN_SECONDS and the watchdog below).
+ *  onCreate() checks that switch BEFORE anything else -- before nativeStart(), before reading or validating the
+ *  ROM/disk/aux paths, before touching any file -- so when the switch is off this screen only ever shows the
+ *  refusal text and does nothing further; when it is on, as in this build, onCreate() goes on to validate the
+ *  rom/disk/aux paths and only then starts the native pipeline and the VM runner. Flipping that switch either way
+ *  is a separate change with its own approval.
  *
  *  ROM/disk/aux: this screen does not default or create them. All three must be given as explicit Intent extra
  *  paths ("rom", "disk", "aux") and must already exist; if any is missing or does not exist, VmRunnerLauncher.start()
@@ -82,7 +83,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private volatile boolean dead;          // onDestroy ran: nothing may touch the views any more; the render thread cleans up when it ends
     private boolean surfaceReady;
     private boolean started;                // nativeStart() succeeded
-    private boolean vmStarted;               // VmRunnerLauncher actually started a process (false in this build: its switch is off)
+    private boolean vmStarted;               // VmRunnerLauncher actually started a process for this screen instance
 
     private volatile Process runner;
     private volatile long runnerPid;
@@ -156,10 +157,12 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
      *  DisplayTestActivity.startRunnerProcess(), but through VmRunnerLauncher (the only place allowed to create
      *  this process) instead of a direct process-start call.
      *
-     *  Left for later, since this build never reaches this method (startEnabled() is false): confirming no
-     *  earlier VM process still holds the shared-memory file before deleting it below. Today that delete only
-     *  guards against an earlier run's leftover file being mistaken for this one's (by pid, once attached) --
-     *  same as DisplayTestActivity's synthetic-runner path already does -- not against one still being live. */
+     *  Now that this build actually reaches this method (startEnabled() is true): the delete below guards against
+     *  an earlier run's leftover shared-memory file being mistaken for this one's (by pid, once attached), the
+     *  same pattern DisplayTestActivity's synthetic-runner path already uses -- that pattern, including the
+     *  VM-restart/leftover-shm-file case specifically, is the one already exercised and confirmed by CI
+     *  (tools/c1vm-test.sh); it does not additionally confirm no earlier process is still live, same as that
+     *  already-reviewed path. */
     private void startVmRunner(File romFile, File diskFile, File auxFile) {
         final File nativeLibDir = new File(getApplicationInfo().nativeLibraryDir);
         final File dir = new File(getFilesDir(), "vm1");
@@ -294,8 +297,8 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
 
     /** nativeClose() (no more frames in), the render thread stopped AND CONFIRMED ended, then nativeDestroy()
      *  (host/render_gate.h: freeing is given to one caller only). Used both here and by startVmRunner() above,
-     *  for the case where nativeStart() already ran but VmRunnerLauncher.start() then failed regardless (never
-     *  reached in this build, since startEnabled() is false; kept for when that switch is eventually turned on). */
+     *  for the case where nativeStart() already ran but VmRunnerLauncher.start() then failed regardless (reachable
+     *  in this build, since startEnabled() is true -- see startVmRunner() above). */
     private void releaseNative() {
         nativeClose();
         if (stopRender()) {

@@ -117,7 +117,7 @@ jobs:
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
             && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"
-          # The C1-3 VM runner (ui_runner_vm, real engine). Shipped, but VmRunnerLauncher.START_ENABLED is false: nothing starts it. NOT optional: a build or static-check failure fails the APK.
+          # The C1-3 VM runner (ui_runner_vm, real engine). Shipped with VmRunnerLauncher.START_ENABLED=true: the [A] screen can actually start it, bounded by RUN_SECONDS and VmDisplayActivity's watchdog. NOT optional: a build or static-check failure fails the APK.
           set -e
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-build.sh build-engine
           cp build-engine/ui_runner_vm android/app/src/main/jniLibs/arm64-v8a/libuirunnervm.so

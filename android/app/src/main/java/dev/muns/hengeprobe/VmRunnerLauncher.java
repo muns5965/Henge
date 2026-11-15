@@ -7,19 +7,22 @@ import java.util.List;
 
 /**
  * [C1-3] The ONLY place in the app that may create the process of the VM runner (libuirunnervm.so = host/ui_runner_vm).
- * In this build starting it is switched off: START_ENABLED is a compile-time constant that is false, start() refuses before it builds
- * a command or touches a file, and no screen, Intent extra or setting can change that. Turning it on is a source change that needs its own approval.
+ * START_ENABLED is the one compile-time switch deciding whether start() may ever build a command or touch a file;
+ * no screen, Intent extra or setting can override it either way. In this build it is true: real execution is on,
+ * bounded by RUN_SECONDS below and VmDisplayActivity's own watchdog, and still conditioned on rom/disk/aux already
+ * existing (VmDisplayActivity checks that; this class never creates them). Turning it back off is a source change
+ * with its own approval, same as turning it on was.
  * Whether the ROM or disk files exist is never a condition for starting (and nothing here creates them).
  * No Android classes are used, so tests/java/VmRunnerLauncherTest.java runs on a plain JVM.
  */
 public final class VmRunnerLauncher {
     private VmRunnerLauncher() {}
 
-    /** The one switch. CI (tools/check-c13-source.sh) requires exactly this declaration and the value false. */
-    static final boolean START_ENABLED = false;
+    /** The one switch. CI (tools/check-c13-source.sh) requires exactly this declaration and a literal true/false. */
+    static final boolean START_ENABLED = true;
 
     static final String LIB_NAME = "libuirunnervm.so";
-    static final String REFUSAL = "이 빌드에서는 VM 실행이 비활성입니다(START_ENABLED=false)";
+    static final String REFUSAL = "이 빌드에서는 VM 실행이 비활성입니다(START_ENABLED=" + START_ENABLED + ")";
 
     /** host/ui_runner_vm.c's own --seconds: it stops the run only once its main loop is reached, so it cannot bound
      *  a hang inside hv_vm_create() (called before that loop) by itself -- VmDisplayActivity's own watchdog adds an

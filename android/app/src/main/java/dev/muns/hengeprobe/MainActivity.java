@@ -472,13 +472,14 @@ public class MainActivity extends Activity {
                 + "화면을 닫으면 종료 신호를 보내고 5초까지 기다린 뒤에만 강제 종료하며, 강제 종료는 로그와 화면에 표시됩니다.");
         c1Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c1Note);
-        // C1-3: information screen of the VM runner. It starts nothing (VM start is switched off in VmRunnerLauncher).
+        // C1-3: information screen of the VM runner. It starts nothing itself; it only reports VmRunnerLauncher's
+        // own switch (VmRunnerLauncher.startEnabled()), whichever way that currently reads in this build.
         final Button c13Button = new Button(this);
-        c13Button.setText("[C1-3] VM 실행기 정보 (이 빌드에서는 시작 비활성)");
+        c13Button.setText("[C1-3] VM 실행기 정보");
         c13Button.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmRunnerActivity.class)));
         root.addView(c13Button);
         final TextView c13Note = new TextView(this);
-        c13Note.setText("VM 실행기가 APK에 들어 있는지와 시작이 꺼져 있다는 것만 보여 줍니다. 프로세스를 시작하지 않습니다.");
+        c13Note.setText("VM 실행기가 APK에 들어 있는지와 시작이 켜져 있는지 꺼져 있는지를 보여 줍니다. 이 화면 자체는 프로세스를 시작하지 않습니다.");
         c13Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c13Note);
         // [A] The real VM's screen. Whether this can ever start a process is decided entirely by

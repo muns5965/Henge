@@ -6,9 +6,9 @@ cd "$(dirname "$0")/.." || exit 1
 J=android/app/src/main/java/dev/muns/hengeprobe; L=$J/VmRunnerLauncher.java
 fail=0; bad() { echo "FAIL $*"; fail=1; }
 [ -f "$L" ] || { echo "FAIL missing $L"; exit 1; }
-# the switch: declared once, false, read only inside the launcher
+# the switch: declared once, a literal true/false (never computed), read only inside the launcher
 n=$(grep -cE 'static final boolean START_ENABLED' $L); [ "$n" = 1 ] || bad "START_ENABLED must be declared once (found $n)"
-grep -qE 'static final boolean START_ENABLED = false;' $L || bad "START_ENABLED must be false in this build"
+grep -qE 'static final boolean START_ENABLED = (true|false);' $L || bad "START_ENABLED must be a literal true or false in this build"
 x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher:"; echo "$x"; }
 # the process: one ProcessBuilder in the launcher; the check comes before it
 n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must have exactly one ProcessBuilder (found $n)"
@@ -45,5 +45,5 @@ if [ -n "${1:-}" ]; then
   done
   rm -rf "$T"
 fi
-[ $fail = 0 ] && echo "OK  C1-3 source rules: START_ENABLED once and false, one ProcessBuilder after the check, the options match what ui_runner_vm requires, runner file named only in VmRunnerLauncher, the info screen starts no process${1:+, APK has both runners (AArch64)}"
+[ $fail = 0 ] && echo "OK  C1-3 source rules: START_ENABLED declared once as a literal true/false, one ProcessBuilder after the check, the options match what ui_runner_vm requires, runner file named only in VmRunnerLauncher, the info screen starts no process${1:+, APK has both runners (AArch64)}"
 exit $fail

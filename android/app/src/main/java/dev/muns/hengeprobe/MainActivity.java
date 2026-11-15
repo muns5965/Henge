@@ -481,6 +481,19 @@ public class MainActivity extends Activity {
         c13Note.setText("VM 실행기가 APK에 들어 있는지와 시작이 꺼져 있다는 것만 보여 줍니다. 프로세스를 시작하지 않습니다.");
         c13Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c13Note);
+        // [A] The real VM's screen. No Intent extras are passed here on purpose: VmRunnerLauncher.startEnabled()
+        // is the very first thing VmDisplayActivity.onCreate() checks, before reading rom/disk/aux or touching
+        // any native/file resource, so this button can only ever reach the blocked-state screen in this build --
+        // exactly what lets its Surface/lifecycle safety (guarded `started` checks, shutdown-notice ordering,
+        // the nativeStart()==1 fix) be looked at on a real device without VM execution ever being reachable.
+        final Button vmDisplayButton = new Button(this);
+        vmDisplayButton.setText("[A] 실제 VM 화면 (이 빌드에서는 시작 비활성)");
+        vmDisplayButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmDisplayActivity.class)));
+        root.addView(vmDisplayButton);
+        final TextView vmDisplayNote = new TextView(this);
+        vmDisplayNote.setText("이 빌드에서는 VM 실행이 꺼져 있어 차단 메시지만 표시됩니다. 화면 전환·종료 시의 안전성(이번 세션에서 고친 부분)을 실기기에서 확인하려는 용도입니다. ROM/디스크/AUX를 건드리지 않습니다.");
+        vmDisplayNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(vmDisplayNote);
 
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");

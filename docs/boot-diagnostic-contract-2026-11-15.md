@@ -84,6 +84,19 @@ belongs to — matching an observed PC against ROM disassembly/address analysis 
 for whoever holds that analysis, not something this field does automatically — and the fault/unsupported
 categories still have no PC captured at all; only the PSCI-halt path got this.
 
+A second accessor added alongside the first, for the SAME question this PC/LR pair could not answer by
+itself: a ROM can reach one shared PSCI-call wrapper from several call sites, and `psci_halt_lr` is that
+wrapper's OWN return address one level up (into whichever helper it calls just before the `hvc`), not the
+address of whichever outer caller reached the wrapper in the first place. `host/vm.c`'s
+`hv_vm_psci_halt_stack()` hands back the halting CPU's SP and x26 at the `hvc` (live-register reads) plus a
+raw, uninterpreted copy of guest memory `[sp, sp+64)` (`core/exception.c`'s `psci_halt_peek_u64`, which never
+raises a guest fault or touches an MMIO device to get it — a word it cannot translate to plain guest RAM is
+just reported as missing, not guessed). Which byte offset in that window holds something useful (an outer
+caller's own saved return address, a caller's preserved register) is a property of how the SPECIFIC ROM
+build under investigation lays out its stack frames at that point — this accessor does not compute or assume
+that, the same way the ROM-hex-dump workflow elsewhere in this investigation does not interpret bytes before
+they reach someone who has worked out the surrounding function's structure.
+
 ### 3. Guest frame existence
 
 **Asks**: has the guest produced anything `hv_vm_boot_display()` (`host/vm.c`) can call a frame yet?

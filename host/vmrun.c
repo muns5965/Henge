@@ -443,11 +443,21 @@ int main(int argc, char **argv) {
            captured the same way whichever program ran it. Independent of --psci-log/HV_PSCI_LOG: that flag
            only turns on a trace of EVERY PSCI call as it happens, which stays exactly as it was; this is the
            separate, always-on record of just the one call that actually halted the machine, if any did. */
-        if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr))
+        if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr)) {
             printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s), psci %s (fn=%#x) by cpu%u at pc=%#llx lr=%#llx\n",
                    by_us ? "by vmrun's time limit" : "by the guest/engine", now() - t1, exit_reason, hv_vm_reason_name(exit_reason),
                    pfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET", pfn, pcpu, (unsigned long long)ppc, (unsigned long long)plr);
-        else
+            /* Same snapshot, the second accessor (host/vm.h's hv_vm_psci_halt_stack): raw sp/x26/stack bytes,
+               printed uninterpreted -- see core/machine.h's psci_halt_stack[] comment and ui_runner_vm.c's
+               matching line. */
+            uint64_t psp = 0, px26 = 0, pstack[8]; int pn = 0;
+            if (hv_vm_psci_halt_stack(&psp, &px26, pstack, &pn)) {
+                printf("vmrun RESULT: psci halt sp=%#llx x26=%#llx stack(sp+0..sp+%#x)=",
+                       (unsigned long long)psp, (unsigned long long)px26, pn * 8);
+                for (int i = 0; i < pn; i++) printf("%s%016llx", i ? "," : "", (unsigned long long)pstack[i]);
+                printf("\n");
+            }
+        } else
             printf("vmrun RESULT: stopped %s after %.1fs, exit reason %d (%s)\n", by_us ? "by vmrun's time limit" : "by the guest/engine",
                    now() - t1, exit_reason, hv_vm_reason_name(exit_reason));
         return 0;

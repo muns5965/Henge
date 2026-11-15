@@ -109,6 +109,15 @@ int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64
     return 1;
 }
 
+int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_words) {
+    if (!__atomic_load_n(&m.psci_halt_valid, __ATOMIC_SEQ_CST)) return 0;
+    if (sp) *sp = m.psci_halt_sp;
+    if (x26) *x26 = m.psci_halt_x26;
+    if (n_words) *n_words = m.psci_halt_stack_words;
+    if (stack) for (int i = 0; i < m.psci_halt_stack_words; i++) stack[i] = m.psci_halt_stack[i];
+    return 1;
+}
+
 const char *hv_vm_reason_name(int r) {
     switch (r) {
     case HV_EXIT_HALT: return "halt";

@@ -286,6 +286,25 @@ typedef struct HvMachine {
     uint32_t psci_halt_fn;    /* 0x84000008 (SYSTEM_OFF) or 0x84000009 (SYSTEM_RESET) */
     uint32_t psci_halt_cpu;   /* the calling CPU's cpu->index */
     uint64_t psci_halt_pc, psci_halt_lr;
+    /* Added alongside the fields above, same snapshot-at-the-call, same first-caller-wins guard, same
+       independence from HV_PSCI_LOG/any HV_* variable -- this is about finding which of several call
+       sites in the ROM reached this PSCI call, not about the PSCI call itself. psci_halt_lr is the
+       shared PSCI wrapper's OWN return address (one level up only: it calls another helper right before
+       the hvc, which overwrites x30 -- see core/exception.c's psci()), so by itself it cannot say which
+       of that wrapper's several callers reached it. psci_halt_sp and psci_halt_x26 are live-register
+       reads (never saved/restored by anything on the call path analyzed so far, so always current);
+       psci_halt_stack[] is a raw, uninterpreted copy of guest memory [sp, sp+64) -- which byte offset
+       in it holds a useful value (an outer caller's saved return address, a caller's own saved register)
+       is a property of how THIS PARTICULAR ROM build's functions happen to lay out their stack frames,
+       not something this capture assumes or computes; that reading is done afterward, same as a ROM hex
+       dump, against whichever offsets a stack-frame analysis of the ROM in question has worked out.
+       psci_halt_stack_words counts how many of the 8 slots were actually readable (a peek that cannot
+       translate, or that resolves to anything other than plain host-backed guest RAM, stops there rather
+       than guessing or touching MMIO -- see core/exception.c's psci_halt_peek_u64). */
+    uint64_t psci_halt_sp;
+    uint64_t psci_halt_x26;
+    int psci_halt_stack_words;   /* 0..8: how many of psci_halt_stack[] are valid, from index 0 up */
+    uint64_t psci_halt_stack[8]; /* psci_halt_stack[i] = guest memory at psci_halt_sp + i*8, if that index < psci_halt_stack_words */
 } HvMachine;
 
 static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {

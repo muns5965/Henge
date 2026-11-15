@@ -62,6 +62,10 @@ int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64
     (void)fn; (void)cpu_index; (void)pc; (void)lr;
     return 0;
 }
+int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_words) {
+    (void)sp; (void)x26; (void)stack; (void)n_words;
+    return 0;
+}
 int hv_vm_boot_display(HvBootDisplay *d) { (void)d; return -1; }
 int hv_vm_pointer(int *x, int *y) { (void)x; (void)y; return -1; }
 void hv_vm_key(uint16_t code, int down) { (void)code; (void)down; atomic_fetch_add(&g_inputs, 1); }

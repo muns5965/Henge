@@ -128,6 +128,24 @@ static HvCpu *cpu_by_mpidr(HvMachine *m, uint64_t mpidr) {
     return NULL;
 }
 
+/* A read-only, side-effect-free peek at 8 bytes of guest memory, for the psci_halt_stack[] diagnostic only
+   (core/machine.h). Deliberately NOT core/memop.c's hv_vmem_xfer: that one raises a guest abort on a
+   translation miss and will read through to an MMIO device on a non-RAM address -- both wrong here, since
+   this runs from inside PSCI handling, where injecting a fault into the guest or causing a device side
+   effect (clearing a status bit, advancing a FIFO) would make the act of looking change what gets looked
+   at. On anything other than a clean translation to plain host-backed guest RAM, this just reports "not
+   available" (0) -- never a guess, never a fault, never a device touch. va must be 8-aligned (the only
+   case this is used for); a misaligned va is treated as unavailable rather than risking a split access. */
+static int psci_halt_peek_u64(HvCpu *cpu, uint64_t va, uint64_t *out) {
+    if (va & 7) return 0;
+    uint64_t pa;
+    if (hv_mmu_access(cpu, va, HV_ACC_READ, cpu->el, &pa)) return 0;
+    void *p = hv_phys_ptr(cpu->m, pa, 8);
+    if (!p) return 0;
+    memcpy(out, p, 8);
+    return 1;
+}
+
 /* PSCI 1.0. pc is the HVC instruction's own guest address (hv_exception_insn's parameter, the same value its
    SVC branch uses for "ELR is the next instruction") -- NOT cpu->pc, which the dispatcher only syncs lazily at
    a block's exit points (core/dispatch.c's helper(): e.g. `cpu->pc = info->pc + 4` only on specific paths) and
@@ -172,6 +190,12 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
                 cpu->m->psci_halt_cpu = cpu->index;
                 cpu->m->psci_halt_pc = pc;           /* the HVC instruction's own address, not the stale cpu->pc */
                 cpu->m->psci_halt_lr = cpu->x[30];
+                cpu->m->psci_halt_sp = cpu->sp;
+                cpu->m->psci_halt_x26 = cpu->x[26];
+                int n = 0;
+                for (; n < 8; n++)
+                    if (!psci_halt_peek_u64(cpu, cpu->sp + (uint64_t)n * 8, &cpu->m->psci_halt_stack[n])) break;
+                cpu->m->psci_halt_stack_words = n;
             }
         }
         for (int i = 0; i < cpu->m->ncpus; i++) /* the whole machine stops */

@@ -151,7 +151,7 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit";
-    char reason_txt[220] = "";
+    char reason_txt[480] = "";
     double tstart = now(), next_frame = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
@@ -163,12 +163,23 @@ int main(int argc, char **argv) {
             /* hv_vm_psci_halt_info() only ever returns non-zero for a PSCI-triggered halt (SYSTEM_OFF/
                SYSTEM_RESET -- see core/exception.c's psci()), so its presence alone is the check; no need to
                separately compare er against HV_EXIT_HALT (whose enum this file does not otherwise need). */
-            if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr))
-                snprintf(reason_txt, sizeof reason_txt,
+            if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr)) {
+                int rn = snprintf(reason_txt, sizeof reason_txt,
                          "the machine stopped itself, reason %d (%s), psci %s (fn=%#x) by cpu%u at pc=%#llx lr=%#llx",
                          er, hv_vm_reason_name(er), pfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET", pfn, pcpu,
                          (unsigned long long)ppc, (unsigned long long)plr);
-            else
+                /* Same snapshot, a second accessor (host/vm.h's hv_vm_psci_halt_stack): raw sp/x26/stack
+                   bytes for working out which of several ROM call sites reached this PSCI call, appended
+                   here rather than interpreted -- see core/machine.h's psci_halt_stack[] comment. */
+                uint64_t psp = 0, px26 = 0, pstack[8]; int pn = 0;
+                if (rn > 0 && (size_t)rn < sizeof reason_txt && hv_vm_psci_halt_stack(&psp, &px26, pstack, &pn)) {
+                    char words[8 * 17 + 1] = ""; size_t wo = 0;
+                    for (int i = 0; i < pn && wo + 18 < sizeof words; i++)
+                        wo += (size_t)snprintf(words + wo, sizeof words - wo, "%s%016llx", i ? "," : "", (unsigned long long)pstack[i]);
+                    snprintf(reason_txt + rn, sizeof reason_txt - (size_t)rn, " sp=%#llx x26=%#llx stack(sp+0..sp+%#x)=%s",
+                             (unsigned long long)psp, (unsigned long long)px26, pn * 8, words);
+                }
+            } else
                 snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s)", er, hv_vm_reason_name(er));
             why_stop = reason_txt; break;
         }

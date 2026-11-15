@@ -220,6 +220,33 @@ PY
           if [ $pok = 1 ]; then echo "ok  SYSTEM_OFF and SYSTEM_RESET are each reported with their own function number, cpu and a pc inside the probe ROM, and never with each other's"
           else echo "-- off runner output:"; cat "$PP/off.out"; echo "-- reset runner output:"; cat "$PP/reset.out"; rc=1; fi
         fi
+
+        echo "=== psci stack probe: sp/x26/stack[] captured alongside the halt (core/exception.c's psci_halt_sp/psci_halt_x26/psci_halt_stack[], host/vm.c's hv_vm_psci_halt_stack)"
+        if ! tools/build-asm-rom.sh tests/roms/psci_reset_stack_probe.S "$T/psci_reset_stack.bin" > "$T/psci_reset_stack_build.out" 2>&1; then
+          echo "FAILED building the psci-reset-stack-probe stand-in ROM"; cat "$T/psci_reset_stack_build.out"; rc=1
+        else
+          SP=$T/pscistackprobe; rm -rf "$SP"; mkdir -p "$SP"
+          truncate -s 16M "$SP/disk.img"
+          python3 - "$SP/aux.img" <<'PY'
+import sys
+hd = bytes([0xa5,0xd5,0xb3,0xfe,0x97,0xad,0x1d,0x27,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0])
+with open(sys.argv[1],'wb') as f:
+    f.write(hd); f.truncate(33570816)
+PY
+          ( sleep 10 | "$OUT/ui_runner_vm" --shm "$SP/run.shm" --rom "$T/psci_reset_stack.bin" --disk "$SP/disk.img" --aux "$SP/aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 5 > "$SP/run.out" 2>&1 )
+          STACK_LINE=$(grep RESULT "$SP/run.out")
+          echo "stack: $STACK_LINE"
+          spok=1
+          echo "$STACK_LINE" | grep -q 'sp=0x70010000' || { echo "FAILED stack probe did not report sp=0x70010000"; spok=0; }
+          echo "$STACK_LINE" | grep -q 'x26=0xaaaa000000000026' || { echo "FAILED stack probe did not report x26=0xaaaa000000000026"; spok=0; }
+          # word index 1 (sp+8) and index 7 (sp+0x38, i.e. the 8th comma-separated word) must carry the two markers the ROM wrote there.
+          WORDS=$(echo "$STACK_LINE" | grep -oE 'stack\(sp\+0..sp\+[0-9a-fx]+\)=[0-9a-f,]+' | cut -d= -f2)
+          W1=$(echo "$WORDS" | cut -d, -f2); W8=$(echo "$WORDS" | cut -d, -f8)
+          [ "$W1" = "beef000000000019" ] || { echo "FAILED stack word[1] (sp+8) was '$W1', expected beef000000000019"; spok=0; }
+          [ "$W8" = "cafe000000000038" ] || { echo "FAILED stack word[7] (sp+0x38) was '$W8', expected cafe000000000038"; spok=0; }
+          if [ $spok = 1 ]; then echo "ok  sp, x26 and the stack words at sp+8/sp+0x38 all round-trip exactly"
+          else echo "-- stack probe runner output:"; cat "$SP/run.out"; rc=1; fi
+        fi
       fi
     fi
   fi

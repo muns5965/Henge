@@ -481,17 +481,47 @@ public class MainActivity extends Activity {
         c13Note.setText("VM 실행기가 APK에 들어 있는지와 시작이 꺼져 있다는 것만 보여 줍니다. 프로세스를 시작하지 않습니다.");
         c13Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c13Note);
-        // [A] The real VM's screen. No Intent extras are passed here on purpose: VmRunnerLauncher.startEnabled()
-        // is the very first thing VmDisplayActivity.onCreate() checks, before reading rom/disk/aux or touching
-        // any native/file resource, so this button can only ever reach the blocked-state screen in this build --
-        // exactly what lets its Surface/lifecycle safety (guarded `started` checks, shutdown-notice ordering,
-        // the nativeStart()==1 fix) be looked at on a real device without VM execution ever being reachable.
+        // [A] The real VM's screen. Whether this can ever start a process is decided entirely by
+        // VmRunnerLauncher.startEnabled(), checked first thing in VmDisplayActivity.onCreate() before anything
+        // else is read or touched -- this button's own job is only to find the same rom/disk/aux this app's
+        // normal-boot button already uses (never downloading or creating a blank disk/aux itself: those stay
+        // vmrun's job) and hand their paths on as Intent extras, or refuse outright if any of the three is
+        // missing. Nothing here writes to rom/disk/aux; it only locates them.
         final Button vmDisplayButton = new Button(this);
-        vmDisplayButton.setText("[A] 실제 VM 화면 (이 빌드에서는 시작 비활성)");
-        vmDisplayButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmDisplayActivity.class)));
+        vmDisplayButton.setText("[A] 실제 VM 화면");
+        final boolean[] vmDisplayBusy = {false};
+        vmDisplayButton.setOnClickListener(v -> {
+            if (vmDisplayBusy[0]) return;
+            vmDisplayBusy[0] = true;
+            new Thread(() -> {
+                StringBuilder acc = new StringBuilder();
+                File base = new File(getExternalFilesDir(null), "vm");
+                File priv = new File(getFilesDir(), "vm");
+                File rom = findLocalRom(acc); // local-only: never downloads (that stays the separate, explicit "ROM 다운로드" flow)
+                File disk = new File(base, "disk.img").isFile() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
+                File aux = new File(base, "aux.img").isFile() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
+                final String refusal;
+                if (rom == null) {
+                    refusal = "ROM이 없어 실행하지 않았습니다. 먼저 일반 또는 설치기 부팅 시험으로 ROM을 받아 두세요 (이 버튼은 다운로드하지 않습니다). 네트워크 요청은 하지 않았습니다.\n" + acc;
+                } else if (!disk.isFile() || !aux.isFile()) {
+                    refusal = "디스크 또는 aux 파일이 아직 없습니다(" + disk.getName() + ", " + aux.getName() + "). 이 화면은 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요.\n" + acc;
+                } else {
+                    refusal = null;
+                }
+                runOnUiThread(() -> {
+                    vmDisplayBusy[0] = false;
+                    if (refusal != null) { show(refusal); return; }
+                    android.content.Intent i = new android.content.Intent(this, VmDisplayActivity.class);
+                    i.putExtra("rom", rom.getAbsolutePath());
+                    i.putExtra("disk", disk.getAbsolutePath());
+                    i.putExtra("aux", aux.getAbsolutePath());
+                    startActivity(i);
+                });
+            }).start();
+        });
         root.addView(vmDisplayButton);
         final TextView vmDisplayNote = new TextView(this);
-        vmDisplayNote.setText("이 빌드에서는 VM 실행이 꺼져 있어 차단 메시지만 표시됩니다. 화면 전환·종료 시의 안전성(이번 세션에서 고친 부분)을 실기기에서 확인하려는 용도입니다. ROM/디스크/AUX를 건드리지 않습니다.");
+        vmDisplayNote.setText("기존 일반/설치기 부팅 시험이 이미 찾아 둔 ROM·디스크·AUX 경로를 그대로 전달합니다. 셋 중 하나라도 없으면 아무것도 만들지 않고 실행을 거부합니다. 실제로 시작되는지는 VmRunnerLauncher의 활성화 여부가 따로 결정합니다.");
         vmDisplayNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(vmDisplayNote);
 

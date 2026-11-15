@@ -19,11 +19,23 @@ x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep 
 x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity creates a process:"; echo "$x"; }
 x=$(grep -nE 'getIntent|getExtra|getStringExtra|getBooleanExtra' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity reads the Intent:"; echo "$x"; }
 grep -A3 'VmRunnerActivity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerActivity must be exported=false"
-# the contract with the native runner: the options host/ui_runner_vm.c requires (from its own "are required" message) must be exactly the options buildCommand adds
+# the contract with the native runner: every option host/ui_runner_vm.c requires (from its own "are required"
+# message) must be among the options buildCommand adds, and buildCommand may add nothing beyond what the runner's
+# own "Arguments:" line says it accepts in total -- so an option may be optional on the Java side (--seconds is,
+# today) without this check loosening into "anything goes".
 R=host/ui_runner_vm.c
-nat=$(grep -o '"ui_runner_vm: [^"]*are required' $R | grep -o -- '--[a-z-]*' | sort | tr '\n' ' ')
-jav=$(grep -o 'c.add("--[a-z-]*")' $L | grep -o -- '--[a-z-]*' | sort | tr '\n' ' ')
-{ [ -n "$nat" ] && [ "$nat" = "$jav" ]; } || bad "runner requires '$nat' but VmRunnerLauncher.buildCommand adds '$jav'"
+nat=$(grep -o '"ui_runner_vm: [^"]*are required' $R | grep -o -- '--[a-z-]*' | sort -u)
+accepted=$(grep -o 'Arguments: [^.]*' $R | grep -o -- '--[a-z-]*' | sort -u)
+jav=$(grep -o 'c.add("--[a-z-]*")' $L | grep -o -- '--[a-z-]*' | sort -u)
+for o in $nat; do echo "$jav" | grep -qFx -- "$o" || bad "runner requires '$o' but VmRunnerLauncher.buildCommand does not add it"; done
+for o in $jav; do echo "$accepted" | grep -qFx -- "$o" || bad "VmRunnerLauncher.buildCommand adds '$o', which host/ui_runner_vm.c's own Arguments line does not list as accepted"; done
+# if the launcher adds --seconds at all, it must be a literal, positive, bounded (<=120 s) constant: not 0 (that
+# disables ui_runner_vm's own time limit entirely -- see its main loop, `if (seconds && ...)`), and not some
+# value computed at run time this script cannot see.
+if echo "$jav" | grep -qx -- '--seconds'; then
+  n=$(grep -oE 'static final int RUN_SECONDS = [0-9]+;' $L | grep -oE '[0-9]+')
+  { [ -n "$n" ] && [ "$n" -gt 0 ] && [ "$n" -le 120 ]; } || bad "VmRunnerLauncher.RUN_SECONDS must be a literal int in (0, 120], found '$n'"
+fi
 # the APK, when given: both runners in it, both AArch64
 if [ -n "${1:-}" ]; then
   A=$1; RE=${READELF:-readelf}; T=$(mktemp -d)

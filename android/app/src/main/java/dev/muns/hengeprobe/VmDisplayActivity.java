@@ -88,6 +88,11 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private volatile long runnerPid;
     private volatile String runnerLine = "vm runner: not started";
     private final java.util.ArrayDeque<String> runnerLog = new java.util.ArrayDeque<>();
+    // guards stopVmRunner() against running twice for the same process: onDestroy() (user closed the screen) and
+    // the watchdog thread below (the native --seconds limit did not stop it) can both decide to stop the same
+    // runner at roughly the same time; StopOnce.tryOnce() (tests/java/StopOnceTest.java covers it on a plain JVM)
+    // is what actually decides which of the two, if either, proceeds. Re-made in startVmRunner() for each process.
+    private volatile StopOnce stopOnce = new StopOnce();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -171,6 +176,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         }
         vmStarted = true;
         final Process p = res.process;
+        stopOnce = new StopOnce();   // fresh race winner-takes-one guard for this specific process
         runner = p;
         runnerPid = 0;
         new Thread(() -> {
@@ -208,21 +214,49 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
                 try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
             }
         }, "henge-vm-runner-poll").start();
+        startWatchdog(p);
+    }
+
+    /** Independent of onDestroy()/the user closing this screen: host/ui_runner_vm.c's own --seconds limit (see
+     *  VmRunnerLauncher.RUN_SECONDS) only applies once its main loop is reached, so a hang before that -- most
+     *  notably inside hv_vm_create() -- is not bounded by it at all. This thread is the backstop: it waits
+     *  RUN_SECONDS plus a margin and, if the process given to it is still the current one and still alive, stops
+     *  it through the same stopVmRunner() path onDestroy() uses (guarded by stopOnce, so whichever of the two
+     *  gets there first is the only one that actually acts). A margin, not an exact match, because the native
+     *  process also needs a moment after its own deadline to notice, log and exit on its own first. */
+    private static final int WATCHDOG_MARGIN_SECONDS = 15;
+
+    private void startWatchdog(Process p) {
+        final long deadline = SystemClock.uptimeMillis() + (VmRunnerLauncher.RUN_SECONDS + WATCHDOG_MARGIN_SECONDS) * 1000L;
+        new Thread(() -> {
+            while (!dead && runner == p && p.isAlive() && SystemClock.uptimeMillis() < deadline) {
+                try { Thread.sleep(500); } catch (InterruptedException e) { return; }
+            }
+            if (!dead && runner == p && p.isAlive()) {
+                Log.w(TAG, "watchdog: still running " + (VmRunnerLauncher.RUN_SECONDS + WATCHDOG_MARGIN_SECONDS) + "s after start (its own --seconds limit did not stop it) -- forcing stop");
+                stopVmRunner("watchdog: native time limit did not stop it");
+            }
+        }, "henge-vm-runner-watchdog").start();
     }
 
     /** Same stop sequence as DisplayTestActivity.stopRunnerProcess(): app-closing notice, "quit", wait up to 5 s,
-     *  only then kill. Logged either way. A no-op when nothing was actually started (the launcher's switch is off here). */
-    private void stopVmRunner() {
+     *  only then kill. Logged either way, together with `why` (which of the two callers -- onDestroy()'s "user
+     *  closed the screen" or the watchdog's "native time limit did not stop it" -- is acting), so a later look at
+     *  the log can tell a normal close apart from a forced one. A no-op when nothing was actually started (the
+     *  launcher's switch is off here), and a no-op for whichever of the two callers loses the race: stopOnce
+     *  (tests/java/StopOnceTest.java) gives the actual work below to exactly one of them per process. */
+    private void stopVmRunner(String why) {
         final Process p = runner;
-        if (p == null) return;
+        if (p == null || !stopOnce.tryOnce()) return;
         runner = null;
+        Log.i(TAG, "stopping the vm runner (" + why + ")");
         try { nativeRunnerAppClose(); } catch (Throwable ignored) { }
         new Thread(() -> {
             try { OutputStream os = p.getOutputStream(); os.write("quit\n".getBytes()); os.flush(); } catch (java.io.IOException ignored) { }
             boolean ended = false;
             try { ended = p.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
-            if (ended) Log.i(TAG, "vm runner stopped, exit code " + p.exitValue());
-            else { Log.w(TAG, "vm runner did not stop within 5 s: FORCED kill"); p.destroyForcibly(); }
+            if (ended) Log.i(TAG, "vm runner stopped (" + why + "), exit code " + p.exitValue());
+            else { Log.w(TAG, "vm runner did not stop within 5 s (" + why + "): FORCED kill"); p.destroyForcibly(); }
         }, "henge-vm-runner-stop").start();
     }
 
@@ -252,7 +286,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
             // process has actually read that flag or exited, which stays a background concern (A-4,
             // unchanged) and an actual-run question, not a memory-safety one (stopVmRunner()'s background
             // thread only touches the Java Process object, never g_shm or any other native resource).
-            if (vmStarted) stopVmRunner();
+            if (vmStarted) stopVmRunner("user closed the screen");
             releaseNative();
         }
         super.onDestroy();

@@ -36,10 +36,14 @@ public class VmRunnerLauncherTest {
         check("isPackaged true when the file is there", VmRunnerLauncher.isPackaged(dir));
 
         List<String> cmd = VmRunnerLauncher.buildCommand(dir, shm, rom, disk, aux);
-        // written out by hand (not taken from the launcher): the four options host/ui_runner_vm.c requires, each with its own path
+        // written out by hand (not taken from the launcher): the four options host/ui_runner_vm.c requires, each with
+        // its own path, plus the one optional option this launcher adds on its own (--seconds)
         List<String> want = java.util.Arrays.asList(new File(dir, VmRunnerLauncher.LIB_NAME).getPath(),
-                "--shm", shm.getPath(), "--rom", rom.getPath(), "--disk", disk.getPath(), "--aux", aux.getPath());
-        check("command is exactly program + --shm/--rom/--disk/--aux with their paths", cmd.equals(want));
+                "--shm", shm.getPath(), "--rom", rom.getPath(), "--disk", disk.getPath(), "--aux", aux.getPath(),
+                "--seconds", String.valueOf(VmRunnerLauncher.RUN_SECONDS));
+        check("command is exactly program + --shm/--rom/--disk/--aux/--seconds with their values", cmd.equals(want));
+        check("RUN_SECONDS is positive and bounded (0 would disable ui_runner_vm's own time limit entirely)",
+                VmRunnerLauncher.RUN_SECONDS > 0 && VmRunnerLauncher.RUN_SECONDS <= 120);
         boolean noLoosen = true;
         for (String s : cmd) if (s.matches("--(installer|net|ipsw|ecid|seed|readonly|no-readonly|write|rw|dfu)")) noLoosen = false;
         check("no setting-loosening option in the command", noLoosen);

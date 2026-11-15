@@ -21,6 +21,12 @@ public final class VmRunnerLauncher {
     static final String LIB_NAME = "libuirunnervm.so";
     static final String REFUSAL = "이 빌드에서는 VM 실행이 비활성입니다(START_ENABLED=false)";
 
+    /** host/ui_runner_vm.c's own --seconds: it stops the run only once its main loop is reached, so it cannot bound
+     *  a hang inside hv_vm_create() (called before that loop) by itself -- VmDisplayActivity's own watchdog adds an
+     *  independent margin on top of this for exactly that case. Kept small for the first real-device runs; nothing
+     *  here raises it automatically. tools/check-c13-source.sh requires this to be a literal, positive, bounded int. */
+    static final int RUN_SECONDS = 30;
+
     /** What start() did. process is null unless started. */
     public static final class Result {
         public final boolean started;
@@ -41,7 +47,10 @@ public final class VmRunnerLauncher {
 
     public static boolean startEnabled() { return START_ENABLED; }
 
-    /** The command the runner would get: all four options host/ui_runner_vm.c requires (--shm --rom --disk --aux), from typed arguments only; the safety settings are not options (they are inside the runner). */
+    /** The command the runner would get: all four options host/ui_runner_vm.c requires (--shm --rom --disk --aux),
+     *  from typed arguments only, plus the one optional option this launcher adds on its own (--seconds, RUN_SECONDS
+     *  above) -- never anything else. The safety settings (read-only storage, no network) are not options; they are
+     *  inside the runner. */
     static List<String> buildCommand(File nativeLibDir, File shm, File rom, File disk, File aux) {
         List<String> c = new ArrayList<>();
         c.add(new File(nativeLibDir, LIB_NAME).getPath());
@@ -49,6 +58,7 @@ public final class VmRunnerLauncher {
         c.add("--rom"); c.add(rom.getPath());
         c.add("--disk"); c.add(disk.getPath());
         c.add("--aux"); c.add(aux.getPath());
+        c.add("--seconds"); c.add(String.valueOf(RUN_SECONDS));
         return c;
     }
 

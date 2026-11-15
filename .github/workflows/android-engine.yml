@@ -163,6 +163,12 @@ jobs:
           javac -encoding UTF-8 -d build-java-nstart android/app/src/main/java/dev/muns/hengeprobe/NativeStart.java tests/java/NativeStartTest.java
           java -cp build-java-nstart dev.muns.hengeprobe.NativeStartTest
 
+      - name: "Test StopOnce (plain java): the race guard VmDisplayActivity uses so onDestroy() and its watchdog never both stop the same vm runner"
+        run: |
+          mkdir -p build-java-stoponce
+          javac -encoding UTF-8 -d build-java-stoponce android/app/src/main/java/dev/muns/hengeprobe/StopOnce.java tests/java/StopOnceTest.java
+          java -cp build-java-stoponce dev.muns.hengeprobe.StopOnceTest
+
       - name: "Test the G0 verdict the app shows (plain java; exit code, result lines, final vmrun line, output completeness)"
         run: |
           mkdir -p build-java-g0

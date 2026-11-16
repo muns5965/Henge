@@ -1507,6 +1507,7 @@ public class MainActivity extends Activity {
         private java.io.OutputStream os;
         private long partBytes, totalBytes;
         private final java.util.List<String> partNames = new java.util.ArrayList<>(); // in write order, for the zip
+        private final java.util.List<android.net.Uri> partUris = new java.util.ArrayList<>(); // same order, same count -- the Uri insert() gave each part
         private boolean capped, failed;
 
         private RunLog(android.content.ContentResolver cr) { this.cr = cr; }
@@ -1548,6 +1549,7 @@ public class MainActivity extends Activity {
             os = new java.io.BufferedOutputStream(cr.openOutputStream(partUri), 65536);
             partBytes = 0;
             partNames.add(name);
+            partUris.add(partUri); // held directly -- zipAndCleanup() must not re-find this by querying MediaStore later
         }
 
         private void publish(android.net.Uri u) {
@@ -1615,8 +1617,9 @@ public class MainActivity extends Activity {
             }
         }
 
-        /** Reads every part of this run back through MediaStore into one DIR+runName+".zip", then deletes the now-redundant parts. Any part this app
-         *  cannot find any more is skipped rather than failing the whole zip, since the zip is still useful with the rest. */
+        /** Zips every part of this run into one DIR+runName+".zip", then deletes the now-redundant parts. Uses the Uri each part's own insert() returned
+         *  (held in partUris, same order/count as partNames) rather than re-finding parts afterward by querying MediaStore -- an earlier version did that
+         *  re-query and it could silently match nothing on a real device (no exception, just zero entries written), producing a "successful" empty zip. */
         private void zipAndCleanup() throws IOException {
             android.content.ContentValues cv = new android.content.ContentValues();
             cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, runName + ".zip");
@@ -1625,13 +1628,11 @@ public class MainActivity extends Activity {
             cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
             android.net.Uri zipUri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
             if (zipUri == null) throw new IOException("zip insert returned null");
-            java.util.List<android.net.Uri> partUris = new java.util.ArrayList<>();
+            int written = 0;
             try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(new java.io.BufferedOutputStream(cr.openOutputStream(zipUri), 65536))) {
-                for (String name : partNames) {
-                    android.net.Uri u = findPart(name);
-                    if (u == null) continue;
-                    partUris.add(u);
-                    zos.putNextEntry(new java.util.zip.ZipEntry(name));
+                for (int i = 0; i < partNames.size(); i++) {
+                    android.net.Uri u = partUris.get(i);
+                    zos.putNextEntry(new java.util.zip.ZipEntry(partNames.get(i)));
                     try (java.io.InputStream in = cr.openInputStream(u)) {
                         if (in != null) {
                             byte[] buf = new byte[65536];
@@ -1640,23 +1641,14 @@ public class MainActivity extends Activity {
                         }
                     }
                     zos.closeEntry();
+                    written++;
                 }
             }
+            if (written == 0) throw new IOException("no parts were written into the zip (partNames was empty)");
             android.content.ContentValues done = new android.content.ContentValues();
             done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
             cr.update(zipUri, done, null, null);
             for (android.net.Uri u : partUris) cr.delete(u, null, null); // the zip now holds everything they held; drop the loose parts
-        }
-
-        private android.net.Uri findPart(String name) {
-            android.os.Bundle q = new android.os.Bundle();
-            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "relative_path=? AND _display_name=?");
-            q.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[]{runDir, name});
-            if (Build.VERSION.SDK_INT >= 31) q.putInt(android.provider.MediaStore.QUERY_ARG_MATCH_PENDING, android.provider.MediaStore.MATCH_INCLUDE);
-            try (android.database.Cursor cur = cr.query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, new String[]{android.provider.MediaStore.MediaColumns._ID}, q, null)) {
-                if (cur != null && cur.moveToFirst()) return android.content.ContentUris.withAppendedId(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cur.getLong(0));
-            }
-            return null;
         }
     }
 

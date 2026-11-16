@@ -272,10 +272,10 @@ PY
           ppok=1
           echo "$PANIC_LINE" | grep -q 'hits=2' || { echo "FAILED panic probe did not report hits=2"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'first.pc=0x1071c4' || { echo "FAILED panic probe first.pc was not 0x1071c4"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'first.x0=0x1111 first.x1=0x0 first.x2=0x0 first.x3=0x0' || { echo "FAILED panic probe first.x0..x3 did not match gate1's w0 (and nothing else)"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.x0=0x1111 first.x1=0 first.x2=0 first.x3=0 ' || { echo "FAILED panic probe first.x0..x3 did not match gate1's w0 (and nothing else)"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'first.sp=0x70020000' || { echo "FAILED panic probe first.sp was not 0x70020000"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'last.pc=0x107214' || { echo "FAILED panic probe last.pc was not 0x107214"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'last.x0=0x5555 last.x1=0x70030000 last.x2=0x0 last.x3=0x0' || { echo "FAILED panic probe last.x0/x1 did not match gate2's w8/x19"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.x0=0x5555 last.x1=0x70030000 last.x2=0 last.x3=0 ' || { echo "FAILED panic probe last.x0/x1 did not match gate2's w8/x19"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'last.sp=0x70030000' || { echo "FAILED panic probe last.sp was not 0x70030000"; ppok=0; }
           # The original guest instructions at both probe addresses must still have executed normally (not been
           # skipped), proving the hook does not disturb the dispatcher's own flow: the ROM only reaches the reset

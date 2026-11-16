@@ -1,75 +1,52 @@
-/* [C1-4] Exercises host/ui_runner_vm.c's Android panic-entry probe end to end: panic_probe_install()'s two
-   stop_pc addresses (0x105F2C / 0x105F9C -- the two generic-panic-helper entry points this investigation found
-   by ROM disassembly in the real AVPBooter ROM, see docs/boot-diagnostic-contract-2026-11-15.md), core/cpu.h's
+/* [C1-4] Exercises host/ui_runner_vm.c's Android boot-branch probe end to end: panic_probe_install()'s two
+   stop_pc addresses (0x1071C4 / 0x107214 -- the two conditions this investigation found immediately upstream
+   of the confirmed panic-helper call at 0x107238, see docs/boot-diagnostic-contract-2026-11-15.md), core/cpu.h's
    HvCpu.panic_first/panic_last/panic_hits capture in panic_probe_hook(), core/exception.c's psci() copying them
    into the machine-wide snapshot, and host/vm.c's hv_vm_panic_probe() accessor.
 
+   (An earlier round of this same probe watched 0x105F2C/0x105F9C -- the panic-helper entries themselves -- and a
+   real device confirmed 0x105F2C is the one reached, called from 0x107238; see git history for that version of
+   this file and of host/ui_runner_vm.c's hook/install functions if that round ever needs to be repeated.)
+
    This ROM is built for VMAPPLE_FIRMWARE-relative addressing (tools/build-asm-rom.sh strips to a raw .text image
    loaded starting at devices/vmapple.h's VMAPPLE_FIRMWARE = 0x100000), so .org below places code at the EXACT
-   guest addresses the real ROM's two probe points sit at -- this file is not a stand-in for the real ROM's logic,
-   only for its two addresses.
+   guest addresses the real ROM's two upstream conditions sit at -- this file is not a stand-in for the real
+   ROM's logic, only for its two addresses.
 
-   Sequence (matches tools/c1vm-test.sh's "T3" check -- probe A, then B, then A again, then SYSTEM_RESET):
-     1. visit A (0x105F2C) with x0..x3 = 0x1111/0x2222/0x3333/0x4444, sp = 0x70020000   (-> first hit)
-     2. fall through to a B setup block with x0..x3 = 0x5555/0x6666/0x7777/0x8888, sp = 0x70030000
-     3. visit B (0x105F9C)                                                            (-> second hit)
-     4. a second A setup block with x0..x3 = 0x9999/0xaaaa/0xbbbb/0xcccc, sp = 0x70040000
-     5. visit A again (same address, different registers)                            (-> third and last hit)
-     6. PSCI SYSTEM_RESET
+   Sequence:
+     1. visit gate1 (0x1071C4, the real ROM's "tbz w0,#0") with w0 = 0x1111, sp = 0x70020000   (-> first hit)
+     2. set x8 = 0x5555, x19 = 0x70030000 (the real ROM's "cbz w8" and the base [x19+0x7DA] would be read from)
+     3. visit gate2 (0x107214, the real ROM's "cbz w8") with sp = 0x70030000                   (-> second/last hit)
+     4. PSCI SYSTEM_RESET
 
-   A passing run must report hits=3, first.{pc=0x105f2c,x0=0x1111,x1=0x2222,x2=0x3333,x3=0x4444,sp=0x70020000},
-   last.{pc=0x105f2c,x0=0x9999,x1=0xaaaa,x2=0xbbbb,x3=0xcccc,sp=0x70040000} -- first and last share a PC (both
-   are the A address) but differ in every register, which is exactly what proves the hook captures the FIRST
-   hit without letting a later one overwrite it, while still keeping the true last one. A register not in this
-   probe's own list (x28) is used purely as this ROM's own visit counter, so panic_probe_hook never needs to
-   know or care about it. */
+   A passing run must report hits=2, first.{pc=0x1071c4,x0=0x1111,sp=0x70020000} (x1/x2/x3 stay 0, gate1's own
+   capture only sets x0), last.{pc=0x107214,x0=0x5555,x1=0x70030000,sp=0x70030000} -- this proves the hook reads
+   the RIGHT register at each address (w0 at the first, w8 and x19 at the second), not just that it fires twice. */
 .text
 .global _start
 _start:
-    mov   x28, #0                 // this ROM's own counter: 0 before A has been visited once, nonzero after
-
-    mov   x0, #0x1111
-    mov   x1, #0x2222
-    mov   x2, #0x3333
-    mov   x3, #0x4444
+    mov   x0, #0x1111              // w0: what the real ROM's 0x10D0B8 would have returned, tbz-tested
     movz  x9, #0x0000
     movk  x9, #0x7002, lsl #16     // sp = 0x70020000
     mov   sp, x9
-    b     probe_a
+    b     gate1
 
-.org 0x5f2c
-probe_a:
-    nop
-    cmp   x28, #0
-    b.eq  to_b_setup
-    b     to_reset
-
-to_b_setup:
-    add   x28, x28, #1
-    mov   x0, #0x5555
-    mov   x1, #0x6666
-    mov   x2, #0x7777
-    mov   x3, #0x8888
+.org 0x71c4
+gate1:
+    nop                            // probe fires here: captures w0
+    mov   x8, #0x5555              // w8: the real ROM's guest-RAM status byte, cbz-tested
+    movz  x19, #0x0000
+    movk  x19, #0x7003, lsl #16    // x19 = 0x70030000 (the real ROM's [x19+0x7DA] base)
     movz  x9, #0x0000
     movk  x9, #0x7003, lsl #16     // sp = 0x70030000
     mov   sp, x9
-    b     probe_b
+    b     gate2
 
-.org 0x5f9c
-probe_b:
-    nop
-    mov   x0, #0x9999
-    mov   x1, #0xaaaa
-    mov   x2, #0xbbbb
-    mov   x3, #0xcccc
-    movz  x9, #0x0000
-    movk  x9, #0x7004, lsl #16     // sp = 0x70040000
-    mov   sp, x9
-    b     probe_a
-
-to_reset:
+.org 0x7214
+gate2:
+    nop                            // probe fires here: captures w8 and x19
     movz  w0, #0x0009
-    movk  w0, #0x8400, lsl #16    // w0 = 0x84000009 (PSCI SYSTEM_RESET)
+    movk  w0, #0x8400, lsl #16     // w0 = 0x84000009 (PSCI SYSTEM_RESET)
     mov   x1, #0
     mov   x2, #0
     mov   x3, #0

@@ -223,11 +223,58 @@ else), never publishes a `PANIC_DIAG` line, even if the probe did record hits on
 `hits=0` is printed plainly rather than the line being omitted: "neither probe address was reached" is itself a
 real, reportable answer to the question this probe exists to ask, not a sign the probe failed to install or run.
 
-Covered by `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check: a synthetic ROM visits
-`0x105F2C` (A), falls through to `0x105F9C` (B), returns to `0x105F2C` (A again) with different registers each
-time, then calls `SYSTEM_RESET` -- a passing run must report `hits=3` with `first` matching the very first visit
-to A and `last` matching the second, later one, proving the hook keeps the true first entry distinct from the
-true last even though both happen to share the same `PC`.
+Covered by `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check (this is the earlier, now
+superseded version of that probe/ROM -- see the next section): a synthetic ROM visited `0x105F2C` (A), fell
+through to `0x105F9C` (B), returned to `0x105F2C` (A again) with different registers each time, then called
+`SYSTEM_RESET` -- a passing run reported `hits=3` with `first` matching the very first visit to A and `last`
+matching the second, later one, proving the hook keeps the true first entry distinct from the true last even
+though both happen to share the same `PC`.
+
+### Round 2: the real device confirmed `0x105F2C`, so the probe moved one step further upstream
+
+A real-device run on build 140 (Galaxy S26 Ultra, commit `a750848`) reported `hits=1`,
+`first=last={pc=0x105F2C, lr=0x10723C, x0=0, x1=0x70028280, x2=0x70028550, x3=0x12B1A0, sp=0x7004ED50}`: of the
+two helpers, only `0x105F2C` is ever reached, and its `LR` names the exact static call site -- `0x107238`'s
+`bl 0x105F2C` -- among the ~163 candidates. Disassembling `0x105F2C` itself (via ROM reads of `0x105F20`) showed
+it hard-codes `x0=0, x1=0` before calling `0x105F78`, so the panic message it produces is always the ROM's
+default/empty one, and the caller's own `x1`-`x3` (whatever they were) are never used as message content --
+an earlier read of this investigation's own working theory (that `x3=0x12B1A0` might be a format-string pointer)
+was wrong and is corrected here; `0x12B1A0` is a small binary table/descriptor, not a C string.
+
+Disassembling the ROM immediately around `0x107238` (reads of `0x107180`-`0x1072F0`) found two conditions
+immediately upstream of that call, both confirmed by independent byte-level decoding of their encodings:
+```
+0x1071B8: adrp x19, 0x7002A000        (x19's only origin in this window -- a guest RAM page, not ROM)
+0x1071C0: bl   0x10D0B8
+0x1071C4: tbz  w0, #0, 0x107210        (w0 is 0x10D0B8's own return value)
+0x107210: ldrb w8, [x19, #0x7DA]
+0x107214: cbz  w8, 0x107238            (w8 was just loaded from guest RAM address 0x7002A7DA)
+0x107238: bl   0x105F2C                (confirmed above to be the real device's own call)
+```
+**Important caution, raised and accepted during `/검토`**: the two addresses above are statically confirmed to be
+the ROM's own code and to reach `0x107238` if taken, but which branch direction the real device actually took at
+`0x1071C4`/`0x107214` on build 140 has NOT been measured -- only the resulting call to `0x105F2C` has. Static
+structure is not a substitute for measuring the actual execution.
+
+So the probe was retargeted (not duplicated: the engine has only one `stop_pc`/`stop_pc2`/`stop_hook` slot, so
+only one probe can be installed per build -- switching which two addresses it watches is a source edit, not a
+runtime option) from the now-confirmed `0x105F2C`/`0x105F9C` to these two upstream conditions, to measure, rather
+than infer, whether the real device takes them and with what live values:
+  - `0x1071C4`: `panic_first`/`panic_last`'s `.x0` holds `w0` (the `tbz`'s own tested register)
+  - `0x107214`: `.x0` holds `w8` and `.x1` holds `x19` (the `cbz`'s tested register and the base `[x19+0x7DA]`
+    was loaded from)
+`core/cpu.h`'s `HvPanicHit` fields are reused generically for this, exactly as that struct's own comment already
+allows ("which field means what... is specific to the ROM build under investigation, not computed or assumed
+here"). Covered by the current `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check: a
+synthetic ROM visits `0x1071C4` with `w0=0x1111`, then `0x107214` with `w8=0x5555, x19=0x70030000`, then resets --
+a passing run must report `hits=2`, `first` matching the `0x1071C4` visit (only `.x0` set) and `last` matching the
+`0x107214` visit (`.x0`/`.x1` both set), proving the hook reads the right register(s) at each address.
+
+`0x7002A7DA` is guest RAM, not ROM, so it is outside what "ROM 구간 읽기"/"직접 분기 참조 검색" can read; it is
+also not `devices/cfg.c`'s `VMAPPLE_CONFIG` region (that is a separate, fixed MMIO window at PA `0x00400000`, not
+RAM-relative), so Henge's own existing device/config code is not a confirmed source of this byte either way --
+that remains open. Tracing who is (or should be) writing to `0x7002A7DA`, and whether `0x10D0B8`'s return value
+matters too, is follow-up work gated on what this round's measurement actually shows.
 
 ## How this gets used
 

@@ -51,24 +51,38 @@ static void on_exit_cb(int reason) { atomic_store(&g_exit_reason, reason); atomi
 static void on_signal(int s) { atomic_store(&g_sig, s); }
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 
-/* [C1-4] Android panic-entry probe: a read-only bring-up aid for the Android-port boot investigation, narrowing
-   WHICH of ~163 static BL references to two known generic-panic-helper functions (empty-message and "%llx:%d"
-   assertion helpers in the AVPBooter ROM under investigation, found by ROM disassembly -- see
-   docs/boot-diagnostic-contract-2026-11-15.md) is the one actually reached before the SYSTEM_RESET this
-   investigation already traced to 0x106270/0x105FC0/0x103db0/0x104530/0x1044d4. This only runs on the cpu that
-   reached one of the two addresses (core/dispatch.c calls stop_hook there, then continues normal execution --
-   see that file's own comment), so it only ever writes that same cpu's own panic_first/panic_last/panic_hits
-   fields (core/cpu.h) -- no lock, no cross-CPU access, and no guest-visible state (registers, PC, memory, return
-   values) is touched. Unlike host/vmrun.c's HV_DIAG_PROBE/_CALLER this cannot be gated by an environment
-   variable: hv_runner_scrub_env() below deliberately removes every HV_* variable before the machine is ever
-   created, precisely so a debug-only switch can never quietly affect a real boot through this binary, which
-   is why this installs unconditionally in code instead. Installing it even against some other ROM is harmless
-   for the same reason HV_DIAG_PROBE already is: these two addresses, if that other ROM never executes them (the
-   overwhelmingly likely case), simply never fire the hook, and if they coincidentally do, the hook still only
-   reads registers. */
+/* [C1-4] Android boot-branch probe: a read-only bring-up aid for the Android-port boot investigation. Earlier
+   rounds (docs/boot-diagnostic-contract-2026-11-15.md) narrowed the SYSTEM_RESET this investigation is tracing
+   down to a confirmed static chain 0x106270/0x105FC0/0x103db0/0x104530/0x1044d4 -> 0x106060 -> 0x105F78 ->
+   0x105F2C, and a real device already confirmed (build 140) that 0x105F2C is the panic-helper entry actually
+   reached, called from 0x107238. Disassembly of the two conditions immediately upstream of that call site found:
+     0x1071C4: tbz w0, #0, 0x107210     (w0 is 0x10D0B8's own return value)
+     0x107214: cbz w8, 0x107238         (w8 was just loaded from the guest-RAM byte [x19+0x7DA], x19 set by an
+                                          adrp a little earlier to a guest RAM page, not a ROM address)
+   This round's probe watches THOSE two addresses instead of the panic-helper entries (0x105F2C/0x105F9C already
+   confirmed, so re-watching them does not add information), to learn whether the real device actually takes the
+   exact branches this investigation traced, and with what live register values -- a ROM-only read cannot show
+   either (see the docs file for the full disassembly and the reasoning). The engine has one stop_pc/stop_pc2/
+   stop_hook slot (core/machine.h), so only one probe can be installed at a time; switching which addresses it
+   watches is a source edit here, not a runtime option (see the comment on hv_runner_scrub_env() below for why
+   this can't be an environment-variable switch instead). This only runs on the cpu that reached one of the two
+   addresses (core/dispatch.c calls stop_hook there, then continues normal execution -- see that file's own
+   comment), so it only ever writes that same cpu's own panic_first/panic_last/panic_hits fields (core/cpu.h) --
+   no lock, no cross-CPU access, and no guest-visible state (registers, PC, memory, return values) is touched.
+   Installing it even against some other ROM is harmless for the same reason HV_DIAG_PROBE already is: these two
+   addresses, if that other ROM never executes them (the overwhelmingly likely case), simply never fire the hook,
+   and if they coincidentally do, the hook still only reads registers. HvPanicHit's fields are reused generically
+   here (core/cpu.h already documents them as "raw and uninterpreted... specific to the ROM build under
+   investigation"): at 0x1071C4 .x0 holds w0 (the tbz's own tested register); at 0x107214 .x0 holds w8 and .x1
+   holds x19 (the cbz's tested register and the base it was loaded from). */
 static void panic_probe_hook(HvCpu *cpu) {
-    HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .x0 = cpu->x[0], .x1 = cpu->x[1],
-                        .x2 = cpu->x[2], .x3 = cpu->x[3], .sp = cpu->sp };
+    HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .sp = cpu->sp };
+    if (cpu->pc == 0x1071c4ull) {
+        hit.x0 = cpu->x[0] & 0xffffffffull; /* w0: 0x10D0B8's return value, tested by tbz w0,#0 */
+    } else {
+        hit.x0 = cpu->x[8] & 0xffffffffull; /* w8: the guest-RAM status byte, tested by cbz w8 */
+        hit.x1 = cpu->x[19];                /* x19: the base it was loaded from ([x19+0x7DA]) */
+    }
     if (cpu->panic_hits == 0) cpu->panic_first = hit;
     cpu->panic_last = hit;
     if (cpu->panic_hits != UINT32_MAX) cpu->panic_hits++; /* saturate, never wrap */
@@ -79,18 +93,18 @@ static void panic_probe_hook(HvCpu *cpu) {
    those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
    is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
    diagnostic. */
-#define HV_PANIC_PROBE_PC1 0x105f2cull
-#define HV_PANIC_PROBE_PC2 0x105f9cull
+#define HV_PANIC_PROBE_PC1 0x1071c4ull /* tbz w0, #0, 0x107210 */
+#define HV_PANIC_PROBE_PC2 0x107214ull /* cbz w8, 0x107238 */
 static void panic_probe_install(void) {
     HvMachine *vm = hv_vm_machine();
     if (vm->stop_hook) {
-        printf("ui_runner_vm: panic-entry probe not installed; a stop hook is already in place\n");
+        printf("ui_runner_vm: boot-branch probe not installed; a stop hook is already in place\n");
         return;
     }
     vm->stop_pc = HV_PANIC_PROBE_PC1;
     vm->stop_pc2 = HV_PANIC_PROBE_PC2;
     vm->stop_hook = panic_probe_hook;
-    printf("ui_runner_vm: panic-entry probe installed at %#llx / %#llx\n",
+    printf("ui_runner_vm: boot-branch probe installed at %#llx (tbz w0,#0) / %#llx (cbz w8)\n",
            (unsigned long long)HV_PANIC_PROBE_PC1, (unsigned long long)HV_PANIC_PROBE_PC2);
 }
 
@@ -264,7 +278,7 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
-    /* [C1-4] Android panic-entry probe result, as its own line rather than appended to reason_txt above: that
+    /* [C1-4] Android boot-branch probe result, as its own line rather than appended to reason_txt above: that
        buffer is already sized for the PSCI stack dump, and a second, independently-truncatable payload is
        clearer kept separate. Only printed when hv_vm_panic_probe() has anything to say at all (the same PSCI-
        halt gate as hv_vm_psci_halt_info/_stack above -- see their own comments for why a non-PSCI stop never

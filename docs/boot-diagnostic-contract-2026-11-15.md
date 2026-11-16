@@ -276,6 +276,68 @@ RAM-relative), so Henge's own existing device/config code is not a confirmed sou
 that remains open. Tracing who is (or should be) writing to `0x7002A7DA`, and whether `0x10D0B8`'s return value
 matters too, is follow-up work gated on what this round's measurement actually shows.
 
+### Round 3: a real device confirmed both branches are taken, so the probe moved inside `0x10D0B8` itself
+
+A real-device run on build 142 (commit `4b679eb`) reported `hits=2`,
+`first={pc=0x1071c4, x0=0, x1=0, x2=0, x3=0}`, `last={pc=0x107214, x0=0, x1=0x7002a000, x2=0, x3=0}`: both
+branches are actually taken, with `x19=0x7002a000` live and matching the static disassembly exactly -- this
+confirms `0x7002A7DA == 0` is really read on the path to the panic, not merely a static possibility.
+
+Disassembling `0x10D0B8` itself (ROM reads spanning `0x10D0B8`-`0x10D4A8`, cross-checked instruction-by-instruction
+against the raw bytes, correcting two of this investigation's own earlier misreads along the way -- see below)
+found it has at least two distinct ways to return 0 to its caller at `0x1071C0`:
+```
+0x10D14C: bl   0x10C51C
+0x10D150: cbz  w0, 0x10D184          (w0 is 0x10C51C's return value)
+; w0 != 0 (0x10C51C failed):
+0x10D154: mov  w8, #0xDD             (an error-report call follows, then:)
+0x10D17C: mov  w19, #0
+0x10D180: b    0x10D2CC              -> early-failure return, x0=0
+; w0 == 0 (0x10C51C succeeded): falls through to 0x10D184, more setup, eventually:
+0x10D184: adrp x20, 0x7002B000
+0x10D188: add  x20, x20, #0x470      (x20 = 0x7002B470, a 3-byte status table this function itself maintains:
+                                       0x10D190/0x10D194 write 0 and the function's own argument to +1/+0)
+  ...
+0x10D2A4: bl   0x104E04
+0x10D2B8: cbz  x0, 0x10D2E0          (x0 is 0x104E04's return value -- note: tests the FULL 64-bit register)
+; x0 != 0 (0x104E04 succeeded):
+0x10D2BC: mov  w19, #1
+0x10D2C0: adrp x8, 0x7002B000
+0x10D2C4: strb w19, [x8, #0x472]     -> records success at 0x7002B472 (a WRITE, not a read)
+0x10D2C8: bl   0x105384
+0x10D2CC: mov  x0, x19               -> success return, x0=1
+```
+Two corrections to this investigation's own earlier reading, found and fixed during this round's `/검토`: (1)
+`0x10D2C4` was first read as `ldrb w19, [x8, #0x472]` (a load) and the function's return value was described as
+"coming from" that RAM byte; re-deriving the encoding bit-by-bit (`opc = bits23:22 = 00`, not `01`) shows it is
+actually `strb` (a store) of the hard-coded `w19=1` set two instructions earlier -- the RAM byte records the
+outcome, it does not produce it. (2) a review document's claim that `0x10D224`/`0x10D228` tested this same
+`0x7002B472` byte (at `+2`) was checked the same way and found to be off by one instruction address (the real
+`ldrb`/`cbz` pair sits at `0x10D224`/`0x10D228` with `imm12=0`, i.e. it re-reads `0x7002B470`, the function's own
+argument byte written moments earlier at `0x10D194` -- an unrelated check). Both corrections were verified by
+re-deriving the raw ROM bytes (recovered from this session's own pre-compaction transcript where the live
+context no longer held them) and decoding every field (`opc`, `Rn`, `Rt`, `imm12`) independently.
+
+Both paths above are consistent with the observed final return value 0, so which one the real device actually
+takes -- an early failure at `0x10C51C`, or reaching `0x10D2B8` and failing there (`0x104E04` returning 0) -- is
+not yet distinguished. The probe was retargeted again (same single-slot constraint as before) to these two
+addresses to measure that directly:
+  - `0x10D150`: `.x0` holds `w0`, masked to 32 bits (the `cbz` there only tests the low 32 bits)
+  - `0x10D2B8`: `.x0` holds the full, unmasked 64-bit `x0` (the `cbz` there tests all 64 bits, unlike `0x10D150`)
+Covered by the current `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check: a synthetic ROM
+visits `0x10D150` with `x0=0x1_00002222` (upper bits deliberately set, to prove the hook's 32-bit mask is really
+applied there), then `0x10D2B8` with `x0=0x5_00006666` (to prove the *second* address is captured unmasked), then
+resets -- a passing run must report `hits=2`, `first.x0=0x2222` and `last.x0=0x500006666`.
+
+Still open, gated on this round's measurement: whether `0x10C51C`'s failure (if that is what happened) traces to
+a Henge device/MMIO gap, and separately, what `0x104E04` and the `0x7002B470`-based 3-byte table are actually
+for -- `devices/cfg.c` was compared field-by-field against QEMU's independent `hw/vmapple` reimplementation of
+the same AVPBooter boot process (same `VMAPPLE_CONFIG` base `0x00400000`, same field layout) and found to match
+closely, so a misplaced or mis-shaped config struct is no longer a live hypothesis; QEMU's vmapple code also does
+not pre-populate the `0x7002A000`-`0x7002B000` RAM region, which weakens (without disproving) the idea that a
+*host* is supposed to fill it -- the `0x7002B470`-`0x7002B472` writes found this round show at least part of
+that region is self-maintained by the ROM's own code instead.
+
 ## How this gets used
 
 For a limited ROM boot trial -- the first one already happened once, on a real device, right after this

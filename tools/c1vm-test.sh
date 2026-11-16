@@ -254,7 +254,7 @@ PY
           else echo "-- stack probe runner output:"; cat "$SP/run.out"; rc=1; fi
         fi
 
-        echo "=== panic probe: Android boot-branch hook at 0x1071C4/0x107214 (host/ui_runner_vm.c's panic_probe_install/panic_probe_hook, core/cpu.h's panic_first/panic_last/panic_hits, host/vm.c's hv_vm_panic_probe)"
+        echo "=== panic probe: Android boot-branch hook at 0x10D150/0x10D2B8 (host/ui_runner_vm.c's panic_probe_install/panic_probe_hook, core/cpu.h's panic_first/panic_last/panic_hits, host/vm.c's hv_vm_panic_probe)"
         if ! tools/build-asm-rom.sh tests/roms/panic_probe.S "$T/panic_probe.bin" > "$T/panic_probe_build.out" 2>&1; then
           echo "FAILED building the panic-probe stand-in ROM"; cat "$T/panic_probe_build.out"; rc=1
         else
@@ -271,17 +271,17 @@ PY
           echo "panic: $PANIC_LINE"
           ppok=1
           echo "$PANIC_LINE" | grep -q 'hits=2' || { echo "FAILED panic probe did not report hits=2"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'first.pc=0x1071c4' || { echo "FAILED panic probe first.pc was not 0x1071c4"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'first.x0=0x1111 first.x1=0 first.x2=0 first.x3=0 ' || { echo "FAILED panic probe first.x0..x3 did not match gate1's w0 (and nothing else)"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.pc=0x10d150' || { echo "FAILED panic probe first.pc was not 0x10d150"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.x0=0x2222 first.x1=0 first.x2=0 first.x3=0 ' || { echo "FAILED panic probe first.x0 did not match gate1's masked w0 (and nothing else)"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'first.sp=0x70020000' || { echo "FAILED panic probe first.sp was not 0x70020000"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'last.pc=0x107214' || { echo "FAILED panic probe last.pc was not 0x107214"; ppok=0; }
-          echo "$PANIC_LINE" | grep -q 'last.x0=0x5555 last.x1=0x70030000 last.x2=0 last.x3=0 ' || { echo "FAILED panic probe last.x0/x1 did not match gate2's w8/x19"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.pc=0x10d2b8' || { echo "FAILED panic probe last.pc was not 0x10d2b8"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.x0=0x500006666 last.x1=0 last.x2=0 last.x3=0 ' || { echo "FAILED panic probe last.x0 did not match gate2's full 64-bit x0 (and nothing else)"; ppok=0; }
           echo "$PANIC_LINE" | grep -q 'last.sp=0x70030000' || { echo "FAILED panic probe last.sp was not 0x70030000"; ppok=0; }
           # The original guest instructions at both probe addresses must still have executed normally (not been
           # skipped), proving the hook does not disturb the dispatcher's own flow: the ROM only reaches the reset
           # (and so only reports hits=2 rather than hanging or crashing) if every branch after each probe point
           # actually ran as written.
-          if [ $ppok = 1 ]; then echo "ok  panic probe reports hits=2 with gate1's w0 and gate2's w8/x19 each captured at the right address"
+          if [ $ppok = 1 ]; then echo "ok  panic probe reports hits=2, with gate1's masked w0 and gate2's full 64-bit x0 each captured at the right address and width"
           else echo "-- panic probe runner output:"; cat "$PP2/run.out"; rc=1; fi
         fi
       fi

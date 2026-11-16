@@ -53,16 +53,21 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 
 /* [C1-4] Android boot-branch probe: a read-only bring-up aid for the Android-port boot investigation. Earlier
    rounds (docs/boot-diagnostic-contract-2026-11-15.md) narrowed the SYSTEM_RESET this investigation is tracing
-   down to a confirmed static chain 0x106270/0x105FC0/0x103db0/0x104530/0x1044d4 -> 0x106060 -> 0x105F78 ->
-   0x105F2C, and a real device already confirmed (build 140) that 0x105F2C is the panic-helper entry actually
-   reached, called from 0x107238. Disassembly of the two conditions immediately upstream of that call site found:
-     0x1071C4: tbz w0, #0, 0x107210     (w0 is 0x10D0B8's own return value)
-     0x107214: cbz w8, 0x107238         (w8 was just loaded from the guest-RAM byte [x19+0x7DA], x19 set by an
-                                          adrp a little earlier to a guest RAM page, not a ROM address)
-   This round's probe watches THOSE two addresses instead of the panic-helper entries (0x105F2C/0x105F9C already
-   confirmed, so re-watching them does not add information), to learn whether the real device actually takes the
-   exact branches this investigation traced, and with what live register values -- a ROM-only read cannot show
-   either (see the docs file for the full disassembly and the reasoning). The engine has one stop_pc/stop_pc2/
+   to a static chain ending in 0x10D0B8 returning 0 to its caller at 0x1071C0 (tested by a tbz at 0x1071C4),
+   which then falls through a second check (cbz w8 at 0x107214) into the confirmed panic call at 0x107238. A real
+   device confirmed both of those branches are actually taken, with the predicted register values. Disassembly
+   of 0x10D0B8 itself found it has (at least) two distinct ways to return 0 to its own caller:
+     0x10D14C: bl   0x10C51C
+     0x10D150: cbz  w0, 0x10D184        (w0 is 0x10C51C's return value; if NONzero, 0x10D0B8 hardcodes w19=0
+                                          at 0x10D17C and returns early -- this is an early-init failure)
+     ... (0x10D184 onward: further setup, then)
+     0x10D2A4: bl   0x104E04
+     0x10D2B8: cbz  x0, 0x10D2E0         (x0 is 0x104E04's return value; if ZERO, 0x10D0B8 takes an error path
+                                          instead of the success path at 0x10D2BC, which would set w19=1, record
+                                          success in a guest-RAM status byte, and return 1)
+   Both paths are consistent with the observed return value 0, so which one the real device actually takes is
+   still unmeasured; this round's probe watches these two addresses (instead of 0x1071C4/0x107214, already
+   confirmed, so re-watching them would not add information) to find out. The engine has one stop_pc/stop_pc2/
    stop_hook slot (core/machine.h), so only one probe can be installed at a time; switching which addresses it
    watches is a source edit here, not a runtime option (see the comment on hv_runner_scrub_env() below for why
    this can't be an environment-variable switch instead). This only runs on the cpu that reached one of the two
@@ -73,15 +78,14 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
    addresses, if that other ROM never executes them (the overwhelmingly likely case), simply never fire the hook,
    and if they coincidentally do, the hook still only reads registers. HvPanicHit's fields are reused generically
    here (core/cpu.h already documents them as "raw and uninterpreted... specific to the ROM build under
-   investigation"): at 0x1071C4 .x0 holds w0 (the tbz's own tested register); at 0x107214 .x0 holds w8 and .x1
-   holds x19 (the cbz's tested register and the base it was loaded from). */
+   investigation"): at 0x10D150 .x0 holds w0, masked to 32 bits (the cbz's own tested register, 32-bit); at
+   0x10D2B8 .x0 holds the full 64-bit x0 (that cbz tests the full register, sf=1). */
 static void panic_probe_hook(HvCpu *cpu) {
     HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .sp = cpu->sp };
-    if (cpu->pc == 0x1071c4ull) {
-        hit.x0 = cpu->x[0] & 0xffffffffull; /* w0: 0x10D0B8's return value, tested by tbz w0,#0 */
+    if (cpu->pc == 0x10d150ull) {
+        hit.x0 = cpu->x[0] & 0xffffffffull; /* w0: 0x10C51C's return value, tested by cbz w0,#0,0x10D184 */
     } else {
-        hit.x0 = cpu->x[8] & 0xffffffffull; /* w8: the guest-RAM status byte, tested by cbz w8 */
-        hit.x1 = cpu->x[19];                /* x19: the base it was loaded from ([x19+0x7DA]) */
+        hit.x0 = cpu->x[0]; /* x0: 0x104E04's return value, tested by cbz x0,#0,0x10D2E0 (64-bit test) */
     }
     if (cpu->panic_hits == 0) cpu->panic_first = hit;
     cpu->panic_last = hit;
@@ -93,8 +97,8 @@ static void panic_probe_hook(HvCpu *cpu) {
    those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
    is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
    diagnostic. */
-#define HV_PANIC_PROBE_PC1 0x1071c4ull /* tbz w0, #0, 0x107210 */
-#define HV_PANIC_PROBE_PC2 0x107214ull /* cbz w8, 0x107238 */
+#define HV_PANIC_PROBE_PC1 0x10d150ull /* cbz w0, #0, 0x10D184 -- 0x10C51C's return value */
+#define HV_PANIC_PROBE_PC2 0x10d2b8ull /* cbz x0, #0, 0x10D2E0 -- 0x104E04's return value */
 static void panic_probe_install(void) {
     HvMachine *vm = hv_vm_machine();
     if (vm->stop_hook) {
@@ -104,7 +108,7 @@ static void panic_probe_install(void) {
     vm->stop_pc = HV_PANIC_PROBE_PC1;
     vm->stop_pc2 = HV_PANIC_PROBE_PC2;
     vm->stop_hook = panic_probe_hook;
-    printf("ui_runner_vm: boot-branch probe installed at %#llx (tbz w0,#0) / %#llx (cbz w8)\n",
+    printf("ui_runner_vm: boot-branch probe installed at %#llx (cbz w0, 0x10C51C's return) / %#llx (cbz x0, 0x104E04's return)\n",
            (unsigned long long)HV_PANIC_PROBE_PC1, (unsigned long long)HV_PANIC_PROBE_PC2);
 }
 

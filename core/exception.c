@@ -182,7 +182,15 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
            second, near-simultaneous caller losing the race here only means its own record is not the one
            kept, not a memory-safety issue -- __atomic_compare_exchange_n still makes the choice itself
            race-free). Independent of HV_PSCI_LOG/HV_* env vars entirely, so ui_runner_vm's environment
-           scrub (host/ui_runner_vm.c's hv_runner_scrub_env) never removes this. */
+           scrub (host/ui_runner_vm.c's hv_runner_scrub_env) never removes this.
+
+           psci_halt_valid is a three-state publish (0 none, 1 claimed/writing, 2 complete -- see
+           core/machine.h's comment on the field): the CAS below only CLAIMS the slot (0 -> 1); every
+           field is filled while it reads 1, which no reader is allowed to look at; only the final RELEASE
+           store to 2 actually publishes the record, so a reader's ACQUIRE load of 2 is guaranteed to see
+           every field below it, even when the CPU that filled them is not the one whose thread later
+           notices the halt and hands control back to host code (host/vm.h's psci_halt_* comment has the
+           cross-CPU detail this matters for). */
         {
             int expected = 0;
             if (__atomic_compare_exchange_n(&cpu->m->psci_halt_valid, &expected, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
@@ -196,6 +204,7 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
                 for (; n < 8; n++)
                     if (!psci_halt_peek_u64(cpu, cpu->sp + (uint64_t)n * 8, &cpu->m->psci_halt_stack[n])) break;
                 cpu->m->psci_halt_stack_words = n;
+                __atomic_store_n(&cpu->m->psci_halt_valid, 2, __ATOMIC_RELEASE); /* now actually publish it */
             }
         }
         for (int i = 0; i < cpu->m->ncpus; i++) /* the whole machine stops */

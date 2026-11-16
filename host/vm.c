@@ -100,8 +100,12 @@ int hv_vm_boot_display(HvBootDisplay *d) {
 }
 void hv_vm_set_poll(void (*poll)(void)) { extra_poll = poll; }
 
+/* psci_halt_valid: 0 none, 1 a writer has claimed the slot and may still be filling it (never safe to
+   read), 2 complete and published with a RELEASE store (core/exception.c's psci()) -- so this ACQUIRE
+   load, on seeing 2, is guaranteed to see every field below too, even from a thread other than the one
+   that wrote them (core/machine.h's comment on the field has the cross-CPU reason this matters). */
 int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr) {
-    if (!__atomic_load_n(&m.psci_halt_valid, __ATOMIC_SEQ_CST)) return 0;
+    if (__atomic_load_n(&m.psci_halt_valid, __ATOMIC_ACQUIRE) != 2) return 0;
     if (fn) *fn = m.psci_halt_fn;
     if (cpu_index) *cpu_index = m.psci_halt_cpu;
     if (pc) *pc = m.psci_halt_pc;
@@ -110,7 +114,7 @@ int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64
 }
 
 int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_words) {
-    if (!__atomic_load_n(&m.psci_halt_valid, __ATOMIC_SEQ_CST)) return 0;
+    if (__atomic_load_n(&m.psci_halt_valid, __ATOMIC_ACQUIRE) != 2) return 0;
     if (sp) *sp = m.psci_halt_sp;
     if (x26) *x26 = m.psci_halt_x26;
     if (n_words) *n_words = m.psci_halt_stack_words;

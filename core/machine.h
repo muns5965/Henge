@@ -281,7 +281,20 @@ typedef struct HvMachine {
        live CPU state: once one CPU halts the machine, other CPUs' registers can still move before anything
        reads them back, so this is a snapshot, set exactly once per run (first caller wins, via
        psci_halt_valid's compare-and-swap) rather than whatever the machine's state happens to be later.
-       Read through host/vm.c's hv_vm_psci_halt_info(). */
+       Read through host/vm.c's hv_vm_psci_halt_info() / hv_vm_psci_halt_stack().
+
+       psci_halt_valid is a three-state publish, not a plain flag, because the machine can have more than
+       one CPU: the CPU that calls psci() and writes these fields is not guaranteed to be the same CPU
+       whose thread later notices the halt and calls this process's on_exit callback (host/ui_runner_vm.c's
+       / host/vmrun.c's own exited flag, which every current reader checks before ever calling either
+       accessor) -- and that path wakes other CPUs through core/machine.c's hv_machine_kick_all(), whose
+       own exit_req is written __ATOMIC_SEQ_CST but read back __ATOMIC_RELAXED in core/dispatch.c's hot
+       path, so it does not by itself give a cross-CPU happens-before guarantee for arbitrary earlier
+       writes. 0: no record. 1: a writer has claimed it (via CAS) and may still be filling the fields
+       below -- a reader must not look at any of them yet. 2: every field below is complete; published
+       with a RELEASE store, so a reader that sees 2 via an ACQUIRE (or stronger) load is guaranteed to see
+       all of them too, regardless of which CPU's thread is doing the reading or how its own halt-detection
+       path happens to order things. */
     int psci_halt_valid;
     uint32_t psci_halt_fn;    /* 0x84000008 (SYSTEM_OFF) or 0x84000009 (SYSTEM_RESET) */
     uint32_t psci_halt_cpu;   /* the calling CPU's cpu->index */

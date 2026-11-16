@@ -70,12 +70,15 @@ const char *hv_vm_reason_name(int reason);
 /* Which PSCI call halted the machine (SYSTEM_OFF 0x84000008 or SYSTEM_RESET 0x84000009), and the CPU/PC/LR
    captured at that call (core/exception.c's psci(), core/machine.h's psci_halt_* fields) -- not reconstructed
    from CPU state after the fact. Returns 0 (every out-param left untouched) when the machine has not halted
-   via PSCI at all (still running, or stopped some other way: wfi, a fault, hv_vm_stop, a test's own stop_pc).
+   via PSCI at all (still running, or stopped some other way: wfi, a fault, hv_vm_stop, a test's own stop_pc),
+   OR when a writer has claimed the record but not yet finished filling it in (core/machine.h's psci_halt_valid
+   comment: this is a three-state publish precisely so that half-written fields are never handed back, even
+   when the CPU that fills them is not the one whose thread later tells host code the machine halted).
    Any out-param may be NULL. Independent of HV_PSCI_LOG and every other HV_* environment variable. */
 int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr);
 
 /* A second accessor for the same captured halt (0 under the exact same conditions as hv_vm_psci_halt_info,
-   and always 1 at the same time that one is, since both read the one psci_halt_valid snapshot) -- kept
+   and always 1 at the same time that one is, since both read the one psci_halt_valid publish) -- kept
    separate rather than widening hv_vm_psci_halt_info's signature, so existing callers of that one are
    untouched. sp and x26 are live-register reads, always meaningful once this returns 1. stack is filled
    with up to 8 uint64_t words of RAW guest memory read from [sp, sp+64) with no guest-visible side effect

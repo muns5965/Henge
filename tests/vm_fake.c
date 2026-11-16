@@ -70,6 +70,12 @@ int hv_vm_panic_probe(uint32_t *hits, HvPanicHit *first, HvPanicHit *last) {
     (void)hits; (void)first; (void)last;
     return 0;
 }
+/* The fake machine has no HvMachine at all (g_board above is an HvVmapple, not an HvMachine), so there is nothing
+   real to hand back. panic_probe_install() in host/ui_runner_vm.c only reads stop_hook off this pointer before
+   deciding whether to install itself, so a zeroed-out static HvMachine is enough to let that check run safely
+   under the fake machine without ever actually hooking anything (the fake machine runs no guest code to hook). */
+static HvMachine g_fake_machine;
+HvMachine *hv_vm_machine(void) { return &g_fake_machine; }
 int hv_vm_boot_display(HvBootDisplay *d) { (void)d; return -1; }
 int hv_vm_pointer(int *x, int *y) { (void)x; (void)y; return -1; }
 void hv_vm_key(uint16_t code, int down) { (void)code; (void)down; atomic_fetch_add(&g_inputs, 1); }

@@ -74,10 +74,11 @@ static void panic_probe_hook(HvCpu *cpu) {
     if (cpu->panic_hits != UINT32_MAX) cpu->panic_hits++; /* saturate, never wrap */
 }
 
-/* Installs the probe right after hv_vm_create() and before hv_vm_start(). Refuses (prints why, changes nothing)
-   rather than overwrite a stop_hook some other debug feature already set -- this binary has none of those, but
-   the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install() is. Either
-   way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one diagnostic. */
+/* Installs the probe right after the machine is created and before hv_vm_start(). Refuses (prints why, changes
+   nothing) rather than overwrite a stop_hook some other debug feature already set -- this binary has none of
+   those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
+   is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
+   diagnostic. */
 #define HV_PANIC_PROBE_PC1 0x105f2cull
 #define HV_PANIC_PROBE_PC2 0x105f9cull
 static void panic_probe_install(void) {

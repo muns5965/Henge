@@ -201,7 +201,7 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
                 cpu->m->psci_halt_sp = cpu->sp;
                 cpu->m->psci_halt_x26 = cpu->x[26];
                 int n = 0;
-                for (; n < 8; n++)
+                for (; n < HV_PSCI_HALT_STACK_WORDS; n++)
                     if (!psci_halt_peek_u64(cpu, cpu->sp + (uint64_t)n * 8, &cpu->m->psci_halt_stack[n])) break;
                 cpu->m->psci_halt_stack_words = n;
                 __atomic_store_n(&cpu->m->psci_halt_valid, 2, __ATOMIC_RELEASE); /* now actually publish it */

@@ -81,13 +81,14 @@ int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64
    and always 1 at the same time that one is, since both read the one psci_halt_valid publish) -- kept
    separate rather than widening hv_vm_psci_halt_info's signature, so existing callers of that one are
    untouched. sp and x26 are live-register reads, always meaningful once this returns 1. stack is filled
-   with up to 8 uint64_t words of RAW guest memory read from [sp, sp+64) with no guest-visible side effect
-   (core/exception.c's psci_halt_peek_u64); *n_words says how many of those 8 the caller actually wrote
-   (0..8 -- fewer than 8 only if an early word's guest-virtual address did not resolve to plain, readable
-   guest RAM). Interpreting any of those words (e.g. "offset 0x38 is an outer caller's saved return
-   address") is specific to how the ROM being investigated happens to lay out its stack frames at the
-   point captured; this call does not assume or compute that -- it hands back the bytes. stack must point
-   at space for 8 uint64_t; any of sp/x26/stack/n_words may be NULL. */
+   with up to HV_PSCI_HALT_STACK_WORDS (core/machine.h; 16 as of this writing) uint64_t words of RAW guest
+   memory read from [sp, sp+HV_PSCI_HALT_STACK_WORDS*8) with no guest-visible side effect (core/exception.c's
+   psci_halt_peek_u64); *n_words says how many of those the caller actually wrote (fewer only if an early
+   word's guest-virtual address did not resolve to plain, readable guest RAM). Interpreting any of those
+   words (e.g. "offset 0x38 is an outer caller's saved return address") is specific to how the ROM being
+   investigated happens to lay out its stack frames at the point captured; this call does not assume or
+   compute that -- it hands back the bytes. stack must point at space for HV_PSCI_HALT_STACK_WORDS
+   uint64_t; any of sp/x26/stack/n_words may be NULL. */
 int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_words);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */

@@ -31,6 +31,7 @@
 #include "frame_shm.h"
 #include "runner_vm_core.h"
 #include "vm.h"
+#include "machine.h" /* HV_PSCI_HALT_STACK_WORDS, for sizing the local buffer hv_vm_psci_halt_stack() fills */
 
 extern uint64_t hv_net_tx_frames, hv_net_rx_frames;
 
@@ -151,7 +152,7 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit";
-    char reason_txt[480] = "";
+    char reason_txt[700] = "";
     double tstart = now(), next_frame = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
@@ -171,9 +172,9 @@ int main(int argc, char **argv) {
                 /* Same snapshot, a second accessor (host/vm.h's hv_vm_psci_halt_stack): raw sp/x26/stack
                    bytes for working out which of several ROM call sites reached this PSCI call, appended
                    here rather than interpreted -- see core/machine.h's psci_halt_stack[] comment. */
-                uint64_t psp = 0, px26 = 0, pstack[8]; int pn = 0;
+                uint64_t psp = 0, px26 = 0, pstack[HV_PSCI_HALT_STACK_WORDS]; int pn = 0;
                 if (rn > 0 && (size_t)rn < sizeof reason_txt && hv_vm_psci_halt_stack(&psp, &px26, pstack, &pn)) {
-                    char words[8 * 17 + 1] = ""; size_t wo = 0;
+                    char words[HV_PSCI_HALT_STACK_WORDS * 17 + 1] = ""; size_t wo = 0;
                     for (int i = 0; i < pn && wo + 18 < sizeof words; i++)
                         wo += (size_t)snprintf(words + wo, sizeof words - wo, "%s%016llx", i ? "," : "", (unsigned long long)pstack[i]);
                     snprintf(reason_txt + rn, sizeof reason_txt - (size_t)rn, " sp=%#llx x26=%#llx stack(sp+0..sp+%#x)=%s",

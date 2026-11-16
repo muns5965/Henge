@@ -89,9 +89,14 @@ itself: a ROM can reach one shared PSCI-call wrapper from several call sites, an
 wrapper's OWN return address one level up (into whichever helper it calls just before the `hvc`), not the
 address of whichever outer caller reached the wrapper in the first place. `host/vm.c`'s
 `hv_vm_psci_halt_stack()` hands back the halting CPU's SP and x26 at the `hvc` (live-register reads) plus a
-raw, uninterpreted copy of guest memory `[sp, sp+64)` (`core/exception.c`'s `psci_halt_peek_u64`, which never
-raises a guest fault or touches an MMIO device to get it — a word it cannot translate to plain guest RAM is
-just reported as missing, not guessed). Which byte offset in that window holds something useful (an outer
+raw, uninterpreted copy of guest memory `[sp, sp+HV_PSCI_HALT_STACK_WORDS*8)` (`core/exception.c`'s
+`psci_halt_peek_u64`, which never raises a guest fault or touches an MMIO device to get it — a word it
+cannot translate to plain guest RAM is just reported as missing, not guessed). `HV_PSCI_HALT_STACK_WORDS`
+(`core/machine.h`) started at 8 words (`[sp, sp+0x40)`) and was widened once to 16 words (`[sp, sp+0x80)`)
+mid-investigation, once a confirmed real-device call chain turned out to have one more stack frame between
+the halting wrapper and the ROM's own outer caller than the 8-word window could see (the frame needed was at
+`sp+0x48`, past the original `sp+0x3f` ceiling) — the window can be widened again the same way if a future
+call chain needs to reach further still. Which byte offset in that window holds something useful (an outer
 caller's own saved return address, a caller's preserved register) is a property of how the SPECIFIC ROM
 build under investigation lays out its stack frames at that point — this accessor does not compute or assume
 that, the same way the ROM-hex-dump workflow elsewhere in this investigation does not interpret bytes before

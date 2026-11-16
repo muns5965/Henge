@@ -450,7 +450,7 @@ int main(int argc, char **argv) {
             /* Same snapshot, the second accessor (host/vm.h's hv_vm_psci_halt_stack): raw sp/x26/stack bytes,
                printed uninterpreted -- see core/machine.h's psci_halt_stack[] comment and ui_runner_vm.c's
                matching line. */
-            uint64_t psp = 0, px26 = 0, pstack[8]; int pn = 0;
+            uint64_t psp = 0, px26 = 0, pstack[HV_PSCI_HALT_STACK_WORDS]; int pn = 0;
             if (hv_vm_psci_halt_stack(&psp, &px26, pstack, &pn)) {
                 printf("vmrun RESULT: psci halt sp=%#llx x26=%#llx stack(sp+0..sp+%#x)=",
                        (unsigned long long)psp, (unsigned long long)px26, pn * 8);

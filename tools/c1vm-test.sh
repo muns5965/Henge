@@ -239,12 +239,18 @@ PY
           spok=1
           echo "$STACK_LINE" | grep -q 'sp=0x70010000' || { echo "FAILED stack probe did not report sp=0x70010000"; spok=0; }
           echo "$STACK_LINE" | grep -q 'x26=0xaaaa000000000026' || { echo "FAILED stack probe did not report x26=0xaaaa000000000026"; spok=0; }
-          # word index 1 (sp+8) and index 7 (sp+0x38, i.e. the 8th comma-separated word) must carry the two markers the ROM wrote there.
+          # word indices 1 (sp+8), 7 (sp+0x38), 9 (sp+0x48) and 15 (sp+0x78, the 16th and last comma-separated
+          # word) must carry the four markers the ROM wrote there -- indices 9 and 15 are new with the 16-word
+          # widening (sp+0x48/sp+0x78 past the original 8-word/sp+0x3f ceiling).
           WORDS=$(echo "$STACK_LINE" | grep -oE 'stack\(sp\+0..sp\+[0-9a-fx]+\)=[0-9a-f,]+' | cut -d= -f2)
           W1=$(echo "$WORDS" | cut -d, -f2); W8=$(echo "$WORDS" | cut -d, -f8)
+          W10=$(echo "$WORDS" | cut -d, -f10); W16=$(echo "$WORDS" | cut -d, -f16)
           [ "$W1" = "beef000000000019" ] || { echo "FAILED stack word[1] (sp+8) was '$W1', expected beef000000000019"; spok=0; }
           [ "$W8" = "cafe000000000038" ] || { echo "FAILED stack word[7] (sp+0x38) was '$W8', expected cafe000000000038"; spok=0; }
-          if [ $spok = 1 ]; then echo "ok  sp, x26 and the stack words at sp+8/sp+0x38 all round-trip exactly"
+          [ "$W10" = "dead000000000048" ] || { echo "FAILED stack word[9] (sp+0x48) was '$W10', expected dead000000000048"; spok=0; }
+          [ "$W16" = "f00d000000000078" ] || { echo "FAILED stack word[15] (sp+0x78) was '$W16', expected f00d000000000078"; spok=0; }
+          echo "$WORDS" | awk -F, '{ if (NF != 16) { print "FAILED stack reported " NF " words, expected 16"; exit 1 } }' || spok=0
+          if [ $spok = 1 ]; then echo "ok  sp, x26 and all four checked stack words (sp+8/0x38/0x48/0x78, 16 words total) round-trip exactly"
           else echo "-- stack probe runner output:"; cat "$SP/run.out"; rc=1; fi
         fi
       fi

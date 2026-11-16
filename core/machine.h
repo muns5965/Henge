@@ -323,6 +323,20 @@ typedef struct HvMachine {
     uint64_t psci_halt_x26;
     int psci_halt_stack_words;   /* 0..HV_PSCI_HALT_STACK_WORDS: how many of psci_halt_stack[] are valid, from index 0 up */
     uint64_t psci_halt_stack[HV_PSCI_HALT_STACK_WORDS]; /* psci_halt_stack[i] = guest memory at psci_halt_sp + i*8, if that index < psci_halt_stack_words */
+
+    /* [C1-4] Android panic-entry probe snapshot, published in the SAME compare-and-swap/RELEASE-store sequence
+       as everything above (there is no separate valid flag for this: a reader that sees psci_halt_valid == 2
+       is guaranteed to see this too, and a reader that sees anything else must not look at it yet). Filled from
+       the halting cpu's own HvCpu.panic_first/panic_last/panic_hits (core/cpu.h) at the same point psci_halt_sp
+       etc. are filled -- see core/exception.c's psci(). This only covers a PSCI-triggered halt (SYSTEM_OFF or
+       SYSTEM_RESET): a panic that is somehow recovered from, or a non-PSCI stop (a fault, hv_vm_stop, a test's
+       stop_pc used for something other than this probe), never publishes here, even if host/ui_runner_vm.c's
+       probe did record hits on that cpu -- that is a known, accepted gap for this investigation's scope, not an
+       oversight (see docs/boot-diagnostic-contract-2026-11-15.md). panic_hits == 0 means neither of the two
+       installed probe addresses was ever hit on the cpu that made this PSCI call, which is itself a real,
+       reportable result (not "the probe failed") -- see host/vm.h's hv_vm_panic_probe(). */
+    uint32_t panic_hits;
+    HvPanicHit panic_first, panic_last;
 } HvMachine;
 
 static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {

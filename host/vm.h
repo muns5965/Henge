@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cpu.h" /* HvPanicHit, for hv_vm_panic_probe() below */
 #include "disk.h"
 #include "vmapple.h"
 
@@ -90,6 +91,24 @@ int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64
    compute that -- it hands back the bytes. stack must point at space for HV_PSCI_HALT_STACK_WORDS
    uint64_t; any of sp/x26/stack/n_words may be NULL. */
 int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_words);
+
+/* [C1-4] A third accessor for the same published halt (0 under the exact same conditions as the two above, and
+   always 1 at the same time they are): host/ui_runner_vm.c's own panic-entry probe, a separate mechanism from
+   HV_DIAG_PROBE/_CALLER above (those are host/vmrun.c only, and gated by HV_* environment variables that
+   host/ui_runner_vm.c deliberately scrubs before creating the machine -- see hv_runner_scrub_env). When
+   ui_runner_vm.c installs the engine's two stop_pc slots at a pair of known generic-panic-helper entry points in
+   the AVPBooter ROM under investigation, this reports the first and the last time the cpu that made the PSCI
+   call itself hit either one, and how many times in total (core/cpu.h's HvPanicHit/HvCpu.panic_first/panic_last/
+   panic_hits, core/machine.h's published copy). *hits == 0 means that cpu never hit either installed address
+   before this halt -- a real, reportable outcome (the panic path, if any, did not go through those two
+   addresses), not a sign the probe failed to install or run; *first and *last are then left unset (zero) and
+   should not be printed as if they were a hit. This is read-only on every path: no guest register, PC or memory
+   is touched by the probe itself, only this cpu's own panic_first/panic_last/panic_hits (and only on the cpu
+   that hit the probe address) are written, and this accessor only ever copies that CPU's own committed snapshot
+   out after the machine has already halted via PSCI. Known gap, accepted for this investigation's scope: a panic
+   that does not end in a PSCI halt (recovered from, or the machine stops some other way) never publishes here,
+   even if the probe did record hits on some cpu -- see docs/boot-diagnostic-contract-2026-11-15.md. */
+int hv_vm_panic_probe(uint32_t *hits, HvPanicHit *first, HvPanicHit *last);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */
 void hv_vm_key(uint16_t code, int down);

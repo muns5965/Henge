@@ -253,6 +253,36 @@ PY
           if [ $spok = 1 ]; then echo "ok  sp, x26 and all four checked stack words (sp+8/0x38/0x48/0x78, 16 words total) round-trip exactly"
           else echo "-- stack probe runner output:"; cat "$SP/run.out"; rc=1; fi
         fi
+
+        echo "=== panic probe: Android panic-entry hook at 0x105F2C/0x105F9C (host/ui_runner_vm.c's panic_probe_install/panic_probe_hook, core/cpu.h's panic_first/panic_last/panic_hits, host/vm.c's hv_vm_panic_probe)"
+        if ! tools/build-asm-rom.sh tests/roms/panic_probe.S "$T/panic_probe.bin" > "$T/panic_probe_build.out" 2>&1; then
+          echo "FAILED building the panic-probe stand-in ROM"; cat "$T/panic_probe_build.out"; rc=1
+        else
+          PP2=$T/panicprobe; rm -rf "$PP2"; mkdir -p "$PP2"
+          truncate -s 16M "$PP2/disk.img"
+          python3 - "$PP2/aux.img" <<'PY'
+import sys
+hd = bytes([0xa5,0xd5,0xb3,0xfe,0x97,0xad,0x1d,0x27,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0])
+with open(sys.argv[1],'wb') as f:
+    f.write(hd); f.truncate(33570816)
+PY
+          ( sleep 10 | "$OUT/ui_runner_vm" --shm "$PP2/run.shm" --rom "$T/panic_probe.bin" --disk "$PP2/disk.img" --aux "$PP2/aux.img" --ram-mb 256 --jit-mb 64 --cpus 2 --seconds 5 > "$PP2/run.out" 2>&1 )
+          PANIC_LINE=$(grep 'RESULT: PANIC_DIAG' "$PP2/run.out")
+          echo "panic: $PANIC_LINE"
+          ppok=1
+          echo "$PANIC_LINE" | grep -q 'hits=3' || { echo "FAILED panic probe did not report hits=3"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.pc=0x105f2c' || { echo "FAILED panic probe first.pc was not 0x105f2c"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.x0=0x1111 first.x1=0x2222 first.x2=0x3333 first.x3=0x4444' || { echo "FAILED panic probe first.x0..x3 did not match the ROM's first visit to A"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'first.sp=0x70020000' || { echo "FAILED panic probe first.sp was not 0x70020000"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.pc=0x105f2c' || { echo "FAILED panic probe last.pc was not 0x105f2c (both A and B share no address, so last must still be A: the ROM returns to A a second time before resetting)"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.x0=0x9999 last.x1=0xaaaa last.x2=0xbbbb last.x3=0xcccc' || { echo "FAILED panic probe last.x0..x3 did not match the ROM's second visit to A"; ppok=0; }
+          echo "$PANIC_LINE" | grep -q 'last.sp=0x70040000' || { echo "FAILED panic probe last.sp was not 0x70040000"; ppok=0; }
+          # The original guest instructions at both probe addresses must still have executed normally (not been
+          # skipped), proving the hook does not disturb the dispatcher's own flow: the ROM's own visit counter
+          # (x28) only reaches 3 total hits if every branch after each probe point actually ran as written.
+          if [ $ppok = 1 ]; then echo "ok  panic probe reports hits=3 with first (A, SET1) correctly kept distinct from last (A again, SET3), B visited in between"
+          else echo "-- panic probe runner output:"; cat "$PP2/run.out"; rc=1; fi
+        fi
       fi
     fi
   fi

@@ -122,6 +122,17 @@ int hv_vm_psci_halt_stack(uint64_t *sp, uint64_t *x26, uint64_t *stack, int *n_w
     return 1;
 }
 
+/* [C1-4] Android panic-entry probe (host/ui_runner_vm.c): same gate, same ACQUIRE/RELEASE pair, as the two
+   accessors above -- see core/machine.h's panic_hits/panic_first/panic_last comment for what this does and does
+   not cover (PSCI halts only; 0 hits is a real, reportable result, not a failure). */
+int hv_vm_panic_probe(uint32_t *hits, HvPanicHit *first, HvPanicHit *last) {
+    if (__atomic_load_n(&m.psci_halt_valid, __ATOMIC_ACQUIRE) != 2) return 0;
+    if (hits) *hits = m.panic_hits;
+    if (first) *first = m.panic_first;
+    if (last) *last = m.panic_last;
+    return 1;
+}
+
 const char *hv_vm_reason_name(int r) {
     switch (r) {
     case HV_EXIT_HALT: return "halt";

@@ -6,6 +6,14 @@
 
 struct HvMachine;
 
+/* One register snapshot taken at a stop_pc/stop_pc2 hit (host/ui_runner_vm.c's panic-entry probe, core/cpu.h's
+   HvCpu.panic_first/panic_last below, core/machine.h's published copy). Raw and uninterpreted, the same way
+   psci_halt_stack[] is: which field means what at a given PC is specific to the ROM build under investigation,
+   not computed or assumed here. */
+typedef struct HvPanicHit {
+    uint64_t pc, lr, x0, x1, x2, x3, sp;
+} HvPanicHit;
+
 /* One software TLB entry. host = guest VA + addend. The exec tag is the guest
    VA of the 16 KB page. The read and write tags are that minus HV_TLB_ADJ, so
    translated code checks "same page, and the access ends in it" for any access
@@ -186,6 +194,21 @@ typedef struct HvCpu {
     uint64_t diag_last_lr;   /* that cpu's x[30] at the hit */
     uint64_t diag_last_x0;   /* that cpu's x[0] at the hit -- meaning depends on which probe is active, see above */
     uint32_t diag_hits;
+
+    /* [C1-4] Android panic-entry probe (host/ui_runner_vm.c only; a separate mechanism from diag_last_pc/_lr/_x0
+       and diag_hits above, which is vmrun.c's HV_DIAG_PROBE/_CALLER -- the two can't be installed at once anyway, since the
+       engine has only two stop_pc slots total, but they serve different host binaries and keep separate fields
+       so that stays true even if that ever changes). When ui_runner_vm.c installs stop_pc/stop_pc2 at the two
+       known generic-panic-helper entry points in the AVPBooter ROM under investigation (0x105F2C / 0x105F9C --
+       see docs/boot-diagnostic-contract-2026-11-15.md), this records the FIRST and the LAST time this cpu's own
+       dispatcher hit either one, so a panic that recurses through further asserts before the final SYSTEM_RESET
+       does not have its original entry overwritten by a later one. Written only by this cpu's own dispatcher
+       (the stop_hook runs on the cpu that reached the address); psci() copies it into the machine-wide published
+       snapshot only for the cpu making the PSCI call, the same way it already does for psci_halt_sp/stack above.
+       panic_hits saturates at UINT32_MAX rather than wrapping; 0 means neither probe has fired yet, in which case
+       panic_first/panic_last are unset (zero), which is itself meaningful (see host/vm.h's hv_vm_panic_probe). */
+    HvPanicHit panic_first, panic_last;
+    uint32_t panic_hits;
 } HvCpu;
 
 #define HV_CPU_X(n)        ((n) * 8)

@@ -204,6 +204,14 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
                 for (; n < HV_PSCI_HALT_STACK_WORDS; n++)
                     if (!psci_halt_peek_u64(cpu, cpu->sp + (uint64_t)n * 8, &cpu->m->psci_halt_stack[n])) break;
                 cpu->m->psci_halt_stack_words = n;
+                /* [C1-4] Android panic-entry probe (host/ui_runner_vm.c): copy this cpu's own raw record, same
+                   as everything above -- 0 hits is copied too (it is itself a real result, not "nothing to
+                   report"), and copying unconditionally costs nothing whether or not ui_runner_vm.c's probe is
+                   actually installed on this run (panic_hits is simply 0 if it never fired or was never set up,
+                   core/cpu.h's own initial state). */
+                cpu->m->panic_hits = cpu->panic_hits;
+                cpu->m->panic_first = cpu->panic_first;
+                cpu->m->panic_last = cpu->panic_last;
                 __atomic_store_n(&cpu->m->psci_halt_valid, 2, __ATOMIC_RELEASE); /* now actually publish it */
             }
         }

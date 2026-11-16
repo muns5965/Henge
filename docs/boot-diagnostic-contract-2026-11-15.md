@@ -176,6 +176,59 @@ check against a captured frame (or the screen itself), done only after stages 1-
 - Signing/restore-related questions are out of scope here as elsewhere in this session (held items): this
   contract is about observing a boot attempt, not about what ROM/aux content is valid to attempt it with.
 
+## Android panic-entry probe (added once the boot trial above reached a PSCI SYSTEM_RESET)
+
+The first real boot trial reached stage 2's halt via a PSCI SYSTEM_RESET, not the ROM reaching further stages.
+Static disassembly (ROM reads taken through the app's own read-only "ROM 구간 읽기"/"직접 분기 참조 검색"
+features) plus the psci_halt_sp/x26/stack[] capture above traced the call chain all the way from the `hvc`
+instruction back through `0x1044d4` (the shared PSCI wrapper) → `0x104530` (`do_reset`) → `0x103db0` → `0x105FC0`
+→ confirmed, via the real device's own captured stack word at `sp+0x48`, to be reached from `0x106270`. From
+there, ROM string analysis found two generic panic/assert helpers (an empty-message one at `0x105F2C`, a
+`"%llx:%d"`-formatted one at `0x105F9C`) that `0x106060` -- the function `0x106270` calls into -- reaches with
+`w2=1` specifically through one of these two helpers, which is what actually triggers the `SYSTEM_RESET`
+(as opposed to two OTHER static callers of the same `0x106060`, found by branch-reference search, that pass
+`w2=0` and only log). Each of these two helpers has tens of static callers (88 and 75 respectively) throughout
+the ROM, corresponding to the many places a generic `assert()`-style check can fail, so which ONE actually fired
+on this device could not be narrowed further by static analysis or stack capture alone -- the registers that
+would say so (the helper's own entry `x0`-`x3`, and especially its `LR`, which is the one piece of information
+that distinguishes among the ~163 static candidates) are long gone by the time execution reaches the `hvc`
+several frames later.
+
+`host/ui_runner_vm.c`'s `panic_probe_install()`/`panic_probe_hook()` close that gap: using the engine's existing
+two `stop_pc`/`stop_pc2` slots (the same mechanism `host/vmrun.c`'s `HV_DIAG_PROBE`/`HV_DIAG_PROBE_CALLER` already
+use, just a different pair of addresses and a host binary of its own), it records the first and the last time the
+cpu that eventually makes the PSCI call hits either `0x105F2C` or `0x105F9C`, together with that cpu's `PC`,
+`LR`, `X0`-`X3` and `SP` at the hit (`core/cpu.h`'s `HvPanicHit`/`HvCpu.panic_first`/`panic_last`/`panic_hits`).
+First and last are kept separately, not just the latest, because a panic path can recurse through further
+asserts before the final reset, and the FIRST entry -- the one whose `LR` actually names the real failing call
+site among the ~163 candidates -- is the one this investigation needs, not whichever one happened last.
+
+Unlike `vmrun.c`'s probes, this cannot be switched on by an `HV_*` environment variable: `ui_runner_vm.c` calls
+`hv_runner_scrub_env()` before `hv_vm_create()` specifically so a debug-only variable can never quietly affect a
+real boot through this binary (confirmed directly in source during this round of review, not assumed), so the
+probe installs unconditionally in code instead, right after `hv_vm_create()` succeeds and before `hv_vm_start()`.
+Installing it is read-only and harmless even against a different ROM than the one this investigation is about:
+the hook only ever copies registers into that cpu's own `panic_first`/`panic_last`/`panic_hits` fields, never
+touches guest-visible state, and a ROM that does not happen to execute at these two addresses simply never
+triggers it.
+
+The result is published through the exact same `psci_halt_valid` three-state RELEASE/ACQUIRE record as
+`psci_halt_sp`/`x26`/`stack[]` above (`core/exception.c`'s `psci()` copies `panic_first`/`panic_last`/`panic_hits`
+in the same compare-and-swap block, before the same final RELEASE store), read back through a third accessor,
+`host/vm.h`'s `hv_vm_panic_probe()`, and printed as its own `"PANIC_DIAG"` RESULT line (kept separate from the
+PSCI line's `reason_txt` rather than appended to it, since that buffer is already sized for the stack dump).
+**Known, accepted limitation**: because this rides on the PSCI-halt publish, a panic that is somehow recovered
+from, or a stop that is not a PSCI call at all (a fault, `hv_vm_stop`, a test's own `stop_pc` used for something
+else), never publishes a `PANIC_DIAG` line, even if the probe did record hits on some cpu. Within a PSCI halt,
+`hits=0` is printed plainly rather than the line being omitted: "neither probe address was reached" is itself a
+real, reportable answer to the question this probe exists to ask, not a sign the probe failed to install or run.
+
+Covered by `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check: a synthetic ROM visits
+`0x105F2C` (A), falls through to `0x105F9C` (B), returns to `0x105F2C` (A again) with different registers each
+time, then calls `SYSTEM_RESET` -- a passing run must report `hits=3` with `first` matching the very first visit
+to A and `last` matching the second, later one, proving the hook keeps the true first entry distinct from the
+true last even though both happen to share the same `PC`.
+
 ## How this gets used
 
 For a limited ROM boot trial -- the first one already happened once, on a real device, right after this

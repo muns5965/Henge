@@ -1485,23 +1485,33 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One run's full output in Download/HengeProbeLogs/vmrun_<mode>_<time>.log through MediaStore (no permission, no dependency). Written while IS_PENDING=1 and
-     * published when finished. Capped at 20 MB (a note is written at the cap; the caller keeps reading the process output). At most the 5 newest vmrun_*.log
-     * files of that folder that this app created are kept; nothing else is touched. Every failure only disables the file: the run goes on.
+     * One run's full output through MediaStore (no permission, no dependency), written as it comes in and never truncated mid-run: the text is split, a
+     * whole line at a time, across part001.log, part002.log, ... (20 MB each) under Download/HengeProbeLogs/vmrun_<mode>_<time>/, so a line is never cut
+     * across two files. A 200 MB total cap (10 parts) stops a run that never ends from filling the disk; a note is written at that point, and the caller
+     * keeps reading the process output either way. When the run ends, finish() closes the last part, reads all the parts back and writes them into a
+     * single Download/HengeProbeLogs/vmrun_<mode>_<time>.zip (one file to pick, nothing to reassemble), then deletes the now-redundant parts. If zipping
+     * itself fails, the parts are left in place (nothing lost) and finish() says so instead of naming the zip. At most the 5 newest vmrun_*.zip (and any
+     * vmrun_*.log left over from this class's previous single-file version) in that folder are kept; nothing else is touched. Every failure only disables
+     * the file: the run goes on.
      */
     private static final class RunLog {
-        static final long CAP = 20L * 1024 * 1024;
+        static final long PART_CAP = 20L * 1024 * 1024;   // one part file
+        static final long TOTAL_CAP = 200L * 1024 * 1024; // the whole run, across every part (worst case 10 parts)
         static final String DIR = "Download/HengeProbeLogs/";
         String note;
         private final android.content.ContentResolver cr;
-        private android.net.Uri uri;
+        private String runName; // "vmrun_<mode>_<time>", no extension -- also the zip's basename
+        private String runDir;  // DIR + runName + "/", where the parts live until they are zipped
+        private int partNo;
+        private android.net.Uri partUri;
         private java.io.OutputStream os;
-        private long bytes;
+        private long partBytes, totalBytes;
+        private final java.util.List<String> partNames = new java.util.ArrayList<>(); // in write order, for the zip
         private boolean capped, failed;
 
         private RunLog(android.content.ContentResolver cr) { this.cr = cr; }
 
-        boolean ok() { return uri != null && !failed; }
+        boolean ok() { return partUri != null && !failed; }
 
         static RunLog open(Context c, String mode, String header) {
             RunLog r = new RunLog(c.getContentResolver());
@@ -1510,18 +1520,12 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 r.note = "이전 로그 정리 실패(시험은 계속): " + e;
             }
+            r.runName = "vmrun_" + mode + "_" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date());
+            r.runDir = DIR + r.runName + "/";
             try {
-                String name = "vmrun_" + mode + "_" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date()) + ".log";
-                android.content.ContentValues cv = new android.content.ContentValues();
-                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
-                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, DIR);
-                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
-                r.uri = r.cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                if (r.uri == null) throw new IOException("insert returned null");
-                r.os = new java.io.BufferedOutputStream(r.cr.openOutputStream(r.uri), 65536);
+                r.openPart(1);
                 r.write(header);
-                r.note = (r.note == null ? "" : r.note + "\n") + "전체 로그 저장 위치: " + DIR + name + " (끝나면 표시됩니다)";
+                r.note = (r.note == null ? "" : r.note + "\n") + "전체 로그 저장 위치: " + DIR + r.runName + ".zip (끝나면 표시됩니다; 그 전까지는 20MB씩 나눠 기록합니다)";
             } catch (Exception e) {
                 r.failed = true;
                 r.note = (r.note == null ? "" : r.note + "\n") + "로그 파일을 만들지 못했습니다(시험은 계속, 화면에는 최근 200줄): " + e;
@@ -1529,11 +1533,38 @@ public class MainActivity extends Activity {
             return r;
         }
 
-        /** Keep the 4 newest vmrun_*.log of this app in DIR, so that with the new one there are 5. Pending (unfinished) ones count and go the same way. */
+        /** Closes and publishes the current part (if any), then opens part n under runDir as the new current part. */
+        private void openPart(int n) throws IOException {
+            if (os != null) { os.close(); publish(partUri); }
+            partNo = n;
+            String name = String.format(java.util.Locale.US, "part%03d.log", n);
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+            cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, runDir);
+            cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            partUri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+            if (partUri == null) throw new IOException("insert returned null");
+            os = new java.io.BufferedOutputStream(cr.openOutputStream(partUri), 65536);
+            partBytes = 0;
+            partNames.add(name);
+        }
+
+        private void publish(android.net.Uri u) {
+            try {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                cr.update(u, cv, null, null);
+            } catch (Exception ignored) { /* best-effort: a part left pending is still readable by this app's own zip step below */ }
+        }
+
+        /** Keep the 4 newest vmrun_*.zip (or, from before this class zipped runs, vmrun_*.log) of this app directly under DIR, so with the new one there
+         *  are 5. This does not see a run's own in-progress part*.log files (they live one level deeper, under DIR+runName+"/") -- those are cleaned up by
+         *  zipAndCleanup() once the run ends; if zipping itself fails they are deliberately left behind instead of deleted, so rotation never touches them. */
         private void rotate() {
             android.os.Bundle q = new android.os.Bundle();
-            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "relative_path=? AND _display_name LIKE ?");
-            q.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[]{DIR, "vmrun_%.log"});
+            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "relative_path=? AND (_display_name LIKE ? OR _display_name LIKE ?)");
+            q.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[]{DIR, "vmrun_%.zip", "vmrun_%.log"});
             q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "date_added DESC, _id DESC");
             if (Build.VERSION.SDK_INT >= 31) q.putInt(android.provider.MediaStore.QUERY_ARG_MATCH_PENDING, android.provider.MediaStore.MATCH_INCLUDE);
             java.util.List<android.net.Uri> old = new java.util.ArrayList<>();
@@ -1547,34 +1578,85 @@ public class MainActivity extends Activity {
         }
 
         void write(String line) {
-            if (os == null || failed) return;
+            if (failed) return;
             try {
                 if (capped) return;
                 byte[] b = (line + "\n").getBytes(StandardCharsets.UTF_8);
-                if (bytes + b.length > CAP) {
+                if (totalBytes + b.length > TOTAL_CAP) {
                     capped = true;
-                    os.write("[로그 상한 20MB에 도달: 이후 줄은 이 파일에 기록하지 않았습니다]\n".getBytes(StandardCharsets.UTF_8));
+                    byte[] n = "[로그 총 상한 200MB에 도달: 이후 줄은 기록하지 않았습니다]\n".getBytes(StandardCharsets.UTF_8);
+                    os.write(n); partBytes += n.length; totalBytes += n.length;
                     return;
                 }
+                if (partBytes + b.length > PART_CAP) openPart(partNo + 1); // roll over whole lines only -- never splits one across parts
                 os.write(b);
-                bytes += b.length;
+                partBytes += b.length;
+                totalBytes += b.length;
             } catch (IOException e) {
                 failed = true;
             }
         }
 
-        /** Closes and publishes the file; returns one line saying where it is (or why not). */
+        /** Closes the last part, bundles every part of this run into one zip, and returns one line saying where the result is (or why not). */
         String finish(long lines) {
-            if (uri == null) return "전체 로그 파일: 저장되지 않음";
+            if (partUri == null) return "전체 로그 파일: 저장되지 않음";
             try {
                 if (os != null) os.close();
-                android.content.ContentValues cv = new android.content.ContentValues();
-                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-                cr.update(uri, cv, null, null);
+                publish(partUri);
             } catch (Exception e) {
                 return "전체 로그 파일 마무리 실패: " + e;
             }
-            return "전체 로그 파일: " + DIR + " 안의 vmrun_*.log (" + lines + "줄, " + bytes + "바이트" + (capped ? ", 20MB 상한에서 잘림" : "") + (failed ? ", 기록 중 오류로 일부만 저장" : "") + ")";
+            String sizeNote = totalBytes + "바이트" + (capped ? ", 200MB 총 상한에서 잘림" : "") + (failed ? ", 기록 중 오류로 일부만 저장" : "");
+            try {
+                zipAndCleanup();
+                return "전체 로그 파일: " + DIR + runName + ".zip (" + lines + "줄, " + sizeNote + ", part 파일 " + partNames.size() + "개를 하나로 묶음)";
+            } catch (Exception e) {
+                return "전체 로그: 하나로 묶지 못해 조각 그대로 둠(" + e + "): " + DIR + runName + "/ 안의 part*.log " + partNames.size() + "개 (" + lines + "줄, " + sizeNote + ")";
+            }
+        }
+
+        /** Reads every part of this run back through MediaStore into one DIR+runName+".zip", then deletes the now-redundant parts. Any part this app
+         *  cannot find any more is skipped rather than failing the whole zip, since the zip is still useful with the rest. */
+        private void zipAndCleanup() throws IOException {
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, runName + ".zip");
+            cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, DIR);
+            cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            android.net.Uri zipUri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+            if (zipUri == null) throw new IOException("zip insert returned null");
+            java.util.List<android.net.Uri> partUris = new java.util.ArrayList<>();
+            try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(new java.io.BufferedOutputStream(cr.openOutputStream(zipUri), 65536))) {
+                for (String name : partNames) {
+                    android.net.Uri u = findPart(name);
+                    if (u == null) continue;
+                    partUris.add(u);
+                    zos.putNextEntry(new java.util.zip.ZipEntry(name));
+                    try (java.io.InputStream in = cr.openInputStream(u)) {
+                        if (in != null) {
+                            byte[] buf = new byte[65536];
+                            int n;
+                            while ((n = in.read(buf)) > 0) zos.write(buf, 0, n);
+                        }
+                    }
+                    zos.closeEntry();
+                }
+            }
+            android.content.ContentValues done = new android.content.ContentValues();
+            done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+            cr.update(zipUri, done, null, null);
+            for (android.net.Uri u : partUris) cr.delete(u, null, null); // the zip now holds everything they held; drop the loose parts
+        }
+
+        private android.net.Uri findPart(String name) {
+            android.os.Bundle q = new android.os.Bundle();
+            q.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "relative_path=? AND _display_name=?");
+            q.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[]{runDir, name});
+            if (Build.VERSION.SDK_INT >= 31) q.putInt(android.provider.MediaStore.QUERY_ARG_MATCH_PENDING, android.provider.MediaStore.MATCH_INCLUDE);
+            try (android.database.Cursor cur = cr.query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, new String[]{android.provider.MediaStore.MediaColumns._ID}, q, null)) {
+                if (cur != null && cur.moveToFirst()) return android.content.ContentUris.withAppendedId(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cur.getLong(0));
+            }
+            return null;
         }
     }
 

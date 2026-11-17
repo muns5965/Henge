@@ -202,10 +202,25 @@ void hv_net_guard_allow_unix(const char *path) {
     if (g_nunix < MAXL) snprintf(g_unix[g_nunix++], sizeof g_unix[0], "%s", path);
     pthread_mutex_unlock(&g_mu);
 }
-void hv_net_guard_allow_host(const char *name, uint16_t port) {
+int hv_net_guard_allow_host(const char *name, uint16_t port) {
+    /* Never silently truncate a host name: the truncated name could authorize a
+       different endpoint. This is an exact allow list, not a URL parser. */
+    if (!name || !*name || !port || strnlen(name, NAMEMAX) >= NAMEMAX) return -1;
     pthread_mutex_lock(&g_mu);
-    if (g_nhost < MAXL) { snprintf(g_host[g_nhost].name, NAMEMAX, "%s", name); g_host[g_nhost++].port = port; }
+    for (int i = 0; i < g_nhost; i++) {
+        if (g_host[i].port == port && !strcasecmp(g_host[i].name, name)) {
+            pthread_mutex_unlock(&g_mu);
+            return 0; /* idempotent registration */
+        }
+    }
+    if (g_nhost == MAXL) {
+        pthread_mutex_unlock(&g_mu);
+        return -1; /* refuse instead of silently discarding registration */
+    }
+    snprintf(g_host[g_nhost].name, NAMEMAX, "%s", name);
+    g_host[g_nhost++].port = port;
     pthread_mutex_unlock(&g_mu);
+    return 0;
 }
 void hv_net_guard_stats(HvNetStats *s) { pthread_mutex_lock(&g_mu); *s = g_st; pthread_mutex_unlock(&g_mu); }
 size_t hv_net_guard_denied_log(char *out, size_t cap) {

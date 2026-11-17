@@ -1,177 +1,151 @@
-# Android port — boot/device compatibility notes
+# 안드로이드 포팅 — 부팅 및 장치 호환성 검증 기록
 
-A running log of what's confirmed, what's still a hypothesis, and what's been
-retracted while debugging why a VMApple guest resets instead of completing
-boot on the Android port. This is a verification ledger, not a narrative:
-each entry should be updated in place as new evidence arrives, rather than
-rewritten wholesale.
+이 문서는 Henge 안드로이드 포팅에서 VMApple 게스트가 정상 부팅을 마치지 못하고 리셋되는 현상을 조사하면서 확보한 사실, 미확인 가설, 철회한 주장을 기록한다. 새로운 근거가 나오면 기존 항목의 판정을 갱신하고, 철회 사유는 남긴다.
 
-Scope note: this document covers Henge's own device emulation and host-side
-boot path (all GPL, all in this repo). It deliberately does not include
-instruction-level disassembly of the proprietary Apple boot ROM
-(`AVPBooter.vmapple2.bin`) that Henge loads as guest firmware — findings
-there are tracked separately. Every entry below is reproducible from this
-repo's source and from VM run logs alone.
+**공개 범위:** Henge 자체의 소스코드, 장치 에뮬레이션, 호스트 측 ROM 적재 경로 및 VM 실행 로그. Apple의 독점 부트 ROM(AVPBooter.vmapple2.bin)에 대한 명령어 단위 디스어셈블리, 내부 검증·리셋 분기 주소 목록은 포함하지 않는다.
 
-## Status legend
+## 판정 기준
 
-- **확인됨 (confirmed)** — verified directly against source or against a
-  concrete, logged VM run.
-- **구현 확인됨 (implementation confirmed)** — the code's current behavior is
-  verified, but whether it matches real hardware/VZ is not.
-- **미확인 (unconfirmed)** — a hypothesis consistent with the evidence so
-  far, not yet proven.
-- **철회됨 (retracted)** — an earlier claim in this investigation that
-  turned out to be wrong or unsupported, kept here so it isn't re-proposed.
+- **확인됨:** 실제 소스코드나 식별 가능한 실행 로그로 확인된 사실.
+- **구현 확인됨:** Henge 코드의 동작은 확인됐으나 실제 Apple Virtualization.framework와의 일치 여부는 검증하지 못한 사항.
+- **미확인:** 확보한 근거와 모순되지는 않지만 아직 입증되지 않은 가설.
+- **철회됨:** 앞서 주장했지만 근거가 없거나 틀린 것으로 밝혀져 더 이상 결론으로 사용하지 않는 설명.
 
-## 1. ROM loading and CPU init — 확인됨
+## 1. ROM 적재와 CPU 초기화 — 확인됨
 
-Traced end to end through source:
+- 안드로이드 앱의 MainActivity.java에 있는 findLocalRom()/isGenuineRom()은 앱 외부 전용 폴더의 vm/rom.bin을 우선 찾고, 없거나 검증에 실패하면 내부 저장소의 vm/AVPBooter.vmapple2.bin을 확인한다. 파일 크기와 SHA-256이 앱의 기대값과 일치하는 경우에 사용한다. 이 검증은 기대한 파일과의 일치 확인이지 Apple 원본 여부에 관한 독립적인 증명은 아니다.
+- host/vmrun.c는 --rom, --disk, --aux를 파일 경로로 받아 설정에 저장한다. 이 인자 파싱 단계에서는 ROM 내용을 읽지 않는다.
+- host/vm.c의 hv_vm_create()는 ROOT/AUX 저장장치를 열고 가상 하드웨어를 구성하는 hv_vmapple_create()를 실행한 뒤 ROM 파일을 적재한다.
+- devices/vmapple.c는 펌웨어용 1MiB 영역을 VMAPPLE_FIRMWARE=0x00100000에 배치한다. 메인 RAM은 0x70000000부터 시작하므로 별도 영역이다.
+- hv_vmapple_load_rom()은 파일에서 최대 1MiB를 fread()로 해당 영역에 복사한다. 이 함수에서 별도 압축 해제, 구조 파싱, SHA-256 검사는 하지 않는다. 새로 할당한 익명 메모리 영역의 미사용 부분은 0으로 초기화된다. 펌웨어 영역은 현재 Henge에서 쓰기 가능한 RAM으로 등록된다.
+- hv_vmapple_reset_cpu()는 CPU0의 시작 PC를 0x100000으로 설정한다. 초기 상태는 EL1, MMU 비활성화, 인터럽트 마스킹 상태이며 보조 CPU는 PSCI CPU_ON을 기다린다.
 
-- `android/app/.../MainActivity.java`'s `findLocalRom()`/`isGenuineRom()`
-  checks the bundled ROM file's size and SHA-256 before use.
-- `host/vmrun.c` takes `--rom`/`--disk`/`--aux` as plain file paths; no
-  content is read at this stage.
-- `host/vm.c`'s `hv_vm_create()` opens ROOT/AUX storage and builds the
-  virtual hardware (`hv_vmapple_create()`) *before* the ROM file is read.
-- `devices/vmapple.c`: `ROM_SIZE` is a fixed 1 MiB region mapped at
-  `VMAPPLE_FIRMWARE = 0x00100000`, separate from main RAM (`0x70000000`).
-  `hv_vmapple_load_rom()` is a plain `fread()` of up to 1 MiB into that
-  region — no decompression, no parsing, and no hash check at this layer
-  (the Android app's check above is the only integrity check in this path).
-  The unused tail of the 1 MiB region reads as zero (anonymous mmap).
-- `hv_vmapple_reset_cpu()` sets CPU0's PC to `VMAPPLE_FIRMWARE` (`0x100000`),
-  EL1, MMU off; other CPUs start off, awaiting PSCI CPU_ON.
+**판정:** ROM 로더가 파일 내용을 재배치하거나 변형한다는 근거는 발견되지 않았다. 다만 ROM 실행 이후에도 Henge가 제공하는 장치 응답과 예외 처리가 실행 결과에 영향을 미치므로, 부팅 실패의 원인을 ROM 자체로 한정할 수 없다.
 
-Conclusion: the loader does not place or transform the ROM in any way that
-would itself explain a boot failure. Everything downstream of this is the
-ROM's own code running.
+## 2. CFG 설정 장치 — 확인됨
 
-## 2. CFG device (`devices/cfg.c`) — 확인됨
+devices/cfg.c는 VMAppleCfg 구조체를 MMIO 장치로 노출한다. CPU 수, ECID, RAM 크기, 설치기 모드 설정값(run_installer1/run_installer2), MAC 주소, 시리얼·모델·SoC 이름 및 난수 관련 레지스터 등이 포함된다.
 
-Exposes a `VMAppleCfg` struct (version, nr_cpus, ECID, ram_size,
-`run_installer1`/`run_installer2`, MAC addresses, serial/model/soc_name
-strings, etc.) as MMIO-backed memory. `run_installer1`/`run_installer2` are
-the installer-vs-normal-boot switch read by the ROM; both are 0 for a
-normal boot, 1/1 for an installer boot in the runs checked so far.
+- 일반 부팅에서 run_installer1=0, run_installer2=0이다.
+- 설치기 부팅에서 host/vm.c는 두 값을 모두 1로 설정한다.
+- HV_RUN_INSTALLER 환경변수를 설정한 실험에서는 두 값을 개별적으로 지정할 수 있다.
+- Android의 기존 순수 일반 부팅 시험에서는 ECID=0, seed=0이었다. iOS의 신규 가상머신 설치 준비에서는 별도의 ECID를 생성하므로 두 경로의 모든 조건이 동일하지는 않다.
 
-## 3. BDIF device (`devices/bdif.c`) — 확인됨 / 구현 확인됨
+**판정:** Henge가 게스트에 전달하는 CFG의 구현과 시험 설정은 확인됐다. 개별 값이 일반 부팅 리셋을 유발하는지는 아직 확인되지 않았다.
 
-- Devices are selected by `off & DEVID_MASK`: `DEVID_ROOT=0x0000`,
-  `DEVID_AUX=0x00010000`, `DEVID_USB=0x00100000`.
-- For ROOT/AUX, `REG_NEXT_DEVICE` (`+0x420`) correctly reports capacity in
-  512-byte sectors (`disk->size / 512`), and matches the capacity the ROM
-  reads in logged runs (AUX: 65,536 sectors / `0x10000`, matching the AUX
-  file's guest-visible size — see §4).
-- Storage commands (`command()`) read/write the real ROOT/AUX file via
-  `hv_disk_read`/`hv_disk_write`, logging
-  `bdif %s: sector %u len %u flags %x -> %s` at `log>=2` or on failure.
-- **USB slot fallback (구현 확인됨, compatibility candidate):** when no USB
-  device is attached (`b->usb == NULL`), `bdif_read()`'s check
-  `if (devid == DEVID_USB && b->usb) return usb_read(...)` is false, so a
-  read of the USB slot's registers falls through to the *generic*
-  switch — the same one ROOT/AUX use for unrecognized registers. Observed
-  values for an absent USB slot:
+## 3. BDIF 장치 — 확인됨 / 구현 확인됨
 
-  | register | value | meaning when a device *is* present |
-  |---|---|---|
-  | `+0x0` (`REG_STATUS`) | 1 ("active") | also 1 |
-  | `+0x4` (`REG_CFG`) | 2 (generic placeholder) | `0x1A01` (`USB_DEVICE_TYPE`) |
-  | `+0x420` (`REG_NEXT_DEVICE`) | `~0ull` | capacity / descriptor-dependent |
+### 3.1 장치 선택과 저장장치 처리
 
-  So an absent USB slot currently reads back as "active" with a generic,
-  non-USB config value, rather than as absent. **Whether this differs from
-  what real Apple Virtualization.framework returns for an unpopulated slot
-  is not yet established** — flagging as a candidate, not a confirmed bug.
+devices/bdif.c는 접근 오프셋에 DEVID_MASK를 적용하여 다음 장치를 구분한다.
 
-## 4. AUX storage format — 확인됨
+| 장치 | 식별값 |
+|---|---|
+| ROOT | 0x00000000 |
+| AUX | 0x00010000 |
+| USB | 0x00100000 |
 
-- `host/vm.c`: `hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, ...)`
-  — the first 16 KiB of the AUX file is host-side metadata, invisible to
-  the guest; the guest's "sector 0" is file offset 16384.
-- `host/disk.h` documents this as matching QEMU's vmapple convention.
-- `host/vmrun.c`'s `make_aux()` writes a fixed 24-byte magic header at
-  offset 0, then `ftruncate()`s to 33,570,816 bytes. Guest-visible capacity
-  is therefore `33,570,816 - 16,384 = 33,554,432` bytes = 65,536 sectors —
-  matches the `REG_NEXT_DEVICE` value logged for AUX (§3).
-- Everything from byte 24 onward (including the entire guest-visible
-  region) is zero-filled by `ftruncate()`, since no personalization/NVRAM
-  data is written into a freshly created AUX file.
-- **iOS parity — 확인됨:** `ios/Henge/Native/henge-vm.c`'s
-  `henge_make_aux()` is byte-for-byte identical (same 24-byte header
-  content, same `ftruncate(33570816)`), called from
-  `ios/Henge/Installer.swift:190`. The blank-AUX behavior is inherited from
-  the existing iOS implementation, not introduced by the Android port.
+ROOT/AUX의 REG_NEXT_DEVICE(+0x420)는 게스트가 볼 수 있는 저장장치 크기를 512바이트 섹터 수(disk->size / 512)로 반환한다. 기존 상세 로그에서 AUX 용량 0x10000(65,536섹터)이 확인됐으며 §4의 파일 크기와 일치한다.
 
-### 철회됨: "빈 AUX가 개인화 검증 실패를 유발한다"
+저장장치의 읽기·쓰기 요청은 command()에서 각각 hv_disk_read()/hv_disk_write()로 처리한다. 로그 수준 2 이상 또는 오류 상황에서는 장치 이름, 섹터, 길이, 플래그, 성공 여부를 기록한다. 성공 기록은 호스트 입출력이 완료됐다는 뜻이지, 게스트의 데이터 내용 검증에 성공했다는 뜻은 아니다.
 
-An earlier pass in this investigation concluded that a blank/zero AUX file
-would naturally fail guest-side personalization checks (reasoning from a
-`SNON`/nonce-shaped SVC call sequence seen in ROM execution logs) and that
-this explained the observed reset. **This causal chain is not established**
-and should not be treated as a conclusion:
-- The host's `SVC #0` handling (`core/exception.c`) only forwards the
-  instruction to the guest's own EL1 exception vector
-  (`hv_take_exception(..., HV_EC_SVC64 << 26 | ..., pc+4)`); Henge's host
-  code does not interpret or act on the SVC's purpose, so "a personalization
-  SVC was seen" cannot by itself mean "it failed".
-  - What that SVC's guest handler actually does with it is unconfirmed (see
-    the (not yet published) ROM-internal notes for the control-flow
-    candidates traced so far).
-- Whether a blank AUX is in fact invalid input for a *new, not-yet-installed*
-  VM (vs. only for an already-installed one doing a normal boot) is unknown.
-  iOS using the identical blank-AUX format for new VMs is evidence against
-  "blank AUX is always rejected", but is not proof either way for a normal
-  (post-install) boot specifically.
+### 3.2 USB 미노출 슬롯의 공통 폴백 — 구현 확인됨, 호환성 검증 후보
 
-## 5. Boot-mode experiments — 확인됨 (per-run) / 미확인 (root cause)
+현재 bdif_read()에서 USB 장치가 존재하는 경우에만 전용 usb_read()가 호출된다. b->usb가 NULL이면 DEVID_USB 접근도 ROOT/AUX에 사용되는 공통 switch로 내려간다. 따라서 **소스에 정의된** 반환값은 아래와 같다. 이는 USB가 없는 순수 일반 부팅에서 ROM이 실제로 해당 값을 읽었다는 관측 결과가 아니다.
 
-- `devices/vmapple.c:336-338`:
-  ```c
-  /* Installer boots (the ROM goes to DFU) get the USB device port, as VZ gives it.
-     HV_USB_ON_NORMAL is an experiment: the same port on a normal boot
-     (run_installer1/2 stay 0), to see whether the ROM's USB slot check, which
-     a normal boot fails with the slot absent, is what ends it. Off by default. */
-  if (cfg->run_installer1 || cfg->run_installer2 || getenv("HV_USB_ON_NORMAL")) {
-  ```
-  Real VZ gives the USB device port only on installer boots. Henge's
-  `HV_USB_ON_NORMAL` env var is an explicit, off-by-default experiment to add
-  that port to a normal boot anyway, for comparison. It is **not** a
-  standard boot configuration.
-- Build 144 ("정상 부팅 + USB 프로브" run, `vmrun_normal_usb_probe_log3_*`)
-  was run with `HV_USB_ON_NORMAL` set — i.e. a non-standard
-  normal-boot-with-USB configuration, not a plain normal boot.
-- Two separate **plain** normal-boot runs (no USB port, `run_installer=0`,
-  ECID/seed 0, fresh blank AUX), dated 2026-11-14 and 2026-11-16, **both
-  also hit `PSCI SYSTEM_RESET`**, ending near PC `0x104518`/`0x104514`/
-  `0x104504`/`0x1044F0` across the two runs (PCs differ slightly between
-  runs; not yet shown to be the same internal branch).
-  - **Conclusion: a normal boot resets even with no USB port at all.**
-    This rules out "USB artificially present" as *the* explanation for the
-    reset, though USB presence clearly does change the ROM's execution path
-    (confirmed difference in BDIF register values read, §3).
-- **미확인:** whether the USB-slot fallback behavior in §3 is what a plain
-  normal boot's reset actually hinges on. Not yet shown: that the ROM reads
-  the USB slot's registers at all during a plain normal boot, or what it
-  does with the fallback value `2` if it does.
+| 레지스터 | USB 미노출 시 Henge 반환값 | USB 노출 시 Henge 반환값 |
+|---|---|---|
+| REG_STATUS(+0x0) | 1 | 1 |
+| REG_CFG(+0x4) | 2 | 0x1A01 |
+| REG_NEXT_DEVICE(+0x420) | ~0ull | ~0ull |
 
-## 6. Open questions / next verification steps
+USB 포트가 없어도 상태 레지스터는 1, 유형 레지스터는 2를 반환한다. 다만 이 값이 실제 Apple Virtualization.framework의 비어 있는 슬롯 동작과 다른지는 확인되지 않았고, 일반 부팅 리셋의 원인이라는 증거도 없다. **확정된 결함이 아니라 소스에서 확인한 구현 특성 및 검증 후보**로 기록한다.
 
-1. On a plain normal boot (no `HV_USB_ON_NORMAL`), does the ROM actually
-   touch `DEVID_USB` registers before resetting? (Needs a diagnostic run
-   with detailed MMIO logging — `HV_DIAG_PROBE_CALLER` / `--log 3` — on a
-   plain normal boot; existing logs don't have this detail.)
-2. If it does, what does it do with the fallback value it reads (`REG_STATUS=1`,
-   `REG_CFG=2`)? Does it branch on "device present but wrong type", or
-   "device present, type `2` happens to be acceptable", or ignore it
-   entirely?
-3. What should an *absent* BDIF slot report, to match real
-   Virtualization.framework behavior for an unpopulated device? (Not yet
-   researched; "set REG_STATUS/REG_CFG to 0" is a guess without a basis to
-   justify it yet.)
-4. Confirm whether the two plain-normal-boot runs (11-14, 11-16) reach the
-   reset via the same internal branch, given their differing final PCs.
+## 4. AUX 파일 구조 — 확인됨
 
-No disk/ROM/source changes have been made as part of this investigation;
-this document only records analysis of existing source and existing VM run
-logs.
+- host/vm.c는 AUX 파일을 열 때 기본 오프셋 16,384바이트를 지정한다. host/disk.c의 hv_disk_read()는 실제 파일 접근 위치에 이 오프셋을 더한다. 따라서 게스트 AUX 섹터 0은 파일 오프셋 16,384에서 시작한다.
+- host/disk.h는 파일 앞 16KiB를 게스트에 보이지 않는 메타데이터 영역으로 설명하며 QEMU vmapple의 관례를 언급한다.
+- host/vmrun.c의 make_aux()는 처음 24바이트에 고정 헤더를 기록한 다음 ftruncate()로 파일 전체 크기를 33,570,816바이트로 확장한다.
+- 신규 파일의 24바이트 이후 영역은 0으로 초기화되므로 최초 생성 직후 게스트 가시 영역도 모두 0이다. 실제 VM 실행 이후에도 값이 계속 0이라는 일반적 보장은 아니다.
+- 게스트 용량은 33,570,816 - 16,384 = 33,554,432바이트, 즉 32MiB = 65,536섹터(0x10000)이다.
+
+### iOS와 Android의 신규 AUX 생성 결과 비교 — 확인됨
+
+ios/Henge/Native/henge-vm.c의 henge_make_aux()와 host/vmrun.c의 make_aux()는 동일한 24바이트 헤더를 기록하고 동일한 크기로 확장한다. **새로 생성되는 파일의 바이트 내용과 크기는 동일하다.** iOS의 Installer.swift에서도 신규 가상머신을 준비할 때 henge_make_aux()를 호출한다.
+
+주석은 완전히 같지 않다. iOS 쪽은 ‘64바이트 헤더’라고 표현하지만 실제 고정 헤더 쓰기는 24바이트이며, Android 쪽 주석은 24바이트라고 설명한다. 이 차이는 파일 생성 결과를 바꾸지 않는다.
+
+**판정:** 빈 AUX 생성은 Android 포팅에서 새로 도입한 방식이 아니라 기존 Henge iOS 구현과 동일한 초기화 방식이다. 하지만 이 사실만으로 빈 AUX가 설치 완료 후 일반 부팅에도 충분하다는 점이 증명되는 것은 아니다.
+
+## 5. 철회된 인과 가설 — 철회됨
+
+### ‘빈 AUX → 개인화 검증 실패 → 리셋’ 주장
+
+이전 분석에서는 AUX 가시 영역이 0이라는 사실과 게스트의 SVC 호출을 연결해, 개인화 검증에 실패하고 특정 상태값이 설정돼 리셋된다고 결론지었다. **이 인과관계는 입증되지 않았으므로 철회한다.**
+
+- AUX 읽기 성공은 데이터의 의미 또는 유효성에 관한 판정이 아니다.
+- core/exception.c에서 SVC #0은 Henge가 서비스 의미를 직접 판정하는 경로가 아니라 게스트 EL1 예외 핸들러로 전달된다.
+- SVC 호출 관측만으로 개인화 검증의 존재, 성공·실패 또는 리셋 원인을 확인할 수 없다.
+- 신규 빈 AUX는 iOS 구현에서도 사용된다. 이는 ‘빈 AUX는 항상 즉시 거부된다’는 단정을 약화하지만, 설치 후 일반 부팅에 필요한 AUX 상태를 입증하지는 않는다.
+
+향후 직접적인 비교 자료가 나오기 전까지 이 인과관계를 다시 확정 사실로 사용하지 않는다.
+
+## 6. 부팅 모드별 실험 — 실행 사실 확인됨 / 원인 미확인
+
+### 6.1 USB 장치 포트 노출 조건
+
+devices/vmapple.c는 run_installer1, run_installer2 중 하나가 참이거나 HV_USB_ON_NORMAL 환경변수가 있을 때 가상 USB 장치 포트를 생성한다. Henge 소스 주석은 설치기 부팅에서 이 포트를 제공하는 구성을 Apple Virtualization.framework와 일치하는 것으로 설명한다.
+
+HV_USB_ON_NORMAL은 일반 부팅 값(run_installer1/2=0)을 유지하면서 USB 포트만 추가하는 **기본 비활성화 실험 옵션**이다. 이 구성은 Henge의 표준 일반 부팅 구성이 아니다. 주석만으로 실제 Apple VZ의 모든 버전·조건에서 USB 장치가 반드시 동일하게 노출된다고 독립 확인한 것은 아니다.
+
+### 6.2 일반 부팅 + USB 추가 실험
+
+2026-11-14 빌드 144의 ‘일반 부팅 + USB 프로브’ 시험은 installer=0을 유지하면서 HV_USB_ON_NORMAL을 활성화한 비교 조건이다. 이 조건에서 USB 장치 접근과 별도 실행 경로가 관측됐다. 비표준 비교 조건에서 얻은 모든 결과를 순수 일반 부팅의 실행 경로로 일반화해서는 안 된다.
+
+### 6.3 USB 미노출 순수 일반 부팅
+
+2026-11-14와 2026-11-16의 두 순수 일반 부팅 시험은 USB 포트 없음, installer=0, ECID/seed=0, 신규 빈 AUX를 사용했다. **두 실행 모두 PSCI SYSTEM_RESET이 발생했다.**
+
+- 11월 14일 로그: PSCI 호출 PC로 0x104504와 0x1044F0이 기록됐다.
+- 11월 16일 로그: SYSTEM_RESET 호출 PC로 0x104514가 기록됐다.
+- 두 실행에서 종료 시 CPU0 PC는 0x104518이었다.
+
+**판정:** 인위적으로 USB를 추가한 것만으로 일반 부팅 리셋을 설명할 수는 없다. 단, PSCI 호출 주소에 차이가 있으므로 두 실행이 동일한 내부 분기에서 리셋됐는지는 미확인이다. USB 미존재 슬롯 폴백이 리셋의 직접 원인인지도 확인되지 않았다.
+
+## 7. 다음 검증 항목
+
+1. **USB 미노출 일반 부팅의 실제 DEVID_USB 접근 여부.** 상세 MMIO 기록이 있는 동일 조건 로그를 확보하여 리셋 전에 해당 슬롯을 읽는지 확인한다. 기존 순수 일반 부팅 로그에는 이를 판정할 상세 MMIO 정보가 부족하다.
+2. **폴백값과 실행 분기의 관계.** 슬롯 접근이 확인되면 어떤 레지스터를 읽고 무슨 값을 돌려받는지, 이후 ROM이 어떤 경로로 진행하는지 확인한다. 호출자와 반환값을 분리해 기록한다.
+3. **기준 환경의 비어 있는 슬롯 응답.** Apple Virtualization.framework의 실제 동작 또는 검증 가능한 자료와 비교한다. 증거 없이 REG_STATUS/REG_CFG를 0으로 바꾸지 않는다.
+4. **두 순수 일반 부팅의 리셋 경로 비교.** 11월 14일과 16일의 PSCI 호출 주소 차이가 생긴 원인을 비교한다. 종료 PC가 같다는 사실만으로 원인이 같다고 판단하지 않는다.
+
+### 향후 AUX 검증의 전제
+
+현재 AUX 생성 형식·오프셋·용량은 소스 및 로그와 일치한다. 새로운 개인화 데이터를 주입하거나 파일 형식을 교체하기 전에 설치기 부팅과 설치 후 일반 부팅에서 AUX가 어떻게 사용·갱신되는지 구분해 검증한다.
+
+## 8. 분석과 변경 관리 원칙
+
+- 소스로 확인한 반환값과 실행 중 실제 관측한 값을 구별한다.
+- 구현 특성과 실제 기준 환경에 대한 호환성 결함을 구별한다.
+- 실행 순서의 전후관계만으로 인과관계를 확정하지 않는다.
+- 입증되지 않은 설명은 미확인으로, 근거가 무너진 설명은 철회됨으로 기록한다.
+- 새로운 로그가 기존 결론과 충돌하면 조건을 대조하고 해당 항목을 갱신한다.
+- Apple ROM의 내부 디스어셈블리와 검증 분기 주소 목록은 공개 포팅 기록에 포함하지 않는다.
+- 실제 불일치 확인 전에 ROM, AUX 또는 BDIF 반환값을 임의로 변경하지 않는다.
+
+### 현재 종합 판정
+
+**확인됨:** ROM 로딩 경로와 CPU 초기화, CFG 구성, BDIF ROOT/AUX 저장장치 처리, 16KiB AUX 오프셋과 65,536섹터 용량, iOS·Android 신규 AUX 생성 결과의 동일성, USB 미노출 일반 부팅의 PSCI SYSTEM_RESET.
+
+**구현 확인됨:** USB 포트가 없는 경우 DEVID_USB 접근이 공통 BDIF 레지스터 처리 구문으로 내려가는 동작.
+
+**미확인:** USB 미존재 슬롯 응답과 Apple VZ 동작의 차이, 그 응답과 리셋의 인과관계, AUX 내용과 리셋의 인과관계, 두 순수 일반 부팅의 내부 리셋 경로 동일성.
+
+**철회됨:** ‘신규 AUX가 비어 있으므로 개인화 검증에 실패하고 리셋된다’는 확정적 주장.
+
+### 변경 이력
+
+- 2026-11-17: 부팅·장치 호환성 검증 기록 최초 작성.
+- 2026-11-17: 문서 전체 한국어화 및 검증 수준·기술적 표현 정정.
+
+이 문서는 기존 소스 및 실행 로그에 관한 분석 기록이다. 문서 수정 자체를 위해 ROM·디스크 이미지 또는 VM 실행 코드는 변경하지 않는다.

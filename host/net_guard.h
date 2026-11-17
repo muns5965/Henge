@@ -36,7 +36,10 @@ int hv_net_guard_engine_count(void);
 void hv_net_guard_reset(void);                                    /* empty the lists and the counters */
 void hv_net_guard_allow_local(const char *ip, uint16_t port);      /* an exact loopback endpoint, e.g. the private usbmuxd's */
 void hv_net_guard_allow_unix(const char *path);                    /* an exact AF_UNIX path */
-void hv_net_guard_allow_host(const char *name, uint16_t port);     /* a public host by name (approved requests only) */
+/* 0: registered or already registered; -1: invalid host/port or capacity exhausted.
+   Exact (name,port) duplicates are case-insensitive and do not consume another slot.
+   The caller MUST check the result before starting a restore that requires this host. */
+int hv_net_guard_allow_host(const char *name, uint16_t port);
 
 /* Why a connection is made. DEFAULT: the library's own link to the private usbmuxd (the registered local endpoints apply). FDR: a host:port the DEVICE named.
    HTTP: curl (TSS, URLAsset). For FDR and HTTP the registered local endpoints and unix paths are NOT consulted: they cannot reach the private usbmuxd. */

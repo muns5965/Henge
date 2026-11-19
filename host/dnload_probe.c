@@ -106,6 +106,40 @@ static int get_state(Ctx *c, const char *tag, int *state) {
     return r;
 }
 
+/* A6: one read-only re-discovery on the session A4/A5 changed into, after the guest came back online. Deliberately bypasses ctrl()/note_gone -- those
+   are tied to the ORIGINAL A4/A5 session-change bookkeeping (res->gone, session_before/after, gone_request, last_answered), and reusing them here would
+   let a second, unrelated session change overwrite that record. Any further session change seen while re-discovering is recorded only in
+   res->a6_gone_again. Sends at most: GET_CONFIGURATION, SET_CONFIGURATION(1), GET_CONFIGURATION, DFU GET_STATE -- nothing else, no retry. */
+static void try_a6(HvVirtioUsb *usb, FILE *out, HvDnloadResult *res, uint32_t new_session) {
+    res->a6_attempted = 1;
+    res->a6_state = -1;
+    uint32_t cur = 0;
+    if (!hv_vusb_online(usb, &cur) || cur != new_session) {
+        fprintf(out, "dnload probe: [A6] the new session is not there any more (stop)\n");
+        res->a6_gone_again = 1;
+        return;
+    }
+    uint8_t cfg = 0xff;
+    int r = hv_usb_control(usb, 0x80, 8, 0, 0, &cfg, 1, TIMEOUT_MS);
+    fprintf(out, "dnload probe: [A6] GET_CONFIGURATION -> %d%s\n", r, r < 0 ? " (stop)" : "");
+    if (r != 1) { if (r == HV_USB_EGONE) res->a6_gone_again = 1; return; }
+    if (cfg == 0) {
+        r = hv_usb_control(usb, 0x00, 9, 1, 0, NULL, 0, TIMEOUT_MS);
+        fprintf(out, "dnload probe: [A6] SET_CONFIGURATION(1) -> %d%s\n", r, r < 0 ? " (stop)" : "");
+        if (r < 0) { if (r == HV_USB_EGONE) res->a6_gone_again = 1; return; }
+        r = hv_usb_control(usb, 0x80, 8, 0, 0, &cfg, 1, TIMEOUT_MS);
+        fprintf(out, "dnload probe: [A6] GET_CONFIGURATION (recheck) -> %d%s\n", r, r < 0 ? " (stop)" : "");
+        if (r != 1) { if (r == HV_USB_EGONE) res->a6_gone_again = 1; return; }
+    }
+    if (cfg != 1) { fprintf(out, "dnload probe: [A6] configuration is not 1 (stop; no GET_STATE sent)\n"); return; }
+    res->a6_setup_ok = 1;
+    uint8_t st = 0xff;
+    r = hv_usb_control(usb, 0xA1, 5, 0, 0, &st, 1, TIMEOUT_MS);
+    fprintf(out, "dnload probe: [A6] DFU GET_STATE -> %d\n", r);
+    if (r == 1) { res->a6_state = st; fprintf(out, "dnload probe: [A6]   DFU state %u (%s)\n", st, hv_dfu_state_name(st)); }
+    else if (r == HV_USB_EGONE) res->a6_gone_again = 1;
+}
+
 int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_status, HvDnloadResult *resp) {
     HvDnloadResult res;
     memset(&res, 0, sizeof res);
@@ -187,10 +221,14 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
         res.a4_sent = 1;
         r = ctrl(&c, "A4", 0x21, 6, 0, 0, NULL, 0);
         res.a4_result = r;
-        if (r < 0) { fprintf(out, "dnload probe: [A4] the ABORT failed; no GET_STATE is sent after it (stop)\n"); res.stopped_at = 6; goto done; }
+        if (r < 0) { fprintf(out, "dnload probe: [A4] the ABORT failed; no GET_STATE is sent after it (stop)\n"); res.stopped_at = 6; goto a4_5_done; }
         r = get_state(&c, "A5", &res.a5_state);
-        if (r != 1) { res.stopped_at = 6; goto done; }
+        if (r != 1) { res.stopped_at = 6; goto a4_5_done; }
     }
+
+a4_5_done:
+    if (with_status >= HV_DNLOAD_A6 && res.gone && res.session_after >= 0)
+        try_a6(usb, out, &res, (uint32_t)res.session_after);
 
 done:
     res.requests = c.sent;
@@ -241,9 +279,18 @@ done:
         fprintf(out, "dnload probe: SESSION CHANGE summary: session %lld -> %lld (-1 = not on the bus); the request in flight or next was #%d (%s); the last answered request was %s.\n",
                 (long long)res.session_before, (long long)res.session_after, res.gone_request, res.gone_sent ? "it had been sent" : "it was not sent", last);
         fprintf(out, "dnload probe: SESSION CHANGE reading: the guest re-attached (a new session) at some point between those two requests. This run cannot say whether the request before it, "
-                     "the one in flight, or something the guest's own ROM did caused it. Nothing was sent to the new session.\n");
+                     "the one in flight, or something the guest's own ROM did caused it.%s\n", res.a6_attempted ? "" : " Nothing was sent to the new session.");
+        if (res.a6_attempted) {
+            if (res.a6_gone_again) fprintf(out, "dnload probe: A6 (added): one read-only re-discovery was attempted on the new session, but it changed again before finishing; nothing more was learned.\n");
+            else if (!res.a6_setup_ok) fprintf(out, "dnload probe: A6 (added): one read-only re-discovery was attempted on the new session; it did not answer GET_CONFIGURATION/SET_CONFIGURATION as expected, so no GET_STATE was sent.\n");
+            else if (res.a6_state >= 0) fprintf(out, "dnload probe: A6 (added): the new session re-discovered the device (configuration 1), DFU GET_STATE answered %d (%s).\n", res.a6_state, hv_dfu_state_name(res.a6_state));
+            else fprintf(out, "dnload probe: A6 (added): the new session re-discovered the device (configuration 1), but GET_STATE got no answer.\n");
+            fprintf(out, "dnload probe: A6 is read-only and the last thing sent: no ABORT, no DNLOAD, no retry, no second GET_STATE.\n");
+        } else if (with_status >= HV_DNLOAD_A6) {
+            fprintf(out, "dnload probe: A6 not attempted: the guest was not back online after the session change.\n");
+        }
     }
-    fprintf(out, "dnload probe: nothing further is sent. (CPU state: see the vmrun lines; it is context only.)\n");
+    fprintf(out, "dnload probe: nothing further is sent.%s (CPU state: see the vmrun lines; it is context only.)\n", res.a6_attempted ? " (A6 above is the last thing this run sends.)" : "");
     rv = res.stopped_at;
     if (resp) *resp = res;
     return rv;

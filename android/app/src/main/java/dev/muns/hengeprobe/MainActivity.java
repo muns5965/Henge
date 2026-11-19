@@ -355,6 +355,18 @@ public class MainActivity extends Activity {
                 .show());
         done.addView(a4Button);
 
+        final Button a6Button = new Button(this);
+        a6Button.setText("DFU 시험 A6: A0~A5 재현 + (세션이 바뀌면) 새 세션 재탐색 1회 (실제 ROM으로 전송)");
+        a6Button.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("실제 ROM에서 세션이 바뀌면 새 세션을 한 번 다시 조회합니다")
+                .setMessage("A0~A5(앞선 A4 시험과 동일: 리셋, 구성, GET_STATE, DNLOAD, GET_STATE, GET_STATUS, ABORT, GET_STATE)를 똑같이 재현합니다. "
+                        + "그 과정에서 USB 세션이 바뀌고 장치가 다시 온라인이면, 새 세션에 대해 GET_CONFIGURATION·필요하면 SET_CONFIGURATION(1)·GET_STATE를 딱 1회씩만 더 보내고 멈춥니다. "
+                        + "세션이 안 바뀌었거나 다시 온라인이 아니면 A4 시험과 똑같이 끝납니다. 재시도·ABORT·DNLOAD·두 번째 GET_STATE·Apple 서명 요청·IPSW 다운로드·복원은 하지 않습니다. 실행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("실행", (d, w) -> runVmrun(true, false, true, 6))
+                .show());
+        done.addView(a6Button);
+
         final Button selftestButton = new Button(this);
         selftestButton.setText("복원 도구 자체 시험 (앱 안에서 적재·스레드·loopback, 잘못된 IPSW 3종)");
         selftestButton.setOnClickListener(v -> runRestoreSelftest());
@@ -1243,7 +1255,8 @@ public class MainActivity extends Activity {
         runVmrun(installer, irecvIn, dnload, a3 ? 3 : 2);
     }
 
-    /** stage (with dnload): 2 = --dnload-probe (A0-A2), 3 = --dnload-probe-a3 (+ one GET_STATUS), 4 = --dnload-probe-a4 (+ one ABORT and one GET_STATE). */
+    /** stage (with dnload): 2 = --dnload-probe (A0-A2), 3 = --dnload-probe-a3 (+ one GET_STATUS), 4 = --dnload-probe-a4 (+ one ABORT and one GET_STATE),
+        6 = --dnload-probe-a6 (same A0-A5; if that ends in a session change with the guest back online, one read-only re-discovery, see host/dnload_probe.h). */
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean tss = tssMode;
         tssMode = false;
@@ -1309,7 +1322,7 @@ public class MainActivity extends Activity {
                     if (!g0) { cmd.add("--make-blank"); cmd.add("--recreate-blank"); cmd.add("--psci-log"); } // G0 never creates, recreates or removes storage
                     if (g0) { File g0Work = new File(getFilesDir(), "rs_g0"); g0Work.mkdirs(); cmd.add("--install-g0"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g0Work.getAbsolutePath()); }
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
-                    if (installer && !pf && !g0) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer && !pf && !g0) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 6 ? "--dnload-probe-a6" : stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     else if (usbP && !pf && !g0) cmd.add("--usb-probe"); // new button: installer stays 0; only --usb-probe is added (never --irecv-probe/--dnload-probe/--tss-probe)
                     if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
                     if (usbP) cfg.put("seconds", "5"); // same polling-loop risk as usbN, plus a little extra time for the probe's reset+descriptor exchange and any ROM reaction after

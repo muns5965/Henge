@@ -144,11 +144,14 @@ int main(int argc, char **argv) {
         {"a4-a2-stall", "stall-after", 0, 4, 0, 2, 0, 0, -1}, {"a4-a2-silent", "silent-after", 0, 4, 0, 2, 0, 0, -1},
         /* session changes (the ROM re-attaches: session + 1, queues dropped). A4 reattach = what the phone showed: ABORT answered, the GET_STATE after it lost. */
         {"a4-reattach", "idle-after", 0, 6, 1, 2, 5, 1, -1},   {"a4-abort-gone", "idle-after", 0, 6, 1, 2, 6, 1, -1},   {"setup-gone", "idle-after", 0, 1, 0, 2, 8, 0, -1},
+        /* A6 (level 3 = HV_DNLOAD_A6): same A4-reattach session change, but now with one read-only re-discovery attempted on the new session. */
+        {"a6-reattach-ok", "idle-after", 0, 6, 1, 3, 5, 1, -1},
     };
     int with_status = 0, a3_ret = 0, a3_gs = 0, a4_abort = 0, a4_a5 = -1, a4_mode = 0;
     g_sc = name;
     for (unsigned i = 0; i < sizeof a3 / sizeof a3[0]; i++)
-        if (!strcmp(name, a3[i].name)) { g_sc = a3[i].base, g_gs_mode = a3[i].gs_mode, a3_ret = a3[i].ret, a3_gs = a3[i].gs_count, with_status = a3[i].level, g_abort_mode = a3[i].abort_mode, a4_abort = a3[i].abort_count, a4_a5 = a3[i].a5, a4_mode = a3[i].level == 2; }
+        if (!strcmp(name, a3[i].name)) { g_sc = a3[i].base, g_gs_mode = a3[i].gs_mode, a3_ret = a3[i].ret, a3_gs = a3[i].gs_count, with_status = a3[i].level, g_abort_mode = a3[i].abort_mode, a4_abort = a3[i].abort_count, a4_a5 = a3[i].a5, a4_mode = a3[i].level >= 2; }
+    int a6_mode = with_status >= HV_DNLOAD_A6;
     g_cfg = !strcmp(g_sc, "configured") ? 1 : 0;
     g_state = !strcmp(g_sc, "not-idle") ? 8 : 2;
     g_u = calloc(1, sizeof *g_u);
@@ -170,7 +173,7 @@ int main(int argc, char **argv) {
     int bad = r != want;
     /* things that must never be sent, in any scenario */
     if (count(0xA1, 3) != (with_status ? a3_gs : 0) || count(0x21, 6) != a4_abort || count(0x21, 4) || count(0xA1, 2) || count(0x21, 0) || count(0xA1, 0xff) || g_resets > 1) { printf("FORBIDDEN request seen (a GET_STATUS beyond the one allowed, ABORT/CLR_STATUS/UPLOAD/DETACH or a second reset)\n"); bad = 1; }
-    if (g_n > (a4_mode ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS)) { printf("more than %d requests\n", HV_DNLOAD_MAX_REQUESTS); bad = 1; }
+    if (g_n > (a4_mode ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS) + (a6_mode ? 4 : 0)) { printf("more than %d requests\n", HV_DNLOAD_MAX_REQUESTS); bad = 1; }
     int dn = count(0x21, 1);
     if (dn > 1) { printf("more than one DNLOAD\n"); bad = 1; }
     for (int i = 0; i < g_n; i++) if (g_log[i].rt == 0x21 && g_log[i].rq == 1) {
@@ -191,13 +194,14 @@ int main(int argc, char **argv) {
         if (a3_gs == 1) {
             int tail = 0, abort_n = a4_abort, a5_n = a4_abort && g_abort_mode != 3 && g_abort_mode != 4 && g_abort_mode != 6;
             tail = abort_n + a5_n;
-            int b = g_n - tail; /* index just past GET_STATUS */
+            int a6_tail = a6_mode && res.a6_attempted ? 2 : 0; /* A6's GET_CONFIGURATION + GET_STATE, appended after everything else */
+            int b = g_n - tail - a6_tail; /* index just past GET_STATUS */
             if (b < 4 || !(g_log[b - 4].rt == 0xA1 && g_log[b - 4].rq == 5 && g_log[b - 3].rt == 0x21 && g_log[b - 3].rq == 1 && g_log[b - 2].rt == 0xA1 && g_log[b - 2].rq == 5 && g_log[b - 1].rt == 0xA1 && g_log[b - 1].rq == 3 && g_log[b - 1].len == 6)) {
                 printf("A3 run: the requests are not ... GET_STATE, DNLOAD, GET_STATE, GET_STATUS(6)\n"); bad = 1;
             }
             if (abort_n && !(g_n > b && g_log[b].rt == 0x21 && g_log[b].rq == 6 && g_log[b].len == 0 && g_log[b].dlen == 0)) { printf("A4: ABORT is not the request right after GET_STATUS\n"); bad = 1; }
             if (a5_n && !(g_log[g_n - 1].rt == 0xA1 && g_log[g_n - 1].rq == 5)) { printf("A5: GET_STATE is not the last request\n"); bad = 1; }
-            if (g_n != 7 + tail) { printf("run: %d requests seen, %d expected\n", g_n, 7 + tail); bad = 1; }
+            if (g_n != 7 + tail + a6_tail) { printf("run: %d requests seen, %d expected\n", g_n, 7 + tail + a6_tail); bad = 1; }
             if (a4_mode && res.a4_sent != (a4_abort ? 1 : 0)) { printf("a4_sent %d, expected %d\n", res.a4_sent, a4_abort); bad = 1; }
             if (a4_mode && a4_abort && res.a5_state != a4_a5) { printf("A5 state %d, expected %d\n", res.a5_state, a4_a5); bad = 1; }
             if (res.a3_sent != 1) { printf("A3 not recorded as sent\n"); bad = 1; }
@@ -221,11 +225,24 @@ int main(int argc, char **argv) {
                        res.gone_request, wreq, res.last_answered, wlast, (long long)res.session_before, (long long)res.session_after);
                 bad = 1;
             }
-            if (g_n != wreq) { printf("%d requests seen, expected %d (nothing may follow a session change)\n", g_n, wreq); bad = 1; }
+            int a6_extra = a6_mode && res.a6_attempted ? 2 : 0; /* GET_CONFIGURATION + GET_STATE; configuration is already 1 here, so no SET_CONFIGURATION */
+            if (g_n != wreq + a6_extra) { printf("%d requests seen, expected %d (nothing may follow a session change, except the one A6 re-discovery)\n", g_n, wreq + a6_extra); bad = 1; }
             if (g_abort_mode == 5 && (res.a4_result != 0 || res.a5_state != -1 || g_log[g_n - 1].rt != 0xA1 || g_log[g_n - 1].rq != 5)) { printf("reattach: ABORT should be answered and the A5 state absent\n"); bad = 1; }
             if (g_abort_mode == 6 && (res.a4_result != HV_USB_EGONE || res.a5_state != -1 || count(0xA1, 5) != 2)) { printf("abort-gone: ABORT should end in EGONE and no GET_STATE follow\n"); bad = 1; }
             if (g_abort_mode == 8 && (res.stopped_at != 1 || g_n != 1)) { printf("setup-gone: should stop in the setup after one request\n"); bad = 1; }
             if (count(0x00, 9) != (g_abort_mode == 8 ? 0 : 1) || count(0x21, 1) != (g_abort_mode == 8 ? 0 : 1)) { printf("unexpected requests around a session change\n"); bad = 1; }
+            /* A6: only reached when the stage asked for it, the original A4/A5 ended in a session change (gone=1), and the guest came back online
+               (session_after >= 0) -- true here only for a6_mode with g_abort_mode == 5 (the "reattach" stand-in). a6_gone_again stays 0 and a6_state
+               echoes the stand-in's GET_STATE answer (2, from the ABORT handler's g_state = 2) since nothing in this scenario changes the session again. */
+            if (a6_mode) {
+                int want_a6 = res.session_after >= 0; /* mirrors hv_dnload_probe_run's own condition for calling try_a6 */
+                if (res.a6_attempted != want_a6) { printf("a6_attempted %d, expected %d\n", res.a6_attempted, want_a6); bad = 1; }
+                if (want_a6 && (!res.a6_setup_ok || res.a6_gone_again || res.a6_state != 2)) {
+                    printf("A6 re-discovery not as expected: setup_ok %d gone_again %d state %d (want setup_ok 1, gone_again 0, state 2)\n",
+                           res.a6_setup_ok, res.a6_gone_again, res.a6_state);
+                    bad = 1;
+                }
+            } else if (res.a6_attempted) { printf("A6 was attempted although the stage did not ask for it\n"); bad = 1; }
         }
     }
     if (!strcmp(g_sc, "not-idle") && (dn != 0 || count(0xA1, 5) != 1)) { printf("data sent although the device was not in dfuIDLE\n"); bad = 1; }

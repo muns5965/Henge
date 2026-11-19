@@ -14,7 +14,9 @@
      A2     DFU GET_STATE                                   the state right after A1 (GET_STATE only reads; GET_STATUS, which can advance the state, is not sent)
    Never sent: GET_STATUS, ABORT, CLR_STATUS, a zero-length DNLOAD, a second block, UPLOAD, DETACH, a reset after the setup. Any error, STALL, timeout or
    unexpected state stops the sequence at once; nothing is retried. The result says what the device answered; it does not say the ROM accepted the bytes as
-   firmware. An OUT transfer's byte count is the request's wLength, not a count the device reported.
+   firmware. An OUT transfer's byte count is the request's wLength, not a count the device reported. The one exception is HV_DNLOAD_A6 (see below): if A4/A5
+   ends in a session change with the guest back online, it adds exactly one read-only re-discovery (A6) on the new session; nothing else about this
+   contract changes.
    Returns 0 when A0-A2 (and A3 if asked) all got an answer (read the printed states), the number of the stage that stopped it (1 setup, 2 A0, 3 A1, 4 A2, 5 A3, 6 A4/A5), or -1 if the guest
    never came on the bus. */
 typedef struct {
@@ -44,6 +46,15 @@ typedef struct {
     int last_answered;        /* 1-based number of the last request the device answered (STALL counts as an answer); 0 = none */
     int64_t session_before;   /* the session the sequence started in */
     int64_t session_after;    /* the session read right after the change was noticed; -1 = the guest was not on the bus */
+    /* stage A6 (only with HV_DNLOAD_A6, and only when A4/A5 ended in a session change with the guest back online -- gone=1 and session_after>=0): ONE
+       read-only re-discovery on the NEW session -- GET_CONFIGURATION, SET_CONFIGURATION(1) only if needed, GET_CONFIGURATION recheck, then ONE DFU
+       GET_STATE. Nothing else is sent: no ABORT, no DNLOAD, no retry, no second GET_STATE. This does not touch gone/session_before/session_after/
+       last_answered above, which still describe the original A4/A5 session change; a second session change seen while re-discovering is recorded
+       separately here (a6_gone_again) and is not folded into those fields. */
+    int a6_attempted;    /* 1 = re-discovery was attempted on the new session */
+    int a6_setup_ok;     /* 1 = GET_CONFIGURATION ended up reporting configuration 1 */
+    int a6_state;        /* the GET_STATE answer on the new session; -1 = no answer / not reached */
+    int a6_gone_again;   /* 1 = the session changed yet again while re-discovering; a6_state stays -1 */
 } HvDnloadResult;
 #define HV_DNLOAD_MAX_REQUESTS 8
 #define HV_DNLOAD_MAX_REQUESTS_A4 9 /* A0-A3 use 7, ABORT and the GET_STATE after it make 9; only the A4 mode has this limit */
@@ -51,14 +62,17 @@ typedef struct {
 #define HV_DNLOAD_A2 0 /* A0-A2 */
 #define HV_DNLOAD_A3 1 /* + one GET_STATUS */
 #define HV_DNLOAD_A4 2 /* + one ABORT and one GET_STATE (A5) */
+#define HV_DNLOAD_A6 3 /* + if A4/A5 saw a session change and the guest is back online: one read-only re-discovery on the new session (A6, see HvDnloadResult) */
 
 /* With with_status = 1 the sequence continues with A3 (see HvDnloadResult) and nothing after it: the second GET_STATUS, ABORT, CLR_STATUS, a zero-length
    DNLOAD, a second block are never sent, whatever GET_STATUS answers. Stopped-at code 5 = A3 not sent (A2 was not 5) or failed. The request limit
    is still HV_DNLOAD_MAX_REQUESTS (A0-A3 use 7). */
 int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_status, HvDnloadResult *res);
 
-/* The same, on a detached thread (vmrun --dnload-probe, --dnload-probe-a3 = HV_DNLOAD_A3, --dnload-probe-a4 = HV_DNLOAD_A4). With HV_DNLOAD_A4 the request
-   limit is HV_DNLOAD_MAX_REQUESTS_A4; ABORT is never sent in the other modes, and nothing follows the GET_STATE after it: no CLR_STATUS, no retry. */
+/* The same, on a detached thread (vmrun --dnload-probe, --dnload-probe-a3 = HV_DNLOAD_A3, --dnload-probe-a4 = HV_DNLOAD_A4, --dnload-probe-a6 = HV_DNLOAD_A6).
+   With HV_DNLOAD_A4 the request limit is HV_DNLOAD_MAX_REQUESTS_A4; ABORT is never sent in the other modes, and nothing follows the GET_STATE after it: no
+   CLR_STATUS, no retry. HV_DNLOAD_A6 runs the identical A0-A5 sequence and, only if that ends in a session change with the guest back online, adds the
+   one read-only A6 re-discovery described in HvDnloadResult; it changes nothing about A0-A5 itself. */
 void hv_dnload_probe_start(HvVirtioUsb *usb, int with_status);
 
 #endif

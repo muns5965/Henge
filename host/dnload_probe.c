@@ -19,6 +19,7 @@ typedef struct {
     uint32_t session;        /* the session the sequence runs in; any other session ends it */
     HvDnloadResult *res;
     char last_tag[8];        /* stage name of the last answered request */
+    int a6_possible;         /* with_status >= HV_DNLOAD_A6: note_gone()'s message should say so instead of claiming nothing follows */
 } Ctx;
 
 static double now_ms(void) { /* monotonic, with sub-millisecond resolution */
@@ -56,8 +57,14 @@ static void note_gone(Ctx *c, const char *tag, int sent) {
     else fprintf(c->out, "dnload probe: [%s]   no request had been answered yet\n", tag);
     if (on) fprintf(c->out, "dnload probe: [%s]   session %u -> %u (guest on the bus)\n", tag, c->session, now_s);
     else fprintf(c->out, "dnload probe: [%s]   session %u -> guest not on the bus\n", tag, c->session);
-    fprintf(c->out, "dnload probe: [%s]   the host cannot tell when between those two points the guest left or which request, if any, caused it; "
-                    "the new session is not queried (no descriptor read, no GET_STATE, no reset, nothing more is sent)\n", tag);
+    /* A6 only ever runs after this exact point when the change happened at A4 or A5 -- an earlier stage (setup/A0/A1/A2/A3) stops the sequence before
+       reaching the A6 check (see hv_dnload_probe_run's a4_5_done:), so this message must not claim otherwise for those. */
+    if (c->a6_possible && on && (!strcmp(tag, "A4") || !strcmp(tag, "A5")))
+        fprintf(c->out, "dnload probe: [%s]   the host cannot tell when between those two points the guest left or which request, if any, caused it; "
+                        "one read-only re-discovery (A6) is attempted next on the new session (see below).\n", tag);
+    else
+        fprintf(c->out, "dnload probe: [%s]   the host cannot tell when between those two points the guest left or which request, if any, caused it; "
+                        "the new session is not queried (no descriptor read, no GET_STATE, no reset, nothing more is sent)\n", tag);
 }
 
 /* One control request, logged with everything it carried. Refuses (-100) past the request limit or the total time limit.
@@ -144,7 +151,7 @@ int hv_dnload_probe_run(HvVirtioUsb *usb, FILE *out, int wait_ms, int with_statu
     HvDnloadResult res;
     memset(&res, 0, sizeof res);
     res.a0_state = res.a2_state = res.a5_state = -1;
-    Ctx c = {.u = usb, .out = out, .t0 = now_ms(), .limit = with_status >= HV_DNLOAD_A4 ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS};
+    Ctx c = {.u = usb, .out = out, .t0 = now_ms(), .limit = with_status >= HV_DNLOAD_A4 ? HV_DNLOAD_MAX_REQUESTS_A4 : HV_DNLOAD_MAX_REQUESTS, .a6_possible = with_status >= HV_DNLOAD_A6};
     int rv = 0;
     int64_t s = hv_usb_wait_online(usb, wait_ms);
     if (s < 0) {
@@ -255,7 +262,7 @@ done:
             fprintf(out, "dnload probe: A3 bStatus=%d (%s) bwPollTimeout=%d ms bState=%d (%s) iString=%d\n", res.a3_status, hv_dfu_status_name(res.a3_status), res.a3_poll_ms, res.a3_state, hv_dfu_state_name(res.a3_state), res.a3_istring);
             fprintf(out, "dnload probe: reading: these are the values GET_STATUS returned, nothing more. bState after GET_STATUS can differ from what GET_STATE showed because GET_STATUS can advance the state; no second GET_STATUS is sent, whatever it says. Whether state 5 is normal for this ROM, or the ROM accepted the 16 bytes, is not answered by this.\n");
         }
-        fprintf(out, "dnload probe: A3 is the last request: no second GET_STATUS, no ABORT, no CLR_STATUS, no zero-length DNLOAD, no second block was sent.\n");
+        if (!res.a4_sent) fprintf(out, "dnload probe: A3 is the last request: no second GET_STATUS, no ABORT, no CLR_STATUS, no zero-length DNLOAD, no second block was sent.\n");
     }
     if (res.a4_sent) {
         fprintf(out, "dnload probe: A4 DFU ABORT: transfer returned %d%s\n", res.a4_result, res.a4_result < 0 ? " (failed; no GET_STATE was sent after it)" : " (the device answered the request)");

@@ -300,6 +300,11 @@ public class MainActivity extends Activity {
         installerButton.setOnClickListener(v -> runVmrun(true));
         done.addView(installerButton);
 
+        final Button irecvVerboseButton = new Button(this);
+        irecvVerboseButton.setText("복원 라이브러리 USB 연결 시험 + 상세 로그 (log=3, 30초)");
+        irecvVerboseButton.setOnClickListener(v -> { verboseMode = true; runVmrun(true, true); });
+        done.addView(irecvVerboseButton);
+
         final Button irecvButton = new Button(this);
         irecvButton.setText("복원 라이브러리 USB 연결 시험 (libirecovery로 장치 열기, 30초)");
         irecvButton.setOnClickListener(v -> runVmrun(true, true));

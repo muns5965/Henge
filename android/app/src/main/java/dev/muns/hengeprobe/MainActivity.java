@@ -407,6 +407,17 @@ public class MainActivity extends Activity {
         tssNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         done.addView(tssNote);
 
+        final Button tssLpolButton = new Button(this);
+        tssLpolButton.setText("TSS 연쇄 확인: AP→LocalPolicy→RecoveryOS (Apple 서버로 최대 3회 전송)");
+        tssLpolButton.setOnClickListener(v -> confirmTssLpolProbe());
+        done.addView(tssLpolButton);
+        final TextView tssLpolNote = new TextView(this);
+        tssLpolNote.setText("위 TSS 버튼과 같은 장치 읽기로 시작하지만, AP(메인) 서명이 발급되면 이어서 LocalPolicy 요청, 그것도 받아들여지면 RecoveryOS root ticket 요청까지 자동으로 진행합니다. "
+                + "각 요청은 정확히 1회이며 재시도가 없고, 받아들여지지 않은 첫 단계에서 즉시 멈춥니다(다음 단계로 넘어가지 않음). 누르면 먼저 확인 창이 나옵니다. "
+                + "받은 서명 값·ECID·nonce는 저장·표시하지 않습니다. 복원·IPSW 전체 다운로드·펌웨어 전송은 하지 않습니다.");
+        tssLpolNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        done.addView(tssLpolNote);
+
         final Button dlButton = new Button(this);
         dlButton.setText("IPSW 다운로드 (전체 15.66 GiB, 이어받기)");
         dlButton.setOnClickListener(v -> confirmIpswDownload());
@@ -1260,6 +1271,8 @@ public class MainActivity extends Activity {
     private void runVmrun(final boolean installer, final boolean irecvIn, final boolean dnload, final int stage) {
         final boolean tss = tssMode;
         tssMode = false;
+        final boolean tssLpol = tssLpolMode;
+        tssLpolMode = false;
         final boolean usbN = usbNormalMode;
         usbNormalMode = false;
         final boolean usbP = usbProbeMode;
@@ -1275,8 +1288,8 @@ public class MainActivity extends Activity {
         final boolean irecv = irecvIn;
         // HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER (host/vmrun.c diag_probe_install): read-only diagnostic logging, normal-boot family only.
         // Read here (not consumed/cleared, unlike the one-shot mode flags above) so each checkbox reflects "next normal-boot run", not "next run of any kind".
-        final boolean diag = !installer && !tss && !pf && !g0 && !irecv && !dnload && diagProbeCheckBox != null && diagProbeCheckBox.isChecked();
-        final boolean diagCaller = !installer && !tss && !pf && !g0 && !irecv && !dnload && diagProbeCallerCheckBox != null && diagProbeCallerCheckBox.isChecked();
+        final boolean diag = !installer && !tss && !tssLpol && !pf && !g0 && !irecv && !dnload && diagProbeCheckBox != null && diagProbeCheckBox.isChecked();
+        final boolean diagCaller = !installer && !tss && !tssLpol && !pf && !g0 && !irecv && !dnload && diagProbeCallerCheckBox != null && diagProbeCallerCheckBox.isChecked();
         if (running) return;
         running = true;
         setButtons(false);
@@ -1291,9 +1304,9 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, g0 ? "libvmrung0.so" : pf ? "libvmrunpreflight.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                File exe = new File(libDir, g0 ? "libvmrung0.so" : pf ? "libvmrunpreflight.so" : tssLpol ? "libvmruntsslpol.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
                 final File pfIpsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw");
-                if (!exe.exists()) acc.append(g0 ? "G0 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                if (!exe.exists()) acc.append(g0 ? "G0 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tssLpol ? "TSS 연쇄 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
                 else if ((pf || g0) && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
                 else if (g0 && (!disk.isFile() || !aux.isFile())) acc.append("디스크 또는 aux 파일이 아직 없습니다(").append(disk.getName()).append(", ").append(aux.getName()).append("). G0은 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요. 아무것도 하지 않았습니다.\n");
                 else if ((rom = findLocalRom(acc)) == null && !confirmRomDownload(acc)) {
@@ -1322,7 +1335,7 @@ public class MainActivity extends Activity {
                     if (!g0) { cmd.add("--make-blank"); cmd.add("--recreate-blank"); cmd.add("--psci-log"); } // G0 never creates, recreates or removes storage
                     if (g0) { File g0Work = new File(getFilesDir(), "rs_g0"); g0Work.mkdirs(); cmd.add("--install-g0"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g0Work.getAbsolutePath()); }
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
-                    if (installer && !pf && !g0) cmd.add(tss ? "--tss-probe" : dnload ? (stage >= 6 ? "--dnload-probe-a6" : stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    if (installer && !pf && !g0) cmd.add(tssLpol ? "--tss-probe-lpol" : tss ? "--tss-probe" : dnload ? (stage >= 6 ? "--dnload-probe-a6" : stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
                     else if (usbP && !pf && !g0) cmd.add("--usb-probe"); // new button: installer stays 0; only --usb-probe is added (never --irecv-probe/--dnload-probe/--tss-probe)
                     if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
                     if (usbP) cfg.put("seconds", "5"); // same polling-loop risk as usbN, plus a little extra time for the probe's reset+descriptor exchange and any ROM reaction after
@@ -1341,7 +1354,7 @@ public class MainActivity extends Activity {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
                         switch (er.status) {
                             case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
-                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || pf || g0 ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || tssLpol || pf || g0 ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
                             default:
                                 acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
                                    .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
@@ -1356,7 +1369,7 @@ public class MainActivity extends Activity {
                     File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
                     cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
                     java.util.List<String> shown = new java.util.ArrayList<>(cmd);
-                    if (tss || pf || g0) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
+                    if (tss || tssLpol || pf || g0) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
                     acc.append("명령: ").append(android.text.TextUtils.join(" ", shown)).append('\n');
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
@@ -1380,7 +1393,7 @@ public class MainActivity extends Activity {
                     final boolean[] textFull = {false};
                     final java.util.ArrayList<String> g0Kept = new java.util.ArrayList<>();   // G0 only: the result lines for the verdict, kept apart from text (2 MB cap) and the screen ring
                     final boolean[] g0Overflow = {false};
-                    final RunLog runLog = (tss || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbP ? "normal_usb_probe" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    final RunLog runLog = (tss || tssLpol || pf || g0) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbP ? "normal_usb_probe" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
@@ -1436,7 +1449,7 @@ public class MainActivity extends Activity {
                     if (!done) acc.append(g0 ? "G0 FAILED: 제한 시간 초과로 프로세스 강제 종료를 요청했습니다(destroyForcibly). 프로세스 종료 확인: " + (killConfirmed ? "확인됨" : "5초 안에 확인하지 못함")
                                             + ". 복원 세션 및 자원 정리 완료 여부는 확인하지 못했습니다 — 통과가 아닙니다.\n" : "vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer && !dnload && !tss && !pf && !g0) { // the dnload probe does not read the DFU string, so there is nothing to compare
+                    if (installer && !dnload && !tss && !tssLpol && !pf && !g0) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));
@@ -1783,6 +1796,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean tssMode;
+    private boolean tssLpolMode;   // set by the TSS-chain (AP+LocalPolicy+RecoveryOS) button; read and cleared by runVmrun
     private boolean preflightStageA;
     private boolean usbNormalMode;   // set by the USB-on-normal-boot experiment button; read and cleared by runVmrun
     private boolean usbProbeMode;    // set by the USB-probe-on-normal-boot button (adds --usb-probe without entering installer); read and cleared by runVmrun
@@ -1803,6 +1817,27 @@ public class MainActivity extends Activity {
                 + "결과가 '서명 발급'이어도 복원 성공을 뜻하지 않습니다(복원에는 요청이 더 필요합니다).\n\n"
                 + "IPSW 전체 다운로드, 펌웨어 전송, 복원은 하지 않습니다.")
             .setPositiveButton("전송", (d, w) -> { tssMode = true; runVmrun(true, false, false, 2); })
+            .setNegativeButton("취소", null)
+            .show();
+    }
+
+    /** The confirmation before anything leaves the phone: says exactly which of the (up to) three requests are sent, in order, and that the chain
+        stops at the first one not accepted. Cancel sends nothing. */
+    private void confirmTssLpolProbe() {
+        if (running) return;
+        new AlertDialog.Builder(this)
+            .setTitle("Apple 서명 서버로 최대 3회 전송합니다 (AP → LocalPolicy → RecoveryOS)")
+            .setMessage("대상: macOS Sequoia 15.6.1 (24G90), 가상 Mac(칩 0xFE00·보드 0x20)의 Customer Erase Install 구성\n\n"
+                + "먼저 IPSW에서 BuildManifest만 Range 요청으로 읽습니다(최대 24회·4 MiB, 파일 저장 없음).\n\n"
+                + "Apple(gs.apple.com, HTTPS·인증서 검증)로 나가는 정보, 순서대로:\n"
+                + "1) AP(메인) 서명 요청 — 발급되어야만 다음 단계로 진행\n"
+                + "2) LocalPolicy 요청 — AP 티켓 해시·고정된 빈 로컬 정책 파일 해시 포함, 받아들여져야만 다음 단계로 진행\n"
+                + "3) RecoveryOS root ticket 요청\n\n"
+                + "각 요청은 정확히 1회이며 자동 재시도가 없고, 받아들여지지 않은 첫 단계에서 즉시 멈춥니다. "
+                + "이 가상 Mac의 ECID·ROM이 알려준 APNonce·SEPNonce·해당 빌드 구성의 구성요소 해시·이 폰의 IP 주소(접속 자체에 따름)가 매 요청에 함께 나갑니다. "
+                + "받은 서명 값과 ECID·nonce는 저장하거나 화면에 표시하지 않습니다. 이 결과가 모두 '수락'이어도 복원 성공을 뜻하지 않습니다(펌웨어 전송·재연결·RecoveryOS 부팅은 이 시험 밖입니다).\n\n"
+                + "IPSW 전체 다운로드, 펌웨어 전송, 복원은 하지 않습니다.")
+            .setPositiveButton("전송", (d, w) -> { tssLpolMode = true; runVmrun(true, false, false, 2); })
             .setNegativeButton("취소", null)
             .show();
     }

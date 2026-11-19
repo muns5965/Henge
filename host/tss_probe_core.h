@@ -19,4 +19,11 @@ typedef struct {
     const char *variant;            /* NULL: "Customer Erase Install (IPSW)" */
 } HvTssProbeCfg;
 int hv_tss_probe_core(const HvTssProbeCfg *cfg, FILE *out);
+
+/* Same inputs, but after the AP (main) ticket is issued it continues on, unretried, to the LocalPolicy request and then the RecoveryOS-root-ticket
+   request (mirroring idevicerestore.c's get_local_policy_tss_response()/get_recoveryos_root_ticket_tss_response()), stopping at the first stage that is
+   not OK. Returns 0 if all three stages were sent and answered, 1 if sending stopped on a stage that was answered but not accepted (or send=0), 2 if
+   nothing was sent at all (manifest/identity/request-build failure). Never stores or prints the ECID, nonces, the local-policy file's hash, or any
+   ticket's content - only CLASS/length. */
+int hv_tss_probe_core_chain(const HvTssProbeCfg *cfg, FILE *out);
 #endif

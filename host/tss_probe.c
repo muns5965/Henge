@@ -14,7 +14,7 @@ static volatile int g_done;
 int hv_tss_probe_finished(void) { return g_done; }
 
 static void *thread_main(void *arg) {
-    struct { HvVirtioUsb *u; uint64_t ecid; } *a = arg;
+    struct { HvVirtioUsb *u; uint64_t ecid; int chain; } *a = arg;
     FILE *out = stdout;
     fprintf(out, "tss probe: waiting for the guest on the virtual USB bus\n");
     int64_t sess = hv_usb_wait_online(a->u, 120000);
@@ -37,8 +37,9 @@ static void *thread_main(void *arg) {
     if (!ecid_ok || !apl || !sepl) { fprintf(out, "tss probe: without the ROM's own ECID and both nonces nothing is sent\n"); goto done; }
     HvTssProbeCfg c; memset(&c, 0, sizeof c);
     c.ipsw_url = IPSW_URL; c.ecid = a->ecid; c.ap_nonce = ap; c.ap_len = apl; c.sep_nonce = sep; c.sep_len = sepl; c.send = 1;
-    int rc = hv_tss_probe_core(&c, out);
-    fprintf(out, "tss probe: finished, result code %d (0 = ticket issued, 1 = sent and not issued, 2 = nothing sent)\n", rc);
+    int rc = a->chain ? hv_tss_probe_core_chain(&c, out) : hv_tss_probe_core(&c, out);
+    fprintf(out, "tss probe: finished, result code %d (0 = %s, 1 = sent and not accepted, 2 = nothing sent)\n", rc,
+            a->chain ? "AP+LocalPolicy+RecoveryOS all accepted" : "ticket issued");
     memset(ap, 0, sizeof ap); memset(sep, 0, sizeof sep);
 done:
     g_done = 1;
@@ -47,11 +48,14 @@ done:
     return NULL;
 }
 
-void hv_tss_probe_start(HvVirtioUsb *usb, uint64_t ecid) {
-    struct { HvVirtioUsb *u; uint64_t ecid; } *a = malloc(sizeof *a);
+static void start_common(HvVirtioUsb *usb, uint64_t ecid, int chain) {
+    struct { HvVirtioUsb *u; uint64_t ecid; int chain; } *a = malloc(sizeof *a);
     if (!a) return;
-    a->u = usb, a->ecid = ecid;
+    a->u = usb, a->ecid = ecid, a->chain = chain;
     pthread_t t;
     if (pthread_create(&t, NULL, thread_main, a) != 0) { free(a); return; }
     pthread_detach(t);
 }
+
+void hv_tss_probe_start(HvVirtioUsb *usb, uint64_t ecid) { start_common(usb, ecid, 0); }
+void hv_tss_probe_lpol_start(HvVirtioUsb *usb, uint64_t ecid) { start_common(usb, ecid, 1); }

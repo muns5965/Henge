@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
     HvVmConfig cfg = {.ram_mb = 2048, .ncpus = 2, .aux_offset = 16384, .no_net = 1, .no_sound = 1};
     double seconds = 30;
     const char *snap = NULL;
-    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0, dnload_a6 = 0, tss_probe = 0;
+    int make_blank = 0, recreate_blank = 0, psci_log = 0, usb_probe = 0, irecv_probe = 0, dnload_probe = 0, dnload_a3 = 0, dnload_a4 = 0, dnload_a6 = 0, tss_probe = 0, tss_probe_lpol = 0;
     const char *pf_ipsw = NULL, *pf_work = ".", *g0_ipsw = NULL;
     int pf_stage = 0;
     unsigned long long disk_gb = 8;
@@ -246,6 +246,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--dnload-probe-a3")) dnload_probe = dnload_a3 = 1; /* A0-A2 plus ONE GET_STATUS (see host/dnload_probe.h) */
         else if (!strcmp(a, "--dnload-probe")) dnload_probe = 1; /* stage A0-A2 of the DFU download test (see host/dnload_probe.h); a vmrun built with HV_IRECV_PROBE */
         else if (!strcmp(a, "--tss-probe")) tss_probe = 1; /* needs a vmrun built with HV_TSS_PROBE: ONE request to Apple's TSS server, see host/tss_probe.h */
+        else if (!strcmp(a, "--tss-probe-lpol")) tss_probe = tss_probe_lpol = 1; /* needs a vmrun built with HV_TSS_PROBE: AP, then (only if accepted) LocalPolicy, then (only if accepted) RecoveryOS root ticket - ONE attempt each, stops at the first that is not accepted, see host/tss_probe.h */
         else if (!strcmp(a, "--irecv-probe")) irecv_probe = 1; /* open the USB device through libirecovery (needs a vmrun built with HV_IRECV_PROBE); sets the configuration, sends no firmware */
         else if (!strcmp(a, "--restore-preflight") && more) pf_ipsw = argv[++i]; /* needs a vmrun built with HV_RESTORE_PREFLIGHT: the real restore tool up to its no-action stop (host/restore_preflight.h); asks Apple nothing */
         else if (!strcmp(a, "--restore-preflight-stop-a")) pf_stage = 1; /* with --restore-preflight: stop A (before the root filesystem step) instead of FLAG_NOACTION */
@@ -254,7 +255,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--disk-gb") && more) disk_gb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(a, "--installer")) cfg.installer = 1; /* boot the ROM in DFU mode (the macOS installer's way in) */
         else {
-            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe] [--restore-preflight IPSW [--restore-preflight-stop-a] [--workdir DIR]] [--install-g0 IPSW [--workdir DIR]] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4 | --dnload-probe-a6] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
+            fprintf(stderr, "usage: vmrun --rom F --disk F --aux F [--installer] [--make-blank [--recreate-blank] [--disk-gb N]] [--psci-log] [--usb-probe] [--irecv-probe] [--tss-probe | --tss-probe-lpol] [--restore-preflight IPSW [--restore-preflight-stop-a] [--workdir DIR]] [--install-g0 IPSW [--workdir DIR]] [--dnload-probe | --dnload-probe-a3 | --dnload-probe-a4 | --dnload-probe-a6] [--ecid N --seed N --aux-offset N --ram-mb N --cpus N --jit-mb N --log N --seconds N --snapshot out.bmp]\n");
             return 2;
         }
     }
@@ -304,11 +305,11 @@ int main(int argc, char **argv) {
     }
     if (tss_probe) {
 #ifdef HV_TSS_PROBE
-        if (usb_probe || irecv_probe || dnload_probe) { fprintf(stderr, "vmrun: --tss-probe cannot be combined with the other USB probes\n"); return 2; }
-        if (!cfg.installer) { fprintf(stderr, "vmrun: --tss-probe needs --installer (the DFU boot)\n"); return 2; }
+        if (usb_probe || irecv_probe || dnload_probe) { fprintf(stderr, "vmrun: --tss-probe%s cannot be combined with the other USB probes\n", tss_probe_lpol ? "-lpol" : ""); return 2; }
+        if (!cfg.installer) { fprintf(stderr, "vmrun: --tss-probe%s needs --installer (the DFU boot)\n", tss_probe_lpol ? "-lpol" : ""); return 2; }
         if (seconds < 120) seconds = 120;
 #else
-        fprintf(stderr, "vmrun: this build has no TSS probe in it (--tss-probe unavailable)\n");
+        fprintf(stderr, "vmrun: this build has no TSS probe in it (--tss-probe%s unavailable)\n", tss_probe_lpol ? "-lpol" : "");
         return 2;
 #endif
     }
@@ -355,8 +356,8 @@ int main(int argc, char **argv) {
 #ifdef HV_TSS_PROBE
     if (tss_probe) {
         HvVmapple *bd2 = hv_vm_board();
-        if (bd2 && bd2->vusb) hv_tss_probe_start(bd2->vusb, cfg.ecid);
-        else fprintf(stderr, "vmrun: no USB port in this boot mode; --tss-probe has nothing to talk to\n");
+        if (bd2 && bd2->vusb) { if (tss_probe_lpol) hv_tss_probe_lpol_start(bd2->vusb, cfg.ecid); else hv_tss_probe_start(bd2->vusb, cfg.ecid); }
+        else fprintf(stderr, "vmrun: no USB port in this boot mode; --tss-probe%s has nothing to talk to\n", tss_probe_lpol ? "-lpol" : "");
     }
 #endif
 #ifdef HV_RESTORE_PREFLIGHT

@@ -44,7 +44,8 @@
 | 앱 저장소 여유 | 검증 완료 | 약 139.9 GB. 파일시스템 여유일 뿐 설치 성공을 보장하지 않음 |
 | 정지점 A 관측 | 검증 완료 | 훅이 직접 `stopped=before_rootfs` 보고. USB 핸들 0→0, 금지된 전송 0, curl 요청 0, 작업 폴더 신규 쓰기 0 |
 | G0 설치 진입점(`host/install.c`의 `hv_install_start()` 전체 경로: 전용 usbmuxd·`restore_session.c` 세션·연결 정책·정리까지) | 검증 완료 (build 149, 실기기, §1.1) | 정지점 A까지 도달(`g0_passed`), Apple 연결 0건, 저장장치 쓰기 0건, 세션·usbmuxd 정리 정상, 디스크·aux 내용 불변 확인 |
-| TSS, iBSS/iBEC 전송, 재접속, RecoveryOS, 복원 | 미검증 | 한 번도 실행하지 않음 |
+| 첫 TSS(AP 티켓) 실제 요청 | 검증 완료 (build 149, 실기기, 단발 1회 승인, §3.1) | Apple TSS 서버가 실제로 **서명 발급**(`ApImg4Ticket`, 5633 bytes). BuildManifest 식별 결과(칩 0xFE00/보드 0x20)가 build 70과 일치 |
+| LocalPolicy, RecoveryOS root ticket, 재요청, iBSS/iBEC 전송, 재접속, RecoveryOS 진입, 복원 | 미검증 | 한 번도 실행하지 않음 — 첫 TSS 이후 단계는 이 TSS 요청의 범위 밖 |
 
 주의: "curl 요청 0"은 curl 대체 계층의 계측 결과이며 모든 네트워크 경로를 감시한 결과가 아니다 (5절).
 
@@ -68,7 +69,7 @@
 | # | 단계 | 구현 | 진입 조건 | 검증 (PC 스탠드인 / 실기기) | 안전 경계 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | DFU 감지 · IPSW 분석 · 정지점 A | 재사용 (완료) | DFU 장치 1회 열거, IPSW 존재 | PC: 가짜 IPSW 시나리오 / 실기기: 완료 | 네트워크 0, 제어 요청만, 데이터 전송 0 |
-| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 변경 필요 | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: 별도 승인 후 단발 | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
+| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 변경 필요 (첫 TSS만 재사용·완료, 아래 참조) | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: **첫 TSS(AP) 완료 (build 149, 단발 1회, §3.1, 티켓 발급 확인)**. LocalPolicy·RecoveryOS는 별도 승인 후 단발 | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
 | 2 | iBSS 전송 · DFU 끊김 · 재접속 | 변경 필요 (전송은 기존 코드, 재접속은 실증 필요) | TSS 응답 보유, DFU dfuIDLE | PC: 끊김·재접속 시나리오 5종 / 실기기: 별도 승인 | 서명 이미지 전송의 시작점 |
 | 3 | LocalPolicy · iBEC · 부트 인자 | 변경 필요 | 재접속 성공, nonce 재확인 | PC: 명령 순서 로그 / 실기기: 별도 승인 | `lpolrestore`, `setenv`, `saveenv`는 장치 상태를 바꿈 |
 | 4 | RecoveryOS 진입 | 신규 판정 필요 | iBEC 실행, RECOVERY 재접속 | PC: RECOVERY 가짜 장치 / 실기기: 읽기 전용 확인 | 상태를 바꾸는 명령을 보내지 않음 |
@@ -90,6 +91,20 @@
 - 정책 충돌: `FLAG_SHSHONLY`는 shsh 파일을 캐시 폴더에 쓴다. 티켓을 저장하지 않는 원칙과 충돌하므로 이 경로를 쓰지 않거나 쓰기를 막아야 한다 (벤더링 변경, 별도 승인).
 - 추가 요청 약 10곳 중 가상 Mac에서 실제로 나가는 것이 몇 개인지는 실행 전에는 알 수 없다 (미검증). 허용 개수를 정하지 않고, 차단 모드에서 시도된 종류만 기록해 보고한다.
 - 모든 TSS 요청은 curl 대체 계층(`curl_mbedtls.c`)을 지나므로 현재의 차단 모드·시도 카운터가 적용된다.
+
+### 3.1 실기기 첫 TSS 요청 (build 149, 단발 1회 승인)
+
+2026-11-20, 실기기(SM-S948N), 앱의 "TSS 서명 가능성 확인 (Apple 서버로 1회 전송)" 버튼(`--tss-probe`). 사전 승인된 범위대로 **정확히 1회**만 Apple TSS 서버(`gs.apple.com`, HTTPS, 인증서 검증됨)에 요청을 보냈다.
+
+- **장치 읽기**: ECID 일치, AP nonce 32바이트, SEP nonce 20바이트(값은 로그에 기록·출력하지 않음 — 정책대로).
+- **BuildManifest 식별**: IPSW의 BuildManifest를 6번의 범위 요청(HTTP 206, 각 262,144바이트)으로 받아 압축 해제(19,846,491바이트) — identity 47/144, 칩 `0xFE00`, 보드 `0x20`, "Customer Erase Install (IPSW)". **build 70의 정지점 A 관측(§1)과 ApChipID·ApBoardID가 정확히 일치.**
+- **요청 구성**: `libtatsu`가 만든 요청, 46개 최상위 필드(값은 기록하지 않음).
+- **전송**: 1회 시도, 재시도 없음.
+- **저장장치**: 이 실행은 G0(§1.1)와 달리 `--make-blank --recreate-blank`를 포함했다 — 빈 디스크·aux가 매번 새로 생성되는 진단 명령 그대로이며, 기존 디스크를 보존한 실행이 아니다. 저장장치 보존이 필요한 실제 복원 단계에서는 이 옵션들을 반드시 제거해야 한다(§2 "안전 경계" 참조).
+- **결과: `CLASS: ticket issued`** — Apple TSS 서버가 이 장치의 ECID·nonce·BuildManifest 조합에 대해 **실제로 서명된 AP 티켓(`ApImg4Ticket`, 5633바이트)을 발급했다.** 티켓 내용은 저장·출력하지 않음(정책대로).
+- `tss probe: finished, result code 0` (0 = 티켓 발급됨). LocalPolicy·RecoveryOS 요청은 시도하지 않음 — 이 버튼의 범위는 첫 TSS(AP)까지다.
+
+**판정:** 이 장치(ECID)와 이 IPSW(macOS 15.6.1, 24G90) 조합에 대해 Apple의 서명 서버가 실제로 유효한 요청을 받아들이고 서명을 발급한다는 것을 확인했다. 이는 §2 "단계 1"의 안전 경계(자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지)를 지킨 채 이뤄졌다. 다만 이 결과는 서명된 펌웨어 전송·DFU 재접속·LocalPolicy·RecoveryOS·실제 복원이 성립함을 보장하지 않는다 — 그 단계들은 전혀 별개로 승인·시험해야 한다(§9).
 
 ## 4. DFU 재접속
 
@@ -228,7 +243,7 @@ iBSS 전송이 끝났다는 사실만으로 다음 단계로 가지 않는다.
 
 ## 9. 별도 승인이 필요한 항목
 
-- [ ] 실제 Apple TSS 요청 (AP / LocalPolicy / RecoveryOS) — 버튼 확인 후 단발 1회
+- [x] 실제 Apple TSS 요청 — **AP(메인) 티켓만** (build 149, 단발 1회, 티켓 발급 확인, §3.1). LocalPolicy·RecoveryOS root ticket은 여전히 [ ] 미승인·미시도
 - [ ] 서명 iBSS/iBEC 및 후속 이미지 전송, `lpolrestore` 등 장치 상태 변경 명령
 - [ ] 복원 실행 자체 (ASR, 루트 스트리밍)와 설치 디스크 쓰기, `macos_disk.img` 실제 생성
 - [x] 벤더링 소스 변경 (승인됨, 반영됨): `ipsw_open` fd 누수, usbmuxd 종료, DFU 핸들 정리, URLAsset·FDR 연결 정책 훅, SHSHONLY 티켓 파일 쓰기 차단 스위치

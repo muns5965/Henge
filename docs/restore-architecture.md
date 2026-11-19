@@ -20,7 +20,7 @@
 
 | 항목 | 구현 | 시험 | 실기기 |
 | --- | --- | --- | --- |
-| 연결 기본 거부 (`host/net_guard.c`: glue 소켓 3종, curl 대체 계층 `connect()`, URLAsset 판정). 연결 목적(기본·FDR·HTTP)을 판정에 전달하고, 주소 길이(`len`)를 먼저 검증 | 구현됨. 복원 도구는 `host/restore_session.c`를 통해서만 시작할 수 있다: 정책이 설치·검증되지 않았으면 시작을 거부하고, 도구 스레드가 남아 있는 동안 정책을 해제하지 않는다 | PC: `tools/netguard-test.sh` (정책 표, 목적, 길이, 실제 glue 소켓, curl, URL), `tools/fdr-session-test.sh` (세션 규칙, 시작·해제 경합 400회) | 미검증 |
+| 연결 기본 거부 (`host/net_guard.c`: glue 소켓 3종, curl 대체 계층 `connect()`, URLAsset 판정). 연결 목적(기본·FDR·HTTP)을 판정에 전달하고, 주소 길이(`len`)를 먼저 검증 | 구현됨. 복원 도구는 `host/restore_session.c`를 통해서만 시작할 수 있다: 정책이 설치·검증되지 않았으면 시작을 거부하고, 도구 스레드가 남아 있는 동안 정책을 해제하지 않는다 | PC: `tools/netguard-test.sh` (정책 표, 목적, 길이, 실제 glue 소켓, curl, URL), `tools/fdr-session-test.sh` (세션 규칙, 시작·해제 경합 400회) | 검증 완료 (build 149, G0, §1.1) — 세션 시작/정리, 연결 정책(전용 usbmuxd만 허용) 실기기에서 확인. TSS·FDR·URLAsset 자체는 미검증(정지점 A 이전이라 호출되지 않음) |
 | usbmuxd 예외 | 구현됨: 등록한 정확한 주소·포트만 허용 (포트 범위 아님). 판정은 **주소·포트만** 본다 (호출한 주체는 모른다). 그래서 예외는 기본 목적의 연결에만 적용하고, 장치가 목적지를 정하는 FDR 연결과 curl(TSS·URLAsset)에는 적용하지 않는다 | 위 시험. FDR 가짜 장치가 usbmuxd의 주소·포트를 목적지로 지정하면 거부됨 | 미검증 |
 | URLAsset 보호 (`restore.c`): 정책 훅, 리다이렉트 3회, 본문 32 MiB 상한 | 구현됨 (벤더링) | PC: 가짜 장치 메시지로 `restore_send_url_asset`을 호출 (http, 사용자 정보, 루프백 리터럴, 승인된 이름이 루프백으로 해석되는 경우). 응답 전송 경로와 실제 장치 메시지는 시험하지 않았다 | 미검증 |
 | FDR 프록시 입력 검증 (`fdr.c`: 호스트 길이·패킷 길이 일치, 길이는 `unsigned`로 계산, 연결 직전에 FDR 목적 표시) | 구현됨 (벤더링) | PC: 가짜 장치(소켓쌍)가 보내는 정상·비정상 프록시 패킷 5종과 130바이트 이름, usbmuxd 주소 지정 시 거부. 정책을 빼면 같은 패킷이 연결되는 대조도 함. ACK를 검증보다 먼저 보내는 기존 순서는 바꾸지 않았다 (연결 생성과 메모리 접근은 검증 뒤) | 미검증 |
@@ -43,9 +43,25 @@
 | 루트 DMG | 검증 완료 (빌드 70) | `043-18152-097.dmg.aea`, 9,261,023,232 B, ZIP stored(0), seekable → 별도 추출 불필요. 이 IPSW에 한함 |
 | 앱 저장소 여유 | 검증 완료 | 약 139.9 GB. 파일시스템 여유일 뿐 설치 성공을 보장하지 않음 |
 | 정지점 A 관측 | 검증 완료 | 훅이 직접 `stopped=before_rootfs` 보고. USB 핸들 0→0, 금지된 전송 0, curl 요청 0, 작업 폴더 신규 쓰기 0 |
+| G0 설치 진입점(`host/install.c`의 `hv_install_start()` 전체 경로: 전용 usbmuxd·`restore_session.c` 세션·연결 정책·정리까지) | 검증 완료 (build 149, 실기기, §1.1) | 정지점 A까지 도달(`g0_passed`), Apple 연결 0건, 저장장치 쓰기 0건, 세션·usbmuxd 정리 정상, 디스크·aux 내용 불변 확인 |
 | TSS, iBSS/iBEC 전송, 재접속, RecoveryOS, 복원 | 미검증 | 한 번도 실행하지 않음 |
 
 주의: "curl 요청 0"은 curl 대체 계층의 계측 결과이며 모든 네트워크 경로를 감시한 결과가 아니다 (5절).
+
+### 1.1 G0 설치 진입점 실기기 검증 (build 149)
+
+2026-11-20, 실기기(SM-S948N), `vmrun --install-g0 <IPSW> --workdir ... --installer --ecid ... (앱의 "[G0] 복원 진입점 시험" 버튼)`. §1의 "정지점 A 관측"과 달리, 이 시험은 단순 `restore_preflight` 호출이 아니라 **앱이 실제로 쓰는 진입점(`hv_install_start()`) 전체** — 전용 `usbmuxd` 스레드 기동, `restore_session.c`의 세션 시작/연결 정책 적용/종료, `idevicerestore_start()` 실행, 정리까지 — 를 거친다.
+
+결과(`install g0 RESULT: g0_passed stopped=before_rootfs`), 모든 점검 행 `ok`:
+
+- **엔진**: `hv_install_start`가 실행을 수락했고, 복원 스레드가 스스로 종료. 도구 반환값 217(정지점 A의 정해진 반환값), 정지점-A 훅이 실제로 호출됨.
+- **세션 정리**: 세션 `closed=1`, `cleanup_mask=0x0`(클라이언트 해제·전용 usbmuxd 정지·join 모두 성공), 최종 판정 2("restore failed"로 분류되지만 이는 정지점 A 반환값에 대한 정해진 분류일 뿐, 실제 복원 실패를 뜻하지 않음 — §8 참조).
+- **네트워크**: curl 대체 계층 시도 0건, connection guard 시도 1건(전용 usbmuxd 리스너, 허용) 외 0건 — Apple로의 연결 시도 자체가 없었음.
+- **USB**: 제어 요청 14건, 금지된 전송(DNLOAD/UPLOAD/DETACH/ABORT/CLR_STATUS/vendor) 0건, bulk/interrupt 전송 0건.
+- **저장장치**: 디스크·aux 둘 다 읽기 전용으로 열렸고, 쓰기 요청 0건·거부 0건. 실행 전후 디스크(8,589,934,592 B)·aux(33,570,816 B) 내용 해시가 동일 — 저장장치가 전혀 바뀌지 않았음을 직접 확인.
+- **스레드**: 실행 전후 44개로 동일, 어떤 이름도 이전보다 늘지 않음(누수 없음).
+
+**판정:** `host/install.c`의 설치 진입점이 앱이 실제로 쓰는 전체 경로(usbmuxd·세션·연결 정책·정리)로 실기기에서 정지점 A까지 정상 동작하며, 그 범위에서 Apple 요청·저장장치 쓰기가 전혀 일어나지 않음을 확인했다. 이는 "복원"이 아니다 — TSS·iBSS/iBEC 전송·재접속·RecoveryOS·실제 복원은 이 시험의 범위 밖이며 여전히 미검증이다(§9의 해당 항목들은 그대로 미승인 상태).
 
 ## 2. 단계별 표
 

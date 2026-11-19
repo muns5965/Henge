@@ -136,6 +136,24 @@ Henge 자신의 시험 도구가 보고한 결과: **"irecv probe: done, 0 stage
 
 **상세 로그로 재확인 (2026-11-19, build 146, 동일 시험을 `--log 3` 추가로 재실행).** 요약 결과는 동일하게 재현됐다("irecv probe: done, 0 stage(s) failed", 7개 항목 전부 `ok`). 프로브 종료 후 화면에 표시된 로그 꼬리(전체 20,752,572줄 중 마지막 200줄) 구간에서는, §6.4가 서술한 것과 같은 패턴 — 타이머 레지스터 읽기(`mrs S3_3_C14_C0_2`) → BDIF `REG_QSEL(+0x410)` 쓰기(값 0) → `REG_UNK1(+0x10)` 읽기(값 0) — 가 이 구간 전체에서 끊김 없이 반복되는 것이 MMIO 단위로 직접 확인됐으며, 이 구간에 PSCI 호출은 전혀 없었다. 종료 시 CPU0 레지스터는 `esr_el1=0x56000000`(SVC64 예외 클래스, §6.5 상단과 동일), `far_el1=0`, `sctlr_el1=0x448d520d` — `pc`·`elr_el1`·`vbar_el1`은 게스트 ROM 내부 코드 주소이므로 이 문서에는 값을 적지 않으며, 다만 이전 관측값들과 일치한다는 사실만 기록한다. 이것이 같은 예외 상태가 반복 관측되는 것인지, 우연의 일치인지는 확정하지 않는다. CPU1은 이번에도 끝까지 별도 동작 없이 멈춰 있었다(세부 레지스터는 §6.5 상단과 동일 패턴). **이 재실행은 §6.5의 기존 결론을 바꾸지 않으며, 거친 간격 스냅샷으로 추정했던 폴링 루프의 정체를 MMIO 수준에서 그대로 확인해준다.**
 
+### 6.6 설치기(DFU) 모드 + DNLOAD A0~A3 더미 전송 — 실제 데이터 블록 전송·상태 전이·상태 조회까지 성공, 로그 확인됨
+
+2026-11-19, build 146, `vmrun --dnload-probe --installer --ecid ... --psci-log`(미설치 빈 ROOT/AUX). §6.5의 irecv 프로브(열기·조회·닫기만)보다 한 단계 더 나간 시험으로, 표준/클래스 USB 제어 전송을 실제로 왕복시켜 DFU 상태 머신의 반응을 그대로 관측했다. 순서(모두 "다음 요청 전까지 응답 수신 확인됨"):
+
+1. 버스 리셋.
+2. `GET_CONFIGURATION`(표준) → `0`(미설정) → `SET_CONFIGURATION(1)`(표준) → 수락(0바이트 응답) → `GET_CONFIGURATION` 재확인 → `1`(설정됨).
+3. **[A0]** `DFU_GETSTATE`(클래스) → 상태값 `2`(`dfuIDLE`).
+4. **[A1]** `DFU_DNLOAD`(클래스, `wLength=16`, 더미 데이터 16바이트 전부 `0x00`) → 장치가 요청을 수락(0바이트 응답, 거부 없음).
+5. **[A2]** `DFU_GETSTATE`(클래스) → 상태값 `5`(`dfuDNLOAD-IDLE`).
+
+Henge 시험 도구의 판정: "control requests sent: 6 (limit 8); stopped at: no stop, A0-A2 all answered" — 중단 없이 세 단계 모두 응답을 받았다. 상태값 `2`→(DNLOAD 수락)→`5`는 USB DFU 표준이 정의하는 상태 전이(유휴 상태에서 데이터 블록을 받으면 `dfuDNLOAD-IDLE`로 전이, 다음 블록이나 종료 신호를 대기)와 일치한다. 도구 자신의 캡션: "reading: dfuDNLOAD-IDLE. The device is waiting for the next block or the end of the download. nothing further is sent." — 이 시험은 여기서 멈추며, 실제 펌웨어나 서명된 데이터를 전송하지 않는다(16바이트는 전부 `0x00`인 더미 값).
+
+**A3까지 추가 확인 (같은 build 146, `--dnload-probe-a3`).** A0~A2까지는 위와 동일하게 재현됐고, 이어서 **[A3]** `DFU_GETSTATUS`(클래스, `bRequest=3`)를 한 번 더 보내 `bStatus=0`(OK, 오류 없음), `bwPollTimeout=50ms`, `bState=5`(`dfuDNLOAD-IDLE`), `iString=0`을 받았다 — A2에서 `DFU_GETSTATE`로 읽은 상태(`5`)와 A3의 `DFU_GETSTATUS`가 보고하는 상태가 서로 일치한다. Henge 도구 자신의 캡션이 이 결과의 한계를 명시한다: "Whether state 5 is normal for this ROM, or the ROM accepted the 16 bytes, is not answered by this." 판정: "control requests sent: 7 (limit 8); stopped at: no stop, A0-A3 all answered" — 역시 중단 없음. 두 번째 `GET_STATUS`나 `ABORT`/`CLR_STATUS`/0바이트 `DNLOAD`(다운로드 종료 신호)/추가 데이터 블록은 이 시험에서 전혀 보내지 않았다. 이후 30초 동안의 상태 스냅샷도 PSCI 리셋 없이, §6.5/§6.6과 같은 USB 연결 상태를 유지한 채 정상 종료했다.
+
+프로브 종료 이후 30초 동안의 상태 스냅샷에서는 PSCI 호출이 전혀 없었고, USB 상태는 "guest on the bus=1 session=1 (rom front-end owns port=1, PCI front-end DRIVER_OK=0)"로 유지됐으며, CPU0은 §6.5에서 이미 관측된 것과 같은 두 지점 사이를 오가는 패턴을 반복했다(구체적 주소는 게스트 ROM 내부 값이므로 비공개). CPU1은 시작부터 끝까지 정지 상태였다. 30초 시간제한으로 `exit reason 7 (halt)`, 양쪽 CPU `halted=3`으로 정상 종료, 화면 출력 없음.
+
+**판정:** Henge의 가상 DFU 장치는 단순히 열기·조회·닫기(§6.5)에 응답하는 것을 넘어, 실제 `DFU_DNLOAD` 데이터 블록을 받아들이고 USB DFU 표준이 정의하는 상태 전이(유휴→다운로드 대기)까지 올바르게 보고하며, `DFU_GETSTATE`와 `DFU_GETSTATUS` 두 조회 경로가 서로 일치하는 상태를 보고한다. 이는 지금까지의 시험 중 가장 깊이 들어간 프로토콜 수준 확인이지만, 받은 것은 여전히 더미(전부 0) 데이터 한 블록뿐이며 서명 검증·실제 펌웨어 블록 처리·다운로드 종료(매니페스트) 단계는 아직 시도되지 않았다. 이 결과만으로 실제 복원이 끝까지 진행된다는 결론은 나오지 않는다.
+
 ## 7. 다음 검증 항목
 
 1. ~~**USB 미노출 일반 부팅의 실제 DEVID_USB 접근 여부.**~~ — **확인됨 (2026-11-17, `vmrun_normal_log3_20261117-100721`, 미설치 빈 ROOT/AUX 조건 — §9 참조).** `--log 3`, installer=0, `HV_USB_ON_NORMAL` 미설정 상태로 받은 상세 MMIO 로그에서 리셋 직전에 다음 접근이 실제로 관측됐다 (장치 레지스터 오프셋만 기록; 게스트 ROM 내부 명령어 주소는 위 "공개 범위"에 따라 제외):
@@ -191,7 +209,7 @@ Henge 자신의 시험 도구가 보고한 결과: **"irecv probe: done, 0 stage
 
 **미확인:** USB 미존재 슬롯 응답과 Apple VZ 동작의 차이(즉 이 불일치가 "올바른" 동작인지), 유형 불일치가 리셋의 **유일한** 원인인지(계측되지 않은 다른 분기 가능성은 배제되지 않음), `cfg+0x64`류 쓰기의 의미, AUX 내용과 리셋의 인과관계, 두 순수 일반 부팅의 내부 리셋 경로 동일성, 설치기 모드의 USB 폴링 루프가 정상적인 DFU 대기인지 다른 원인의 정체 상태인지(§6.4), irecv 프로브가 PCI virtio-usb 장치 열기/조회/닫기에 전부 성공한 것이 실제 복원(펌웨어 전송·TSS 교환)의 성공 가능성에 대해 무엇을 뜻하는지(§6.5, 도구 자신도 단서로 남김).
 
-**구현 확인됨(추가):** ROM 측 BDIF 프런트엔드와 PCI virtio-usb 프런트엔드가 실제 USB 제어 전송 수준에서 끝까지 맞물려 동작함 — 실제 `libirecovery`가 Henge의 가상 DFU 장치를 열기·일련번호 조회·닫기까지 0건 실패로 수행(§6.5).
+**구현 확인됨(추가):** ROM 측 BDIF 프런트엔드와 PCI virtio-usb 프런트엔드가 실제 USB 제어 전송 수준에서 끝까지 맞물려 동작함 — 실제 `libirecovery`가 Henge의 가상 DFU 장치를 열기·일련번호 조회·닫기까지 0건 실패로 수행(§6.5). 가상 DFU 장치가 실제 `DFU_DNLOAD` 데이터 블록(더미 16바이트)을 받아들이고 USB DFU 표준이 정의하는 상태 전이(`dfuIDLE`→`dfuDNLOAD-IDLE`)까지 올바르게 보고하며, `DFU_GETSTATUS`로도 같은 상태를 일관되게 보고함(§6.6, 서명·실제 펌웨어·매니페스트 단계는 미시도).
 
 **철회됨:** ‘신규 AUX가 비어 있으므로 개인화 검증에 실패하고 리셋된다’는 확정적 주장.
 
@@ -210,6 +228,7 @@ Henge 자신의 시험 도구가 보고한 결과: **"irecv probe: done, 0 stage
 - 2026-11-17: 설치 통합 설계 §5 보완 — 상태 파일 부재·손상, 엔진 결과와 앱 상태의 분리, 취소·종료 경합, 네트워크 목록 등록 검증, 설치 디스크/VM 식별정보 및 오프라인 검증 관문을 구체화. 실행 코드·VM 실행 변경 없음.
 - 2026-11-19: §6.5 신규 추가 — 실기기(build 145) 설치기(DFU) 모드 + irecv 프로브 로그에서 실제 `libirecovery`가 Henge의 가상 DFU 장치를 PCI virtio-usb 경로로 열기·일련번호 조회(ECID 일치, 장치표 조회 성공)·닫기까지 0건 실패로 수행한 것을 확인("0 stage(s) failed"). 프로브 종료 후에도 PSCI 리셋·화면 출력 없이 30초 시간제한으로 정상 종료. 도구 자신의 "열기만 증명, 복원 성공의 증거 아님" 단서를 그대로 유지. §8 구현 확인됨·미확인 목록 갱신.
 - 2026-11-19: build 146(`--irecv-probe --installer --log 3` 재실행, 새로 추가된 상세 로그 버튼)으로 §6.5를 보완 — 요약 결과("0 stage(s) failed") 재현을 확인하고, 거친 간격 스냅샷으로만 추정했던 프로브 종료 후 폴링 루프를 MMIO 단위로 §6.4와 동일한 패턴임을 직접 확인. 결론 변경 없음.
+- 2026-11-19: §6.6 신규 추가 — 실기기(build 146) 설치기(DFU) 모드 + DNLOAD A0~A3 더미 전송 시험에서 가상 DFU 장치가 실제 `DFU_DNLOAD` 요청(더미 16바이트)을 받아들이고 `dfuIDLE`(2)→`dfuDNLOAD-IDLE`(5) 상태 전이를 올바르게 보고하며, 이어진 `DFU_GETSTATUS`(A3)도 같은 상태를 일관되게 보고하는 것을 확인("no stop, A0-A2/A0-A3 all answered"). 서명·실제 펌웨어·매니페스트 단계는 미시도임을 명시. PSCI 리셋·화면 출력 없이 정상 종료. §8 구현 확인됨 목록 갱신.
 
 이 문서는 기존 소스 및 실행 로그에 관한 분석 기록이다. 문서 수정 자체를 위해 ROM·디스크 이미지 또는 VM 실행 코드는 변경하지 않는다.
 

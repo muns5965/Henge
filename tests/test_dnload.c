@@ -26,6 +26,7 @@
 static HvVirtioUsb *g_u;
 static volatile int g_stop;
 static int g_cfg, g_state, g_gs_mode, g_abort_mode;
+static int g_state_reads; /* distinguish the pre-DNLOAD and post-DNLOAD GET_STATE */
 static int g_pending_bump; /* the stand-in re-attaches (session + 1) when the next request arrives, without answering it */
 static const char *g_sc;
 #define MAXLOG 64
@@ -57,7 +58,10 @@ static void handle_setup(const uint8_t *s, uint32_t len) {
         return;
     }
     if (rt == 0xA1 && rq == 5) { /* GET_STATE */
+        g_state_reads++;
         if (!strcmp(g_sc, "stall-state") && g_state == 2) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
+        if (g_state_reads == 2 && !strcmp(g_sc, "stall-after")) { reply(HV_VUSB_RSP_STALL, NULL, 0); return; }
+        if (g_state_reads == 2 && !strcmp(g_sc, "silent-after")) return; /* timeout only after DNLOAD; no further requests */
         b[0] = (uint8_t)g_state;
         reply(HV_VUSB_RSP_DATA, b, 1);
         return;
@@ -129,13 +133,15 @@ int main(int argc, char **argv) {
         {"a3-ok", "idle-after", 0, 0, 1, 1, 0, 0, -1},         {"a3-err-status", "idle-after", 1, 0, 1, 1, 0, 0, -1}, {"a3-poll0", "idle-after", 2, 0, 1, 1, 0, 0, -1}, {"a3-pollbig", "idle-after", 3, 0, 1, 1, 0, 0, -1},
         {"a3-stall", "idle-after", 4, 5, 1, 1, 0, 0, -1},      {"a3-short", "idle-after", 5, 5, 1, 1, 0, 0, -1},      {"a3-silent", "idle-after", 6, 5, 1, 1, 0, 0, -1},
         {"a3-state3", "sync", 0, 5, 0, 1, 0, 0, -1},           {"a3-ignored", "ignored", 0, 5, 0, 1, 0, 0, -1},       {"a3-error-state", "error-after", 0, 5, 0, 1, 0, 0, -1},
-        {"a3-not-idle", "not-idle", 0, 2, 0, 1, 0, 0, -1},     {"a3-stall-dnload", "stall-dnload", 0, 3, 0, 1, 0, 0, -1}, {"a3-stall-state", "stall-state", 0, 2, 0, 1, 0, 0, -1},
+        {"a3-not-idle", "not-idle", 0, 2, 0, 1, 0, 0, -1},
+        {"a3-a2-stall", "stall-after", 0, 4, 0, 1, 0, 0, -1}, {"a3-a2-silent", "silent-after", 0, 4, 0, 1, 0, 0, -1},     {"a3-stall-dnload", "stall-dnload", 0, 3, 0, 1, 0, 0, -1}, {"a3-stall-state", "stall-state", 0, 2, 0, 1, 0, 0, -1},
         /* A4: ABORT only after a clean A3; GET_STATE (A5) only after an answered ABORT; nothing after that */
         {"a4-ok", "idle-after", 0, 0, 1, 2, 0, 1, 2},          {"a4-stays5", "idle-after", 0, 0, 1, 2, 1, 1, 5},       {"a4-error", "idle-after", 0, 0, 1, 2, 2, 1, 10},
         {"a4-abort-stall", "idle-after", 0, 6, 1, 2, 3, 1, -1}, {"a4-abort-silent", "idle-after", 0, 6, 1, 2, 4, 1, -1},
         {"a4-status-err", "idle-after", 1, 6, 1, 2, 0, 0, -1}, {"a4-a3-state2", "idle-after", 7, 6, 1, 2, 0, 0, -1}, {"a4-a3-stall", "idle-after", 4, 5, 1, 2, 0, 0, -1},
         {"a4-a3-short", "idle-after", 5, 5, 1, 2, 0, 0, -1},   {"a4-state3", "sync", 0, 5, 0, 2, 0, 0, -1},           {"a4-not-idle", "not-idle", 0, 2, 0, 2, 0, 0, -1},
         {"a4-stall-dnload", "stall-dnload", 0, 3, 0, 2, 0, 0, -1},
+        {"a4-a2-stall", "stall-after", 0, 4, 0, 2, 0, 0, -1}, {"a4-a2-silent", "silent-after", 0, 4, 0, 2, 0, 0, -1},
         /* session changes (the ROM re-attaches: session + 1, queues dropped). A4 reattach = what the phone showed: ABORT answered, the GET_STATE after it lost. */
         {"a4-reattach", "idle-after", 0, 6, 1, 2, 5, 1, -1},   {"a4-abort-gone", "idle-after", 0, 6, 1, 2, 6, 1, -1},   {"setup-gone", "idle-after", 0, 1, 0, 2, 8, 0, -1},
     };
@@ -224,6 +230,11 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(g_sc, "not-idle") && (dn != 0 || count(0xA1, 5) != 1)) { printf("data sent although the device was not in dfuIDLE\n"); bad = 1; }
     if ((!strcmp(g_sc, "stall-dnload") || !strcmp(g_sc, "silent-dnload")) && (dn != 1 || count(0xA1, 5) != 1)) { printf("after the failed DNLOAD another request was sent\n"); bad = 1; }
+    if ((!strcmp(g_sc, "stall-after") || !strcmp(g_sc, "silent-after")) &&
+        (dn != 1 || count(0xA1, 5) != 2 || count(0xA1, 3) != 0 || count(0x21, 6) != 0 ||
+         res.a2_state != -1 || res.a3_sent || res.a4_sent || res.stopped_at != 4)) {
+        printf("A2 failed but the probe continued, or misreported the stop\n"); bad = 1;
+    }
     if (!strcmp(g_sc, "stall-state") && (dn != 0 || count(0xA1, 5) != 1)) { printf("requests continued after the GET_STATE STALL\n"); bad = 1; }
     if (nodev && g_n != 0) { printf("requests sent although the guest never came online\n"); bad = 1; }
     printf("scenario %s: probe returned %d (expected %d), %d requests seen -> %s\n", g_sc, r, want, g_n, bad ? "EXPECTATION NOT MET" : "as expected");

@@ -119,6 +119,21 @@ HV_USB_ON_NORMAL은 일반 부팅 값(run_installer1/2=0)을 유지하면서 USB
 
 같은 ROM/AUX로 곧바로 실행한 `ui_runner_vm`(안전 실행기, 일반 모드 고정)에서는 리셋 대신 자체 내장 진단(`PANIC_DIAG`, 게스트 내부 주소이므로 비공개, `hits=1`, `x0=0xfffffffd`)이 한 번 걸린 채 30초 타임아웃까지 멈췄다. 화면에는 아무것도 그려지지 않았다(`frames 0`). 이 지점이 §7 item 2의 USB 비교 지점과 같은지 다른지는 확인하지 않았다 — 별도 계측이므로 섣불리 동일시하지 않는다.
 
+### 6.5 설치기(DFU) 모드 + irecv 프로브 — 가상 DFU 장치 열기/조회/닫기 전부 성공, 로그 확인됨
+
+2026-11-19, build 145, `vmrun --irecv-probe --installer --ecid ... --psci-log`(미설치 빈 ROOT/AUX, `--log 3` 없이 일반 상태 스냅샷만). 실제 `libirecovery` 라이브러리(복원 도구가 쓰는 것과 같은 라이브러리이며, 이 시험에서는 `vmrun` 자신에 함께 링크되어 "외부 호스트" 역할로 동작)가 Henge의 가상 DFU 장치를 PCI virtio-usb 경로(`05ac:1227`, PCI 슬롯 8)로 다음 단계까지 모두 성공적으로 수행했다:
+
+- 장치 발견(`irecv_open_with_ecid` 성공), `GET_CONFIGURATION`/`SET_CONFIGURATION(1)` 수락, 인터페이스 클레임.
+- 일련번호 문자열 읽기·해석: `CPID 0xfe00 CPRV 0x00 CPFM 0x03 SCEP 0x01 BDID 0x20 ECID 0x2d2a8d94f32ba4d2 IBFL 0x3c SRTG iBoot-10151.140.19` — ECID가 지정값과 일치.
+- 장치표 조회 성공: `VirtualMac2,1` / `vma2macosap` / "Apple Virtual Machine 1", AP/SEP nonce 존재.
+- 정상 종료(`irecv_close` → 0).
+
+Henge 자신의 시험 도구가 보고한 결과: **"irecv probe: done, 0 stage(s) failed"** — 점검한 7개 항목(events/discover/open/info-serial/info-table/close/boundary) 전부 `ok`. 도구 자체가 다음을 명시적으로 단서로 남긴다: "opened and closed only; no firmware was sent, no TSS request made, nothing downloaded. A pass says libirecovery can open this virtual device, not that a restore will work." — 즉 이 결과는 가상 장치를 **열 수 있다**는 것만 증명하며, 복원 자체가 동작한다는 증거는 아니다.
+
+프로브 종료 이후 30초 동안의 상태 스냅샷(세밀 트레이스 없이 몇 초 간격)에서는: CPU0의 `pc`가 두 값(비공개, 게스트 내부 주소) 사이를 오갔고 `esr_el1=0x56000000`(SVC64 예외 클래스)은 전 구간 동일했다 — 이 값이 스냅샷마다 새로 갱신된 것인지는 §3 분석의 단서대로 확정할 수 없다. CPU1은 시작부터 끝까지 `pc=0x100000, el=1`에 정지해 있었다. USB 상태는 "guest on the bus=1 session=1 (rom front-end owns port=1, PCI front-end DRIVER_OK=0)"로 전 구간 유지됐고, PSCI 리셋은 한 번도 없었으며 화면 출력도 없었다(`boot display none`). 30초 시간제한으로 `exit reason 7 (halt)`, 양쪽 CPU `halted=3`으로 정상 종료.
+
+**판정:** ROM 측 BDIF 프런트엔드(게스트가 자신의 "연결" 상태를 올리는 쪽)와 PCI virtio-usb 프런트엔드(외부 호스트가 실제로 보고 통신하는 쪽)가 같은 가상 포트의 양 끝으로서 실제 USB/DFU 프로토콜 수준에서 끝까지 맞물려 동작한다는 것을 보여준다. §3.2/`devices/virtio_usb.h`에서 이미 구분한 `rom_on`/`pci_on`(PCI `DRIVER_OK`) 두 플래그 중, 이번 결과는 ROM 쪽이 아닌 PCI virtio-usb 경로로 실제 제어 전송이 왕복했다는 최초의 직접 확인이다. 다만 `DRIVER_OK=0`이 계속 유지된 것은 이 irecv 프로브가 PCI "드라이버"로서의 영구 연결을 맺는 것이 아니라 열기·조회·닫기만 수행했기 때문일 수 있으며, 이 프로브만으로 실제 복원(펌웨어 전송, TSS 요청)이 성공한다는 결론은 나오지 않는다. 또한 이 결과가 §6.4의 USB 폴링 루프가 "정상 DFU 대기"라는 가설을 강화하는 정황은 되지만, 그 루프 자체의 정체를 확정하는 것은 아니다.
+
 ## 7. 다음 검증 항목
 
 1. ~~**USB 미노출 일반 부팅의 실제 DEVID_USB 접근 여부.**~~ — **확인됨 (2026-11-17, `vmrun_normal_log3_20261117-100721`, 미설치 빈 ROOT/AUX 조건 — §9 참조).** `--log 3`, installer=0, `HV_USB_ON_NORMAL` 미설정 상태로 받은 상세 MMIO 로그에서 리셋 직전에 다음 접근이 실제로 관측됐다 (장치 레지스터 오프셋만 기록; 게스트 ROM 내부 명령어 주소는 위 "공개 범위"에 따라 제외):
@@ -172,7 +187,9 @@ HV_USB_ON_NORMAL은 일반 부팅 값(run_installer1/2=0)을 유지하면서 USB
 
 **구현 확인됨:** USB 포트가 없는 경우 DEVID_USB 접근이 공통 BDIF 레지스터 처리 구문으로 내려가는 동작.
 
-**미확인:** USB 미존재 슬롯 응답과 Apple VZ 동작의 차이(즉 이 불일치가 "올바른" 동작인지), 유형 불일치가 리셋의 **유일한** 원인인지(계측되지 않은 다른 분기 가능성은 배제되지 않음), `cfg+0x64`류 쓰기의 의미, AUX 내용과 리셋의 인과관계, 두 순수 일반 부팅의 내부 리셋 경로 동일성, 설치기 모드의 USB 폴링 루프가 정상적인 DFU 대기인지 다른 원인의 정체 상태인지(§6.4).
+**미확인:** USB 미존재 슬롯 응답과 Apple VZ 동작의 차이(즉 이 불일치가 "올바른" 동작인지), 유형 불일치가 리셋의 **유일한** 원인인지(계측되지 않은 다른 분기 가능성은 배제되지 않음), `cfg+0x64`류 쓰기의 의미, AUX 내용과 리셋의 인과관계, 두 순수 일반 부팅의 내부 리셋 경로 동일성, 설치기 모드의 USB 폴링 루프가 정상적인 DFU 대기인지 다른 원인의 정체 상태인지(§6.4), irecv 프로브가 PCI virtio-usb 장치 열기/조회/닫기에 전부 성공한 것이 실제 복원(펌웨어 전송·TSS 교환)의 성공 가능성에 대해 무엇을 뜻하는지(§6.5, 도구 자신도 단서로 남김).
+
+**구현 확인됨(추가):** ROM 측 BDIF 프런트엔드와 PCI virtio-usb 프런트엔드가 실제 USB 제어 전송 수준에서 끝까지 맞물려 동작함 — 실제 `libirecovery`가 Henge의 가상 DFU 장치를 열기·일련번호 조회·닫기까지 0건 실패로 수행(§6.5).
 
 **철회됨:** ‘신규 AUX가 비어 있으므로 개인화 검증에 실패하고 리셋된다’는 확정적 주장.
 
@@ -189,6 +206,7 @@ HV_USB_ON_NORMAL은 일반 부팅 값(run_installer1/2=0)을 유지하면서 USB
 - 2026-11-17: `docs/android-install-integration-design.md` 신규 작성 — §9.5의 네 가지 선결 과제에 대한 설계 초안(앱–네이티브 계약, 네트워크 승인·격리 계약, 저장장치·설치 상태 계약)을 확인된 사실/설계 선택/미해결로 구분해 정리. 코드 변경·네트워크 접근·저장장치 생성·VM 실행 없음.
 - 2026-11-19: §6.4 신규 추가 — 실기기(build 145) 설치기(DFU) 모드 순수 부팅 로그에서 30초 내내 PSCI SYSTEM_RESET이 발생하지 않고 USB 레지스터 폴링 루프에 머문 것을 확인. 같은 ROM/AUX로 실행한 `ui_runner_vm`(일반 모드 고정)은 리셋 대신 별도의 내장 진단(PANIC_DIAG)에 걸린 채 타임아웃, 화면 출력 없음. §8 미확인 목록 갱신.
 - 2026-11-17: 설치 통합 설계 §5 보완 — 상태 파일 부재·손상, 엔진 결과와 앱 상태의 분리, 취소·종료 경합, 네트워크 목록 등록 검증, 설치 디스크/VM 식별정보 및 오프라인 검증 관문을 구체화. 실행 코드·VM 실행 변경 없음.
+- 2026-11-19: §6.5 신규 추가 — 실기기(build 145) 설치기(DFU) 모드 + irecv 프로브 로그에서 실제 `libirecovery`가 Henge의 가상 DFU 장치를 PCI virtio-usb 경로로 열기·일련번호 조회(ECID 일치, 장치표 조회 성공)·닫기까지 0건 실패로 수행한 것을 확인("0 stage(s) failed"). 프로브 종료 후에도 PSCI 리셋·화면 출력 없이 30초 시간제한으로 정상 종료. 도구 자신의 "열기만 증명, 복원 성공의 증거 아님" 단서를 그대로 유지. §8 구현 확인됨·미확인 목록 갱신.
 
 이 문서는 기존 소스 및 실행 로그에 관한 분석 기록이다. 문서 수정 자체를 위해 ROM·디스크 이미지 또는 VM 실행 코드는 변경하지 않는다.
 

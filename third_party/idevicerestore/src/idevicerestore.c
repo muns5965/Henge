@@ -1447,6 +1447,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
+#ifdef HV_STOP_AFTER_DFU_RECOVERY
+	int hv_b_mode_before = (int)(client->mode - idevicerestore_modes);
+#endif
 	if (client->mode == MODE_DFU) {
 		// if the device is in DFU mode, place it into recovery mode
 		dfu_client_free(client);
@@ -1517,6 +1520,26 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		}
 		mutex_unlock(&client->device_event_mutex);
 	}
+
+#ifdef HV_STOP_AFTER_DFU_RECOVERY
+	/* Henge test mode "stop B" (see hv_stop.h): report and return right after personalized firmware was sent and the device reconnected in Recovery mode,
+	   before the post-mode-change nonce recheck and before recovery_enter_restore()/restore_device() (the actual disk-writing restore). */
+	if (client->flags & FLAG_STOP_AFTER_DFU_RECOVERY) {
+		struct hv_stop_b_info hv_info;
+		memset(&hv_info, 0, sizeof(hv_info));
+		hv_info.hardware_model = client->device->hardware_model;
+		hv_info.product_type = client->device->product_type;
+		hv_info.mode_before = hv_b_mode_before;
+		hv_info.mode_after = (int)(client->mode - idevicerestore_modes);
+		hv_info.tss_enabled = tss_enabled;
+		hv_info.macos_variant = client->macos_variant != NULL;
+		if (hv_stop_b_hook) hv_stop_b_hook(&hv_info);
+		if (client->tss)
+			plist_free(client->tss);
+		return HV_STOP_AFTER_DFU_RECOVERY_RC;
+	}
+#endif
+
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.5);
 	if (client->flags & FLAG_QUIT) {
 		return -1;
@@ -1635,6 +1658,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 #ifdef HV_STOP_BEFORE_ROOTFS
 void (*hv_stop_a_hook)(const struct hv_stop_a_info *info) = NULL;
+#endif
+
+#ifdef HV_STOP_AFTER_DFU_RECOVERY
+void (*hv_stop_b_hook)(const struct hv_stop_b_info *info) = NULL;
 #endif
 
 /* Henge: 1 = FLAG_SHSHONLY must not write the ticket to a file (this app keeps no ticket on disk). Set by the host before the tool starts. */

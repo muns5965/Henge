@@ -25,4 +25,24 @@ struct hv_stop_a_info {
 };
 extern void (*hv_stop_a_hook)(const struct hv_stop_a_info *info);
 #endif
+
+/* Henge, Android test mode only (compiled in only with -DHV_STOP_AFTER_DFU_RECOVERY, which no shipped iOS build and no install path sets).
+   "Stop B": idevicerestore_start returns right after the device has left DFU (or Recovery+iBEC) mode and reconnected in Recovery mode — i.e. right after the
+   personalized firmware (iBSS/iBEC, already signed by the TSS tickets fetched earlier in this same call) has been sent and the device has disconnected and
+   reconnected — but BEFORE the post-mode-change AP-nonce recheck/re-signing step and BEFORE recovery_enter_restore()/restore_device() (the actual disk-writing
+   restore). Unlike stop A, this point is reached only after real signing tickets were used and real firmware WAS transferred to the device; it reports what it
+   found through hv_stop_b_hook and returns HV_STOP_AFTER_DFU_RECOVERY_RC, a value no other exit of the function uses. */
+#ifdef HV_STOP_AFTER_DFU_RECOVERY
+#define FLAG_STOP_AFTER_DFU_RECOVERY (1 << 21)
+#define HV_STOP_AFTER_DFU_RECOVERY_RC 218
+struct hv_stop_b_info {
+	const char *hardware_model;
+	const char *product_type;
+	int mode_before;      /* client->mode's index into idevicerestore_modes[] right before this step started (2 = DFU, 3 = RECOVERY) */
+	int mode_after;       /* same, now; expected 3 (RECOVERY) on success */
+	int tss_enabled;
+	int macos_variant;    /* a macOS recovery-OS variant exists for this model */
+};
+extern void (*hv_stop_b_hook)(const struct hv_stop_b_info *info);
+#endif
 #endif

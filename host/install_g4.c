@@ -353,6 +353,15 @@ static void row_meta(FILE *out, const char *name, const char *fmt, ...) {
     fprintf(out, "install g4: %-16s %-6s %s\n", name, "META", d);
     g_meta++;
 }
+/* Purely informational: unlike row_meta() above (reserved for the disk/aux metadata-only fallback, which downgrades the final verdict to
+   g4_passed_metadata_only), this never touches g_meta or g_failed -- a row printed with this must never change the pass level or the pass/fail
+   decision, only add detail for a human reading the log. Added after build 159 showed bad_xfer_detail (which has nothing to do with disk/aux content
+   verification) incorrectly downgrading an otherwise full g4_passed run to g4_passed_metadata_only, just because it also called row_meta(). */
+static void row_info(FILE *out, const char *name, const char *fmt, ...) {
+    char d[1000];
+    va_list ap; va_start(ap, fmt); vsnprintf(d, sizeof d, fmt, ap); va_end(ap);
+    fprintf(out, "install g4: %-16s %-6s %s\n", name, "INFO", d);
+}
 
 int hv_g4_finish(FILE *out, const char *disk, const char *aux) {
     g_failed = 0;
@@ -454,7 +463,7 @@ int hv_g4_finish(FILE *out, const char *disk, const char *aux) {
                 shown++;
             }
             unsigned bh[7]; for (int s = 0; s < 7; s++) bh[s] = hv_libusb_data_bad_hist(s) - g_bad_hist0[s];
-            row_meta(out, "bad_xfer_detail", "%d bad bulk/interrupt completion(s) this run (%d classified as the usbmuxd standing-read teardown artifact above, %d unexplained), %d shown below and %d no longer in the detail ring (ring holds the last %d): %s "
+            row_info(out, "bad_xfer_detail", "%d bad bulk/interrupt completion(s) this run (%d classified as the usbmuxd standing-read teardown artifact above, %d unexplained), %d shown below and %d no longer in the detail ring (ring holds the last %d): %s "
                      "by status (never evicted, so this covers all %d even past the ring): error=%u timed_out=%u cancelled=%u stall=%u no_device=%u overflow=%u",
                      d_bad, teardown_cancel, d_bad_unexplained, shown, missing, HV_DATA_BAD_LOG_MAX, dn ? detail : "(none held)", d_bad, bh[1], bh[2], bh[3], bh[4], bh[5], bh[6]);
         }

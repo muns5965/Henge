@@ -405,35 +405,58 @@ int hv_g4_finish(FILE *out, const char *disk, const char *aux) {
         int d_sub = hv_libusb_data_transfer_count() - g_data0;
         int d_ok = hv_libusb_data_transfer_ok_count() - g_data_ok0;
         int d_bad = hv_libusb_data_transfer_bad_count() - g_data_bad0;
-        row(out, "device_requests", !forbidden && dnload >= 1 && d_bad == 0,
+        /* Build 158's real-device run put a name to d_bad: 3 identical completions, ep=0x81 (IN) bulk CANCELLED req=16384 act=0. Source-confirmed cause
+           (third_party/usbmuxd/src/usb.c, not this project's code): start_rx_loop() keeps NUM_RX_LOOPS=3 standing async bulk-IN reads of USB_MRU=16384
+           bytes posted on a device usbmuxd is tracking; usb_disconnect() explicitly libusb_cancel_transfer()s every one of them before closing the handle.
+           G4's own stop C deliberately tears the whole private usbmuxd down right after confirming MODE_RESTORE (rather than letting a real restore
+           continue), so this device's 3 standing reads get cancelled every single time a G4 run reaches that point -- it is a fixed, always-3,
+           always-this-exact-signature side effect of the engine confirming MODE_RESTORE and then stopping on purpose, not a transfer error. G3 never
+           sees it because it stops before the device reaches a state usbmuxd tracks with standing reads at all. Only a completion matching the full
+           signature (CANCELLED, IN, bulk, requested == usbmuxd's fixed 16384-byte read size, 0 bytes actually moved) is counted here, capped at
+           NUM_RX_LOOPS so more than 3 (or any other status/shape) still fails below exactly as before -- this never widens what counts as expected,
+           it only names the one shape now proven benign. */
+        #define HV_USBMUXD_RX_MRU 16384
+        #define HV_USBMUXD_NUM_RX_LOOPS 3
+        int teardown_cancel = 0;
+        {
+            int bl0 = hv_libusb_data_bad_count();
+            for (int k = g_bad_log0; k < bl0 && teardown_cancel < HV_USBMUXD_NUM_RX_LOOPS; k++) {
+                HvDataBadRecord r;
+                if (hv_libusb_data_bad_get(k, &r) && r.status == 3 /* LIBUSB_TRANSFER_CANCELLED */ && (r.ep & 0x80) && r.type == 2 /* LIBUSB_TRANSFER_TYPE_BULK */
+                    && r.requested == HV_USBMUXD_RX_MRU && r.actual == 0)
+                    teardown_cancel++;
+            }
+        }
+        int d_bad_unexplained = d_bad - teardown_cancel;
+        row(out, "device_requests", !forbidden && dnload >= 1 && d_bad_unexplained == 0,
             "%d control request(s) total (%d no longer in the detail ring -- the ring only holds the last %d; the counts below come from the never-evicted histogram instead, so this does not affect them): "
             "%d DFU DNLOAD (must be >=1: components were personalized and sent all the way through RecoveryOS entry), %d DFU GET_STATUS, %d DFU GET_STATE, %d DFU CLRSTATUS/ABORT "
             "(libirecovery's own per-component state recovery, conditional -- not forbidden), %d Recovery-mode vendor handshake (libirecovery's one call before each bulk send), "
             "%d Recovery-mode vendor command_execute (bRequest 1 -- \"ticket\"/\"devicetree\"/\"ramdisk\"/\"go\"/... per libirecovery's irecv_send_command()/irecv_send_command_breq(); which one isn't recorded, only the count), "
             "%d standard/enumeration request(s), %d forbidden (detach/upload/any other vendor call/reserved type -- none of these are issued by this call path); "
-            "%d bulk/interrupt transfer(s) submitted (%d completed OK, %llu bytes, %d completed with a non-success status -- must be 0; a bulk transfer is expected here, so only a failed one counts against the row)",
-            total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, command_execute, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad);
+            "%d bulk/interrupt transfer(s) submitted (%d completed OK, %llu bytes, %d completed with a non-success status, %d of those matching usbmuxd's own standing-read teardown signature exactly (CANCELLED/IN/bulk/16384/0 bytes, source-confirmed, capped at %d) and excluded as expected, %d unexplained -- must be 0; a bulk transfer is expected here, so only an unexplained failure counts against the row)",
+            total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, command_execute, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad, teardown_cancel, HV_USBMUXD_NUM_RX_LOOPS, d_bad_unexplained);
         if (d_bad) {
-            /* Diagnostic only, added after build 157's real-device run showed d_bad=3 with no detail to tell a benign device-reconnect artifact (a
-               stale read request on the OUT-going DFU device left behind right as the device re-enumerates into RESTORE mode -- CANCELLED or NO_DEVICE
-               would fit that) from an actual transfer error (STALL/TIMED_OUT/ERROR). This row never changes the device_requests verdict above (d_bad == 0
-               is still required to pass) and never changes the virtual USB device's own transfer/retry/cancel handling or storage write permissions --
-               it only reads back what host/libusb_shim.c's complete() already recorded for every bad completion. */
-            char detail[900]; size_t dn = 0;
-            int bl1 = hv_libusb_data_bad_count(), shown = 0, missing = 0;
+            /* Per-entry detail for every bad completion this run, so the next real-device run can be checked against this same signature at a glance.
+               Still informational: the pass/fail decision is made above, from d_bad_unexplained, not recomputed here. */
+            char detail[1000]; size_t dn = 0;
+            int bl1 = hv_libusb_data_bad_count(), shown = 0, missing = 0, marked = 0;
             for (int k = g_bad_log0; k < bl1; k++) {
                 HvDataBadRecord r;
                 if (!hv_libusb_data_bad_get(k, &r)) { missing++; continue; }
+                int is_teardown = marked < teardown_cancel && r.status == 3 && (r.ep & 0x80) && r.type == 2 && r.requested == HV_USBMUXD_RX_MRU && r.actual == 0;
+                if (is_teardown) marked++;
                 if (shown && dn < sizeof detail) detail[dn++] = ' ';
-                int n = snprintf(detail + dn, dn < sizeof detail ? sizeof detail - dn : 0, "#%d ep=0x%02x(%s) %s %s req=%d act=%d;",
-                                  r.seq, r.ep, (r.ep & 0x80) ? "IN" : "OUT", xfer_type_name(r.type), xfer_status_name(r.status), r.requested, r.actual);
+                int n = snprintf(detail + dn, dn < sizeof detail ? sizeof detail - dn : 0, "#%d ep=0x%02x(%s) %s %s req=%d act=%d%s;",
+                                  r.seq, r.ep, (r.ep & 0x80) ? "IN" : "OUT", xfer_type_name(r.type), xfer_status_name(r.status), r.requested, r.actual,
+                                  is_teardown ? "[usbmuxd-rx-teardown,expected]" : "");
                 if (n > 0) dn += (size_t)n;
                 shown++;
             }
             unsigned bh[7]; for (int s = 0; s < 7; s++) bh[s] = hv_libusb_data_bad_hist(s) - g_bad_hist0[s];
-            row_meta(out, "bad_xfer_detail", "%d bad bulk/interrupt completion(s) this run, %d shown below and %d no longer in the detail ring (ring holds the last %d; this count is informational and does not change the device_requests verdict above): %s "
+            row_meta(out, "bad_xfer_detail", "%d bad bulk/interrupt completion(s) this run (%d classified as the usbmuxd standing-read teardown artifact above, %d unexplained), %d shown below and %d no longer in the detail ring (ring holds the last %d): %s "
                      "by status (never evicted, so this covers all %d even past the ring): error=%u timed_out=%u cancelled=%u stall=%u no_device=%u overflow=%u",
-                     d_bad, shown, missing, HV_DATA_BAD_LOG_MAX, dn ? detail : "(none held)", d_bad, bh[1], bh[2], bh[3], bh[4], bh[5], bh[6]);
+                     d_bad, teardown_cancel, d_bad_unexplained, shown, missing, HV_DATA_BAD_LOG_MAX, dn ? detail : "(none held)", d_bad, bh[1], bh[2], bh[3], bh[4], bh[5], bh[6]);
         }
     }
     FileId d1, a1;

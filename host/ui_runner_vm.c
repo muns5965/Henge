@@ -3,14 +3,26 @@
 
    WHAT IT WILL NOT DO, and where that is enforced:
      - write to the disk or the auxiliary storage: the readonly_storage field set to 1 in hv_runner_make_config and re-checked by hv_runner_config_ok before hv_vm_create
-     - use a network: no_net = 1 (same place); this program links no restore, TSS, curl, USB-host, libirecovery or install code and imports no socket function
+     - use a network: no_net = 1 (same place); this program links no restore, TSS, curl, libirecovery or install code and imports no socket function. [2026-11-21 correction:
+       host/usb_host.c itself IS linked (as vm_usb_host.o, from tools/devices-build.sh, same as every vmrun_g0..g6 binary) -- an earlier version of this comment said
+       "USB-host" was absent too, which was never true; host/libusb_shim.c (the actual libirecovery/usbmuxd/idevicerestore passthrough) is what is genuinely absent. Until
+       2026-11-21 this did not matter because nothing ever called into usb_host.c: its one entry point, hv_usb_probe_start(), is only started by host/vm.c's hv_vm_create()
+       when HV_VUSB_PROBE is set in the environment, and this binary removes every HV_* variable regardless -- see below for why that changed.
      - boot as an installer: installer = 0 (same place), no machine identity (ECID and seed 0), and every HV_* environment variable is removed first (the engine reads some of
        them to switch an installer boot, a RAM file or the USB probe on)
      - [2026-11-20] this binary does now explicitly ask for one non-installer thing: cfg.usb_on_normal_boot = 1 (host/vm.h), so devices/vmapple.c attaches its existing,
-       guest-facing-only virtual USB device port (hv_virtio_usb_create -- not host USB, not libirecovery, not restore/usbmuxd code, none of which this binary links) even
-       though installer stays 0 and the ROM's own cfg region still reports run_installer1/run_installer2 as 0. This is a deliberate, explicitly-approved diagnostic: a real-
-       device capture confirmed the ROM's own USB-type probe (AVPBooter 0x10C51C/0x10C590) expects USB_DEVICE_TYPE (0x1a01) and fails when a normal boot has no USB channel
-       to answer it. After hv_vm_create it checks that the machine's USB device port state matches exactly what was asked for (present, now) -- not merely "absent" as before
+       guest-facing-only virtual USB device port (hv_virtio_usb_create -- not host USB, not libirecovery, not restore/usbmuxd code) even though installer stays 0 and the
+       ROM's own cfg region still reports run_installer1/run_installer2 as 0. This is a deliberate, explicitly-approved diagnostic: a real-device capture confirmed the
+       ROM's own USB-type probe (AVPBooter 0x10C51C/0x10C590) expects USB_DEVICE_TYPE (0x1a01) and fails when a normal boot has no USB channel to answer it. After
+       hv_vm_create it checks that the machine's USB device port state matches exactly what was asked for (present, now) -- not merely "absent" as before
+     - [2026-11-21] and now a second, explicitly-approved thing: cfg.usb_probe_on_normal_boot = 1 (host/vm.h), so hv_vm_create() starts host/usb_host.c's hv_usb_probe_start()
+       on that port -- the SAME non-destructive USB enumeration (reset, GET_DESCRIPTOR device+config, GET_STATUS, GET_CONFIGURATION, conditional DFU GET_STATE/GET_STATUS;
+       never SET_CONFIGURATION/DNLOAD/ABORT/CLRSTATUS) an installer boot already gets via HV_VUSB_PROBE. Real-device logs showed the ROM submitting a 2062-byte receive
+       buffer to queue 0 and then waiting (164M+ REG_BUSY reads, q0.done staying 0) because nothing on the host side ever supplied a request for it to receive -- this
+       starts the same supplier G0-G6 already use, reusing its code rather than designing a new one. Safe for this binary's one-VM-per-process, no-hv_vm_destroy lifecycle:
+       hv_vm_create() runs exactly once per process (see main() below), hv_vm_stop() only halts CPU dispatch and never frees board/vusb (see host/vm.c), and the probe's
+       detached thread, however it is blocked, is simply torn down with the whole process on exit -- host/libusb_shim.c (the real restore passthrough) stays unlinked either
+       way, so this does not add any path to actual USB device passthrough or restore communication
        -- so an unexpected state (e.g. an installer boot slipping through, or the port failing to attach) still stops the machine rather than running regardless.
      - take any of that from the command line: the only options are --shm, --rom, --disk, --aux, --ram-mb, --cpus, --jit-mb, --seconds, --stop-wait-ms
    tools/check-runner-vm-safe.sh checks the built binary and these source lines; tools/c1vm-test.sh runs it (a stand-in ROM and blank disks, Linux arm64 only: the engine runs arm64
@@ -216,6 +228,10 @@ int main(int argc, char **argv) {
        storage, no network, installer=0 -- all untouched above) is already built. See the top-of-file
        comment and devices/vmapple.c for what this does and does not add. */
     cfg.usb_on_normal_boot = 1;
+    /* [2026-11-21, explicitly approved, D2] Same reasoning as usb_on_normal_boot just above: hv_runner_make_config
+       leaves this 0, this binary alone turns it on. See the top-of-file comment for what hv_usb_probe_start()
+       actually does (non-destructive enumeration only) and why this binary's lifecycle makes it safe. */
+    cfg.usb_probe_on_normal_boot = 1;
     char why[160], line[400];
     if (hv_runner_config_ok(&cfg, why, sizeof why) != 0) {
         fprintf(stderr, "ui_runner_vm: the settings were refused: %s\n", why);
@@ -237,7 +253,8 @@ int main(int argc, char **argv) {
     printf("ui_runner_vm: started pid %d, virtual machine mode\n", (int)getpid());
     hv_runner_config_line(&cfg, line, sizeof line);
     printf("ui_runner_vm config (the structure passed to hv_vm_create): %s\n", line);
-    printf("ui_runner_vm config (extra, not in hv_runner_config_line): usb_on_normal_boot=%d\n", cfg.usb_on_normal_boot);
+    printf("ui_runner_vm config (extra, not in hv_runner_config_line): usb_on_normal_boot=%d usb_probe_on_normal_boot=%d\n",
+           cfg.usb_on_normal_boot, cfg.usb_probe_on_normal_boot);
     printf("ui_runner_vm env: %d HV_* variable(s) removed%s%s\n", scrubbed, scrubbed ? ": " : "", scrubbed ? names : "");
     fflush(stdout);
 

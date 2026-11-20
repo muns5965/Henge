@@ -302,7 +302,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     }
     if (board.snd && !c->no_sound) hv_audio_attach(board.snd);
     board.poll = board_poll;
-    if (board.vusb && getenv("HV_VUSB_PROBE")) hv_usb_probe_start(board.vusb);
+    if (board.vusb && (getenv("HV_VUSB_PROBE") || c->usb_probe_on_normal_boot)) hv_usb_probe_start(board.vusb);
     // The setter and publication share this lock: an older preboot target can
     // never overwrite a monitor change made while the board was being built.
     os_unfair_lock_lock(&display_lock);

@@ -28,6 +28,18 @@ typedef struct HvVmConfig {
        this through, is deliberately not copied into that guest-visible region). This adds no USB-host,
        restore, or libirecovery code and does not by itself enable any of those. */
     int usb_on_normal_boot;
+    /* [2026-11-21, explicitly approved, D2] Separate from usb_on_normal_boot on purpose: that one only decides
+       whether the virtual USB device port EXISTS; this one decides whether anything on the host side actually
+       talks to it. When set (and only once usb_on_normal_boot/installer has actually produced a board.vusb),
+       host/vm.c's hv_vm_create() starts the SAME hv_usb_probe_start() (host/usb_host.c) that an installer boot
+       already starts via the HV_VUSB_PROBE environment variable -- this field exists only because a caller like
+       host/ui_runner_vm.c that deliberately scrubs every HV_* variable for its own unrelated reasons has no
+       other way to ask for it. hv_usb_probe_start()'s probe() does a non-destructive USB enumeration (reset,
+       GET_DESCRIPTOR device+config, GET_STATUS, GET_CONFIGURATION, and conditionally DFU GET_STATE/GET_STATUS
+       only if a DFU interface is present) and explicitly never sends SET_CONFIGURATION, DNLOAD, ABORT or
+       CLRSTATUS -- see that file's own comments. It does not link or enable host/libusb_shim.c (the real
+       libirecovery/usbmuxd/idevicerestore passthrough), which stays absent from this binary either way. */
+    int usb_probe_on_normal_boot;
     int readonly_storage;     /* open the disk and the auxiliary storage read-only (the G0 test: any write the guest asks for is refused and counted) */
     /* JIT memory the host already has (iOS: granted by a debugger), or NULL to map it here. */
     void *jit_rx, *jit_rw;

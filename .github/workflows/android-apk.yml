@@ -33,6 +33,7 @@ on:
       - tools/restore-selftest-build.sh
       - tools/vmrun-preflight-build.sh
       - tools/vmrun-install-g0-build.sh
+      - tools/vmrun-install-g2-build.sh
       - tools/ui-runner-vm-build.sh
       - tools/check-runner-vm-safe.sh
       - tools/check-c13-source.sh
@@ -118,6 +119,10 @@ jobs:
           # vmrun with the install entry point and the G0 test in it (the "[G0] 복원 진입점 시험" button, --install-g0): host/install.c up to the tool's stop A, storage read-only. A test program, not an installer; optional.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-install-g0-build.sh build-engine build-restore \
             && cp build-engine/vmrun_g0 android/app/src/main/jniLibs/arm64-v8a/libvmrung0.so || echo "::warning::vmrun with the G0 test did not build; the APK goes without that button's program"
+          # vmrun with the install entry point and the G2 diagnostic in it (the "[G2] 복원 진입점 + 실제 Apple 서명 요청" button, --install-g2): host/install.c up to the real idevicerestore TSS stage
+          # against Apple's real signing server (FLAG_SHSHONLY), storage read-only. A diagnostic program, not an installer; optional.
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-install-g2-build.sh build-engine build-restore \
+            && cp build-engine/vmrun_g2 android/app/src/main/jniLibs/arm64-v8a/libvmrung2.so || echo "::warning::vmrun with the G2 diagnostic did not build; the APK goes without that button's program"
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
             && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"

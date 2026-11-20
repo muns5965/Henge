@@ -11,6 +11,8 @@
 #   --wrap=thread_new / tests/fake_device/wrap_thread.c   the test-only link-time wrapper of tools/fake-restore-test.sh; never in a shipped link
 #   HV_INSTALL_G0           the G0 test of the install entry point (host/install_g0.h): host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g0-build.sh (the vmrun_g0 test program) and tools/install-g0-test.sh
 #   HV_INSTALL_G1           the G1 test of the install entry point and the restore tool's signing path (host/install_g1.h): host/install.c compiles its hooks only with it; set only by tools/install-g1-test.sh
+#   HV_INSTALL_G2           the G2 diagnostic of the install entry point against Apple's REAL signing server (host/install_g2.h): host/install.c and host/vmrun.c compile its hooks only with it; set only by
+#                           tools/vmrun-install-g2-build.sh (the vmrun_g2 program this ships as its own .so, never through the main engine/app CMake build -- see the source-location check below)
 #   FLAG_STOP_BEFORE_ROOTFS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/restore_preflight.c ever sets it
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
@@ -40,6 +42,13 @@ if grep -rln "DHV_INSTALL_G1" tools android .github ios Makefile 2>/dev/null | g
 grep -q "hv_g1_extra_flags" host/install.c && ! grep -q "FLAG_SHSHONLY" host/install.c || bad "host/install.c does not go through the G1 hook, or names the signing-only flag"
 # the G1 test program is not part of any shipped source list
 if grep -rn "install_g1" android/app/src android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "a shipped build mentions host/install_g1"; fi
+# the G2 switch: only its own build script may set it (not the main engine/app CMake build, not iOS, not the Makefile; the CI workflow only calls the script by
+# name and never names the switch itself, so it needs no exemption here -- same as HV_INSTALL_G0 and tools/vmrun-install-g0-build.sh)
+if grep -rln "DHV_INSTALL_G2" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g2-build.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g2-build.sh sets -DHV_INSTALL_G2"; fi
+# only host/install_g2.c sets the real TSS hosts and the signing-only stop; host/install.c keeps the plain flag-free source and reaches it through hv_g2_extra_flags
+grep -q "hv_g2_extra_flags" host/install.c && ! grep -q "FLAG_SHSHONLY" host/install.c || bad "host/install.c does not go through the G2 hook, or names the signing-only flag"
+# the G2 program is its own binary (vmrun_g2 -> libvmrung2.so), never part of the main engine/app's own CMake source list
+if grep -rn "install_g2" android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "the main engine/app CMake build mentions host/install_g2"; fi
 # the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
 if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do

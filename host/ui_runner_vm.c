@@ -120,25 +120,41 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
    It does not by itself establish what, if anything, happens after that mismatch is fixed. Printed directly (not
    folded into the generic HvPanicHit x0-only reporting below, which can't hold the extra registers this needs)
    so the two points are fully legible without a separate accessor. */
+/* [2026-11-21 round] Retargeted again (same single stop_pc/stop_pc2/stop_hook slot as before). The previous round
+   confirmed the 0x10C51C/0x10C590 type-mismatch call site (lr=0x10D150) and, with D1/D2 now exposing a USB port
+   and starting host/usb_host.c's non-destructive enumeration probe on normal boot too, a real-device run showed
+   that mismatch resolved (mismatch=0) and the full DFU enumeration sequence (reset, descriptors, GET_STATUS,
+   GET_CONFIGURATION, DFU GET_STATE/GET_STATUS=dfuIDLE) completing successfully -- but still no display. Independent
+   Capstone disassembly of the ROM bytes (read back via the app's own read-only "ROM 구간 읽기"/"직접 분기 참조 검색"
+   features, not executed) found: (a) a disk block-read-and-validate pair of functions (entered via lr=0x10CBE0,
+   confirmed as one of 0x10C51C's three call sites) that report distinct AVPBooter error codes (0x40200102/0103)
+   on failure; (b) a third, previously-unobserved call site to 0x10C51C at 0x10DF9C, reached only if a global
+   state-table slot at a fixed data address is still zero (an ordering guard, not obviously disk- or DFU-related);
+   (c) a generic 6-slot object-pool allocator at 0x104E04 (called from 0x10D2A4, itself reached after the 0x10C51C/
+   0x10C590 type check passes) whose return value 0x10D2B8 tests with "cbz x0, 0x10D2E0" -- zero takes an error
+   path, nonzero a success path that records state and returns 1. Neither 0x104E04's underlying work function
+   (0x104B60, not yet disassembled) nor 0x10DF9C's reachability on an actual run has been confirmed from a real
+   device; this is why this round watches exactly those two points, as the most direct next step a review chain
+   (documents f9250710/d3b7b4b0, independently re-derived from the same ROM bytes) converged on. This does NOT
+   establish that a disk-validation failure is what sends this boot path into DFU -- that causal link is still
+   unconfirmed; this probe only adds two more real-device data points toward it, same as every prior round. */
 static void panic_probe_hook(HvCpu *cpu) {
     HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .sp = cpu->sp };
-    if (cpu->pc == 0x10c51cull) {
-        /* Point A, 0x10C51C: the validation routine's entry. x4 is the caller's expected device type (not
-           compared until point B); x5/x6 are its other options; lr says which of the three known call sites
-           reached it this time. */
+    if (cpu->pc == 0x10d2b8ull) {
+        /* Point A, 0x10D2B8: right before "cbz x0, 0x10D2E0" executes -- x0 is 0x104E04's return value (which is
+           itself whatever 0x104B60, the slot's actual work function, returned), untouched by this hook. Zero means
+           the ROM is about to take 0x10D2E0's error path instead of 0x10D2BC's success path. */
         hit.x0 = cpu->x[0];
-        printf("ui_runner_vm: boot-branch probe A pc=10c51c lr=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx\n",
-               (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0], (unsigned long long)cpu->x[1],
-               (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], (unsigned long long)cpu->x[4],
-               (unsigned long long)cpu->x[5], (unsigned long long)cpu->x[6]);
+        printf("ui_runner_vm: boot-branch probe A pc=10d2b8 lr=%#llx x0=%#llx (0x104E04/0x104B60 return value; zero -> error path 0x10D2E0)\n",
+               (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0]);
     } else {
-        /* Point B, 0x10C590: right before "cmp w0, w24" executes, so both registers still hold exactly what the
-           ROM is about to compare -- neither this hook nor the engine touches them first. 32-bit compare, so the
-           mismatch test mirrors that width rather than the full 64-bit x[]. */
-        uint32_t actual = (uint32_t)cpu->x[0], expected = (uint32_t)cpu->x[24];
-        hit.x0 = actual;
-        printf("ui_runner_vm: boot-branch probe B pc=10c590 x21=%#llx actual(w0)=%#x expected(w24)=%#x mismatch=%d\n",
-               (unsigned long long)cpu->x[21], actual, expected, actual != expected);
+        /* Point B, 0x10DF9C: the third known call site to 0x10C51C (the other two, 0x10CBDC and 0x10D14C, are
+           already confirmed reached on every run). Simply firing at all answers the open "실기기 실행: 미관측"
+           question from the static analysis; x4/x5/x6 are the same three "expected type / options" args point A
+           (0x10C51C's own entry) takes at the other two call sites, for comparison. */
+        printf("ui_runner_vm: boot-branch probe B pc=10df9c reached (third 0x10C51C call site) lr=%#llx x4=%#llx x5=%#llx x6=%#llx\n",
+               (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[4], (unsigned long long)cpu->x[5], (unsigned long long)cpu->x[6]);
+        hit.x0 = cpu->x[4];
     }
     fflush(stdout);
     if (cpu->panic_hits == 0) cpu->panic_first = hit;
@@ -151,8 +167,8 @@ static void panic_probe_hook(HvCpu *cpu) {
    those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
    is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
    diagnostic. */
-#define HV_PANIC_PROBE_PC1 0x10c51cull /* point A: the shared BDIF-device validation routine's entry */
-#define HV_PANIC_PROBE_PC2 0x10c590ull /* point B: "cmp w0, w24" right before its type-mismatch check */
+#define HV_PANIC_PROBE_PC1 0x10d2b8ull /* point A: "cbz x0, 0x10D2E0" testing 0x104E04/0x104B60's return value */
+#define HV_PANIC_PROBE_PC2 0x10df9cull /* point B: the third, previously-unconfirmed call site to 0x10C51C */
 static void panic_probe_install(void) {
     HvMachine *vm = hv_vm_machine();
     if (vm->stop_hook) {
@@ -162,7 +178,7 @@ static void panic_probe_install(void) {
     vm->stop_pc = HV_PANIC_PROBE_PC1;
     vm->stop_pc2 = HV_PANIC_PROBE_PC2;
     vm->stop_hook = panic_probe_hook;
-    printf("ui_runner_vm: boot-branch probe installed at %#llx (0x10C51C entry) / %#llx (0x10C590 compare)\n",
+    printf("ui_runner_vm: boot-branch probe installed at %#llx (0x10D2B8 compare) / %#llx (0x10DF9C third call site)\n",
            (unsigned long long)HV_PANIC_PROBE_PC1, (unsigned long long)HV_PANIC_PROBE_PC2);
 }
 

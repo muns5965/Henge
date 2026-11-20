@@ -379,16 +379,23 @@ int hv_g3_finish(FILE *out, const char *disk, const char *aux) {
            confirmed against third_party/libirecovery/src/libirecovery.c's irecv_send_buffer(): DFU-mode sends check state first (GETSTATE, class/5) and
            conditionally issue CLRSTATUS (class/4) or ABORT (class/6) to recover from an unexpected one -- not a sign of trouble, so no longer forbidden;
            entering recovery mode for each of the three components sent there (Ap,LocalPolicy/RestoreLogo/iBEC) issues exactly one vendor-class handshake
-           (0x41, bRequest 0) before its bulk transfer -- the only vendor-class call this path ever makes, so only vendor-class calls with a DIFFERENT
-           bRequest remain forbidden. DETACH (class/0) and UPLOAD (class/2) are never issued by this path (only by the limera1n exploit, HAVE_LIMERA1N,
-           which this build does not define) and remain forbidden; standard-type requests (type 0) are ordinary USB re-enumeration after the DFU<->Recovery
+           (0x41, bRequest 0) before its bulk transfer. A SECOND vendor-class bRequest, 1, is also legitimate and source-confirmed separately:
+           irecv_send_command_breq() (third_party/libirecovery/src/libirecovery.c) sends it for "go"/"bootx"/"reset", and build 155's real-device run showed
+           it is reachable within G3's own scope -- third_party/idevicerestore/src/dfu.c's dfu_enter_recovery() issues "go" (bRequest 1) right after sending
+           iBEC, when client->mode == MODE_RECOVERY, to execute it; recovery.c has the same "go" for its own (not-this-run) code path, plus "bootx"/"reset"
+           for stages after stop B. The histogram cannot tell which command string a given bRequest-1 request carried (it has no room for one), so this
+           bucket is reported under the neutral name "command_execute", not "go" -- build 155's single forbidden hit is very likely this, inferred from the
+           call path and the observed iBootStage2 banner, but not provable from the histogram alone. Only vendor-class calls with a bRequest OTHER than 0 or
+           1 remain forbidden. DETACH (class/0) and UPLOAD (class/2) are never issued by this path (only by the limera1n exploit, HAVE_LIMERA1N, which this
+           build does not define) and remain forbidden; standard-type requests (type 0) are ordinary USB re-enumeration after the DFU<->Recovery
            disconnect/reconnect and are counted but not forbidden. */
         unsigned h[4][8];
         for (int t = 0; t < 4; t++) for (int b = 0; b < 8; b++) h[t][b] = hv_libusb_ctrl_hist(t, b) - g_hist0[t][b];
-        int dnload = (int)h[1][1], getstatus = (int)h[1][3], getstate = (int)h[1][5], reset = (int)h[1][4] + (int)h[1][6], handshake = (int)h[2][0], enumreq = 0, forbidden = 0;
+        int dnload = (int)h[1][1], getstatus = (int)h[1][3], getstate = (int)h[1][5], reset = (int)h[1][4] + (int)h[1][6];
+        int handshake = (int)h[2][0], command_execute = (int)h[2][1], enumreq = 0, forbidden = 0;
         for (int b = 0; b < 8; b++) enumreq += (int)h[0][b];
         forbidden += (int)h[1][0] + (int)h[1][2] + (int)h[1][7];                 /* detach, upload, class-type "7 or more": none expected */
-        for (int b = 1; b < 8; b++) forbidden += (int)h[2][b];                   /* any vendor-class call other than the one handshake (breq 0) */
+        for (int b = 2; b < 8; b++) forbidden += (int)h[2][b];                   /* any vendor-class call other than the handshake (breq 0) or a command-execute (breq 1) */
         for (int b = 0; b < 8; b++) forbidden += (int)h[3][b];                   /* reserved request-type bits: never expected */
         int c1 = hv_libusb_ctrl_count(), total = c1 - g_ctrl0, lost = 0;
         for (int k = g_ctrl0; k < c1; k++) { HvCtrlRecord r; if (!hv_libusb_ctrl_get(k, &r)) lost++; }
@@ -399,9 +406,10 @@ int hv_g3_finish(FILE *out, const char *disk, const char *aux) {
             "%d control request(s) total (%d no longer in the detail ring -- the ring only holds the last %d; the counts below come from the never-evicted histogram instead, so this does not affect them): "
             "%d DFU DNLOAD (must be >=1: this stage's whole point is that personalized firmware WAS sent), %d DFU GET_STATUS, %d DFU GET_STATE, %d DFU CLRSTATUS/ABORT "
             "(libirecovery's own per-component state recovery, conditional -- not forbidden), %d Recovery-mode vendor handshake (libirecovery's one call before each bulk send), "
+            "%d Recovery-mode vendor command_execute (bRequest 1 -- \"go\"/\"bootx\"/\"reset\" per libirecovery's irecv_send_command_breq(); which one isn't recorded, only the count), "
             "%d standard/enumeration request(s), %d forbidden (detach/upload/any other vendor call/reserved type -- none of these are issued by this call path); "
             "%d bulk/interrupt transfer(s) submitted (%d completed OK, %llu bytes, %d completed with a non-success status -- must be 0; a bulk transfer is now expected here, so only a failed one counts against the row)",
-            total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad);
+            total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, command_execute, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad);
     }
     FileId d1, a1;
     file_id(disk, &d1); file_id(aux, &a1);

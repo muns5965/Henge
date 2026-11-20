@@ -23,6 +23,7 @@
 #include "install.h"
 #include "net_guard.h"
 #include "usb_host.h"
+#include "vm.h"
 
 #ifndef HV_STOP_AFTER_RESTORE_OPTIONS
 #error "install_g6.c needs the vendored restore tool built with -DHV_STOP_AFTER_RESTORE_OPTIONS"
@@ -306,10 +307,91 @@ int hv_g6_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_
     return 0;
 }
 
+/* ---- read-only diagnostic: periodic raw boot_args framebuffer sampling while waiting for stop E ----
+   Host-side only (this file, not the vendored idevicerestore sources): hv_vm_boot_display() is already a
+   public, read-only accessor (host/vm.h) for the raw guest-RAM framebuffer XNU's boot_args points at, used the
+   same way by host/vmrun.c's own diagnostics -- no new hook into third_party/idevicerestore is needed to get a
+   second look at the screen while G6 is still running.
+   This reads the WHOLE source frame, never the 640x400 copy vmrun.c's --snapshot scales it down to:
+   hv_vm_capture_screen's nearest-neighbor scale samples only a fraction of the source rows (e.g. ~400 of 1136),
+   so "0 non-black pixels" on that scaled copy does not by itself rule out content in a row the scale never
+   reads. Throttled to about once a second (not every 20ms wait-loop tick) since it walks every pixel of the
+   source frame.
+   Never gates install g6's own pass/fail table and is never counted as a failure if it finds nothing or the
+   frame isn't available yet -- purely informational, like row_info() below. */
+static double g_scr_t0_ms, g_scr_next_ms;
+static int g_scr_started, g_scr_seen_nonblack;
+
+static int g6_write_bmp_raw(const char *path, const uint8_t *bgra, int w, int h) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    uint32_t size = 54 + (uint32_t)w * (uint32_t)h * 4;
+    uint8_t hd[54] = {'B', 'M'};
+    memcpy(hd + 2, &size, 4);
+    uint32_t off = 54, dib = 40, planes_bpp = 1 | (32u << 16), img = (uint32_t)w * (uint32_t)h * 4;
+    int32_t ww = w, hh = -h; /* top-down */
+    memcpy(hd + 10, &off, 4);
+    memcpy(hd + 14, &dib, 4);
+    memcpy(hd + 18, &ww, 4);
+    memcpy(hd + 22, &hh, 4);
+    memcpy(hd + 26, &planes_bpp, 4);
+    memcpy(hd + 34, &img, 4);
+    int ok = fwrite(hd, 1, 54, f) == 54 && fwrite(bgra, 1, img, f) == img;
+    fclose(f);
+    return ok ? 0 : -1;
+}
+
+static void g6_screen_poll(void) {
+    double t = now_ms();
+    if (!g_scr_started) { g_scr_started = 1; g_scr_t0_ms = t; g_scr_next_ms = t; }
+    if (t < g_scr_next_ms) return;
+    g_scr_next_ms = t + 1000.0;
+    double rel = (t - g_scr_t0_ms) / 1000.0;
+    HvBootDisplay d;
+    if (hv_vm_boot_display(&d) != 0 || !d.pixels || !d.width || !d.height || !d.stride) {
+        printf("install g6: screen t=+%.1fs raw boot_args: none yet\n", rel);
+        fflush(stdout);
+        return;
+    }
+    uint64_t nonblack = 0, hash = 1469598103934665603ULL; /* FNV-1a 64, offset basis */
+    for (uint32_t y = 0; y < d.height; y++) {
+        const uint8_t *row = d.pixels + (size_t)y * d.stride;
+        for (uint32_t x = 0; x < d.width; x++) {
+            const uint8_t *p = row + (size_t)x * 4;
+            if (p[0] || p[1] || p[2]) nonblack++;
+            for (int k = 0; k < 4; k++) { hash ^= p[k]; hash *= 1099511628211ULL; }
+        }
+    }
+    uint64_t total = (uint64_t)d.width * (uint64_t)d.height;
+    printf("install g6: screen t=+%.1fs raw boot_args %ux%u stride %u nonblack %llu/%llu (%.3f%%) hash %016llx\n",
+           rel, d.width, d.height, d.stride, (unsigned long long)nonblack, (unsigned long long)total,
+           100.0 * (double)nonblack / (double)total, (unsigned long long)hash);
+    fflush(stdout);
+    if (nonblack > 0 && !g_scr_seen_nonblack) {
+        g_scr_seen_nonblack = 1;
+        char path[600];
+        snprintf(path, sizeof path, "%s/g6_first_nonblack_%ux%u.bmp", g_workdir, d.width, d.height);
+        /* The full original resolution, not vmrun's scaled 640x400 copy -- in case whatever made this sample
+           non-black sits in a source row the scale would have skipped. Needs a tightly-packed BGRA copy first:
+           d.pixels may have row padding (stride > width*4) that the BMP writer's format does not allow for. */
+        uint8_t *packed = malloc((size_t)d.width * d.height * 4);
+        if (packed) {
+            for (uint32_t y = 0; y < d.height; y++)
+                memcpy(packed + (size_t)y * (size_t)d.width * 4, d.pixels + (size_t)y * d.stride, (size_t)d.width * 4);
+            if (g6_write_bmp_raw(path, packed, (int)d.width, (int)d.height) == 0)
+                printf("install g6: screen t=+%.1fs first non-black sample, full-resolution raw frame written to %s\n", rel, path);
+            else
+                printf("install g6: screen t=+%.1fs first non-black sample, could not write %s\n", rel, path);
+            free(packed);
+            fflush(stdout);
+        }
+    }
+}
+
 int hv_g6_wait(int cap_ms) {
     if (!g_started) return 1;
     double t0 = now_ms();
-    while (hv_install_result() == 1 && now_ms() - t0 < cap_ms) usleep(20000);
+    while (hv_install_result() == 1 && now_ms() - t0 < cap_ms) { g6_screen_poll(); usleep(20000); }
     if (hv_install_result() != 1) { g_waited = 1; return 1; }
     hv_install_cancel();
     double t1 = now_ms();

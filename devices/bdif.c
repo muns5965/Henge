@@ -29,12 +29,35 @@ typedef struct {
     uint32_t len, flags;
 } ReqCmd;
 
+/* [2026-11-20, explicitly approved, read-only] USB-queue diagnostics for the Android boot investigation: now that
+   host/ui_runner_vm.c's normal boot explicitly attaches this device (see devices/vmapple.c), the ROM's USB-type
+   check passes, but no further boot progress (no display) has been observed in a full 30s run either -- one
+   hypothesis is the ROM submitting a USB request to this queue and waiting, since nothing on the host side
+   actually answers hv_vusb_take_request() in that build. These log a REG_UNK2/REG_QSEL/REG_CMD write (each rare)
+   every time, and a REG_BUSY read or a usb_deliver() poll (either can be called every tick, i.e. very often) only
+   on a state change plus a throttled summary -- never forcing q->pending/q->done or synthesizing a request. */
+static int g_usbdiag_rom_on = -1;              /* -1: not yet observed */
+static uint32_t g_usbdiag_qsel = 0xffffffffu;
+static int g_usbdiag_busy_d0 = -1, g_usbdiag_busy_d1 = -1;
+static uint64_t g_usbdiag_busy_reads;          /* REG_BUSY reads since the last change (logged), for the summary */
+
 static uint64_t usb_read(HvBdif *b, uint64_t reg) {
     switch (reg) {
     case REG_STATUS: return 1;
     case REG_CFG: return USB_DEVICE_TYPE;
     case REG_UNK1: return 0x420;
-    case REG_BUSY: return b->usb_qsel < 2 ? (uint64_t)b->usb_q[b->usb_qsel].done : 0;
+    case REG_BUSY: {
+        int d0 = b->usb_q[0].done, d1 = b->usb_q[1].done;
+        if (d0 != g_usbdiag_busy_d0 || d1 != g_usbdiag_busy_d1) {
+            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u (changed, %llu reads since last change)\n",
+                    d0, d1, b->usb_qsel, (unsigned long long)g_usbdiag_busy_reads);
+            g_usbdiag_busy_d0 = d0; g_usbdiag_busy_d1 = d1; g_usbdiag_busy_reads = 0;
+        } else if ((g_usbdiag_busy_reads++ % 20000) == 0) {
+            fprintf(stderr, "bdif usb diag: REG_BUSY read x%llu with no change, q0.done=%d q1.done=%d qsel=%u\n",
+                    (unsigned long long)g_usbdiag_busy_reads, d0, d1, b->usb_qsel);
+        }
+        return b->usb_qsel < 2 ? (uint64_t)b->usb_q[b->usb_qsel].done : 0;
+    }
     case REG_UNK2: return 1;
     case 0x404: return b->usb_irq;
     case REG_QSEL: return b->usb_qsel;
@@ -79,7 +102,18 @@ static void usb_deliver(HvBdif *b) {
     HvBdifUsbQ *q = &b->usb_q[0];
     if (!b->usb || !b->usb->rom_on || !q->pending || q->done) return;
     HvVusbMsg m;
-    if (!hv_vusb_take_request(b->usb, &m)) return;
+    if (!hv_vusb_take_request(b->usb, &m)) {
+        /* [2026-11-20 diag] pending && !done but no host request to deliver: this is the "ROM submitted a USB
+           request and nothing on the host answers it" state the investigation is checking for. Called every
+           tick while it holds, so throttled to avoid flooding -- this never fabricates a request or sets done. */
+        static uint64_t waits;
+        if ((waits++ % 20000) == 0)
+            fprintf(stderr, "bdif usb diag: usb_deliver: q0 pending=%#llx done=0, no host request yet (checked x%llu)\n",
+                    (unsigned long long)q->pending, (unsigned long long)waits);
+        return;
+    }
+    fprintf(stderr, "bdif usb diag: usb_deliver: q0 pending=%#llx -> delivering a host request (ep=%#x type=%#x len=%u)\n",
+            (unsigned long long)q->pending, m.ep, m.type, m.len);
     uint32_t room = 0;
     usb_xfer(b, q->pending, 1, NULL, 0, &room);
     uint32_t payload = m.data ? m.len : 0;
@@ -109,20 +143,33 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
         hv_vusb_set_online(b->usb, v != 0);
         memset(b->usb_q, 0, sizeof b->usb_q);
         b->usb_q[0].done = b->usb_q[1].done = 1; /* idle: nothing submitted */
+        if (g_usbdiag_rom_on != (v != 0)) {
+            fprintf(stderr, "bdif usb diag: REG_UNK2 write -> rom_on=%d (queues reset to idle)\n", v != 0);
+            g_usbdiag_rom_on = v != 0;
+        }
         break;
     case 0x404: b->usb_irq = (uint32_t)v; break;
-    case REG_QSEL: b->usb_qsel = (uint32_t)v; break;
+    case REG_QSEL:
+        b->usb_qsel = (uint32_t)v;
+        if (g_usbdiag_qsel != b->usb_qsel) {
+            fprintf(stderr, "bdif usb diag: REG_QSEL write -> %u\n", b->usb_qsel);
+            g_usbdiag_qsel = b->usb_qsel;
+        }
+        break;
     case REG_CMD: {
         if (b->usb_qsel >= 2) break;
         HvBdifUsbQ *q = &b->usb_q[b->usb_qsel];
         q->done = 0;
         if (b->usb_qsel == 0) {
             q->pending = v;
+            fprintf(stderr, "bdif usb diag: REG_CMD write, q0 pending=%#llx done=0 (submitted)\n", (unsigned long long)v);
             usb_deliver(b);
+            fprintf(stderr, "bdif usb diag: REG_CMD write, q0 after usb_deliver(): done=%d\n", q->done);
             break;
         }
         /* A response: take it now. */
         if (!b->usb->rom_on) break;
+        fprintf(stderr, "bdif usb diag: REG_CMD write, q1 (response) addr=%#llx\n", (unsigned long long)v);
         uint32_t room = 0;
         usb_xfer(b, v, 0, NULL, 0, &room);
         uint8_t *tmp = room ? malloc(room) : NULL;

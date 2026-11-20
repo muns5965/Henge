@@ -36,6 +36,9 @@
 #ifdef HV_INSTALL_G5
 #include "install_g5.h"   /* the G5 diagnostic build only (tools/vmrun-install-g5-build.sh): see host/install_g5.h */
 #endif
+#ifdef HV_INSTALL_G6
+#include "install_g6.h"   /* the G6 diagnostic build only (tools/vmrun-install-g6-build.sh): see host/install_g6.h */
+#endif
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
 #include "restore_session.h"
@@ -148,6 +151,9 @@ static void *restore_thread(void *arg) {
 #ifdef HV_INSTALL_G5
     flags |= hv_g5_extra_flags();   /* G5 diagnostic build: the tool's own stop right after the restored handshake/queries/BBTicket-copy are confirmed (vendored hv_stop_d_hook), against the real Apple TSS hosts; same net_guard allowance as G2/G3/G4 */
 #endif
+#ifdef HV_INSTALL_G6
+    flags |= hv_g6_extra_flags();   /* G6 diagnostic build: the tool's own stop right after the Reverse Proxy attempt and the options-plist construction are resolved (vendored hv_stop_e_hook), against the real Apple TSS hosts; same net_guard allowance as G2/G3/G4/G5 */
+#endif
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
 #ifdef __ANDROID__
@@ -178,7 +184,7 @@ static void *restore_thread(void *arg) {
     /* C18/C9: close the session first (CLOSED or QUIESCENCE_FAILED), then release what the session allows, then ONE final result composed from three things:
        the engine's return value, the cleanup (tasks, client, private usbmuxd) and the session end (policy removal). Nothing is released after a failed close:
        the client is deliberately leaked and the policy and usbmuxd stay, because a task may still use them (the use-after-free the T5 baseline reproduced). */
-#if defined(HV_INSTALL_G0) || defined(HV_INSTALL_G1) || defined(HV_INSTALL_G2) || defined(HV_INSTALL_G3) || defined(HV_INSTALL_G4) || defined(HV_INSTALL_G5)
+#if defined(HV_INSTALL_G0) || defined(HV_INSTALL_G1) || defined(HV_INSTALL_G2) || defined(HV_INSTALL_G3) || defined(HV_INSTALL_G4) || defined(HV_INSTALL_G5) || defined(HV_INSTALL_G6)
     int engine_rc = r;
 #endif
     int closed = hv_restore_session_close() == 0;
@@ -216,6 +222,9 @@ static void *restore_thread(void *arg) {
 #endif
 #ifdef HV_INSTALL_G5
     hv_g5_record(engine_rc, closed, cleanup_mask, rep);
+#endif
+#ifdef HV_INSTALL_G6
+    hv_g6_record(engine_rc, closed, cleanup_mask, rep);
 #endif
     fprintf(stderr, "install: final result %d (1 success, 2 restore failed, 3 user cancel, 5 cleanup failed, 6 not quiescent; 0 = not decided)\n", rep);
     r = rep == HV_REG_R_SUCCESS ? 0 : -1;

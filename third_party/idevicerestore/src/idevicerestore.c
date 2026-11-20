@@ -1676,6 +1676,16 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		   step -- this is the intended, successful stop for this build, not a failure, so it gets no "RESTORE FAILED" line. */
 		logger(LL_INFO, "Henge test stop D reached (restored handshake confirmed, no restore-start command sent)\n");
 #endif
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+	} else if (result == HV_STOP_AFTER_RESTORE_OPTIONS_RC) {
+		/* Henge test mode "stop E" (see hv_stop.h): restore_device() returned right after the restore-options plist was built and the Reverse Proxy
+		   attempt resolved, strictly before restored_start_restore() -- the intended, successful stop for this build. */
+		logger(LL_INFO, "Henge test stop E reached (restore options built, Reverse Proxy resolved, no restore-start command sent)\n");
+	} else if (result == HV_STOP_E_CLEANUP_UNCERTAIN_RC) {
+		/* Henge test mode "stop E": the Reverse Proxy's own cleanup returned an unresolvable UNKNOWN_ERROR (see hv_stop.h's long comment) -- this build
+		   deliberately left client->restore unfreed rather than risk a use-after-free, and reports this as its own distinct, non-passing outcome. */
+		logger(LL_INFO, "Henge test stop E: Reverse Proxy cleanup result unresolvable; client->restore left allocated, not a pass\n");
+#endif
 	} else {
 		logger(LL_INFO, "RESTORE FAILED\n");
 	}
@@ -1700,6 +1710,9 @@ void (*hv_stop_c_hook)(const struct hv_stop_c_info *info) = NULL;
 
 #ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
 void (*hv_stop_d_hook)(const struct hv_stop_d_info *info) = NULL;
+#endif
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+void (*hv_stop_e_hook)(const struct hv_stop_e_info *info) = NULL;
 #endif
 
 /* Henge: 1 = FLAG_SHSHONLY must not write the ticket to a file (this app keeps no ticket on disk). Set by the host before the tool starts. */

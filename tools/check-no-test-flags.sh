@@ -22,10 +22,14 @@
 #   HV_INSTALL_G5           the G5 diagnostic of the install entry point through TSS, the DFU->Recovery firmware transfer, RecoveryOS entry and into restore_device() itself (host/install_g5.h):
 #                           host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g5-build.sh (the vmrun_g5 program this ships as its own .so, never through the
 #                           main engine/app CMake build -- see the source-location check below)
+#   HV_INSTALL_G6           the G6 diagnostic of the install entry point through TSS, the DFU->Recovery firmware transfer, RecoveryOS entry, the restored handshake and into the Reverse Proxy attempt and
+#                           the restore-options plist construction (host/install_g6.h): host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g6-build.sh (the
+#                           vmrun_g6 program this ships as its own .so, never through the main engine/app CMake build -- see the source-location check below)
 #   FLAG_STOP_BEFORE_ROOTFS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/restore_preflight.c ever sets it
 #   FLAG_STOP_AFTER_DFU_RECOVERY  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/install_g3.c (through hv_g3_extra_flags) ever sets it
 #   FLAG_STOP_AFTER_RECOVERYOS_ENTRY  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/install_g4.c (through hv_g4_extra_flags) ever sets it
 #   FLAG_STOP_AFTER_RESTORED_HANDSHAKE  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/install_g5.c (through hv_g5_extra_flags) ever sets it
+#   FLAG_STOP_AFTER_RESTORE_OPTIONS  (third_party/idevicerestore/src/hv_stop.h) is compiled into the Android restore stack but only host/install_g6.c (through hv_g6_extra_flags) ever sets it
 # 1. source level: no build script or workflow that makes the shipped binaries sets them; the shipped libtatsu build sets HV_TSS_HTTPS_ONLY.
 # 2. object level: compiles libtatsu's tss.c and host/curl_mbedtls.c the way the shipped build does and looks for the test strings in the objects.
 # Usage: [CC=..] tools/check-no-test-flags.sh [workdir]
@@ -47,6 +51,7 @@ for f in host/install.c host/ipsw_dl.c host/tss_probe.c; do
   [ -f "$f" ] && grep -q "FLAG_STOP_AFTER_DFU_RECOVERY" "$f" && bad "$f sets the stop-B test flag"
   [ -f "$f" ] && grep -q "FLAG_STOP_AFTER_RECOVERYOS_ENTRY" "$f" && bad "$f sets the stop-C test flag"
   [ -f "$f" ] && grep -q "FLAG_STOP_AFTER_RESTORED_HANDSHAKE" "$f" && bad "$f sets the stop-D test flag"
+  [ -f "$f" ] && grep -q "FLAG_STOP_AFTER_RESTORE_OPTIONS" "$f" && bad "$f sets the stop-E test flag"
 done
 # the G0 switch: only its own build script and its Linux test may set it (never the app's CMake, gradle, workflows for the main program, the iOS project, the Makefile)
 if grep -rln "DHV_INSTALL_G0" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g0-build.sh$\|^tools/install-g0-test.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g0-build.sh and tools/install-g0-test.sh sets -DHV_INSTALL_G0"; fi
@@ -85,6 +90,13 @@ if grep -rln "DHV_INSTALL_G5" tools android .github ios Makefile 2>/dev/null | g
 grep -q "hv_g5_extra_flags" host/install.c && ! grep -q "FLAG_STOP_AFTER_RESTORED_HANDSHAKE" host/install.c || bad "host/install.c does not go through the G5 hook, or names the stop-D flag"
 # the G5 program is its own binary (vmrun_g5 -> libvmrung5.so), never part of the main engine/app's own CMake source list
 if grep -rn "install_g5" android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "the main engine/app CMake build mentions host/install_g5"; fi
+# the G6 switch: only its own build script may set it (not the main engine/app CMake build, not iOS, not the Makefile; the CI workflow only calls the script by
+# name and never names the switch itself, so it needs no exemption here -- same as HV_INSTALL_G5 and tools/vmrun-install-g5-build.sh)
+if grep -rln "DHV_INSTALL_G6" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g6-build.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g6-build.sh sets -DHV_INSTALL_G6"; fi
+# only host/install_g6.c sets the restore-options stop; host/install.c keeps the plain flag-free source (checked above) and reaches it through hv_g6_extra_flags
+grep -q "hv_g6_extra_flags" host/install.c && ! grep -q "FLAG_STOP_AFTER_RESTORE_OPTIONS" host/install.c || bad "host/install.c does not go through the G6 hook, or names the stop-E flag"
+# the G6 program is its own binary (vmrun_g6 -> libvmrung6.so), never part of the main engine/app's own CMake source list
+if grep -rn "install_g6" android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "the main engine/app CMake build mentions host/install_g6"; fi
 # the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
 if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do

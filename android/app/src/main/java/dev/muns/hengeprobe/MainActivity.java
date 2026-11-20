@@ -564,6 +564,28 @@ public class MainActivity extends Activity {
         g5Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(g5Note);
 
+        final Button g6Button = new Button(this);
+        g6Button.setText("[G6] Reverse Proxy + 복원 옵션 구성 (복원 시작 명령 전까지, 저장장치 읽기 전용) — 실제 Apple 서버 + 실제 기기 펌웨어 전송");
+        g6Button.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("G6: Reverse Proxy 연결과 복원 옵션 구성까지만 진행합니다 (복원 시작 명령은 보내지 않음)")
+                .setMessage("G5와 같이 실제 Apple 서명 서버에 서명 요청을 보내고 서명된 펌웨어를 기기에 전송해 RecoveryOS까지 진입시키고 restored 핸드셰이크·HardwareInfo 조회를 확인한 뒤, G5와 달리 거기서 멈추지 않고 "
+                        + "Reverse Proxy에 연결을 시도하고(이 기기 빌드는 FDR 스레드가 아니라 Reverse Proxy 경로로 컴파일됩니다) 복원 옵션 plist를 메모리에 구성합니다 "
+                        + "(모두 로컬 usbmuxd 연결 위의 통신이며, 새로운 Apple 요청은 없습니다). 실제 복원 시작 명령(restored_start_restore)을 보내기 직전에 즉시 멈춥니다 — "
+                        + "그 다음 단계(ASR, 실제 디스크 쓰기)는 하지 않습니다. 디스크와 aux는 읽기 전용으로 열고, 새로 만들거나 지우지 않습니다(이미 있어야 합니다). "
+                        + "허용되는 연결은 전용 usbmuxd와 세 서명 호스트뿐이며, 그 외 목적지로의 연결은 모두 거부되고 그 자체로 실패로 처리됩니다. 서명 티켓은 파일로 저장하지 않고 화면에도 표시하지 않습니다. "
+                        + "ECID는 만들지 않고(이미 있어야 함) 화면에도 표시하지 않습니다. "
+                        + "이것은 복원이 아닙니다 — Reverse Proxy 연결과 복원 옵션 구성이 실제 엔진 경로에서 정상 동작하는지 보는 진단이며, 통과해도 macOS 설치 성공을 뜻하지 않습니다. 기기가 실제로 DFU→Recovery→Restore로 전환되고 RecoveryOS가 restored와 Reverse Proxy를 구동합니다. "
+                        + "대기 시간이 G5보다 길 수 있습니다(최대 약 9분). 진행할까요?")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("전송", (d, w) -> { g6Mode = true; runVmrun(true, false, false, 2); })
+                .show());
+        root.addView(g6Button);
+        final TextView g6Note = new TextView(this);
+        g6Note.setText("결과는 '복원 성공'이 아니라 g6_passed 입니다. G5와 달리 Reverse Proxy 연결 성공과 복원 옵션 plist 필수 필드 확인, 복원 시작 명령 호출 0건을 확인합니다(이 버튼만 그렇습니다). "
+                + "디스크·aux가 없으면 아무것도 만들지 않고 멈춥니다(먼저 일반/설치기 부팅 시험을 한 번 해 두세요). 이 시험은 로그 파일을 저장하지 않습니다.");
+        g6Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(g6Note);
+
         // C0 + B0: the synthetic screen and input test (no virtual machine). On top, not in the folded section of finished tests.
         final Button uiTestButton = new Button(this);
         uiTestButton.setText("[C0/B0] 합성 화면·입력 시험 (VM 없음)");
@@ -1376,11 +1398,13 @@ public class MainActivity extends Activity {
         g4Mode = false;
         final boolean g5 = g5Mode;
         g5Mode = false;
+        final boolean g6 = g6Mode;
+        g6Mode = false;
         final boolean irecv = irecvIn;
         // HV_DIAG_PROBE / HV_DIAG_PROBE_CALLER (host/vmrun.c diag_probe_install): read-only diagnostic logging, normal-boot family only.
         // Read here (not consumed/cleared, unlike the one-shot mode flags above) so each checkbox reflects "next normal-boot run", not "next run of any kind".
-        final boolean diag = !installer && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !irecv && !dnload && diagProbeCheckBox != null && diagProbeCheckBox.isChecked();
-        final boolean diagCaller = !installer && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !irecv && !dnload && diagProbeCallerCheckBox != null && diagProbeCallerCheckBox.isChecked();
+        final boolean diag = !installer && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !g6 && !irecv && !dnload && diagProbeCheckBox != null && diagProbeCheckBox.isChecked();
+        final boolean diagCaller = !installer && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !g6 && !irecv && !dnload && diagProbeCallerCheckBox != null && diagProbeCallerCheckBox.isChecked();
         if (running) return;
         running = true;
         setButtons(false);
@@ -1395,11 +1419,11 @@ public class MainActivity extends Activity {
                 File disk = new File(base, "disk.img").exists() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
                 File aux = new File(base, "aux.img").exists() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
                 acc.append("폴더: ").append(base).append('\n');
-                File exe = new File(libDir, g5 ? "libvmrung5.so" : g4 ? "libvmrung4.so" : g3 ? "libvmrung3.so" : g2 ? "libvmrung2.so" : g0 ? "libvmrung0.so" : pf ? "libvmrunpreflight.so" : tssLpol ? "libvmruntsslpol.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
+                File exe = new File(libDir, g6 ? "libvmrung6.so" : g5 ? "libvmrung5.so" : g4 ? "libvmrung4.so" : g3 ? "libvmrung3.so" : g2 ? "libvmrung2.so" : g0 ? "libvmrung0.so" : pf ? "libvmrunpreflight.so" : tssLpol ? "libvmruntsslpol.so" : tss ? "libvmruntss.so" : irecv || dnload ? "libvmrunirecv.so" : "libvmrun.so");
                 final File pfIpsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw");
-                if (!exe.exists()) acc.append(g5 ? "G5 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g4 ? "G4 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g3 ? "G3 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g2 ? "G2 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g0 ? "G0 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tssLpol ? "TSS 연쇄 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
-                else if ((pf || g0 || g2 || g3 || g4 || g5) && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
-                else if ((g0 || g2 || g3 || g4 || g5) && (!disk.isFile() || !aux.isFile())) acc.append("디스크 또는 aux 파일이 아직 없습니다(").append(disk.getName()).append(", ").append(aux.getName()).append("). G0/G2/G3/G4/G5는 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요. 아무것도 하지 않았습니다.\n");
+                if (!exe.exists()) acc.append(g6 ? "G6 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g5 ? "G5 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g4 ? "G4 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g3 ? "G3 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g2 ? "G2 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : g0 ? "G0 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : pf ? "복원 도구가 들어간 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 하지 않았습니다.\n" : tssLpol ? "TSS 연쇄 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : tss ? "TSS 시험용 vmrun이 이 APK에 없습니다(빌드 실패). 아무것도 전송하지 않았습니다.\n" : irecv || dnload ? "libirecovery가 들어간 vmrun이 이 APK에 없습니다(빌드 실패).\n" : "vmrun 실행 파일이 이 APK에 없습니다.\n");
+                else if ((pf || g0 || g2 || g3 || g4 || g5 || g6) && !pfIpsw.isFile()) acc.append("받아 둔 IPSW가 없습니다(").append(pfIpsw.getName()).append("). 'IPSW 다운로드'로 먼저 받으세요. 아무것도 하지 않았습니다.\n");
+                else if ((g0 || g2 || g3 || g4 || g5 || g6) && (!disk.isFile() || !aux.isFile())) acc.append("디스크 또는 aux 파일이 아직 없습니다(").append(disk.getName()).append(", ").append(aux.getName()).append("). G0/G2/G3/G4/G5/G6는 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요. 아무것도 하지 않았습니다.\n");
                 else if ((rom = findLocalRom(acc)) == null && !confirmRomDownload(acc)) {
                     acc.append("ROM이 없어 실행하지 않았습니다. 네트워크 요청은 하지 않았습니다.\n");
                 } else if (rom == null && (rom = ensureRom(acc)) == null) {
@@ -1423,33 +1447,34 @@ public class MainActivity extends Activity {
                     cmd.add("--rom"); cmd.add(rom.getAbsolutePath());
                     cmd.add("--disk"); cmd.add(disk.getAbsolutePath());
                     cmd.add("--aux"); cmd.add(aux.getAbsolutePath());
-                    if (!g0 && !g2 && !g3 && !g4 && !g5) { cmd.add("--make-blank"); cmd.add("--recreate-blank"); cmd.add("--psci-log"); } // G0/G2/G3/G4/G5 never create, recreate or remove storage
+                    if (!g0 && !g2 && !g3 && !g4 && !g5 && !g6) { cmd.add("--make-blank"); cmd.add("--recreate-blank"); cmd.add("--psci-log"); } // G0/G2/G3/G4/G5/G6 never create, recreate or remove storage
                     if (g0) { File g0Work = new File(getFilesDir(), "rs_g0"); g0Work.mkdirs(); cmd.add("--install-g0"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g0Work.getAbsolutePath()); }
                     if (g2) { File g2Work = new File(getFilesDir(), "rs_g2"); g2Work.mkdirs(); cmd.add("--install-g2"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g2Work.getAbsolutePath()); }
                     if (g3) { File g3Work = new File(getFilesDir(), "rs_g3"); g3Work.mkdirs(); cmd.add("--install-g3"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g3Work.getAbsolutePath()); }
                     if (g4) { File g4Work = new File(getFilesDir(), "rs_g4"); g4Work.mkdirs(); cmd.add("--install-g4"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g4Work.getAbsolutePath()); }
                     if (g5) { File g5Work = new File(getFilesDir(), "rs_g5"); g5Work.mkdirs(); cmd.add("--install-g5"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g5Work.getAbsolutePath()); }
+                    if (g6) { File g6Work = new File(getFilesDir(), "rs_g6"); g6Work.mkdirs(); cmd.add("--install-g6"); cmd.add(pfIpsw.getAbsolutePath()); cmd.add("--workdir"); cmd.add(g6Work.getAbsolutePath()); }
                     if (pf) { File pfWork = new File(getFilesDir(), "rs_pf"); pfWork.mkdirs(); cmd.add("--restore-preflight"); cmd.add(pfIpsw.getAbsolutePath()); if (pfA) cmd.add("--restore-preflight-stop-a"); cmd.add("--workdir"); cmd.add(pfWork.getAbsolutePath()); }
-                    if (installer && !pf && !g0 && !g2 && !g3 && !g4 && !g5) cmd.add(tssLpol ? "--tss-probe-lpol" : tss ? "--tss-probe" : dnload ? (stage >= 6 ? "--dnload-probe-a6" : stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
-                    else if (usbP && !pf && !g0 && !g2 && !g3 && !g4 && !g5) cmd.add("--usb-probe"); // new button: installer stays 0; only --usb-probe is added (never --irecv-probe/--dnload-probe/--tss-probe)
+                    if (installer && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !g6) cmd.add(tssLpol ? "--tss-probe-lpol" : tss ? "--tss-probe" : dnload ? (stage >= 6 ? "--dnload-probe-a6" : stage >= 4 ? "--dnload-probe-a4" : stage == 3 ? "--dnload-probe-a3" : "--dnload-probe") : irecv ? "--irecv-probe" : "--usb-probe");
+                    else if (usbP && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !g6) cmd.add("--usb-probe"); // new button: installer stays 0; only --usb-probe is added (never --irecv-probe/--dnload-probe/--tss-probe)
                     if (installer || (!usbN && "1".equals(cfg.get("installer")))) cmd.add("--installer"); // the USB experiment must stay a normal boot
                     if (usbP) cfg.put("seconds", "5"); // same polling-loop risk as usbN, plus a little extra time for the probe's reset+descriptor exchange and any ROM reaction after
                     else if (usbN) cfg.put("seconds", "3"); // the normal boot ended after 10 ms; with the USB port it may sit in a polling loop printing ~1M lines/s
                     if (verbose) cfg.put("log", "3"); // after config.txt was read: log=3 replaces any config value, so --log is passed once
-                    acc.append(g5 ? "모드: G5 restored 핸드셰이크 (install 경로, restored 연결·HardwareInfo 조회·BBTicket 복사까지, 복원 시작 명령 전, 저장장치 읽기 전용)\n" : g4 ? "모드: G4 서명 + RecoveryOS 진입 (install 경로, RecoveryOS 구성요소 전송 + MODE_RESTORE 확인까지, 저장장치 읽기 전용)\n" : g3 ? "모드: G3 서명 + 펌웨어 전송 (install 경로, DFU→Recovery 재접속까지, 저장장치 읽기 전용)\n" : g2 ? "모드: G2 복원 진입점 + 실제 Apple 서명 요청 (install 경로, 실제 TSS 응답까지, 저장장치 읽기 전용)\n" : g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbP ? "모드: 일반 부팅 + USB 프로브 (시험, installer=0, --usb-probe로 리셋·디스크립터 조회 수행, log=3, 5초)\n" : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
+                    acc.append(g6 ? "모드: G6 Reverse Proxy + 복원 옵션 구성 (install 경로, Reverse Proxy 연결·옵션 plist 구성까지, 복원 시작 명령 전, 저장장치 읽기 전용)\n" : g5 ? "모드: G5 restored 핸드셰이크 (install 경로, restored 연결·HardwareInfo 조회·BBTicket 복사까지, 복원 시작 명령 전, 저장장치 읽기 전용)\n" : g4 ? "모드: G4 서명 + RecoveryOS 진입 (install 경로, RecoveryOS 구성요소 전송 + MODE_RESTORE 확인까지, 저장장치 읽기 전용)\n" : g3 ? "모드: G3 서명 + 펌웨어 전송 (install 경로, DFU→Recovery 재접속까지, 저장장치 읽기 전용)\n" : g2 ? "모드: G2 복원 진입점 + 실제 Apple 서명 요청 (install 경로, 실제 TSS 응답까지, 저장장치 읽기 전용)\n" : g0 ? "모드: G0 복원 진입점 시험 (install 경로, 정지점 A, 저장장치 읽기 전용)\n" : installer ? (verbose ? "모드: 설치기(DFU) 부팅 (상세 로그 log=3)\n" : "모드: 설치기(DFU) 부팅\n") : usbP ? "모드: 일반 부팅 + USB 프로브 (시험, installer=0, --usb-probe로 리셋·디스크립터 조회 수행, log=3, 5초)\n" : usbN ? "모드: 일반 부팅 + USB 장치만 노출 (시험, installer=0, run_installer 0, log=3, 3초)\n" : verbose ? "모드: 일반 부팅 (상세 로그 log=3)\n" : "모드: 일반 부팅\n");
                     if (diag) acc.append("진단: HV_DIAG_PROBE=1 (읽기 전용, 이 실행에만 적용)\n");
                     if (diagCaller) acc.append("진단: HV_DIAG_PROBE_CALLER=1 (읽기 전용, 이 실행에만 적용)\n");
                     if (diag && diagCaller) acc.append("주의: 두 진단을 동시에 켰습니다 — 엔진이 둘 다 설치하지 않고 충돌 메시지만 출력합니다 (부팅은 정상 진행).\n");
                     Long vmEcid = null;
-                    if ((g0 || g2 || g3 || g4 || g5) && !cfg.containsKey("ecid") && !new File(priv, VmEcid.FILE).isFile()) {
-                        acc.append("이 VM의 ECID 파일이 아직 없습니다. G0/G2/G3/G4/G5는 ECID를 만들지 않습니다. 먼저 설치기 부팅 시험을 한 번 실행하세요. 아무것도 하지 않았습니다.\n");
+                    if ((g0 || g2 || g3 || g4 || g5 || g6) && !cfg.containsKey("ecid") && !new File(priv, VmEcid.FILE).isFile()) {
+                        acc.append("이 VM의 ECID 파일이 아직 없습니다. G0/G2/G3/G4/G5/G6는 ECID를 만들지 않습니다. 먼저 설치기 부팅 시험을 한 번 실행하세요. 아무것도 하지 않았습니다.\n");
                         show(acc.toString()); running = false; setButtons(true); return;
                     }
                     if (installer && !cfg.containsKey("ecid")) {
                         VmEcid.Result er = VmEcid.loadOrCreate(priv);
                         switch (er.status) {
                             case CREATED: acc.append("이 VM의 ECID를 새로 만들어 ").append(er.detail).append("에 저장했습니다.\n"); break;
-                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5 ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
+                            case LOADED: acc.append("기존 ECID를 ").append(er.detail).append("에서 읽음").append(tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5 || g6 ? " (값은 표시하지 않음)" : ": " + String.format("0x%x", er.value)).append('\n'); break;
                             default:
                                 acc.append("ECID를 쓸 수 없어 멈춥니다(파일은 바꾸지 않았습니다): ").append(er.detail)
                                    .append(er.status == VmEcid.Status.CORRUPT ? " — 내용을 확인하고, 버리려면 직접 지운 뒤 다시 누르세요.\n" : "\n");
@@ -1464,7 +1489,7 @@ public class MainActivity extends Activity {
                     File snap = new File(getExternalFilesDir(null), "vm/snapshot.bmp");
                     cmd.add("--snapshot"); cmd.add(snap.getAbsolutePath());
                     java.util.List<String> shown = new java.util.ArrayList<>(cmd);
-                    if (tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
+                    if (tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5 || g6) for (int k = 0; k + 1 < shown.size(); k++) if (shown.get(k).equals("--ecid")) shown.set(k + 1, "(표시 안 함)");
                     acc.append("명령: ").append(android.text.TextUtils.join(" ", shown)).append('\n');
                     show(acc.toString());
                     ProcessBuilder pb = new ProcessBuilder(cmd).directory(getFilesDir()).redirectErrorStream(true);
@@ -1496,7 +1521,9 @@ public class MainActivity extends Activity {
                     final boolean[] g4Overflow = {false};
                     final java.util.ArrayList<String> g5Kept = new java.util.ArrayList<>();   // G5 only: same idea as g0Kept
                     final boolean[] g5Overflow = {false};
-                    final RunLog runLog = (tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbP ? "normal_usb_probe" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
+                    final java.util.ArrayList<String> g6Kept = new java.util.ArrayList<>();   // G6 only: same idea as g0Kept
+                    final boolean[] g6Overflow = {false};
+                    final RunLog runLog = (tss || tssLpol || pf || g0 || g2 || g3 || g4 || g5 || g6) ? null : RunLog.open(this, (installer ? "installer" : irecv ? "irecv" : dnload ? "dnload" : usbP ? "normal_usb_probe" : usbN ? "normal_usb" : "normal") + (verbose ? "_log3" : ""), acc.toString());
                     if (runLog != null && runLog.note != null) acc.append(runLog.note).append('\n');
                     final java.util.concurrent.atomic.AtomicBoolean uiPending = new java.util.concurrent.atomic.AtomicBoolean(false);
                     Thread reader = new Thread(() -> {
@@ -1527,6 +1554,10 @@ public class MainActivity extends Activity {
                                         String kl = line.endsWith("\r") ? line.substring(0, line.length() - 1) : line;
                                         if (G5Verdict.isKept(kl)) { if (g5Kept.size() < G5Verdict.MAX_KEPT) g5Kept.add(kl); else g5Overflow[0] = true; }
                                     }
+                                    if (g6) {
+                                        String kl = line.endsWith("\r") ? line.substring(0, line.length() - 1) : line;
+                                        if (G6Verdict.isKept(kl)) { if (g6Kept.size() < G6Verdict.MAX_KEPT) g6Kept.add(kl); else g6Overflow[0] = true; }
+                                    }
                                     if (!isTraceNoise(line)) {
                                         if (text.length() < 2_000_000) text.append(line).append('\n');
                                         else if (!textFull[0]) { textFull[0] = true; text.append("(요약용 보관 상한 2MB에 도달: 이후 줄은 화면 최근 줄과 로그 파일에만 있습니다)\n"); }
@@ -1552,10 +1583,11 @@ public class MainActivity extends Activity {
                     if ((g0 || g2 || g3) && secs < 260) secs = 260; // up to 60 s for the guest on the bus, 120 s for the run, 20 s after a cancel request
                     if (g4 && secs < 460) secs = 460; // G3's own budget plus recovery_enter_restore()'s <=30s wait and idevicerestore.c's own separate <=300s MODE_RESTORE wait
                     if (g5 && secs < 500) secs = 500; // G4's own budget plus the extra restored round-trips (the handshake, HardwareInfo, SavedDebugInfo) before reaching stop D
+                    if (g6 && secs < 560) secs = 560; // must exceed vmrun.c's own 460s G6 wait cap by a safety margin, as G5's 500s floor exceeds its 400s cap
                     boolean done = p.waitFor((long) secs + 60, java.util.concurrent.TimeUnit.SECONDS);
                     boolean killConfirmed = true;
-                    if (!done) { p.destroyForcibly(); if (g0 || g2 || g3 || g4 || g5) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
-                    reader.join((g0 || g2 || g3 || g4 || g5) ? 5000 : 2000);
+                    if (!done) { p.destroyForcibly(); if (g0 || g2 || g3 || g4 || g5 || g6) killConfirmed = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } // a kill request is not a confirmed end
+                    reader.join((g0 || g2 || g3 || g4 || g5 || g6) ? 5000 : 2000);
                     final boolean readerUnfinished = reader.isAlive();
                     final int bodyStart;
                     synchronized (text) {
@@ -1567,10 +1599,10 @@ public class MainActivity extends Activity {
                         }
                         bodyStart = acc.length();
                     }
-                    if (!done) acc.append((g0 || g2 || g3 || g4 || g5) ? (g5 ? "G5" : g4 ? "G4" : g3 ? "G3" : g2 ? "G2" : "G0") + " FAILED: 제한 시간 초과로 프로세스 강제 종료를 요청했습니다(destroyForcibly). 프로세스 종료 확인: " + (killConfirmed ? "확인됨" : "5초 안에 확인하지 못함")
+                    if (!done) acc.append((g0 || g2 || g3 || g4 || g5 || g6) ? (g6 ? "G6" : g5 ? "G5" : g4 ? "G4" : g3 ? "G3" : g2 ? "G2" : "G0") + " FAILED: 제한 시간 초과로 프로세스 강제 종료를 요청했습니다(destroyForcibly). 프로세스 종료 확인: " + (killConfirmed ? "확인됨" : "5초 안에 확인하지 못함")
                                             + ". 복원 세션 및 자원 정리 완료 여부는 확인하지 못했습니다 — 통과가 아닙니다.\n" : "vmrun이 제한 시간 안에 끝나지 않아 강제 종료했습니다.\n");
                     else acc.append("vmrun 종료 코드: ").append(p.exitValue()).append(p.exitValue() > 128 ? " (128 초과: 시그널 종료일 수 있음, 확정 아님)" : "").append('\n');
-                    if (installer && !dnload && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5) { // the dnload probe does not read the DFU string, so there is nothing to compare
+                    if (installer && !dnload && !tss && !tssLpol && !pf && !g0 && !g2 && !g3 && !g4 && !g5 && !g6) { // the dnload probe does not read the DFU string, so there is nothing to compare
                         String want = cfg.containsKey("ecid") ? cfg.get("ecid") : "0";
                         try {
                             String w = String.format("%016X", Long.decode(want));
@@ -1641,6 +1673,16 @@ public class MainActivity extends Activity {
                         G5Verdict.Result gv = G5Verdict.evaluate(kept, !done, done ? p.exitValue() : -1, g5Overflow[0], readerUnfinished);
                         String label = gv.kind == G5Verdict.Kind.PASS ? "통과 (g5_passed)" : gv.kind == G5Verdict.Kind.PARTIAL_PASS ? "부분 통과 (g5_passed_metadata_only)" : gv.kind == G5Verdict.Kind.FAILED ? "실패" : "판정 없음";
                         acc.append("G5 최종 판정: ").append(label).append(" — ").append(gv.text).append(" (이것은 복원 성공을 뜻하지 않습니다)\n");
+                    }
+                    if (g6) {
+                        StringBuilder sum = new StringBuilder();
+                        for (String ln : text.toString().split("\n")) if (ln.startsWith("install g6") || ln.startsWith("vmrun RESULT") || ln.startsWith("install: final result")) sum.append(ln).append('\n');
+                        acc.append(sum.length() > 0 ? "\n— 요약 (G6 줄 전체) —\n" + sum : "\n— G6 줄이 없습니다: 시험이 시작되지 못했습니다 —\n");
+                        String kept;
+                        synchronized (text) { kept = String.join("\n", g6Kept); }
+                        G6Verdict.Result gv = G6Verdict.evaluate(kept, !done, done ? p.exitValue() : -1, g6Overflow[0], readerUnfinished);
+                        String label = gv.kind == G6Verdict.Kind.PASS ? "통과 (g6_passed)" : gv.kind == G6Verdict.Kind.PARTIAL_PASS ? "부분 통과 (g6_passed_metadata_only)" : gv.kind == G6Verdict.Kind.FAILED ? "실패" : "판정 없음";
+                        acc.append("G6 최종 판정: ").append(label).append(" — ").append(gv.text).append(" (이것은 복원 성공을 뜻하지 않습니다)\n");
                     }
                     if (irecv) {
                         String all = text.toString();
@@ -1967,6 +2009,7 @@ public class MainActivity extends Activity {
     private boolean g3Mode;   // set by the G3 button; read and cleared by runVmrun. Like G2 it contacts Apple's real signing server, and additionally sends real firmware to the device (DFU->Recovery).
     private boolean g4Mode;   // set by the G4 button; read and cleared by runVmrun. Like G3 it contacts Apple's real signing server and sends real firmware; additionally it continues past Recovery entry into recovery_enter_restore() and confirms MODE_RESTORE, without ever writing to the virtual disk.
     private boolean g5Mode;   // set by the G5 button; read and cleared by runVmrun. Like G4 it contacts Apple's real signing server and sends real firmware; additionally it continues past MODE_RESTORE confirmation into restore_device() itself and confirms the restored handshake/HardwareInfo query, strictly before the host ever sends the restore-start command.
+    private boolean g6Mode;   // set by the G6 button; read and cleared by runVmrun. Like G5 it contacts Apple's real signing server and sends real firmware and completes the restored handshake; additionally it continues into the Reverse Proxy attempt and the restore-options plist construction, strictly before restored_start_restore() is ever called.
     private boolean preflightMode;   // set by the preflight button; read and cleared by runVmrun
 
     /** The confirmation before anything leaves the phone: says exactly what is sent, once, and where. Cancel sends nothing. */

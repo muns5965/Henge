@@ -5435,6 +5435,9 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 #ifndef HAVE_REVERSE_PROXY
 	THREAD_T fdr_thread = THREAD_T_NULL;
 #endif
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+	int rp_started = 0;   /* whether reverse_proxy_client_start_proxy() actually returned SUCCESS -- rproxy != NULL alone does not prove this (see hv_stop.h) */
+#endif
 
 	restore_finished = 0;
 
@@ -5578,8 +5581,16 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 					reverse_proxy_client_set_status_callback(rproxy, rp_status_cb, NULL);
 					if (reverse_proxy_client_start_proxy(rproxy, 1) != REVERSE_PROXY_E_SUCCESS) {
 						logger(LL_ERROR, "ReverseProxy: Device didn't accept old protocol, giving up\n");
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+					} else {
+						rp_started = 1;
+#endif
 					}
 				}
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+			} else {
+				rp_started = 1;
+#endif
 			}
 		}
 		if (rproxy) {
@@ -5772,6 +5783,79 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_dict_set_item(spp, "8", plist_new_uint(80));
 	}
 	plist_dict_set_item(opts, "SystemPartitionPadding", spp);
+
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+	/* Henge test mode "stop E" (see hv_stop.h, docs/g6-stop-e-design-2026-11-20.md): verify the options plist's required fields, resolve the Reverse Proxy
+	   attempt, report, free opts, and (only if the Reverse Proxy's own cleanup was unambiguous) free client->restore -- then return, strictly before
+	   restored_start_restore() below is ever reached. */
+	if (client->flags & FLAG_STOP_AFTER_RESTORE_OPTIONS) {
+		int opts_ok = 1;
+		plist_t n;
+#define HV_E_REQ(key) ((n = plist_dict_get_item(opts, key)) != NULL)
+#define HV_E_REQ_BOOL(key) (HV_E_REQ(key) && plist_get_node_type(n) == PLIST_BOOLEAN)
+		if (!HV_E_REQ("AutoBootDelay")) opts_ok = 0;
+		if (!HV_E_REQ("SupportedDataTypes")) opts_ok = 0;
+		if (!HV_E_REQ("SupportedMessageTypes")) opts_ok = 0;
+		if (!HV_E_REQ("SupportedAsyncDataTypes")) opts_ok = 0;
+		if (!HV_E_REQ("RootToInstall")) opts_ok = 0;
+		if (!HV_E_REQ_BOOL("CreateFilesystemPartitions")) opts_ok = 0;
+		if (!HV_E_REQ_BOOL("SystemImage")) opts_ok = 0;
+		if (!HV_E_REQ("SystemPartitionPadding")) opts_ok = 0;
+		if (!HV_E_REQ("UUID") || plist_get_node_type(n) != PLIST_STRING) {
+			opts_ok = 0;
+		} else {
+			char *uuid_val = NULL;
+			plist_get_string_val(n, &uuid_val);
+			if (!uuid_val || !uuid_val[0]) opts_ok = 0;
+			free(uuid_val);
+		}
+		if (client->macos_variant) {
+			/* Henge only ever installs macOS, so this branch is always taken in practice; kept conditional rather than assumed, to revisit if a non-macOS
+			   variant path is ever exercised (docs/g6-stop-e-design-2026-11-20.md §8). */
+			if (!HV_E_REQ_BOOL("FormatForAPFS")) opts_ok = 0;
+			if (!HV_E_REQ_BOOL("MacOSVariantPresent")) opts_ok = 0;
+			if (!HV_E_REQ_BOOL("ShouldRestoreSystemImage")) opts_ok = 0;
+			if (!HV_E_REQ("InstallRecoveryOS")) opts_ok = 0;
+		}
+#undef HV_E_REQ_BOOL
+#undef HV_E_REQ
+
+		int rp_cleanup_uncertain = 0;
+#ifdef HAVE_REVERSE_PROXY
+		if (rproxy) {
+			/* reverse_proxy_client_free() returns REVERSE_PROXY_E_UNKNOWN_ERROR both when its internal thread_join() failed (nothing freed, the thread may
+			   still reference client->restore->device) and when the join succeeded but a later, unrelated step failed (everything already freed) -- those
+			   two cases are not distinguishable from this return value alone, so this build treats exactly that one code as the unsafe case (hv_stop.h). */
+			reverse_proxy_error_t rp_free_err = reverse_proxy_client_free(rproxy);
+			rp_cleanup_uncertain = (rp_free_err == REVERSE_PROXY_E_UNKNOWN_ERROR);
+		}
+#endif
+		struct hv_stop_e_info hv_info;
+		memset(&hv_info, 0, sizeof(hv_info));
+		hv_info.hardware_model = client->device->hardware_model;
+		hv_info.product_type = client->device->product_type;
+		hv_info.mode = (int)(client->mode - idevicerestore_modes);
+		hv_info.restored_protocol_version = client->restore->protocol_version;
+#ifdef HAVE_REVERSE_PROXY
+		hv_info.rproxy_status = rp_started ? HV_RP_OK : HV_RP_FAILED;
+#else
+		hv_info.rproxy_status = HV_RP_FAILED;
+#endif
+		hv_info.opts_required_fields_ok = opts_ok;
+		hv_info.tss_enabled = (client->tss != NULL);
+		if (hv_stop_e_hook) hv_stop_e_hook(&hv_info);
+
+		plist_free(opts);
+		if (rp_cleanup_uncertain) {
+			/* Never a pass: client->restore is deliberately left allocated (see the comment above and hv_stop.h), so this does NOT call
+			   restore_client_free(client) -- doing so here, while the Reverse Proxy's control thread might still reference the same idevice_t, is exactly
+			   the use-after-free this stop is designed to avoid. */
+			return HV_STOP_E_CLEANUP_UNCERTAIN_RC;
+		}
+		restore_client_free(client);
+		return HV_STOP_AFTER_RESTORE_OPTIONS_RC;
+	}
+#endif
 
 	// start the restore process
 	restore_error = restored_start_restore(restore, opts, client->restore->protocol_version);

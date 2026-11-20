@@ -35,8 +35,8 @@ cmake -S $TP/libzip -B "$ZB" $TCF -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS
   -DENABLE_WINDOWS_CRYPTO=OFF -DENABLE_BZIP2=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF \
   -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF -DLIBZIP_DO_INSTALL=OFF > "$R/libzip.cfg.log" 2>&1 && cmake --build "$ZB" -j4 > "$R/libzip.build.log" 2>&1 \
   && [ -f "$ZB/lib/libzip.a" ] || { echo "FAILED libzip"; tail -5 "$R/libzip.cfg.log" "$R/libzip.build.log"; exit 1; }
-add idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DHV_SAFE_DOWNLOAD -DHV_STOP_BEFORE_ROOTFS -DHV_STOP_AFTER_DFU_RECOVERY -DHV_STOP_AFTER_RECOVERYOS_ENTRY -DHV_STOP_AFTER_RESTORED_HANDSHAKE -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"'" $TP/idevicerestore/src/*.c
-add idrs "-I$ZB -I$TP/idevicerestore/src -I$TP/libimobiledevice/src -DHV_STOP_BEFORE_ROOTFS -DHV_STOP_AFTER_DFU_RECOVERY -DHV_STOP_AFTER_RECOVERYOS_ENTRY -DHV_STOP_AFTER_RESTORED_HANDSHAKE -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"' -std=gnu11 -D_GNU_SOURCE" host/restore_session.c host/restore_registry.c
+add idr "-I$ZB -I$TP/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DHV_SAFE_DOWNLOAD -DHV_STOP_BEFORE_ROOTFS -DHV_STOP_AFTER_DFU_RECOVERY -DHV_STOP_AFTER_RECOVERYOS_ENTRY -DHV_STOP_AFTER_RESTORED_HANDSHAKE -DHV_STOP_AFTER_RESTORE_OPTIONS -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"'" $TP/idevicerestore/src/*.c
+add idrs "-I$ZB -I$TP/idevicerestore/src -I$TP/libimobiledevice/src -DHV_STOP_BEFORE_ROOTFS -DHV_STOP_AFTER_DFU_RECOVERY -DHV_STOP_AFTER_RECOVERYOS_ENTRY -DHV_STOP_AFTER_RESTORED_HANDSHAKE -DHV_STOP_AFTER_RESTORE_OPTIONS -DPACKAGE_NAME='\"idevicerestore\"' -DPACKAGE_VERSION='\"1.0.0-henge\"' -std=gnu11 -D_GNU_SOURCE" host/restore_session.c host/restore_registry.c
 add henge "-std=gnu11 -D_GNU_SOURCE" host/libusb_shim.c host/install.c host/usb_host.c host/curl_mbedtls.c host/net_guard.c host/disk_policy.c devices/virtio_usb.c
 add test "-std=gnu11 -D_GNU_SOURCE" tests/test_restore_stack.c
 

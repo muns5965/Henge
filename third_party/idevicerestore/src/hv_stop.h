@@ -102,4 +102,35 @@ struct hv_stop_d_info {
 };
 extern void (*hv_stop_d_hook)(const struct hv_stop_d_info *info);
 #endif
+
+/* Henge, Android test mode only (compiled in only with -DHV_STOP_AFTER_RESTORE_OPTIONS, which no shipped iOS build and no install path sets).
+   "Stop E": restore_device() returns right after the restore-options plist is fully built (the last field it sets is "SystemPartitionPadding") and right
+   after it has tried to start the Reverse Proxy (this build always defines HAVE_REVERSE_PROXY -- third_party/restore_config/config.h -- so this is the
+   branch that actually compiles here; the FDR-listener-thread branch does not) -- but strictly BEFORE restored_start_restore() (the actual disk-writing
+   restore command) is ever called. docs/g6-stop-e-design-2026-11-20.md is the full design; this comment only gives the return-code contract.
+
+   Two distinct returns, because the Reverse Proxy's own cleanup (reverse_proxy_client_free()) can leave a genuinely unresolved case: it returns
+   REVERSE_PROXY_E_UNKNOWN_ERROR both when its internal thread_join() failed (nothing freed, the thread may still reference client->restore->device) and
+   when the join succeeded but a later, unrelated step failed (everything already freed) -- the two are NOT distinguishable from that return value alone.
+   - HV_STOP_AFTER_RESTORE_OPTIONS_RC: the normal stop. Either there was nothing to join (no Reverse Proxy thread ever started, or free() returned anything
+     other than UNKNOWN_ERROR, which only happens once the join has already succeeded), and restore_client_free(client) ran normally before returning.
+   - HV_STOP_E_CLEANUP_UNCERTAIN_RC: free() returned exactly UNKNOWN_ERROR. client->restore (and the idevice_t it shares with the Reverse Proxy client) is
+     deliberately NOT freed in this case -- only opts is freed, which has nothing to do with the Reverse Proxy and is always safe to free. A G6 diagnostic
+     build must treat this return as a failure, never as any kind of pass, and must not call this function again on the same client. */
+#ifdef HV_STOP_AFTER_RESTORE_OPTIONS
+#define FLAG_STOP_AFTER_RESTORE_OPTIONS (1 << 24)
+#define HV_STOP_AFTER_RESTORE_OPTIONS_RC 221
+#define HV_STOP_E_CLEANUP_UNCERTAIN_RC 222
+enum { HV_RP_FAILED = 0, HV_RP_OK = 1 };   /* rproxy_status: whether reverse_proxy_client_start_proxy() actually returned SUCCESS (rp_started), not whether the pointer is non-NULL */
+struct hv_stop_e_info {
+    const char *hardware_model;
+    const char *product_type;
+    int mode;                         /* client->mode's index into idevicerestore_modes[] at this point (4 = RESTORE expected, same check as stop D) */
+    uint64_t restored_protocol_version;
+    int rproxy_status;                /* HV_RP_OK or HV_RP_FAILED, from rp_started -- see restore.c */
+    int opts_required_fields_ok;      /* the fixed required-field/type check on the options plist (docs/g6-stop-e-design-2026-11-20.md §8) */
+    int tss_enabled;
+};
+extern void (*hv_stop_e_hook)(const struct hv_stop_e_info *info);
+#endif
 #endif

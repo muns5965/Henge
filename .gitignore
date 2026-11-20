@@ -18,3 +18,5 @@ build-rs/
 build-rs.build.log
 build-*.build.log
 build-tssprobe/
+build-engine/
+build-restore/

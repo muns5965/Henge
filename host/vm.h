@@ -21,6 +21,13 @@ typedef struct HvVmConfig {
     int log;                  /* m->log */
     int no_net, no_sound;
     int installer;            /* boot the ROM in DFU mode with the USB device port (installing macOS) */
+    /* Diagnostic-only, added 2026-11-20: expose that same virtual USB device port (devices/vmapple.c's
+       existing hv_virtio_usb_create() -- the emulated guest-facing port, not host USB) on a boot that is
+       otherwise NOT an installer boot: installer stays 0 here, and the ROM's own cfg region still reports
+       run_installer1/run_installer2 as 0 (devices/cfg.h's HvCfgParams.usb_on_normal_boot, which carries
+       this through, is deliberately not copied into that guest-visible region). This adds no USB-host,
+       restore, or libirecovery code and does not by itself enable any of those. */
+    int usb_on_normal_boot;
     int readonly_storage;     /* open the disk and the auxiliary storage read-only (the G0 test: any write the guest asks for is refused and counted) */
     /* JIT memory the host already has (iOS: granted by a debugger), or NULL to map it here. */
     void *jit_rx, *jit_rw;

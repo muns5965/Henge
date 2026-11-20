@@ -5,7 +5,13 @@
      - write to the disk or the auxiliary storage: the readonly_storage field set to 1 in hv_runner_make_config and re-checked by hv_runner_config_ok before hv_vm_create
      - use a network: no_net = 1 (same place); this program links no restore, TSS, curl, USB-host, libirecovery or install code and imports no socket function
      - boot as an installer: installer = 0 (same place), no machine identity (ECID and seed 0), and every HV_* environment variable is removed first (the engine reads some of
-       them to switch an installer boot, a RAM file or the USB probe on); after hv_vm_create it also checks that the machine has no USB device port (installer boots only)
+       them to switch an installer boot, a RAM file or the USB probe on)
+     - [2026-11-20] this binary does now explicitly ask for one non-installer thing: cfg.usb_on_normal_boot = 1 (host/vm.h), so devices/vmapple.c attaches its existing,
+       guest-facing-only virtual USB device port (hv_virtio_usb_create -- not host USB, not libirecovery, not restore/usbmuxd code, none of which this binary links) even
+       though installer stays 0 and the ROM's own cfg region still reports run_installer1/run_installer2 as 0. This is a deliberate, explicitly-approved diagnostic: a real-
+       device capture confirmed the ROM's own USB-type probe (AVPBooter 0x10C51C/0x10C590) expects USB_DEVICE_TYPE (0x1a01) and fails when a normal boot has no USB channel
+       to answer it. After hv_vm_create it checks that the machine's USB device port state matches exactly what was asked for (present, now) -- not merely "absent" as before
+       -- so an unexpected state (e.g. an installer boot slipping through, or the port failing to attach) still stops the machine rather than running regardless.
      - take any of that from the command line: the only options are --shm, --rom, --disk, --aux, --ram-mb, --cpus, --jit-mb, --seconds, --stop-wait-ms
    tools/check-runner-vm-safe.sh checks the built binary and these source lines; tools/c1vm-test.sh runs it (a stand-in ROM and blank disks, Linux arm64 only: the engine runs arm64
    code natively).
@@ -205,6 +211,11 @@ int main(int argc, char **argv) {
 
     HvVmConfig cfg;
     hv_runner_make_config(&cfg, rom, disk, aux, (uint64_t)(ram_mb < 0 ? 0 : ram_mb), (int)cpus, (size_t)(jit_mb < 0 ? 0 : jit_mb));
+    /* [2026-11-20, explicitly approved] hv_runner_make_config leaves this 0 (host/runner_vm_core.c is
+       unchanged); this binary alone turns it on, after the config the runner itself guarantees (readonly
+       storage, no network, installer=0 -- all untouched above) is already built. See the top-of-file
+       comment and devices/vmapple.c for what this does and does not add. */
+    cfg.usb_on_normal_boot = 1;
     char why[160], line[400];
     if (hv_runner_config_ok(&cfg, why, sizeof why) != 0) {
         fprintf(stderr, "ui_runner_vm: the settings were refused: %s\n", why);
@@ -226,6 +237,7 @@ int main(int argc, char **argv) {
     printf("ui_runner_vm: started pid %d, virtual machine mode\n", (int)getpid());
     hv_runner_config_line(&cfg, line, sizeof line);
     printf("ui_runner_vm config (the structure passed to hv_vm_create): %s\n", line);
+    printf("ui_runner_vm config (extra, not in hv_runner_config_line): usb_on_normal_boot=%d\n", cfg.usb_on_normal_boot);
     printf("ui_runner_vm env: %d HV_* variable(s) removed%s%s\n", scrubbed, scrubbed ? ": " : "", scrubbed ? names : "");
     fflush(stdout);
 
@@ -237,9 +249,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     HvVmapple *bd = hv_vm_board();
-    printf("ui_runner_vm: machine created in %.0f ms; usb device port present: %d (must be 0)\n", (now() - t0) * 1e3, bd && bd->vusb ? 1 : 0);
-    if (!bd || bd->vusb) {   /* only an installer boot has the port: the machine is not what the settings said */
-        printf("ui_runner_vm RESULT: FAILED, the machine has a USB device port; it is not started\n");
+    int usb_present = bd && bd->vusb ? 1 : 0;
+    printf("ui_runner_vm: machine created in %.0f ms; usb device port present: %d (want %d)\n", (now() - t0) * 1e3, usb_present, cfg.usb_on_normal_boot);
+    /* [2026-11-20] Was "must be 0" unconditionally (only an installer boot has the port). Now checked against
+       cfg.usb_on_normal_boot instead of hardcoded 0, so the machine still refuses to run on ANY mismatch --
+       an installer boot slipping through, or the explicitly-requested port failing to attach -- exactly as
+       strictly as the old check did, just against the state this binary now actually asks for. */
+    if (!bd || usb_present != cfg.usb_on_normal_boot) {
+        printf("ui_runner_vm RESULT: FAILED, usb device port present=%d does not match the requested %d; it is not started\n",
+               usb_present, cfg.usb_on_normal_boot);
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
         return 1;
     }

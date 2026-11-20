@@ -334,8 +334,12 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size,
         hv_virtio_balloon_set_target(b->balloon, (uint64_t)atoll(getenv("HV_BALLOON")) << 20);
     }
     /* Installer boots (the ROM goes to DFU) get the USB device port, as VZ gives it. HV_USB_ON_NORMAL is an experiment: the same port on a normal boot
-       (run_installer1/2 stay 0), to see whether the ROM's USB slot check, which a normal boot fails with the slot absent, is what ends it. Off by default. */
-    if (cfg->run_installer1 || cfg->run_installer2 || getenv("HV_USB_ON_NORMAL")) {
+       (run_installer1/2 stay 0), to see whether the ROM's USB slot check, which a normal boot fails with the slot absent, is what ends it. Off by default.
+       cfg->usb_on_normal_boot (devices/cfg.h) is the same idea, set explicitly by a caller's own HvVmConfig.usb_on_normal_boot (host/vm.h) instead of an
+       environment variable -- host/ui_runner_vm.c needs this form because it deliberately scrubs every HV_* variable before hv_vm_create. Confirmed by a
+       real-device capture (2026-11-20): on a normal boot without this, the ROM's own USB-type probe at AVPBooter 0x10C51C/0x10C590 expects USB_DEVICE_TYPE
+       (0x1a01) and gets devices/bdif.c's no-USB-channel fallback (2) instead, which is what this is for. */
+    if (cfg->run_installer1 || cfg->run_installer2 || cfg->usb_on_normal_boot || getenv("HV_USB_ON_NORMAL")) {
         b->vusb = hv_virtio_usb_create(m, b->pcie);
         b->bdif->usb = b->vusb;
     }

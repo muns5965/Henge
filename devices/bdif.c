@@ -97,6 +97,30 @@ static uint32_t usb_xfer(HvBdif *b, uint64_t chain, int write, uint8_t *buf, uin
     return done;
 }
 
+/* [2026-11-20 diag, read-only, explicitly approved] Decode a just-submitted descriptor chain for logging only:
+   the same bounded walk as usb_xfer above (at most 5 descriptors, stopping on a short/invalid read or a missing
+   "next" bit), but it only reads and reports -- never touches guest memory, never follows the chain into
+   usb_xfer itself, and reports nothing beyond what the chain's own descriptors say (addr/len/direction/next).
+   For queue 0 (the ROM's receive buffer, HvBdifUsbQ.pending's own comment in devices/bdif.h) this shows how much
+   room and what shape of buffer the ROM is waiting to have filled -- not the ep/type of any host request, which
+   only exists once hv_vusb_take_request() actually supplies one (not observed in this investigation so far). */
+static void usb_diag_log_chain(HvBdif *b, const char *why, uint64_t chain) {
+    UsbDesc dsc[5];
+    uint32_t total = 0;
+    int n = 0;
+    for (; n < 5; n++) {
+        if (hv_phys_read(b->m, chain + 16u * n, &dsc[n], 16) != 0) {
+            fprintf(stderr, "bdif usb diag: %s chain %#llx: descriptor %d unreadable, stopping\n", why, (unsigned long long)chain, n);
+            break;
+        }
+        total += dsc[n].len;
+        fprintf(stderr, "bdif usb diag: %s chain %#llx descriptor %d: addr=%#llx len=%u one=%u dev_writes=%d next=%d\n",
+                why, (unsigned long long)chain, n, (unsigned long long)dsc[n].addr, dsc[n].len, dsc[n].one, (dsc[n].flags & 2) != 0, dsc[n].flags & 1);
+        if (!(dsc[n].flags & 1)) { n++; break; }
+    }
+    fprintf(stderr, "bdif usb diag: %s chain %#llx: %d descriptor(s) read, %u byte(s) of room total\n", why, (unsigned long long)chain, n, total);
+}
+
 /* Queue 0 has a buffer and the host has a request: fill it. */
 static void usb_deliver(HvBdif *b) {
     HvBdifUsbQ *q = &b->usb_q[0];
@@ -163,6 +187,7 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
         if (b->usb_qsel == 0) {
             q->pending = v;
             fprintf(stderr, "bdif usb diag: REG_CMD write, q0 pending=%#llx done=0 (submitted)\n", (unsigned long long)v);
+            usb_diag_log_chain(b, "q0 submit", v);
             usb_deliver(b);
             fprintf(stderr, "bdif usb diag: REG_CMD write, q0 after usb_deliver(): done=%d\n", q->done);
             break;
@@ -170,6 +195,7 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
         /* A response: take it now. */
         if (!b->usb->rom_on) break;
         fprintf(stderr, "bdif usb diag: REG_CMD write, q1 (response) addr=%#llx\n", (unsigned long long)v);
+        usb_diag_log_chain(b, "q1 response", v);
         uint32_t room = 0;
         usb_xfer(b, v, 0, NULL, 0, &room);
         uint8_t *tmp = room ? malloc(room) : NULL;

@@ -24,6 +24,15 @@ typedef int64_t curl_off_t;
 typedef size_t (*curl_write_callback)(char *ptr, size_t size, size_t nmemb, void *userdata);
 typedef int (*curl_xferinfo_callback)(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
 typedef int (*curl_progress_callback)(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow);
+/* Henge addition (host/curl_mbedtls.c only; libcurl has no such callback): called with the fully resolved, absolute URL
+   of a redirect target, right before it is followed -- for every hop allowed by CURLOPT_FOLLOWLOCATION/CURLOPT_MAXREDIRS,
+   not just the first request. TLS certificate and host name verification already happen unconditionally on every hop
+   (see the top of curl_mbedtls.c); this callback is for the CALLER's own allow/deny policy on the destination itself
+   (e.g. an allow-listed set of hosts), which a followed redirect would otherwise silently move the transfer past. Return
+   0 to allow following this hop, nonzero to refuse it -- the transfer then ends with CURLE_ABORTED_BY_CALLBACK and no
+   further hop is attempted. Leaving this unset (NULL, the default) allows every hop within the existing redirect cap,
+   exactly as before this callback existed. */
+typedef int (*curl_henge_redirect_guard_callback)(const char *url, void *userdata);
 
 struct curl_slist {
     char *data;
@@ -78,6 +87,10 @@ typedef enum {
     CURLOPT_CONNECTTIMEOUT = 78,
     CURLOPT_TIMEOUT_MS = 155,
     CURLOPT_CONNECTTIMEOUT_MS = 156,
+    /* Henge additions (host/curl_mbedtls.c only; libcurl has no such options). Numbered well away from any real libcurl
+       CURLOPT_* value so a future upstream sync of this header can't collide with them. */
+    CURLOPT_HENGE_REDIRECT_GUARD_DATA = 20900,
+    CURLOPT_HENGE_REDIRECT_GUARD = 20901,
 } CURLoption;
 
 typedef enum {

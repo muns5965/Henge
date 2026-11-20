@@ -1278,6 +1278,20 @@ static size_t _curl_header_callback(char* buffer, size_t size, size_t nitems, vo
 	return len;
 }
 
+/* Henge: CURLOPT_HENGE_REDIRECT_GUARD callback for restore_send_url_asset() below -- re-applies hv_urlasset_guard (the
+   host's own allow/deny policy for a URLAsset destination) to every redirect hop, not just the initial RequestURL. See
+   the comment at the curl_easy_setopt(handle, CURLOPT_HENGE_REDIRECT_GUARD, ...) call for why this exists as a shim hook
+   rather than disabling CURLOPT_FOLLOWLOCATION and resolving redirects here. */
+static int _url_asset_redirect_guard(const char *url, void *userdata)
+{
+	(void)userdata;
+	if (hv_urlasset_guard && hv_urlasset_guard(url) != 0) {
+		logger(LL_ERROR, "restore_send_url_asset: redirect target refused by policy: %s\n", url);
+		return 1;
+	}
+	return 0;
+}
+
 int restore_send_url_asset(struct idevicerestore_client_t* client, plist_t message)
 {
 	plist_t arguments = plist_dict_get_item(message, "Arguments");
@@ -1323,12 +1337,17 @@ int restore_send_url_asset(struct idevicerestore_client_t* client, plist_t messa
 
 	char curl_error_message[CURL_ERROR_SIZE];
 	CURL* handle = curl_easy_init();
-	/* disable SSL verification to allow download from untrusted https locations */
-	curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0);
+	/* Henge: this is accepted but ignored by both of this project's actual curl backends (host/curl_mbedtls.c for
+	   Android/Linux, host/curl_shim.m's NSURLSession for iOS) -- both verify the TLS certificate chain and host name on
+	   every request unconditionally and have no way to turn that off (see the top of curl_mbedtls.c). It was previously
+	   set to 0 with a comment claiming it disabled verification, which was never actually true for a build of this
+	   project; set to 1 here only so the source does not read as doing the opposite of what it does. */
+	curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L);
 
 	query_response* response = malloc(sizeof(query_response));
 	if (response == NULL) {
 		logger(LL_ERROR, "%s: Unable to allocate sufficient memory\n", __func__);
+		curl_easy_cleanup(handle);
 		return -1;
 	}
 
@@ -1348,11 +1367,49 @@ int restore_send_url_asset(struct idevicerestore_client_t* client, plist_t messa
 	}
 	curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1);
 	curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L); /* Henge */
+	/* Henge: hv_urlasset_guard above only ever validated the initial RequestURL chosen by the device -- a redirect could
+	   otherwise move the transfer to a different, never-validated host without the host's allow/deny policy ever seeing
+	   it, even though every hop's TLS certificate and host name are still verified (that verification is unconditional
+	   in both of this project's curl backends, and is a different thing from this policy check). This re-runs
+	   hv_urlasset_guard on every redirect target before it is followed, via a Henge-only hook added to curl_mbedtls.c's
+	   curl shim (see CURLOPT_HENGE_REDIRECT_GUARD in curl.h) specifically because this project has no real libcurl to
+	   call CURLOPT_FOLLOWLOCATION on, and re-implementing relative-Location-header resolution here to intercept hops
+	   from the outside would risk diverging from what curl_mbedtls.c actually follows. See the Nov 2026
+	   URLAsset-security review ("리다이렉트 목적지에 대한 허용 정책도 포함해야 합니다"). On iOS (host/curl_shim.m /
+	   NSURLSession) this option is accepted and silently ignored, same as before it existed -- that backend is not part
+	   of this Android port and is unchanged here. */
+	curl_easy_setopt(handle, CURLOPT_HENGE_REDIRECT_GUARD, &_url_asset_redirect_guard);
 	curl_easy_setopt(handle, CURLOPT_TIMEOUT, 120L);
 	curl_easy_setopt(handle, CURLOPT_URL, request_url);
 	g_body_cap = hv_urlasset_guard ? hv_urlasset_max_body : 0;
-	curl_easy_perform(handle);
+	CURLcode perform_rc = curl_easy_perform(handle);
 	g_body_cap = 0;
+
+	if (perform_rc == CURLE_ABORTED_BY_CALLBACK) {
+		/* Henge: a redirect target was refused by hv_urlasset_guard inside curl_mbedtls.c's hop loop (see
+		   CURLOPT_HENGE_REDIRECT_GUARD above). Same "refused by policy" response shape as the initial hv_urlasset_guard
+		   check above -- the device gets what a failed download looks like, nothing from the refused target is kept or
+		   sent. */
+		logger(LL_ERROR, "%s: request aborted (redirect target refused by policy, or a transfer-level abort)\n", __func__);
+		curl_easy_cleanup(handle);
+		free(response->content);
+		free(response);
+		plist_free(response_headers);
+		plist_t refused = plist_new_dict();
+		plist_dict_set_item(refused, "ResponseBody", plist_new_data("", 0));
+		plist_dict_set_item(refused, "ResponseBodyDone", plist_new_bool(1));
+		plist_dict_set_item(refused, "ResponseHeaders", plist_new_dict());
+		plist_dict_set_item(refused, "ResponseStatus", plist_new_uint(0));
+		restore_service_client_t rsvc = _restore_get_service_client_for_data_request(client, message);
+		if (!rsvc) {
+			plist_free(refused);
+			return -1;
+		}
+		_restore_service_send(rsvc, refused, PLIST_FORMAT_BINARY);
+		_restore_service_free(rsvc);
+		plist_free(refused);
+		return 0;
+	}
 
 	long http_response = 0;
 	curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_response);
@@ -5415,6 +5472,27 @@ static int restore_wait_for_reconnect(struct idevicerestore_client_t* client)
 	logger(LL_ERROR, "Device did not reappear after 10 seconds\n");
 	return -1;
 }
+
+/* Henge shared safe Reverse Proxy cleanup (Nov 2026 review: "Reverse Proxy 정리 함수 공통화"), used by EVERY exit point of
+   restore_device() that may run while a Reverse Proxy control/connection thread is still alive -- the already-shipped test
+   mode "stop E" below, the restored_start_restore() failure path, and the normal restore-loop-end path. Without this, a
+   caller could free client->restore (and the idevice_t it owns) while the Reverse Proxy thread still holds a reference to
+   the same device, a use-after-free.
+
+   reverse_proxy_client_free() can return REVERSE_PROXY_E_UNKNOWN_ERROR either because its internal thread_join() failed (the
+   thread may still be running and may still touch client->restore->device) or because the join succeeded but a later,
+   unrelated step failed (everything already freed); those two cases are not distinguishable from the return value alone, so
+   this helper treats exactly that one code as "uncertain" and every caller must then skip restore_client_free(client) --
+   freeing client->restore in that case is exactly the risk this exists to avoid, even at the cost of leaking it.
+
+   Returns 1 if cleanup is uncertain (the caller must NOT call restore_client_free()), 0 if it is safe to free (rproxy was
+   NULL -- Reverse Proxy was never started or already torn down -- or it was freed without REVERSE_PROXY_E_UNKNOWN_ERROR). */
+static int hv_reverse_proxy_safe_free(reverse_proxy_client_t rproxy)
+{
+	if (!rproxy) return 0;
+	reverse_proxy_error_t rp_free_err = reverse_proxy_client_free(rproxy);
+	return rp_free_err == REVERSE_PROXY_E_UNKNOWN_ERROR;
+}
 #endif
 
 int restore_device(struct idevicerestore_client_t* client, plist_t build_identity)
@@ -5820,15 +5898,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 #undef HV_E_REQ_BOOL
 #undef HV_E_REQ
 
+		/* Henge: shared with every other restore_device() exit point -- see hv_reverse_proxy_safe_free() above. */
 		int rp_cleanup_uncertain = 0;
 #ifdef HAVE_REVERSE_PROXY
-		if (rproxy) {
-			/* reverse_proxy_client_free() returns REVERSE_PROXY_E_UNKNOWN_ERROR both when its internal thread_join() failed (nothing freed, the thread may
-			   still reference client->restore->device) and when the join succeeded but a later, unrelated step failed (everything already freed) -- those
-			   two cases are not distinguishable from this return value alone, so this build treats exactly that one code as the unsafe case (hv_stop.h). */
-			reverse_proxy_error_t rp_free_err = reverse_proxy_client_free(rproxy);
-			rp_cleanup_uncertain = (rp_free_err == REVERSE_PROXY_E_UNKNOWN_ERROR);
-		}
+		rp_cleanup_uncertain = hv_reverse_proxy_safe_free(rproxy);
 #endif
 		struct hv_stop_e_info hv_info;
 		memset(&hv_info, 0, sizeof(hv_info));
@@ -5862,6 +5935,27 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	if (restore_error != RESTORE_E_SUCCESS) {
 		logger(LL_ERROR, "Unable to start the restore process\n");
 		plist_free(opts);
+		/* Henge: the Reverse Proxy control thread may already be running at this point (it was started well before this call --
+		   see "Starting Reverse Proxy" above), so it must be stopped and confirmed safe to let go of BEFORE
+		   client->restore->device is freed by restore_client_free() below. Previously this path skipped Reverse Proxy cleanup
+		   entirely, which could free client->restore->device out from under a still-running Reverse Proxy thread
+		   (use-after-free). See hv_reverse_proxy_safe_free() above and the Nov 2026 Reverse-Proxy-cleanup review. */
+#ifdef HAVE_REVERSE_PROXY
+		if (hv_reverse_proxy_safe_free(rproxy)) {
+			/* Cleanup is uncertain: do NOT free client->restore while the Reverse Proxy thread might still reference the same
+			   idevice_t. This leaks client->restore rather than risking a use-after-free. */
+			logger(LL_ERROR, "Reverse Proxy cleanup was uncertain; not releasing the restore client to avoid a possible use-after-free\n");
+			return -1;
+		}
+#else
+		if (thread_alive(fdr_thread)) {
+			if (fdr_control_channel) {
+				fdr_disconnect(fdr_control_channel);
+				thread_join(fdr_thread);
+				fdr_control_channel = NULL;
+			}
+		}
+#endif
 		restore_client_free(client);
 		return -1;
 	}
@@ -6080,7 +6174,17 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 
 #ifdef HAVE_REVERSE_PROXY
-	reverse_proxy_client_free(rproxy);
+	/* Henge: previously this discarded reverse_proxy_client_free()'s return value and unconditionally freed client->restore
+	   right after, the same use-after-free risk as the restored_start_restore() failure path above -- see
+	   hv_reverse_proxy_safe_free() and the Nov 2026 Reverse-Proxy-cleanup review. */
+	if (hv_reverse_proxy_safe_free(rproxy)) {
+		/* Cleanup is uncertain: do NOT free client->restore while the Reverse Proxy thread might still reference the same
+		   idevice_t. This leaks client->restore rather than risking a use-after-free, and reports failure even if the
+		   restore loop above otherwise looked successful (err == 0) -- a restore whose Reverse Proxy teardown could not be
+		   confirmed safe is not reported as a clean success. */
+		logger(LL_ERROR, "Reverse Proxy cleanup was uncertain; not releasing the restore client to avoid a possible use-after-free\n");
+		return err == 0 ? -1 : err;
+	}
 #else
 	if (thread_alive(fdr_thread)) {
 		if (fdr_control_channel) {

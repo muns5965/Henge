@@ -57,6 +57,8 @@ typedef struct {
     void *xferinfo_data;
     struct curl_slist *headers;
     char *errorbuffer;
+    curl_henge_redirect_guard_callback redirect_guard;   /* CURLOPT_HENGE_REDIRECT_GUARD: consulted on every redirect hop */
+    void *redirect_guard_data;                           /* CURLOPT_HENGE_REDIRECT_GUARD_DATA */
     long response_code;
     long max_redir;   /* CURLOPT_MAXREDIRS; 0 = MAX_REDIRECTS */
     long timeout_ms, connect_timeout_ms;   /* CURLOPT_TIMEOUT[_MS]: the whole transfer, redirects included; CURLOPT_CONNECTTIMEOUT[_MS] */
@@ -523,6 +525,8 @@ CURLcode curl_easy_setopt(CURL *c, CURLoption opt, ...) {
     case CURLOPT_TIMEOUT_MS: e->timeout_ms = va_arg(ap, long); break;
     case CURLOPT_CONNECTTIMEOUT: e->connect_timeout_ms = va_arg(ap, long) * 1000L; break;
     case CURLOPT_CONNECTTIMEOUT_MS: e->connect_timeout_ms = va_arg(ap, long); break;
+    case CURLOPT_HENGE_REDIRECT_GUARD: e->redirect_guard = va_arg(ap, curl_henge_redirect_guard_callback); break;
+    case CURLOPT_HENGE_REDIRECT_GUARD_DATA: e->redirect_guard_data = va_arg(ap, void *); break;
     default: (void)va_arg(ap, void *); break; /* VERBOSE; SSL_VERIFYPEER is ignored on purpose (see the top) */
     }
     va_end(ap);
@@ -976,6 +980,15 @@ static CURLcode perform_hops(Easy *e) {
         if (parse_url(next, &nu) == 0 && u.https && !nu.https) {
             seterr(e, "refusing a redirect from https to plain http");
             return CURLE_UNSUPPORTED_PROTOCOL;
+        }
+        /* Henge: CURLOPT_HENGE_REDIRECT_GUARD, if set, is the caller's own allow/deny policy on the destination -- separate
+           from (and checked in addition to) the TLS/host-name verification and the https-to-http downgrade refusal above,
+           both of which already happen unconditionally. `next` is the fully resolved, absolute URL (resolve_location()
+           has already turned a relative Location header into one), so the callback never has to do that resolution
+           itself. */
+        if (e->redirect_guard && e->redirect_guard(next, e->redirect_guard_data) != 0) {
+            seterr(e, "redirect to %s refused by policy", next);
+            return CURLE_ABORTED_BY_CALLBACK;
         }
         if (redirect == 301 || redirect == 302 || redirect == 303) post = 0; /* as curl: the request becomes a GET */
         snprintf(cur, sizeof cur, "%s", next);

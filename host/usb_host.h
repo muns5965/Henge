@@ -72,6 +72,21 @@ int hv_libusb_data_transfer_ok_count(void);
 int hv_libusb_data_transfer_bad_count(void);   /* completed with a status other than LIBUSB_TRANSFER_COMPLETED (error, cancel, timeout, stall, no device) */
 uint64_t hv_libusb_data_transfer_bytes(void);  /* total actual_length of every OK completion */
 
+/* Every non-control (bulk/interrupt/isochronous) transfer that completed with a status other than LIBUSB_TRANSFER_COMPLETED, oldest first (the last
+   HV_DATA_BAD_LOG_MAX are kept; same ring-with-never-evicted-histogram shape as the control-request ring above). Diagnostic only: nothing here changes a
+   transfer's outcome, retries it or affects the virtual USB device. `status` is a libusb_transfer_status value (never LIBUSB_TRANSFER_COMPLETED=0 here). */
+#define HV_DATA_BAD_LOG_MAX 16
+typedef struct {
+    int seq;
+    uint8_t ep;             /* raw endpoint address; bit 0x80 set means IN */
+    uint8_t type;            /* libusb_transfer_type: BULK=2, INTERRUPT=3, ISOCHRONOUS=1 */
+    uint8_t status;          /* libusb_transfer_status at completion */
+    int requested, actual;   /* transfer length requested, and actual_length reported with the failing completion */
+} HvDataBadRecord;
+int hv_libusb_data_bad_count(void);                 /* total bad non-control completions recorded so far (same total hv_libusb_data_transfer_bad_count() gives, tracked alongside the ring) */
+int hv_libusb_data_bad_get(int k, HvDataBadRecord *out); /* 1 if entry k is still held */
+unsigned hv_libusb_data_bad_hist(int status);        /* never evicted: a count by libusb_transfer_status, for a run longer than HV_DATA_BAD_LOG_MAX */
+
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */
 void hv_usb_probe_start(HvVirtioUsb *d);
 

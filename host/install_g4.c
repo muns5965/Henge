@@ -194,6 +194,8 @@ static int g_began, g_started, g_online_ok, g_att0, g_ctrl0, g_data0, g_waited =
 static int g_data_ok0, g_data_bad0;
 static uint64_t g_data_bytes0;
 static unsigned g_hist0[4][8]; /* hv_libusb_ctrl_hist() baseline, taken at the same moment as g_ctrl0: never evicted, so it survives past HV_CTRL_LOG_MAX */
+static int g_bad_log0;         /* hv_libusb_data_bad_count() baseline, taken at the same moment as g_data_bad0 */
+static unsigned g_bad_hist0[8]; /* hv_libusb_data_bad_hist() baseline, one snapshot per libusb_transfer_status (0-6, 7 = other); never evicted */
 static HvNetStats g_ns0;
 
 #define MAXTH 64
@@ -290,6 +292,8 @@ int hv_g4_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_
     g_data_bad0 = hv_libusb_data_transfer_bad_count();
     g_data_bytes0 = hv_libusb_data_transfer_bytes();
     for (int t = 0; t < 4; t++) for (int b = 0; b < 8; b++) g_hist0[t][b] = hv_libusb_ctrl_hist(t, b);
+    g_bad_log0 = hv_libusb_data_bad_count();
+    for (int s = 0; s < 8; s++) g_bad_hist0[s] = hv_libusb_data_bad_hist(s);
     th_snap(&g_th0);
     hv_net_guard_stats(&g_ns0);
     g_port = 27100 + (int)(getpid() % 800);   /* the same rule as host/install.c */
@@ -331,6 +335,9 @@ static int parse_diag(const char *d, Diag *o) {
 }
 static const char *diag_name(int k) { static const char *n[] = {"success", "not_a_tss_reply", "status", "transport", "empty", "success_but_not_a_plist"}; return k >= 0 && k <= 5 ? n[k] : "?"; }
 static const char *mode_name(int idx) { static const char *n[] = {"unknown", "wtf", "dfu", "recovery", "restore", "normal", "portdfu"}; return idx >= 0 && idx <= 6 ? n[idx] : "?"; }
+/* libusb_transfer_status (0-6; third_party/libusb-1.0/libusb.h) and the transfer types a bulk/interrupt completion can carry. Diagnostic naming only. */
+static const char *xfer_status_name(int s) { static const char *n[] = {"COMPLETED", "ERROR", "TIMED_OUT", "CANCELLED", "STALL", "NO_DEVICE", "OVERFLOW"}; return s >= 0 && s <= 6 ? n[s] : "?"; }
+static const char *xfer_type_name(int t) { static const char *n[] = {"control", "isochronous", "bulk", "interrupt", "bulk_stream"}; return t >= 0 && t <= 4 ? n[t] : "?"; }
 
 /* ---- the table ---- */
 static int g_failed, g_meta;
@@ -406,6 +413,28 @@ int hv_g4_finish(FILE *out, const char *disk, const char *aux) {
             "%d standard/enumeration request(s), %d forbidden (detach/upload/any other vendor call/reserved type -- none of these are issued by this call path); "
             "%d bulk/interrupt transfer(s) submitted (%d completed OK, %llu bytes, %d completed with a non-success status -- must be 0; a bulk transfer is expected here, so only a failed one counts against the row)",
             total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, command_execute, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad);
+        if (d_bad) {
+            /* Diagnostic only, added after build 157's real-device run showed d_bad=3 with no detail to tell a benign device-reconnect artifact (a
+               stale read request on the OUT-going DFU device left behind right as the device re-enumerates into RESTORE mode -- CANCELLED or NO_DEVICE
+               would fit that) from an actual transfer error (STALL/TIMED_OUT/ERROR). This row never changes the device_requests verdict above (d_bad == 0
+               is still required to pass) and never changes the virtual USB device's own transfer/retry/cancel handling or storage write permissions --
+               it only reads back what host/libusb_shim.c's complete() already recorded for every bad completion. */
+            char detail[900]; size_t dn = 0;
+            int bl1 = hv_libusb_data_bad_count(), shown = 0, missing = 0;
+            for (int k = g_bad_log0; k < bl1; k++) {
+                HvDataBadRecord r;
+                if (!hv_libusb_data_bad_get(k, &r)) { missing++; continue; }
+                if (shown && dn < sizeof detail) detail[dn++] = ' ';
+                int n = snprintf(detail + dn, dn < sizeof detail ? sizeof detail - dn : 0, "#%d ep=0x%02x(%s) %s %s req=%d act=%d;",
+                                  r.seq, r.ep, (r.ep & 0x80) ? "IN" : "OUT", xfer_type_name(r.type), xfer_status_name(r.status), r.requested, r.actual);
+                if (n > 0) dn += (size_t)n;
+                shown++;
+            }
+            unsigned bh[7]; for (int s = 0; s < 7; s++) bh[s] = hv_libusb_data_bad_hist(s) - g_bad_hist0[s];
+            row_meta(out, "bad_xfer_detail", "%d bad bulk/interrupt completion(s) this run, %d shown below and %d no longer in the detail ring (ring holds the last %d; this count is informational and does not change the device_requests verdict above): %s "
+                     "by status (never evicted, so this covers all %d even past the ring): error=%u timed_out=%u cancelled=%u stall=%u no_device=%u overflow=%u",
+                     d_bad, shown, missing, HV_DATA_BAD_LOG_MAX, dn ? detail : "(none held)", d_bad, bh[1], bh[2], bh[3], bh[4], bh[5], bh[6]);
+        }
     }
     FileId d1, a1;
     file_id(disk, &d1); file_id(aux, &a1);

@@ -201,6 +201,34 @@ static void sync_cb(struct libusb_transfer *t);
 static int g_data_xfers_ok, g_data_xfers_bad; /* non-control transfers completed, by outcome (atomic) */
 static uint64_t g_data_bytes_ok; /* actual_length summed over every OK completion (atomic) */
 
+/* Every bad (non-LIBUSB_TRANSFER_COMPLETED) non-control completion, recorded the same way the control-request ring above is: a small ring plus a
+   never-evicted per-status histogram. Diagnostic only -- recording a completion here never changes its outcome, retries it, or touches the virtual USB
+   device; it is written after the real outcome (st, actual) is already decided below. */
+static HvDataBadRecord g_data_bad_log[HV_DATA_BAD_LOG_MAX];
+static unsigned g_data_bad_n;           /* total recorded; entry k lives in slot k % HV_DATA_BAD_LOG_MAX */
+static unsigned g_data_bad_hist[8];     /* indexed by libusb_transfer_status (0-6 per libusb.h; 7 catches anything else); never evicted */
+static pthread_mutex_t g_data_bad_mu = PTHREAD_MUTEX_INITIALIZER;
+
+int hv_libusb_data_bad_count(void) {
+    pthread_mutex_lock(&g_data_bad_mu);
+    int n = (int)g_data_bad_n;
+    pthread_mutex_unlock(&g_data_bad_mu);
+    return n;
+}
+unsigned hv_libusb_data_bad_hist(int status) {
+    pthread_mutex_lock(&g_data_bad_mu);
+    unsigned v = g_data_bad_hist[status >= 0 && status < 7 ? (unsigned)status : 7];
+    pthread_mutex_unlock(&g_data_bad_mu);
+    return v;
+}
+int hv_libusb_data_bad_get(int k, HvDataBadRecord *out) {
+    int ok = 0;
+    pthread_mutex_lock(&g_data_bad_mu);
+    if (k >= 0 && (unsigned)k < g_data_bad_n && g_data_bad_n - (unsigned)k <= HV_DATA_BAD_LOG_MAX) *out = g_data_bad_log[k % HV_DATA_BAD_LOG_MAX], ok = 1;
+    pthread_mutex_unlock(&g_data_bad_mu);
+    return ok;
+}
+
 static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
     struct libusb_transfer *t = x->t;
     struct libusb_device *dv = x->dev;
@@ -210,6 +238,13 @@ static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
             __atomic_add_fetch(&g_data_bytes_ok, (uint64_t)(actual > 0 ? actual : 0), __ATOMIC_ACQ_REL);
         } else {
             __atomic_add_fetch(&g_data_xfers_bad, 1, __ATOMIC_ACQ_REL);
+            pthread_mutex_lock(&g_data_bad_mu);
+            unsigned k = g_data_bad_n++;
+            HvDataBadRecord *r = &g_data_bad_log[k % HV_DATA_BAD_LOG_MAX];
+            r->seq = (int)k; r->ep = t->endpoint; r->type = (uint8_t)t->type; r->status = (uint8_t)st;
+            r->requested = t->length; r->actual = actual;
+            g_data_bad_hist[(unsigned)st < 7 ? (unsigned)st : 7]++;
+            pthread_mutex_unlock(&g_data_bad_mu);
         }
     }
     x->dev = NULL;

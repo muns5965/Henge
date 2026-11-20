@@ -1,6 +1,8 @@
 #!/bin/bash
 # vmrun with the TSS probe in it (--tss-probe): vmrun-irecv's pieces + libplist + libtatsu (HV_TSS_HTTPS_ONLY: https only, one attempt on request) + the HTTP client
-# stand-in with mbedtls + libzip + host/remote_zip.c + host/tss_probe_core.c + host/tss_probe.c. A separate program on purpose: if it does not build, everything else ships.
+# stand-in with mbedtls + libzip + host/remote_zip.c + host/tss_probe_core.c + host/tss_probe.c, + third_party/libimobiledevice-glue/src/sha512.c (sha384(): host/tss_probe_core.c
+# always defines hv_tss_probe_core_chain(), which this binary never calls through --tss-probe but still needs at link time; see tools/vmrun-tss-lpol-build.sh, which adds
+# nothing else). A separate program on purpose: if it does not build, everything else ships.
 # NO test switches (no HV_TSS_ALLOW_HTTP_TEST, HV_RZ_ALLOW_HTTP_TEST, HV_ALLOW_CA_ENV): tools/check-no-test-flags.sh scans this file.
 # Run after tools/engine-build.sh and tools/devices-build.sh with the same compiler and output dir. For Android set NDK_ROOT (libzip is built with the NDK toolchain file).
 # Usage: CC=<compiler> [NDK_ROOT=..] [EXTRA_LIBS=...] tools/vmrun-tss-build.sh <output dir>
@@ -28,7 +30,7 @@ cc1() { # src extra-flags
   $CC $FL "$@" -c "$f" -o "$o" 2> "$o.log" || { echo "FAILED  $f"; head -20 "$o.log"; exit 1; }
   objs="$objs $o"
 }
-for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/src/thread.c; do cc1 $f; done
+for f in $TP/libimobiledevice-glue/src/collection.c $TP/libimobiledevice-glue/src/thread.c $TP/libimobiledevice-glue/src/sha512.c; do cc1 $f; done
 cc1 $TP/libirecovery/src/libirecovery.c '-DPACKAGE_VERSION="1.3.1-henge"'
 for f in host/libusb_shim.c host/remote_zip.c; do cc1 $f; done
 cc1 host/tss_probe_core.c -DHV_TSS_HTTPS_ONLY

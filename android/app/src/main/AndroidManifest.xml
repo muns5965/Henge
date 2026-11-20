@@ -32,5 +32,11 @@
             android:name=".VmDisplayActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
+        <!-- Shows and exports vm/snapshot.bmp (G0-G6's and the normal/installer boot test's one-shot screen
+             capture). Not exported: nothing outside this app may launch it. -->
+        <activity
+            android:name=".SnapshotViewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
     </application>
 </manifest>

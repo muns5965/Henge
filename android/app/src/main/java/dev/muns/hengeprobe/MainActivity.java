@@ -659,6 +659,18 @@ public class MainActivity extends Activity {
         vmDisplayNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(vmDisplayNote);
 
+        // Shows and exports vm/snapshot.bmp -- the one-shot capture G0-G6 and the normal/installer boot test all
+        // write to the same shared path whenever --snapshot is given (host/vmrun.c's g_capture_screen()/the normal
+        // path's own snap block). Reads nothing here; SnapshotViewActivity does its own existence/format checks.
+        final Button snapshotViewButton = new Button(this);
+        snapshotViewButton.setText("📷 최근 스냅샷 보기/내보내기");
+        snapshotViewButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, SnapshotViewActivity.class)));
+        root.addView(snapshotViewButton);
+        final TextView snapshotViewNote = new TextView(this);
+        snapshotViewNote.setText("G0~G6 또는 일반/설치기 부팅 시험이 --snapshot으로 남긴 가장 최근 화면 캡처(PVG_FRAME 또는 BOOT_ARGS_FRAME)를 앱 안에서 바로 보여주고, 원하면 다운로드 폴더 등으로 내보냅니다(Android/data 폴더 접근 제한과 무관).");
+        snapshotViewNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(snapshotViewNote);
+
         final Button toggle = new Button(this);
         toggle.setText("▶ 완료된 시험 펼치기 (끝난 시험 전부, 다시 쓰지 않음)");
         toggle.setOnClickListener(v -> {

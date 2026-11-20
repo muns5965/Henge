@@ -213,6 +213,19 @@ static const char *screen_source_name(int s) {
     return s == HV_SCREEN_PVG ? "PVG_FRAME" : s == HV_SCREEN_BOOT_ARGS ? "BOOT_ARGS_FRAME" : "NO_FRAME";
 }
 
+/* Henge: how many of the W*H pixels in a captured BGRA buffer are not pure black (B=G=R=0; alpha is not
+   meaningful capture data -- see hv_vm_capture_screen's caller contract -- so it is ignored here). A diagnostic
+   count only: whether this is "a lot", "none" or "a little" is for whoever reads the log to judge, not this
+   function. */
+static int count_nonblack(const uint8_t *bgra, int w, int h) {
+    int n = 0;
+    for (int i = 0; i < w * h; i++) {
+        const uint8_t *p = bgra + (size_t)i * 4;
+        if (p[0] || p[1] || p[2]) n++;
+    }
+    return n;
+}
+
 /* G0-G6 diagnostic only: never gates their own pass/fail table (install_gN.c's), and never gated by it either --
    called whether or not the run passed. Must run BEFORE hv_vm_stop() tears the machine down: once stopped, neither
    the PVG frame nor the RAM boot_args framebuffer is guaranteed still readable. Separate from --snapshot's own
@@ -222,7 +235,16 @@ static void g_capture_screen(const char *snap, const char *tag) {
     enum { W = 640, H = 400 };
     static uint8_t px[W * H * 4];
     int src = HV_SCREEN_NONE;
-    int ok = hv_vm_capture_screen(px, W, H, &src) == 0;
+    HvScreenCaptureInfo info;
+    int ok = hv_vm_capture_screen(px, W, H, &src, &info) == 0;
+    /* Henge: the source frame's own size (when known -- see HvScreenCaptureInfo's doc comment in vm.h) and how
+       many of the final W*H pixels are not pure black, so a log alone says whether anything was scaled from a
+       larger source and whether the capture is plausibly "something rendered" before anyone has to open the BMP. */
+    if (info.orig_width) printf("vmrun %s screen: source frame %ux%u stride %u -> %dx%d\n", tag, info.orig_width, info.orig_height, info.orig_stride, W, H);
+    if (ok) {
+        int nz = count_nonblack(px, W, H);
+        printf("vmrun %s screen: %s, %d/%d non-black pixels (%.1f%%)\n", tag, screen_source_name(src), nz, W * H, 100.0 * nz / (W * H));
+    }
     if (ok && write_bmp(snap, px, W, H) == 0) printf("vmrun %s screen: %s, written %s\n", tag, screen_source_name(src), snap);
     else printf("vmrun %s screen: %s, nothing written\n", tag, screen_source_name(src));
     fflush(stdout);

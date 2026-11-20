@@ -129,11 +129,20 @@ int hv_vm_snapshot(uint8_t *bgra, int width, int height);
    hv_vm_boot_display's own fallback finds). Diagnostic only: this classification is informational and gates
    nothing on its own. */
 enum { HV_SCREEN_NONE = 0, HV_SCREEN_PVG = 1, HV_SCREEN_BOOT_ARGS = 2 };
+/* The boot_args source frame's own size, before hv_vm_capture_screen scales it to the caller's width x height.
+   Left all-zero when the frame came from hv_vm_snapshot (PVG) instead: that accessor already renders at exactly
+   the requested size, so it has no separate "original" size of its own to report, and when *source comes back
+   HV_SCREEN_NONE there was no frame to measure. */
+typedef struct { uint32_t orig_width, orig_height, orig_stride; } HvScreenCaptureInfo;
 /* Tries hv_vm_snapshot (PVG) first; only if that has nothing yet, falls back to hv_vm_boot_display's raw
-   framebuffer, copied into bgra cropped or zero-padded to width x height (never both; the two are mutually
-   exclusive sources of the same picture). *source reports which one (if either) actually supplied the frame.
-   Changes neither hv_vm_snapshot's nor hv_vm_boot_display's own behavior -- this only combines their existing
-   results. */
-int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source);
+   framebuffer, SCALED (nearest-neighbor on both axes, independently) to exactly fill width x height -- not
+   cropped to its top-left corner: a boot logo is typically centered, so on a source larger than width x height a
+   crop could miss content that a scale would still show, and this diagnostic snapshot only needs the content to
+   be recognizable, not pixel-accurate or aspect-correct (there is no "correct" aspect ratio to preserve against a
+   destination size that has nothing to do with the guest's actual resolution). *source reports which of the two
+   sources (if either) actually supplied the frame; info, if non-NULL, reports the boot_args source frame's own
+   width/height/stride (see HvScreenCaptureInfo above). Changes neither hv_vm_snapshot's nor hv_vm_boot_display's
+   own behavior -- this only combines and scales their existing results. */
+int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source, HvScreenCaptureInfo *info);
 
 #endif

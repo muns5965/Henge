@@ -559,8 +559,9 @@ int hv_vm_snapshot(uint8_t *bgra, int width, int height) {
     return hv_pvg_lite_snapshot(pvg, bgra, (uint32_t)width, (uint32_t)height);
 }
 
-int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source) {
+int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source, HvScreenCaptureInfo *info) {
     if (source) *source = HV_SCREEN_NONE;
+    if (info) memset(info, 0, sizeof *info);
     if (width <= 0 || height <= 0) return -1;
     if (hv_vm_snapshot(bgra, width, height) == 0) {
         if (source) *source = HV_SCREEN_PVG;
@@ -568,10 +569,20 @@ int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source) {
     }
     HvBootDisplay d;
     if (hv_vm_boot_display(&d) != 0 || !d.pixels || !d.width || !d.height || !d.stride) return -1;
-    uint32_t cw = d.width < (uint32_t)width ? d.width : (uint32_t)width;
-    uint32_t ch = d.height < (uint32_t)height ? d.height : (uint32_t)height;
-    for (uint32_t y = 0; y < ch; y++) memcpy(bgra + (size_t)y * width * 4, d.pixels + (size_t)y * d.stride, (size_t)cw * 4);
-    if (ch < (uint32_t)height) memset(bgra + (size_t)ch * width * 4, 0, (size_t)(height - ch) * (size_t)width * 4);
+    if (info) info->orig_width = d.width, info->orig_height = d.height, info->orig_stride = d.stride;
+    /* Henge: scale the WHOLE source frame to exactly fill width x height (nearest-neighbor, independently on each
+       axis) rather than copying only its top-left width x height corner -- see the doc comment in vm.h for why. */
+    for (uint32_t y = 0; y < (uint32_t)height; y++) {
+        uint32_t sy = (y * d.height) / (uint32_t)height;
+        if (sy >= d.height) sy = d.height - 1; /* guards the single case y==height-1 could round past d.height-1 */
+        const uint8_t *srow = d.pixels + (size_t)sy * d.stride;
+        uint8_t *drow = bgra + (size_t)y * (size_t)width * 4;
+        for (uint32_t x = 0; x < (uint32_t)width; x++) {
+            uint32_t sx = (x * d.width) / (uint32_t)width;
+            if (sx >= d.width) sx = d.width - 1;
+            memcpy(drow + (size_t)x * 4, srow + (size_t)sx * 4, 4);
+        }
+    }
     /* hv_vm_boot_display tries the PVG frame accessor before its own boot_args RAM scan, so a pixels pointer
        inside guest RAM proves this came from that scan rather than the GPU frame (board.ram/ram_size are the
        same bounds the scan itself checked against, just above). */

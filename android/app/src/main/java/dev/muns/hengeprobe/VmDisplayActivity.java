@@ -1,8 +1,10 @@
 package dev.muns.hengeprobe;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,12 +17,21 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.util.concurrent.TimeUnit;
 
 /** [A] The real VM's screen. Unlike DisplayTestActivity (C0+B0: a synthetic picture, no virtual machine), this
@@ -48,6 +59,7 @@ import java.util.concurrent.TimeUnit;
  *  closing, sent "quit", given 5 s, and only then killed -- logged either way. */
 public class VmDisplayActivity extends Activity implements SurfaceHolder.Callback {
     private static final String TAG = "henge-ui-vm";
+    private static final int REQ_EXPORT_LOG = 1;
 
     static {
         System.loadLibrary("henge_ui");
@@ -89,6 +101,14 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private volatile long runnerPid;
     private volatile String runnerLine = "vm runner: not started";
     private final java.util.ArrayDeque<String> runnerLog = new java.util.ArrayDeque<>();
+    // Every line the VM runner process prints, not just the last 40 kept in runnerLog above for the on-screen
+    // status overlay (which has no scrollback): written as each line arrives so a hang or crash still leaves
+    // whatever was printed so far on disk, and exported on request via exportLogBtn/onActivityResult below --
+    // same ACTION_CREATE_DOCUMENT pattern SnapshotViewActivity already uses for snapshot.bmp. One fixed path per
+    // app (overwritten at the start of each run, same convention as vm/snapshot.bmp): this screen shows one VM
+    // at a time, so the previous run's log is not needed once a new one starts.
+    private File logFile;
+    private volatile Writer logWriter;
     // guards stopVmRunner() against running twice for the same process: onDestroy() (user closed the screen) and
     // the watchdog thread below (the native --seconds limit did not stop it) can both decide to stop the same
     // runner at roughly the same time; StopOnce.tryOnce() (tests/java/StopOnceTest.java covers it on a plain JVM)
@@ -99,6 +119,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        logFile = new File(getExternalFilesDir(null), "vm/vm_display_last.log");
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         surface = new SurfaceView(this);
@@ -113,6 +134,10 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         status.setPadding(12, 8, 12, 8);
         status.setText("[A] VM display (real guest). Starting...");
         root.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        final Button exportLogBtn = new Button(this);
+        exportLogBtn.setText("로그 내보내기");
+        exportLogBtn.setOnClickListener(v -> exportLog());
+        root.addView(exportLogBtn, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END));
         setContentView(root);
 
         // The launcher's switch is checked FIRST, before nativeStart() or any file access: when VM execution
@@ -182,6 +207,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         stopOnce = new StopOnce();   // fresh race winner-takes-one guard for this specific process
         runner = p;
         runnerPid = 0;
+        openLogWriter();
         new Thread(() -> {
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String ln;
@@ -192,10 +218,12 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
                         try { runnerPid = Long.parseLong(ln.substring(STARTED_PID_PREFIX.length()).split("[ ,]")[0]); } catch (NumberFormatException ignored) { }
                     }
                     Log.i(TAG, ln);
+                    writeLogLine(ln);
                 }
             } catch (java.io.IOException ignored) { }
-            try { int code = p.waitFor(); runnerLine = "vm runner exited, code " + code + (code == 0 ? " (stopped, confirmed)" : code == 3 ? " (stop NOT confirmed by the runner)" : " (not a clean stop)") + "; last: " + runnerLine; Log.i(TAG, "vm runner exit code " + code); }
+            try { int code = p.waitFor(); runnerLine = "vm runner exited, code " + code + (code == 0 ? " (stopped, confirmed)" : code == 3 ? " (stop NOT confirmed by the runner)" : " (not a clean stop)") + "; last: " + runnerLine; Log.i(TAG, "vm runner exit code " + code); writeLogLine(runnerLine); }
             catch (InterruptedException ignored) { }
+            closeLogWriter();
         }, "henge-vm-runner-out").start();
         new Thread(() -> {
             String path = shm.getAbsolutePath();
@@ -218,6 +246,68 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
             }
         }, "henge-vm-runner-poll").start();
         startWatchdog(p);
+    }
+
+    /** Opens logFile fresh (truncating any previous run's log, same one-shared-path convention as vm/snapshot.bmp),
+     *  called once right before the reader thread that will write to it starts. A failure to open (e.g. the
+     *  directory could not be created) just means nothing is logged to disk this run -- the in-memory runnerLog/
+     *  runnerLine status display above is unaffected either way, so this never blocks or fails the VM run itself. */
+    private void openLogWriter() {
+        try {
+            File parent = logFile.getParentFile();
+            if (parent != null) parent.mkdirs();
+            logWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(logFile, false)));
+        } catch (IOException e) {
+            logWriter = null;
+            Log.w(TAG, "could not open vm display log file: " + e.getMessage());
+        }
+    }
+
+    /** Appends one line and flushes immediately (not buffered across lines) so a hang or a forced kill still
+     *  leaves everything printed so far on disk, not just whatever happened to be flushed already. Called from
+     *  the single reader thread only, so no synchronization is needed for the write itself; logWriter is
+     *  volatile only so closeLogWriter() (same thread, just later) and this always see the same reference. */
+    private void writeLogLine(String ln) {
+        Writer w = logWriter;
+        if (w == null) return;
+        try { w.write(ln); w.write('\n'); w.flush(); } catch (IOException ignored) { }
+    }
+
+    private void closeLogWriter() {
+        Writer w = logWriter;
+        logWriter = null;
+        if (w != null) try { w.close(); } catch (IOException ignored) { }
+    }
+
+    /** Same ACTION_CREATE_DOCUMENT pattern as SnapshotViewActivity's exportBtn: hands a copy of logFile to a
+     *  folder the user picks, without requesting any storage permission. */
+    private void exportLog() {
+        if (logFile == null || !logFile.isFile()) {
+            Toast.makeText(this, "로그 파일이 아직 없습니다 (VM을 먼저 한 번 실행하세요)", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_TITLE, "henge_vm_display_log.txt");
+        startActivityForResult(i, REQ_EXPORT_LOG);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_EXPORT_LOG || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if (uri == null || logFile == null) return;
+        try (InputStream in = new FileInputStream(logFile); OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) throw new IOException("출력 스트림을 열 수 없습니다");
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            Toast.makeText(this, "로그 내보내기 완료: " + uri, Toast.LENGTH_SHORT).show();
+        } catch (IOException e) {
+            Toast.makeText(this, "로그 내보내기 실패: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     /** Independent of onDestroy()/the user closing this screen: host/ui_runner_vm.c's own --seconds limit (see

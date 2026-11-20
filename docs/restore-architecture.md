@@ -46,7 +46,8 @@
 | G0 설치 진입점(`host/install.c`의 `hv_install_start()` 전체 경로: 전용 usbmuxd·`restore_session.c` 세션·연결 정책·정리까지) | 검증 완료 (build 149, 실기기, §1.1) | 정지점 A까지 도달(`g0_passed`), Apple 연결 0건, 저장장치 쓰기 0건, 세션·usbmuxd 정리 정상, 디스크·aux 내용 불변 확인 |
 | 첫 TSS(AP 티켓) 실제 요청 | 검증 완료 (build 149, 실기기, 단발 1회 승인, §3.1) | Apple TSS 서버가 실제로 **서명 발급**(`ApImg4Ticket`, 5633 bytes). BuildManifest 식별 결과(칩 0xFE00/보드 0x20)가 build 70과 일치 |
 | LocalPolicy, RecoveryOS root ticket (AP 직후 연쇄 요청) | 검증 완료 (build 150, 실기기, 단발 1회 승인, §3.2) | AP 티켓 발급 후 이어서 보낸 두 요청 모두 Apple이 plist로 **응답을 받아들임**. 단, 이 두 단계는 libtatsu에 전용 티켓 추출 함수가 없어 "특정 티켓 필드가 실제로 들어있는가"는 이 빌드에서 확인하지 못함(§3.2) |
-| 재요청, iBSS/iBEC 전송, 재접속, RecoveryOS 진입, 복원 | 미검증 | 한 번도 실행하지 않음 — 이 TSS 연쇄의 범위 밖 |
+| G2: **실제 설치 진입점(`hv_install_start`) 전체 경로**로 실제 Apple TSS 3건 | 검증 완료 (build 152, 실기기, §3.3) | §3.1·§3.2의 TSS 프로브(`tss_probe_core.c`의 손수 작성한 요청 구성)가 아니라, 앱이 실제 설치에 쓰는 바로 그 경로(`hv_install_start` → `idevicerestore_start`)로 AP·LocalPolicy·RecoveryOS 3건을 보냄. `idevicerestore.c` 자신의 판정 기준(`FLAG_SHSHONLY`, `client->tss` non-NULL)으로 세 단계 모두 성공 처리됨(엔진 반환값 0). 세션 정리·연결 허용 목록·디스크·aux 불변 모두 확인(§3.2와 같은 한계: 필드 수준 티켓 유효성은 미확인) |
+| 재요청, iBSS/iBEC 전송, 재접속, RecoveryOS 진입, 복원 | 미검증 | 한 번도 실행하지 않음 — TSS 프로브(§3.1, §3.2)와 G2(§3.3) 모두 TSS 단계 직후 멈추도록 설계됐으며, 그 범위 밖 |
 
 주의: "curl 요청 0"은 curl 대체 계층의 계측 결과이며 모든 네트워크 경로를 감시한 결과가 아니다 (5절).
 
@@ -70,7 +71,7 @@
 | # | 단계 | 구현 | 진입 조건 | 검증 (PC 스탠드인 / 실기기) | 안전 경계 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | DFU 감지 · IPSW 분석 · 정지점 A | 재사용 (완료) | DFU 장치 1회 열거, IPSW 존재 | PC: 가짜 IPSW 시나리오 / 실기기: 완료 | 네트워크 0, 제어 요청만, 데이터 전송 0 |
-| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 완료 (연쇄 구현, 각 단계 1회·무재시도, 아래 참조) | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: **AP 완료(build 149, §3.1, 티켓 발급 확인), LocalPolicy·RecoveryOS 완료(build 150, §3.2, 응답 수락 확인 — 필드 수준 티켓 확인은 아님)** | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
+| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 완료 (연쇄 구현, 각 단계 1회·무재시도, 아래 참조) | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: **AP 완료(build 149, §3.1, 티켓 발급 확인), LocalPolicy·RecoveryOS 완료(build 150, §3.2, 응답 수락 확인 — 필드 수준 티켓 확인은 아님), 실제 설치 진입점 전체 경로로도 동일 확인(G2, build 152, §3.3, `idevicerestore.c` 자신의 판정 기준)** | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
 | 2 | iBSS 전송 · DFU 끊김 · 재접속 | 변경 필요 (전송은 기존 코드, 재접속은 실증 필요) | TSS 응답 보유, DFU dfuIDLE | PC: 끊김·재접속 시나리오 5종 / 실기기: 별도 승인 | 서명 이미지 전송의 시작점 |
 | 3 | LocalPolicy · iBEC · 부트 인자 | 변경 필요 | 재접속 성공, nonce 재확인 | PC: 명령 순서 로그 / 실기기: 별도 승인 | `lpolrestore`, `setenv`, `saveenv`는 장치 상태를 바꿈 |
 | 4 | RecoveryOS 진입 | 신규 판정 필요 | iBEC 실행, RECOVERY 재접속 | PC: RECOVERY 가짜 장치 / 실기기: 읽기 전용 확인 | 상태를 바꾸는 명령을 보내지 않음 |
@@ -119,6 +120,23 @@
 - ECID·nonce·요청 값·응답 값 모두 로그에 기록·출력되지 않음(정책대로).
 
 **판정:** 이 장치·IPSW 조합에 대해 Apple의 서명 서버가 AP 티켓 발급 후 이어지는 LocalPolicy·RecoveryOS root ticket 요청도 거부하지 않고 plist로 응답한다는 것을 확인했다. 이는 §2 "단계 1" 전체(TSS 3건)가 실기기에서 막히지 않고 끝까지 간다는 긍정적 신호다. 다만 §3의 주의사항대로 LocalPolicy·RecoveryOS 응답 안에 유효한 티켓 필드가 실제로 들어있는지는 별도로 확인된 바 없고(libtatsu에 전용 추출 함수가 없음), 서명된 이미지 전송·DFU 재접속·RecoveryOS 부팅·실제 복원 중 어느 것도 이 결과로 보장되지 않는다 — §2의 단계 2 이후는 전부 별개로 승인·시험해야 한다(§9).
+
+### 3.3 실기기 G2: 실제 설치 진입점 전체 경로로 실제 Apple TSS 3건 (build 152)
+
+2026-11-20, 실기기(SM-S948N), 앱의 "[G2] 복원 진입점 + 실제 Apple 서명 요청" 버튼(`--install-g2`, `host/install_g2.c`). §3.1·§3.2와의 핵심 차이: 이번에는 `host/tss_probe_core.c`가 손수 구성한 요청이 아니라, **앱이 실제 설치에 쓰는 바로 그 경로**(`hv_install_start()` → 전용 usbmuxd·`restore_session.c` 세션 → `idevicerestore_start()`)가 `idevicerestore.c` 자신의 함수(`get_tss_response`/`get_local_policy_tss_response`/`get_recoveryos_root_ticket_tss_response`)로 세 요청을 보냈다. `net_guard`에는 이 실행 전까지 비어 있던 연결 허용 목록에 실제 TSS 호스트 3개(`gs.apple.com` 및 CDN 별칭 2개, 443번 포트)만 추가됐고, 그 외 목적지로의 시도는 0건(거부 0건 — 아무것도 시도하지 않았다는 뜻).
+
+판정표 전 행 `ok`:
+
+- **엔진**: `hv_install_start`가 실행을 수락, 복원 스레드가 스스로 종료. 도구 반환값 0(`FLAG_SHSHONLY`가 세 TSS 응답을 모두 손에 쥔 뒤의 정해진 성공값). 로그에 `Received SHSH blobs`가 3회(AP·LocalPolicy·RecoveryOS 각 1회로 추정 — `idevicerestore.c`는 이 세 응답을 구분해 출력하지 않는다) 등장한 뒤 `SHSH not saved (ticket files are disabled)` — `hv_no_ticket_files`가 이미 켜져 있어 티켓을 파일로 쓰지 않고 바로 반환하는, §3에서 확인한 바로 그 경로.
+- **세션 정리**: `closed=1`, `cleanup_mask=0x0`(클라이언트 해제·전용 usbmuxd 정지·join 모두 성공), 최종 판정 1("restore succeeded" — 반환값 0에 대한 정해진 분류이며, §3.2의 두 단계와 마찬가지로 "복원 성공"을 뜻하지 않는다).
+- **네트워크**: connection guard 시도 4건, 전부 허용(전용 usbmuxd 리스너 1 + 승인된 TSS 호스트 3), 거부 0건, URLAsset 시도 0건. curl 클라이언트의 실제 요청 시도 3건(AP·LocalPolicy·RecoveryOS 각 1회), 마지막 요청의 libtatsu 진단: `kind=success attempts=1 http=200 tss_status=0`.
+- **USB**: 제어 요청 14건, 금지된 전송(DNLOAD/UPLOAD/DETACH/ABORT/CLR_STATUS/vendor) 0건, bulk/interrupt 전송 0건 — 펌웨어가 장치로 전혀 전송되지 않았음을 확인.
+- **저장장치**: 이 실행에는 `--make-blank`/`--recreate-blank`가 없어 기존 디스크·aux가 그대로 쓰였다(§3.1의 TSS 단독 프로브와 달리, G0·G2는 저장장치를 만들거나 지우지 않는다). 실행 전후 디스크(8,589,934,592 B)·aux(33,570,816 B) 내용 해시가 동일.
+- **작업 폴더·티켓 파일**: `rs_g2` 작업 폴더에 신규·변경·삭제 항목 0건. `shsh`/`ticket`/`img4`/`apimg`처럼 보이는 이름의 신규 파일 0건.
+- **로그 필터**: 17줄 통과, 10줄 차단(그중 5줄이 ECID/nonce/ticket 패턴과 일치해 차단) — ECID·nonce·티켓 값은 로그에 기록·출력되지 않음(정책대로).
+- **스레드**: 실행 전후 44개로 동일, 어떤 이름도 이전보다 늘지 않음.
+
+**판정:** `host/install.c`의 설치 진입점이, 앱이 실제 설치에 쓰는 전체 경로(usbmuxd·세션·연결 정책·정리) 그대로, 실기기에서 Apple의 실제 서명 서버로부터 AP·LocalPolicy·RecoveryOS root ticket 3건에 대한 응답을 받고 `idevicerestore.c` 자신의 기준(`FLAG_SHSHONLY`, `client->tss` non-NULL)으로 성공 처리된 뒤 깨끗이 정리됨을 실기기에서 확인했다. §3.1·§3.2의 독립형 프로브(`tss_probe_core.c`)가 손수 구성한 요청으로 확인한 것과 같은 결론을, 이번에는 실제 프로덕션 경로·실제 판정 기준으로 한 번 더 확인한 것이다. 다만 이것은 복원이 아니다 — §3의 한계(LocalPolicy·RecoveryOS 응답 안의 티켓 필드 유효성은 여전히 미확인, libtatsu에 전용 추출 함수 없음)는 그대로 적용되고, 서명된 이미지 전송·DFU 재접속·RecoveryOS 부팅·실제 복원 중 어느 것도 이 결과로 보장되지 않는다 — §2의 단계 2 이후는 전부 별개로 승인·시험해야 한다(§9).
 
 ## 4. DFU 재접속
 
@@ -257,7 +275,7 @@ iBSS 전송이 끝났다는 사실만으로 다음 단계로 가지 않는다.
 
 ## 9. 별도 승인이 필요한 항목
 
-- [x] 실제 Apple TSS 요청 — AP(메인) 티켓 발급 확인(build 149, §3.1), **LocalPolicy·RecoveryOS root ticket 응답 수락 확인**(build 150, 단발 1회, §3.2). 단, LocalPolicy·RecoveryOS는 "응답(plist) 받음"까지만 — 응답 안의 티켓 필드 유효성은 [ ] 미검증(libtatsu에 전용 추출 함수 없음, §3 참조)
+- [x] 실제 Apple TSS 요청 — AP(메인) 티켓 발급 확인(build 149, §3.1), **LocalPolicy·RecoveryOS root ticket 응답 수락 확인**(build 150, 단발 1회, §3.2), **실제 설치 진입점 전체 경로(`hv_install_start`)로도 동일 확인**(G2, build 152, 단발 1회, §3.3 — `idevicerestore.c` 자신의 판정 기준, `tss_probe_core.c`의 손수 구성 요청이 아님). 단, 세 빌드 모두 LocalPolicy·RecoveryOS는 "응답(plist) 받음"까지만 — 응답 안의 티켓 필드 유효성은 [ ] 미검증(libtatsu에 전용 추출 함수 없음, §3 참조)
 - [ ] 서명 iBSS/iBEC 및 후속 이미지 전송, `lpolrestore` 등 장치 상태 변경 명령
 - [ ] 복원 실행 자체 (ASR, 루트 스트리밍)와 설치 디스크 쓰기, `macos_disk.img` 실제 생성
 - [x] 벤더링 소스 변경 (승인됨, 반영됨): `ipsw_open` fd 누수, usbmuxd 종료, DFU 핸들 정리, URLAsset·FDR 연결 정책 훅, SHSHONLY 티켓 파일 쓰기 차단 스위치

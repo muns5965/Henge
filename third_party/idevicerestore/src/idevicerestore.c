@@ -1586,6 +1586,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
+#ifdef HV_STOP_AFTER_RECOVERYOS_ENTRY
+	int hv_c_mode_before = (int)(client->mode - idevicerestore_modes);
+#endif
 	// now finally do the magic to put the device into restore mode
 	if (client->mode == MODE_RECOVERY) {
 		if (recovery_enter_restore(client, build_identity) < 0) {
@@ -1614,6 +1617,27 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		}
 		mutex_unlock(&client->device_event_mutex);
 	}
+
+#ifdef HV_STOP_AFTER_RECOVERYOS_ENTRY
+	/* Henge test mode "stop C" (see hv_stop.h): report and return right after the device is confirmed in MODE_RESTORE -- i.e. right after
+	   recovery_enter_restore() sent AppleLogo/the components iBoot loads/the restore ramdisk/the device tree/(SEP firmware)/the kernelcache, the device
+	   disconnected from Recovery and reconnected running that ramdisk, and the wait above (if it was needed) confirmed MODE_RESTORE -- but BEFORE
+	   "About to restore device..." and restore_device() (the actual ASR/FDR disk-writing restore). */
+	if (client->flags & FLAG_STOP_AFTER_RECOVERYOS_ENTRY) {
+		struct hv_stop_c_info hv_info;
+		memset(&hv_info, 0, sizeof(hv_info));
+		hv_info.hardware_model = client->device->hardware_model;
+		hv_info.product_type = client->device->product_type;
+		hv_info.mode_before = hv_c_mode_before;
+		hv_info.mode_after = (int)(client->mode - idevicerestore_modes);
+		hv_info.tss_enabled = tss_enabled;
+		hv_info.macos_variant = client->macos_variant != NULL;
+		if (hv_stop_c_hook) hv_stop_c_hook(&hv_info);
+		if (client->tss)
+			plist_free(client->tss);
+		return HV_STOP_AFTER_RECOVERYOS_ENTRY_RC;
+	}
+#endif
 
 	// device is finally in restore mode, let's do this
 	if (client->mode == MODE_RESTORE) {
@@ -1662,6 +1686,10 @@ void (*hv_stop_a_hook)(const struct hv_stop_a_info *info) = NULL;
 
 #ifdef HV_STOP_AFTER_DFU_RECOVERY
 void (*hv_stop_b_hook)(const struct hv_stop_b_info *info) = NULL;
+#endif
+
+#ifdef HV_STOP_AFTER_RECOVERYOS_ENTRY
+void (*hv_stop_c_hook)(const struct hv_stop_c_info *info) = NULL;
 #endif
 
 /* Henge: 1 = FLAG_SHSHONLY must not write the ticket to a file (this app keeps no ticket on disk). Set by the host before the tool starts. */

@@ -45,4 +45,25 @@ struct hv_stop_b_info {
 };
 extern void (*hv_stop_b_hook)(const struct hv_stop_b_info *info);
 #endif
+
+/* Henge, Android test mode only (compiled in only with -DHV_STOP_AFTER_RECOVERYOS_ENTRY, which no shipped iOS build and no install path sets).
+   "Stop C": idevicerestore_start returns right after the device has been confirmed in MODE_RESTORE -- i.e. right after recovery_enter_restore() has sent
+   AppleLogo, the components iBoot loads, the restore ramdisk, the device tree, (SEP firmware, if present) and the kernelcache, the device disconnected from
+   Recovery and reconnected running that ramdisk (RecoveryOS), and idevicerestore's own wait for MODE_RESTORE succeeded -- but BEFORE "About to restore
+   device..." and restore_device() (the actual ASR/FDR disk-writing restore). Like stop B, every component sent up to this point was already signed by the
+   TSS tickets fetched earlier in this same call and extracted from the already-downloaded IPSW: this step asks for no new signature and reaches no new
+   network host. It reports what it found through hv_stop_c_hook and returns HV_STOP_AFTER_RECOVERYOS_ENTRY_RC, a value no other exit of the function uses. */
+#ifdef HV_STOP_AFTER_RECOVERYOS_ENTRY
+#define FLAG_STOP_AFTER_RECOVERYOS_ENTRY (1 << 22)
+#define HV_STOP_AFTER_RECOVERYOS_ENTRY_RC 219
+struct hv_stop_c_info {
+	const char *hardware_model;
+	const char *product_type;
+	int mode_before;      /* client->mode's index into idevicerestore_modes[] right before this step started (3 = RECOVERY) */
+	int mode_after;       /* same, now; expected 4 (RESTORE) on success */
+	int tss_enabled;
+	int macos_variant;    /* a macOS recovery-OS variant exists for this model */
+};
+extern void (*hv_stop_c_hook)(const struct hv_stop_c_info *info);
+#endif
 #endif

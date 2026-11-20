@@ -209,6 +209,25 @@ static int write_bmp(const char *path, const uint8_t *bgra, int w, int h) {
     return 0;
 }
 
+static const char *screen_source_name(int s) {
+    return s == HV_SCREEN_PVG ? "PVG_FRAME" : s == HV_SCREEN_BOOT_ARGS ? "BOOT_ARGS_FRAME" : "NO_FRAME";
+}
+
+/* G0-G6 diagnostic only: never gates their own pass/fail table (install_gN.c's), and never gated by it either --
+   called whether or not the run passed. Must run BEFORE hv_vm_stop() tears the machine down: once stopped, neither
+   the PVG frame nor the RAM boot_args framebuffer is guaranteed still readable. Separate from --snapshot's own
+   normal-run-path handling further below, which this does not touch. */
+static void g_capture_screen(const char *snap, const char *tag) {
+    if (!snap) { printf("vmrun %s screen: --snapshot not given, skipped\n", tag); return; }
+    enum { W = 640, H = 400 };
+    static uint8_t px[W * H * 4];
+    int src = HV_SCREEN_NONE;
+    int ok = hv_vm_capture_screen(px, W, H, &src) == 0;
+    if (ok && write_bmp(snap, px, W, H) == 0) printf("vmrun %s screen: %s, written %s\n", tag, screen_source_name(src), snap);
+    else printf("vmrun %s screen: %s, nothing written\n", tag, screen_source_name(src));
+    fflush(stdout);
+}
+
 /* A new auxiliary storage file the way Henge's iOS app makes one (ios/Henge/Native/henge-vm.c): a 24-byte header, zeros to 32 MB + 16 KB. */
 static int make_aux(const char *path) {
     static const unsigned char header[24] = {0xa5, 0xd5, 0xb3, 0xfe, 0x97, 0xad, 0x1d, 0x27, 1, 0, 0, 0, 0, 0, 0, 0,
@@ -499,6 +518,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g0_wait(120000) : 1;
         int failed = hv_g0_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g0 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g0");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg = now();
         while (!EXITED() && now() - tsg < 5.0) usleep(10000);
@@ -513,6 +533,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g2_wait(120000) : 1;
         int failed = hv_g2_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g2 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g2");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg2 = now();
         while (!EXITED() && now() - tsg2 < 5.0) usleep(10000);
@@ -527,6 +548,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g3_wait(120000) : 1;
         int failed = hv_g3_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g3 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g3");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg3 = now();
         while (!EXITED() && now() - tsg3 < 5.0) usleep(10000);
@@ -543,6 +565,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g4_wait(380000) : 1;
         int failed = hv_g4_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g4 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g4");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg4 = now();
         while (!EXITED() && now() - tsg4 < 5.0) usleep(10000);
@@ -559,6 +582,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g5_wait(400000) : 1;
         int failed = hv_g5_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g5 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g5");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg5 = now();
         while (!EXITED() && now() - tsg5 < 5.0) usleep(10000);
@@ -575,6 +599,7 @@ int main(int argc, char **argv) {
         int w = started ? hv_g6_wait(460000) : 1;
         int failed = hv_g6_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g6 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
+        g_capture_screen(snap, "g6");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg6 = now();
         while (!EXITED() && now() - tsg6 < 5.0) usleep(10000);

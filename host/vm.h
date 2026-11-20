@@ -122,4 +122,18 @@ int hv_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
 int hv_vm_snapshot(uint8_t *bgra, int width, int height);
 
+/* Which of the two independent sources (if either) produced the frame hv_vm_capture_screen below copied out:
+   HV_SCREEN_NONE neither has a frame yet; HV_SCREEN_PVG the GPU's own snapshot (hv_vm_snapshot's path, a
+   Metal-rendered frame); HV_SCREEN_BOOT_ARGS the raw framebuffer XNU's boot_args points at in guest RAM (the
+   Apple logo and progress bar while booting/installing, before any GPU driver takes the display -- what
+   hv_vm_boot_display's own fallback finds). Diagnostic only: this classification is informational and gates
+   nothing on its own. */
+enum { HV_SCREEN_NONE = 0, HV_SCREEN_PVG = 1, HV_SCREEN_BOOT_ARGS = 2 };
+/* Tries hv_vm_snapshot (PVG) first; only if that has nothing yet, falls back to hv_vm_boot_display's raw
+   framebuffer, copied into bgra cropped or zero-padded to width x height (never both; the two are mutually
+   exclusive sources of the same picture). *source reports which one (if either) actually supplied the frame.
+   Changes neither hv_vm_snapshot's nor hv_vm_boot_display's own behavior -- this only combines their existing
+   results. */
+int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source);
+
 #endif

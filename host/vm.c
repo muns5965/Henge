@@ -558,3 +558,23 @@ int hv_vm_snapshot(uint8_t *bgra, int width, int height) {
     if (!pvg || width <= 0 || height <= 0) return -1;
     return hv_pvg_lite_snapshot(pvg, bgra, (uint32_t)width, (uint32_t)height);
 }
+
+int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source) {
+    if (source) *source = HV_SCREEN_NONE;
+    if (width <= 0 || height <= 0) return -1;
+    if (hv_vm_snapshot(bgra, width, height) == 0) {
+        if (source) *source = HV_SCREEN_PVG;
+        return 0;
+    }
+    HvBootDisplay d;
+    if (hv_vm_boot_display(&d) != 0 || !d.pixels || !d.width || !d.height || !d.stride) return -1;
+    uint32_t cw = d.width < (uint32_t)width ? d.width : (uint32_t)width;
+    uint32_t ch = d.height < (uint32_t)height ? d.height : (uint32_t)height;
+    for (uint32_t y = 0; y < ch; y++) memcpy(bgra + (size_t)y * width * 4, d.pixels + (size_t)y * d.stride, (size_t)cw * 4);
+    if (ch < (uint32_t)height) memset(bgra + (size_t)ch * width * 4, 0, (size_t)(height - ch) * (size_t)width * 4);
+    /* hv_vm_boot_display tries the PVG frame accessor before its own boot_args RAM scan, so a pixels pointer
+       inside guest RAM proves this came from that scan rather than the GPU frame (board.ram/ram_size are the
+       same bounds the scan itself checked against, just above). */
+    if (source) *source = (d.pixels >= board.ram && d.pixels < board.ram + board.ram_size) ? HV_SCREEN_BOOT_ARGS : HV_SCREEN_PVG;
+    return 0;
+}

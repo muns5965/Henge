@@ -84,14 +84,22 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
    above): the previous round (0x10D150/0x10D2B8) already confirmed 0x10C51C returns a nonzero/failure value
    (0xFFFFFFFD observed) on this normal, non-installer boot. host/vmrun.c's own HV_DIAG_PROBE_CALLER mechanism
    (same file layout, same two-point idea) already narrowed 0x10C51C to a shared BDIF-device validation routine
-   called from three known sites, compared at 0x10C590 ("cmp w0, w24"; the mismatch path there is documented to
-   return 0x40200003 -- NOT the 0xFFFFFFFD actually observed here, so that specific mismatch branch is not yet
-   confirmed as the one taken on THIS boot path). This round watches 0x10C51C itself (point A: the routine's
-   entry, x4 the caller's expected device type among other args) and 0x10C590 (point B: right before the compare)
-   to get that trace directly from a real no-USB-channel boot (devices/vmapple.c only creates b->vusb for an
-   installer boot or HV_USB_ON_NORMAL, and this binary forces installer=0 and strips every HV_* variable -- see
-   the top-of-file comment -- so b->usb is NULL here, and devices/bdif.c's bdif_read() falls through to its
-   generic REG_CFG=2 default instead of USB_DEVICE_TYPE=0x1a01 for exactly that reason). Printed directly (not
+   called from three known sites, compared at 0x10C590 ("cmp w0, w24"). Independent Capstone disassembly of the
+   actual ROM bytes at 0x10C51C (a 512-byte dump read back via the app's own read-only "ROM 구간 읽기" feature)
+   found 0x10C590's mismatch path returns -3 (0xFFFFFFFD) at 0x10C6B8 -- matching, not contradicting, the value
+   observed on this boot path; an older host/vmrun.c comment's "0x40200003" for this path does not match the
+   disassembly and is superseded here. This round watches 0x10C51C itself (point A: the routine's entry, x4 the
+   caller's expected device type among other args) and 0x10C590 (point B: right before the compare) to get that
+   trace directly from a real no-USB-channel boot (devices/vmapple.c only creates b->vusb for an installer boot
+   or HV_USB_ON_NORMAL, and this binary forces installer=0 and strips every HV_* variable -- see the top-of-file
+   comment -- so b->usb is NULL here, and devices/bdif.c's bdif_read() falls through to its generic REG_CFG=2
+   default instead of USB_DEVICE_TYPE=0x1a01 for exactly that reason). A real-device capture (this binary, 2026-
+   11-20) recorded three hits: two at point B with expected(w24)=0x2 actual(w0)=0x2 mismatch=0 (lr=0x10CBE0, an
+   unrelated storage-type check that passes), and one with expected(w24)=0x1A01 actual(w0)=0x2 mismatch=1
+   (lr=0x10D150 -- the same call site already tied to the observed SYSTEM_RESET above). This directly confirms
+   the USB-device-type mismatch as the cause of the 0x10C51C/0x10C590/0xFFFFFFFD failure on this boot path: the
+   ROM's USB-type probe expects USB_DEVICE_TYPE (0x1a01) and gets bdif.c's no-USB-channel fallback (2) instead.
+   It does not by itself establish what, if anything, happens after that mismatch is fixed. Printed directly (not
    folded into the generic HvPanicHit x0-only reporting below, which can't hold the extra registers this needs)
    so the two points are fully legible without a separate accessor. */
 static void panic_probe_hook(HvCpu *cpu) {

@@ -80,13 +80,41 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
    here (core/cpu.h already documents them as "raw and uninterpreted... specific to the ROM build under
    investigation"): at 0x10D150 .x0 holds w0, masked to 32 bits (the cbz's own tested register, 32-bit); at
    0x10D2B8 .x0 holds the full 64-bit x0 (that cbz tests the full register, sf=1). */
+/* [2026-11-20 round] Retargeted again (same single stop_pc/stop_pc2/stop_hook slot as before -- see the comment
+   above): the previous round (0x10D150/0x10D2B8) already confirmed 0x10C51C returns a nonzero/failure value
+   (0xFFFFFFFD observed) on this normal, non-installer boot. host/vmrun.c's own HV_DIAG_PROBE_CALLER mechanism
+   (same file layout, same two-point idea) already narrowed 0x10C51C to a shared BDIF-device validation routine
+   called from three known sites, compared at 0x10C590 ("cmp w0, w24"; the mismatch path there is documented to
+   return 0x40200003 -- NOT the 0xFFFFFFFD actually observed here, so that specific mismatch branch is not yet
+   confirmed as the one taken on THIS boot path). This round watches 0x10C51C itself (point A: the routine's
+   entry, x4 the caller's expected device type among other args) and 0x10C590 (point B: right before the compare)
+   to get that trace directly from a real no-USB-channel boot (devices/vmapple.c only creates b->vusb for an
+   installer boot or HV_USB_ON_NORMAL, and this binary forces installer=0 and strips every HV_* variable -- see
+   the top-of-file comment -- so b->usb is NULL here, and devices/bdif.c's bdif_read() falls through to its
+   generic REG_CFG=2 default instead of USB_DEVICE_TYPE=0x1a01 for exactly that reason). Printed directly (not
+   folded into the generic HvPanicHit x0-only reporting below, which can't hold the extra registers this needs)
+   so the two points are fully legible without a separate accessor. */
 static void panic_probe_hook(HvCpu *cpu) {
     HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .sp = cpu->sp };
-    if (cpu->pc == 0x10d150ull) {
-        hit.x0 = cpu->x[0] & 0xffffffffull; /* w0: 0x10C51C's return value, tested by cbz w0,#0,0x10D184 */
+    if (cpu->pc == 0x10c51cull) {
+        /* Point A, 0x10C51C: the validation routine's entry. x4 is the caller's expected device type (not
+           compared until point B); x5/x6 are its other options; lr says which of the three known call sites
+           reached it this time. */
+        hit.x0 = cpu->x[0];
+        printf("ui_runner_vm: boot-branch probe A pc=10c51c lr=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx\n",
+               (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0], (unsigned long long)cpu->x[1],
+               (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], (unsigned long long)cpu->x[4],
+               (unsigned long long)cpu->x[5], (unsigned long long)cpu->x[6]);
     } else {
-        hit.x0 = cpu->x[0]; /* x0: 0x104E04's return value, tested by cbz x0,#0,0x10D2E0 (64-bit test) */
+        /* Point B, 0x10C590: right before "cmp w0, w24" executes, so both registers still hold exactly what the
+           ROM is about to compare -- neither this hook nor the engine touches them first. 32-bit compare, so the
+           mismatch test mirrors that width rather than the full 64-bit x[]. */
+        uint32_t actual = (uint32_t)cpu->x[0], expected = (uint32_t)cpu->x[24];
+        hit.x0 = actual;
+        printf("ui_runner_vm: boot-branch probe B pc=10c590 x21=%#llx actual(w0)=%#x expected(w24)=%#x mismatch=%d\n",
+               (unsigned long long)cpu->x[21], actual, expected, actual != expected);
     }
+    fflush(stdout);
     if (cpu->panic_hits == 0) cpu->panic_first = hit;
     cpu->panic_last = hit;
     if (cpu->panic_hits != UINT32_MAX) cpu->panic_hits++; /* saturate, never wrap */
@@ -97,8 +125,8 @@ static void panic_probe_hook(HvCpu *cpu) {
    those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
    is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
    diagnostic. */
-#define HV_PANIC_PROBE_PC1 0x10d150ull /* cbz w0, #0, 0x10D184 -- 0x10C51C's return value */
-#define HV_PANIC_PROBE_PC2 0x10d2b8ull /* cbz x0, #0, 0x10D2E0 -- 0x104E04's return value */
+#define HV_PANIC_PROBE_PC1 0x10c51cull /* point A: the shared BDIF-device validation routine's entry */
+#define HV_PANIC_PROBE_PC2 0x10c590ull /* point B: "cmp w0, w24" right before its type-mismatch check */
 static void panic_probe_install(void) {
     HvMachine *vm = hv_vm_machine();
     if (vm->stop_hook) {
@@ -108,7 +136,7 @@ static void panic_probe_install(void) {
     vm->stop_pc = HV_PANIC_PROBE_PC1;
     vm->stop_pc2 = HV_PANIC_PROBE_PC2;
     vm->stop_hook = panic_probe_hook;
-    printf("ui_runner_vm: boot-branch probe installed at %#llx (cbz w0, 0x10C51C's return) / %#llx (cbz x0, 0x104E04's return)\n",
+    printf("ui_runner_vm: boot-branch probe installed at %#llx (0x10C51C entry) / %#llx (0x10C590 compare)\n",
            (unsigned long long)HV_PANIC_PROBE_PC1, (unsigned long long)HV_PANIC_PROBE_PC2);
 }
 

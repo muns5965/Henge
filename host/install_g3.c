@@ -186,6 +186,9 @@ static void hex(const uint8_t *b, char *out) { for (int i = 0; i < 8; i++) sprin
 /* ---- state ---- */
 static FileId g_disk0, g_aux0;
 static int g_began, g_started, g_online_ok, g_att0, g_ctrl0, g_data0, g_waited = -2, g_port;
+static int g_data_ok0, g_data_bad0;
+static uint64_t g_data_bytes0;
+static unsigned g_hist0[4][8]; /* hv_libusb_ctrl_hist() baseline, taken at the same moment as g_ctrl0: never evicted, so it survives past HV_CTRL_LOG_MAX */
 static HvNetStats g_ns0;
 
 #define MAXTH 64
@@ -278,6 +281,10 @@ int hv_g3_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, uint64_
     g_online_ok = 1;
     g_ctrl0 = hv_libusb_ctrl_count();
     g_data0 = hv_libusb_data_transfer_count();
+    g_data_ok0 = hv_libusb_data_transfer_ok_count();
+    g_data_bad0 = hv_libusb_data_transfer_bad_count();
+    g_data_bytes0 = hv_libusb_data_transfer_bytes();
+    for (int t = 0; t < 4; t++) for (int b = 0; b < 8; b++) g_hist0[t][b] = hv_libusb_ctrl_hist(t, b);
     th_snap(&g_th0);
     hv_net_guard_stats(&g_ns0);
     g_port = 27100 + (int)(getpid() % 800);   /* the same rule as host/install.c */
@@ -323,7 +330,7 @@ static const char *mode_name(int idx) { static const char *n[] = {"unknown", "wt
 /* ---- the table ---- */
 static int g_failed, g_meta;
 static void row(FILE *out, const char *name, int ok, const char *fmt, ...) {
-    char d[900];
+    char d[1400];
     va_list ap; va_start(ap, fmt); vsnprintf(d, sizeof d, fmt, ap); va_end(ap);
     fprintf(out, "install g3: %-16s %-6s %s\n", name, ok ? "ok" : "FAILED", d);
     if (!ok) g_failed++;
@@ -366,18 +373,35 @@ int hv_g3_finish(FILE *out, const char *disk, const char *aux) {
     int den = ns.denied - g_ns0.denied, allowed = ns.allowed - g_ns0.allowed;
     row(out, "connections", den == 0 && ns.url_attempts == 0, "connection guard: %d attempt(s), %d allowed (the private usbmuxd listener and the three approved TSS hosts), %d refused, URLAsset %d; any refusal means something besides the private usbmuxd and the three TSS hosts was reached for, which is not a pass (a direct connect() elsewhere in the process is not covered)", ns.attempts - g_ns0.attempts, allowed, den, ns.url_attempts);
     {
-        int c1 = hv_libusb_ctrl_count(), d1 = hv_libusb_data_transfer_count();
-        int forbidden = 0, lost = 0, getstatus = 0, dnload = 0, total = c1 - g_ctrl0;
-        for (int k = g_ctrl0; k < c1; k++) {
-            HvCtrlRecord r;
-            if (!hv_libusb_ctrl_get(k, &r)) { lost++; continue; }
-            uint8_t type = (r.bmRequestType >> 5) & 3;
-            if (type == 2) forbidden++;                                  /* vendor-class: never expected at this stage */
-            else if (type == 1 && r.bRequest == 1) dnload++;              /* DFU DNLOAD: the personalized firmware itself -- this is the one thing G0/G1/G2 forbid and G3 requires */
-            else if (type == 1 && (r.bRequest == 0 || r.bRequest == 2 || r.bRequest == 4 || r.bRequest == 6)) forbidden++;   /* detach/upload/clear-status/abort: not part of a clean download */
-            else if (type == 1 && r.bRequest == 3) getstatus++;
-        }
-        row(out, "device_requests", !forbidden && !lost && dnload >= 1 && d1 == g_data0, "%d control request(s) (%d DFU DNLOAD, %d DFU GET_STATUS), %d forbidden (detach/upload/clear-status/abort/vendor), %d no longer in the log, %d bulk/interrupt transfer(s) (must be 0); unlike G0/G1/G2, dnload must be >=1 here -- this stage's whole point is that personalized firmware WAS sent", total, dnload, getstatus, forbidden, lost, d1 - g_data0);
+        /* Classification by (bmRequestType's type bits, bRequest), read from hv_libusb_ctrl_hist() -- a cumulative count that is never evicted, unlike the
+           HV_CTRL_LOG_MAX ring (third_party/libirecovery's irecv_send_buffer() makes far more requests sending four components (iBSS, the Ap,LocalPolicy
+           ticket, RestoreLogo, iBEC) than G0/G1/G2 ever did, so the ring alone undercounts past that limit; build 154's real-device run made 285). Source-
+           confirmed against third_party/libirecovery/src/libirecovery.c's irecv_send_buffer(): DFU-mode sends check state first (GETSTATE, class/5) and
+           conditionally issue CLRSTATUS (class/4) or ABORT (class/6) to recover from an unexpected one -- not a sign of trouble, so no longer forbidden;
+           entering recovery mode for each of the three components sent there (Ap,LocalPolicy/RestoreLogo/iBEC) issues exactly one vendor-class handshake
+           (0x41, bRequest 0) before its bulk transfer -- the only vendor-class call this path ever makes, so only vendor-class calls with a DIFFERENT
+           bRequest remain forbidden. DETACH (class/0) and UPLOAD (class/2) are never issued by this path (only by the limera1n exploit, HAVE_LIMERA1N,
+           which this build does not define) and remain forbidden; standard-type requests (type 0) are ordinary USB re-enumeration after the DFU<->Recovery
+           disconnect/reconnect and are counted but not forbidden. */
+        unsigned h[4][8];
+        for (int t = 0; t < 4; t++) for (int b = 0; b < 8; b++) h[t][b] = hv_libusb_ctrl_hist(t, b) - g_hist0[t][b];
+        int dnload = (int)h[1][1], getstatus = (int)h[1][3], getstate = (int)h[1][5], reset = (int)h[1][4] + (int)h[1][6], handshake = (int)h[2][0], enumreq = 0, forbidden = 0;
+        for (int b = 0; b < 8; b++) enumreq += (int)h[0][b];
+        forbidden += (int)h[1][0] + (int)h[1][2] + (int)h[1][7];                 /* detach, upload, class-type "7 or more": none expected */
+        for (int b = 1; b < 8; b++) forbidden += (int)h[2][b];                   /* any vendor-class call other than the one handshake (breq 0) */
+        for (int b = 0; b < 8; b++) forbidden += (int)h[3][b];                   /* reserved request-type bits: never expected */
+        int c1 = hv_libusb_ctrl_count(), total = c1 - g_ctrl0, lost = 0;
+        for (int k = g_ctrl0; k < c1; k++) { HvCtrlRecord r; if (!hv_libusb_ctrl_get(k, &r)) lost++; }
+        int d_sub = hv_libusb_data_transfer_count() - g_data0;
+        int d_ok = hv_libusb_data_transfer_ok_count() - g_data_ok0;
+        int d_bad = hv_libusb_data_transfer_bad_count() - g_data_bad0;
+        row(out, "device_requests", !forbidden && dnload >= 1 && d_bad == 0,
+            "%d control request(s) total (%d no longer in the detail ring -- the ring only holds the last %d; the counts below come from the never-evicted histogram instead, so this does not affect them): "
+            "%d DFU DNLOAD (must be >=1: this stage's whole point is that personalized firmware WAS sent), %d DFU GET_STATUS, %d DFU GET_STATE, %d DFU CLRSTATUS/ABORT "
+            "(libirecovery's own per-component state recovery, conditional -- not forbidden), %d Recovery-mode vendor handshake (libirecovery's one call before each bulk send), "
+            "%d standard/enumeration request(s), %d forbidden (detach/upload/any other vendor call/reserved type -- none of these are issued by this call path); "
+            "%d bulk/interrupt transfer(s) submitted (%d completed OK, %llu bytes, %d completed with a non-success status -- must be 0; a bulk transfer is now expected here, so only a failed one counts against the row)",
+            total, lost, HV_CTRL_LOG_MAX, dnload, getstatus, getstate, reset, handshake, enumreq, forbidden, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad);
     }
     FileId d1, a1;
     file_id(disk, &d1); file_id(aux, &a1);

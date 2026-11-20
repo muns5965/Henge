@@ -61,6 +61,16 @@ int hv_libusb_open_handles(void);          /* device handles opened and not yet 
 int hv_libusb_handles_opened_total(void);  /* handles opened so far */
 int hv_libusb_hotplug_live(void);          /* hotplug callbacks registered and not yet deregistered (the restore tool's device-event subscription) */
 int hv_libusb_ctrl_get(int k, HvCtrlRecord *out); /* 1 if entry k is still held */
+/* A cumulative count of every control request made so far, by (bmRequestType's type bits 0-3) and bRequest (0-6, or 7 for "7 or more"). Unlike the ring
+   above, this is never evicted: a caller that wants a total for a request shape across a run longer than HV_CTRL_LOG_MAX reads this instead of the ring. It
+   says nothing about a request's outcome, direction, interface or value/index (only the ring gives those, and only for requests still in it). */
+unsigned hv_libusb_ctrl_hist(int type, int breq);
+/* Outcome of every non-control (bulk/interrupt/isochronous) transfer once it completes: the first two never shrink the other's count (a transfer completes
+   exactly one way), and the byte count only grows for an OK completion. hv_libusb_data_transfer_count() (above) is submissions, which can be ahead of these
+   two by the number still in flight. */
+int hv_libusb_data_transfer_ok_count(void);
+int hv_libusb_data_transfer_bad_count(void);   /* completed with a status other than LIBUSB_TRANSFER_COMPLETED (error, cancel, timeout, stall, no device) */
+uint64_t hv_libusb_data_transfer_bytes(void);  /* total actual_length of every OK completion */
 
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */
 void hv_usb_probe_start(HvVirtioUsb *d);

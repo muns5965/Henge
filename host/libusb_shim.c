@@ -198,9 +198,20 @@ static Xfer *g_active[32]; /* the transfer each worker is running, for cancel */
 
 static void sync_cb(struct libusb_transfer *t);
 
+static int g_data_xfers_ok, g_data_xfers_bad; /* non-control transfers completed, by outcome (atomic) */
+static uint64_t g_data_bytes_ok; /* actual_length summed over every OK completion (atomic) */
+
 static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
     struct libusb_transfer *t = x->t;
     struct libusb_device *dv = x->dev;
+    if (t->type != LIBUSB_TRANSFER_TYPE_CONTROL) {
+        if (st == LIBUSB_TRANSFER_COMPLETED) {
+            __atomic_add_fetch(&g_data_xfers_ok, 1, __ATOMIC_ACQ_REL);
+            __atomic_add_fetch(&g_data_bytes_ok, (uint64_t)(actual > 0 ? actual : 0), __ATOMIC_ACQ_REL);
+        } else {
+            __atomic_add_fetch(&g_data_xfers_bad, 1, __ATOMIC_ACQ_REL);
+        }
+    }
     x->dev = NULL;
     t->status = st;
     t->actual_length = actual;
@@ -402,6 +413,9 @@ void libusb_free_transfer(struct libusb_transfer *t) {
 
 static int g_data_xfers; /* non-control transfers submitted (atomic): lets a probe say that no data was sent */
 int hv_libusb_data_transfer_count(void) { return __atomic_load_n(&g_data_xfers, __ATOMIC_ACQUIRE); }
+int hv_libusb_data_transfer_ok_count(void) { return __atomic_load_n(&g_data_xfers_ok, __ATOMIC_ACQUIRE); }
+int hv_libusb_data_transfer_bad_count(void) { return __atomic_load_n(&g_data_xfers_bad, __ATOMIC_ACQUIRE); }
+uint64_t hv_libusb_data_transfer_bytes(void) { return __atomic_load_n(&g_data_bytes_ok, __ATOMIC_ACQUIRE); }
 
 int libusb_submit_transfer(struct libusb_transfer *t) {
     if (t->type != LIBUSB_TRANSFER_TYPE_CONTROL) __atomic_add_fetch(&g_data_xfers, 1, __ATOMIC_ACQ_REL);
@@ -557,6 +571,7 @@ static int sync_xfer(struct libusb_transfer *t) {
    libirecovery made, in which order, and what each returned. The numbers also appear in the HV_LIBUSB_LOG lines, next to the virtio-usb lines. */
 static HvCtrlRecord g_ctrl[HV_CTRL_LOG_MAX];
 static unsigned g_ctrl_n; /* total recorded; entry k lives in slot k % HV_CTRL_LOG_MAX */
+static unsigned g_ctrl_hist[4][8]; /* [type bits 0-3][bRequest 0-6, or 7 for "7 or more"]: never evicted, unlike the ring above */
 static pthread_mutex_t g_ctrl_mu = PTHREAD_MUTEX_INITIALIZER;
 
 int hv_libusb_ctrl_count(void) {
@@ -564,6 +579,13 @@ int hv_libusb_ctrl_count(void) {
     int n = (int)g_ctrl_n;
     pthread_mutex_unlock(&g_ctrl_mu);
     return n;
+}
+
+unsigned hv_libusb_ctrl_hist(int type, int breq) {
+    pthread_mutex_lock(&g_ctrl_mu);
+    unsigned v = g_ctrl_hist[type & 3][breq < 0 ? 0 : breq < 7 ? breq : 7];
+    pthread_mutex_unlock(&g_ctrl_mu);
+    return v;
 }
 
 int hv_libusb_ctrl_get(int k, HvCtrlRecord *out) {
@@ -582,6 +604,7 @@ int libusb_control_transfer(libusb_device_handle *h, uint8_t rt, uint8_t req, ui
     unsigned k = g_ctrl_n++;
     HvCtrlRecord *r = &g_ctrl[k % HV_CTRL_LOG_MAX];
     r->seq = (int)k, r->bmRequestType = rt, r->bRequest = req, r->wValue = val, r->wIndex = idx, r->wLength = len, r->result = 0, r->done = 0;
+    g_ctrl_hist[(rt >> 5) & 3][req < 7 ? req : 7]++;
     pthread_mutex_unlock(&g_ctrl_mu);
     if (g_log) fprintf(stderr, "libusb shim: ctrl#%u begin rt=%02x req=%02x value=%04x index=%04x length=%u\n", k, rt, req, val, idx, len);
     int res = ctrl_transfer(h, rt, req, val, idx, data, len, timeout);

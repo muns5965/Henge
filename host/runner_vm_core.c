@@ -150,6 +150,14 @@ int hv_runner_config_ok(const HvVmConfig *c, char *why, size_t cap) {
     if (c->ram_mb < 64 || c->ram_mb > 4096) BAD("RAM size out of range (64..4096 MB)");
     if (c->ncpus < 1 || c->ncpus > 4) BAD("CPU count out of range (1..4)");
     if (c->jit_bytes < ((size_t)16 << 20) || c->jit_bytes > ((size_t)768 << 20)) BAD("JIT size out of range (16..768 MB)");
+    /* [2026-11-21, explicitly approved] usb_on_normal_boot/usb_probe_on_normal_boot (host/vm.h) are host-only
+       diagnostic fields: hv_runner_make_config above leaves both at 0 for every caller, they are never copied
+       into the guest-visible cfg region, and neither loosens readonly_storage/no_net/installer checked above --
+       so they need no bound of their own. The one combination worth rejecting here is a caller that asks to
+       start host/usb_host.c's enumeration probe without the USB device port that gives it something to talk to:
+       devices/vmapple.c only creates board.vusb when usb_on_normal_boot (or run_installer1/2) is set, so a probe
+       request with the port left off would just never fire -- silently, which is worse than refusing it here. */
+    if (c->usb_probe_on_normal_boot && !c->usb_on_normal_boot) BAD("usb probe requested without the usb device port");
     if (why && cap) why[0] = 0;
     return 0;
 #undef BAD

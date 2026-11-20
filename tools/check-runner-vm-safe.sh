@@ -26,8 +26,16 @@ x=$(echo "$SYMS" | grep -E ' [UuTtWwVv] (socket|connect|bind|listen|accept|accep
 [ -z "$x" ] || { bad "network / process-start symbols:"; echo "$x"; }
 # 2
 # (restore_ only at the start of a name: enter.S has a local label Lrestore_host that is not the restore stack)
+# [2026-11-21] "libusb" here means host/libusb_shim.c specifically: the libusb-1.0 stand-in that libirecovery/
+# usbmuxd/idevicerestore link against for a REAL restore, and that stays unlinked from this binary either way.
+# It does NOT mean host/usb_host.c's hv_usb_probe_start() (a separate, non-destructive USB enumeration thread --
+# reset, GET_DESCRIPTOR, GET_STATUS, GET_CONFIGURATION, and conditionally DFU GET_STATE/GET_STATUS only; never
+# SET_CONFIGURATION, DNLOAD, ABORT or CLRSTATUS, per that file's own comments) is deliberately linked into every
+# vmrun_g0..g6 binary and, since D1/D2 (host/vm.h's usb_probe_on_normal_boot), into this one too -- its symbols
+# (hv_usb_probe_start, hv_usb_control, probe, ...) do not match any pattern below, by design, so this check
+# passes either way and says nothing about whether that probe is present.
 x=$(echo "$SYMS" | grep -Ei -e ' [A-Za-z] [A-Za-z_0-9]*(tss_|irecv|idevice|libusb|hv_install|hv_g0|hv_g1|curl_|mbedtls|slirp|hv_net_guard|hv_dnload|hv_urlasset)' -e ' [A-Za-z] (hv_)?restore_')
-[ -z "$x" ] || { bad "restore / TSS / USB-host / network code in the symbol table:"; echo "$x" | head; }
+[ -z "$x" ] || { bad "restore / TSS / libusb-passthrough / network code in the symbol table:"; echo "$x" | head; }
 # 3
 if strings "$B" | grep -q 'HV-TEST-FAKE-MACHINE'; then bad "the test-only fake machine is in this binary"; fi
 if strings "$B" | grep -Eq -- '--(installer|net|ipsw|ecid|seed|readonly|no-readonly|write|rw|dfu)\b'; then bad "the binary names an option that would loosen the settings"; fi
@@ -76,5 +84,5 @@ opts=$(grep -o '"--[a-z-]*"' $R | sort -u | tr -d '"' | tr '\n' ' ')
 if grep -nE '(^|[^a-z_])(setenv|putenv)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' > /dev/null; then bad "$R / $C set an environment variable"; fi
 if grep -nE '\b(system|popen|fork|exec[a-z]*|socket|connect|dlopen)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' | grep -v '^[^:]*:[0-9]*:.*\*/' > /dev/null; then bad "$R / $C call a process-start or network function"; fi
 
-[ $fail = 0 ] && echo "OK  VM runner (static): no network or process-start imports, no restore / TSS / USB-host / slirp code, safety fields set once in hv_runner_make_config and checked before hv_vm_create, accepted options as listed, no fake machine"
+[ $fail = 0 ] && echo "OK  VM runner (static): no network or process-start imports, no restore / TSS / libusb-passthrough / slirp code (the separate, non-destructive host/usb_host.c enumeration probe this binary may start is not covered by that -- see check 2's comment above), safety fields set once in hv_runner_make_config and checked before hv_vm_create, accepted options as listed, no fake machine"
 exit $fail

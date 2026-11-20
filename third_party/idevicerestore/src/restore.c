@@ -51,6 +51,7 @@
 #include <curl/curl.h>
 
 #include "idevicerestore.h"
+#include "hv_stop.h"
 #include "asr.h"
 #include "fdr.h"
 #include "fls.h"
@@ -5426,6 +5427,11 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	idevice_t device = NULL;
 	restored_client_t restore = NULL;
 	restored_error_t restore_error = RESTORE_E_SUCCESS;
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+	int hv_hwinfo_status = HV_INFO_FAILED;
+	int hv_saved_debug_status = HV_INFO_NOT_PROVIDED;
+	int hv_bbticket_present = 0;
+#endif
 #ifndef HAVE_REVERSE_PROXY
 	THREAD_T fdr_thread = THREAD_T_NULL;
 #endif
@@ -5445,6 +5451,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	device = client->restore->device;
 
 	restore_error = restored_query_value(restore, "HardwareInfo", &hwinfo);
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+	/* HardwareInfo is never legitimately absent from a real restored session (unlike SavedDebugInfo below), so it is tracked OK/FAILED only. */
+	hv_hwinfo_status = (restore_error == RESTORE_E_SUCCESS) ? HV_INFO_OK : HV_INFO_FAILED;
+#endif
 	if (restore_error == RESTORE_E_SUCCESS) {
 		uint64_t i = 0;
 		uint8_t b = 0;
@@ -5477,6 +5487,12 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 
 	restore_error = restored_query_value(restore, "SavedDebugInfo", &hwinfo);
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+	/* restored_query_value() (third_party/libimobiledevice/src/restore.c) returns RESTORE_E_PLIST_ERROR specifically when the device's answer parsed fine but
+	   had no entry for the requested key -- a device with no prior restore attempt legitimately has nothing to give here, so that one code (and only that
+	   one) is read as "not provided", never as a failure; any other non-success code is a real transport/communication failure. */
+	hv_saved_debug_status = (restore_error == RESTORE_E_SUCCESS) ? HV_INFO_OK : (restore_error == RESTORE_E_PLIST_ERROR) ? HV_INFO_NOT_PROVIDED : HV_INFO_FAILED;
+#endif
 	if (restore_error == RESTORE_E_SUCCESS) {
 		char* sval = NULL;
 
@@ -5508,7 +5524,34 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 
 	if (plist_dict_get_item(client->tss, "BBTicket")) {
 		client->restore->bbtss = plist_copy(client->tss);
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+		hv_bbticket_present = 1;
+#endif
 	}
+
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+	/* Henge test mode "stop D" (see hv_stop.h): return right after the restored handshake (service type + protocol version -- already confirmed inside
+	   restore_open_with_timeout() above; reaching this point is itself proof of that), the HardwareInfo/SavedDebugInfo queries and the conditional BBTicket
+	   copy -- but BEFORE FDR starts and BEFORE restored_start_restore() (the actual disk-writing restore). Every other return of this function frees
+	   client->restore via restore_client_free() right before returning (see the calls right before "restored_start_restore" failing and right after the
+	   restore loop ends, further down in this file) -- idevicerestore_client_release() never does this itself (it only frees the idevicerestore_client_t
+	   fields that do NOT include client->restore), so this stop point must do the same or leak the restored_client_t/idevice_t/BBTicket-copy it opened. */
+	if (client->flags & FLAG_STOP_AFTER_RESTORED_HANDSHAKE) {
+		struct hv_stop_d_info hv_info;
+		memset(&hv_info, 0, sizeof(hv_info));
+		hv_info.hardware_model = client->device->hardware_model;
+		hv_info.product_type = client->device->product_type;
+		hv_info.mode = (int)(client->mode - idevicerestore_modes);
+		hv_info.restored_protocol_version = client->restore->protocol_version;
+		hv_info.hwinfo_status = hv_hwinfo_status;
+		hv_info.saved_debug_status = hv_saved_debug_status;
+		hv_info.bbticket_present = hv_bbticket_present;
+		hv_info.tss_enabled = (client->tss != NULL);
+		if (hv_stop_d_hook) hv_stop_d_hook(&hv_info);
+		restore_client_free(client);
+		return HV_STOP_AFTER_RESTORED_HANDSHAKE_RC;
+	}
+#endif
 
 #ifdef HAVE_REVERSE_PROXY
 	logger(LL_INFO, "Starting Reverse Proxy\n");

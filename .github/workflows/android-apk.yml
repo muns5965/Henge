@@ -36,6 +36,7 @@ on:
       - tools/vmrun-install-g2-build.sh
       - tools/vmrun-install-g3-build.sh
       - tools/vmrun-install-g4-build.sh
+      - tools/vmrun-install-g5-build.sh
       - tools/ui-runner-vm-build.sh
       - tools/check-runner-vm-safe.sh
       - tools/check-c13-source.sh
@@ -134,6 +135,12 @@ jobs:
           # tickets, no new Apple request), stopping right after the device is confirmed in MODE_RESTORE (stop C), storage read-only. A diagnostic program, not an installer; optional.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-install-g4-build.sh build-engine build-restore \
             && cp build-engine/vmrun_g4 android/app/src/main/jniLibs/arm64-v8a/libvmrung4.so || echo "::warning::vmrun with the G4 diagnostic did not build; the APK goes without that button's program"
+          # vmrun with the install entry point and the G5 diagnostic in it (the "[G5] restored 핸드셰이크" button, --install-g5): host/install.c through G4's whole TSS + DFU->Recovery firmware
+          # transfer + RecoveryOS-entry stage and then into restore_device() itself (the restored handshake, the HardwareInfo/SavedDebugInfo queries and the conditional BBTicket copy -- all over
+          # the already-open local restored/usbmuxd link, no new Apple request), stopping right after (stop D), strictly before FDR starts or restored_start_restore() is ever called, storage
+          # read-only. A diagnostic program, not an installer; optional.
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/vmrun-install-g5-build.sh build-engine build-restore \
+            && cp build-engine/vmrun_g5 android/app/src/main/jniLibs/arm64-v8a/libvmrung5.so || echo "::warning::vmrun with the G5 diagnostic did not build; the APK goes without that button's program"
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
             && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"

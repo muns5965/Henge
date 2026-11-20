@@ -4,6 +4,7 @@
    hv_stop_a_hook and returns HV_STOP_BEFORE_ROOTFS_RC, a value no other exit of the function uses. */
 #ifndef HV_STOP_H
 #define HV_STOP_H
+#include <stdint.h>
 #ifdef HV_STOP_BEFORE_ROOTFS
 #include <plist/plist.h>
 #define FLAG_STOP_BEFORE_ROOTFS (1 << 20)
@@ -65,5 +66,40 @@ struct hv_stop_c_info {
 	int macos_variant;    /* a macOS recovery-OS variant exists for this model */
 };
 extern void (*hv_stop_c_hook)(const struct hv_stop_c_info *info);
+#endif
+
+/* Henge, Android test mode only (compiled in only with -DHV_STOP_AFTER_RESTORED_HANDSHAKE, which no shipped iOS build and no install path sets).
+   "Stop D": restore_device() returns right after it has opened the device's `restored` service (restore_open_with_timeout: confirms the response type is
+   "com.apple.mobile.restored" and records its protocol version -- reaching this stop point is itself proof that succeeded, since restore_device() returns
+   early otherwise), queried HardwareInfo and SavedDebugInfo (purely informational queries; restore_device() tolerates either failing without aborting), and
+   done the conditional, no-new-request BBTicket copy -- but BEFORE FDR starts and BEFORE restored_start_restore() (the actual disk-writing restore command).
+   Unlike stops A/B/C (which all return from idevicerestore_start itself, before restore_device() is ever called), stop D is the first point reached INSIDE
+   restore_device() -- the first point where Henge's test harness talks to a real restored session at all. Every byte exchanged to reach this point was
+   already signed by the TSS tickets fetched earlier in this same call, and the host never sends the actual restore-start command, so storage writes continue
+   to be refused exactly as before this point (the guest's own AUX write attempts, observed since Henge build 155, are unaffected and remain refused -- this is
+   not "no disk-related signal is sent at all", only "the host never sends the restore-start command"). It reports what it found through hv_stop_d_hook and
+   returns HV_STOP_AFTER_RESTORED_HANDSHAKE_RC from restore_device(), a value no other normal exit of that function uses. */
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+#define FLAG_STOP_AFTER_RESTORED_HANDSHAKE (1 << 23)
+#define HV_STOP_AFTER_RESTORED_HANDSHAKE_RC 220
+/* HardwareInfo is never legitimately "not provided" (restore_device() always queries it and a real restored session always has hardware info to give), so
+   it is tracked as OK/FAILED only. SavedDebugInfo legitimately has nothing to give on a device with no prior restore attempt, so it gets the third state. */
+enum { HV_INFO_NOT_PROVIDED = 0, HV_INFO_OK = 1, HV_INFO_FAILED = 2 };
+struct hv_stop_d_info {
+	const char *hardware_model;
+	const char *product_type;
+	int mode;                /* client->mode's index into idevicerestore_modes[] at this point (4 = RESTORE expected; restore_device() is only ever called
+	                             while client->mode == MODE_RESTORE, and nothing before stop D changes it, but this makes that a checkable fact rather than
+	                             an assumption about the source) */
+	uint64_t restored_protocol_version; /* client->restore->protocol_version, set by restore_open_with_timeout() once it confirmed the service type */
+	int hwinfo_status;       /* HV_INFO_OK or HV_INFO_FAILED: restored_query_value(restore, "HardwareInfo", ...) == RESTORE_E_SUCCESS or not */
+	int saved_debug_status;  /* HV_INFO_NOT_PROVIDED, HV_INFO_OK or HV_INFO_FAILED, from restored_query_value(restore, "SavedDebugInfo", ...): SUCCESS -> OK;
+	                             the device validly answered but had no SavedDebugInfo entry (RESTORE_E_PLIST_ERROR, from restored's own
+	                             QueryValue handling of a missing key) -> NOT_PROVIDED; anything else (a transport/communication error) -> FAILED */
+	int bbticket_present;     /* 1 if client->tss had a BBTicket entry (and client->restore->bbtss now holds a copy); 0 for a device/build with no baseband
+	                              (this project's virtual Mac, for instance) -- NOT required for stop D to count as reached */
+	int tss_enabled;
+};
+extern void (*hv_stop_d_hook)(const struct hv_stop_d_info *info);
 #endif
 #endif

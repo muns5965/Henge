@@ -1670,6 +1670,12 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	if (result == 0) {
 		logger(LL_INFO, "DONE\n");
 		idevicerestore_progress(client, RESTORE_NUM_STEPS-1, 1.0);
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+	} else if (result == HV_STOP_AFTER_RESTORED_HANDSHAKE_RC) {
+		/* Henge test mode "stop D" (see hv_stop.h): restore_device() returned right after the restored handshake/queries, strictly before any disk-writing
+		   step -- this is the intended, successful stop for this build, not a failure, so it gets no "RESTORE FAILED" line. */
+		logger(LL_INFO, "Henge test stop D reached (restored handshake confirmed, no restore-start command sent)\n");
+#endif
 	} else {
 		logger(LL_INFO, "RESTORE FAILED\n");
 	}
@@ -1690,6 +1696,10 @@ void (*hv_stop_b_hook)(const struct hv_stop_b_info *info) = NULL;
 
 #ifdef HV_STOP_AFTER_RECOVERYOS_ENTRY
 void (*hv_stop_c_hook)(const struct hv_stop_c_info *info) = NULL;
+#endif
+
+#ifdef HV_STOP_AFTER_RESTORED_HANDSHAKE
+void (*hv_stop_d_hook)(const struct hv_stop_d_info *info) = NULL;
 #endif
 
 /* Henge: 1 = FLAG_SHSHONLY must not write the ticket to a file (this app keeps no ticket on disk). Set by the host before the tool starts. */

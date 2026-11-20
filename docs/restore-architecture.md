@@ -45,7 +45,8 @@
 | 정지점 A 관측 | 검증 완료 | 훅이 직접 `stopped=before_rootfs` 보고. USB 핸들 0→0, 금지된 전송 0, curl 요청 0, 작업 폴더 신규 쓰기 0 |
 | G0 설치 진입점(`host/install.c`의 `hv_install_start()` 전체 경로: 전용 usbmuxd·`restore_session.c` 세션·연결 정책·정리까지) | 검증 완료 (build 149, 실기기, §1.1) | 정지점 A까지 도달(`g0_passed`), Apple 연결 0건, 저장장치 쓰기 0건, 세션·usbmuxd 정리 정상, 디스크·aux 내용 불변 확인 |
 | 첫 TSS(AP 티켓) 실제 요청 | 검증 완료 (build 149, 실기기, 단발 1회 승인, §3.1) | Apple TSS 서버가 실제로 **서명 발급**(`ApImg4Ticket`, 5633 bytes). BuildManifest 식별 결과(칩 0xFE00/보드 0x20)가 build 70과 일치 |
-| LocalPolicy, RecoveryOS root ticket, 재요청, iBSS/iBEC 전송, 재접속, RecoveryOS 진입, 복원 | 미검증 | 한 번도 실행하지 않음 — 첫 TSS 이후 단계는 이 TSS 요청의 범위 밖 |
+| LocalPolicy, RecoveryOS root ticket (AP 직후 연쇄 요청) | 검증 완료 (build 150, 실기기, 단발 1회 승인, §3.2) | AP 티켓 발급 후 이어서 보낸 두 요청 모두 Apple이 plist로 **응답을 받아들임**. 단, 이 두 단계는 libtatsu에 전용 티켓 추출 함수가 없어 "특정 티켓 필드가 실제로 들어있는가"는 이 빌드에서 확인하지 못함(§3.2) |
+| 재요청, iBSS/iBEC 전송, 재접속, RecoveryOS 진입, 복원 | 미검증 | 한 번도 실행하지 않음 — 이 TSS 연쇄의 범위 밖 |
 
 주의: "curl 요청 0"은 curl 대체 계층의 계측 결과이며 모든 네트워크 경로를 감시한 결과가 아니다 (5절).
 
@@ -69,7 +70,7 @@
 | # | 단계 | 구현 | 진입 조건 | 검증 (PC 스탠드인 / 실기기) | 안전 경계 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | DFU 감지 · IPSW 분석 · 정지점 A | 재사용 (완료) | DFU 장치 1회 열거, IPSW 존재 | PC: 가짜 IPSW 시나리오 / 실기기: 완료 | 네트워크 0, 제어 요청만, 데이터 전송 0 |
-| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 변경 필요 (첫 TSS만 재사용·완료, 아래 참조) | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: **첫 TSS(AP) 완료 (build 149, 단발 1회, §3.1, 티켓 발급 확인)**. LocalPolicy·RecoveryOS는 별도 승인 후 단발 | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
+| 1 | TSS 3건 (AP / LocalPolicy / RecoveryOS root ticket) | 완료 (연쇄 구현, 각 단계 1회·무재시도, 아래 참조) | 단계 0 통과, AP nonce 읽기 성공, 사용자 확인 | PC: curl 스탠드인이 본문을 받아 가짜 응답 / 실기기: **AP 완료(build 149, §3.1, 티켓 발급 확인), LocalPolicy·RecoveryOS 완료(build 150, §3.2, 응답 수락 확인 — 필드 수준 티켓 확인은 아님)** | 외부 통신의 첫 지점. 자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지 |
 | 2 | iBSS 전송 · DFU 끊김 · 재접속 | 변경 필요 (전송은 기존 코드, 재접속은 실증 필요) | TSS 응답 보유, DFU dfuIDLE | PC: 끊김·재접속 시나리오 5종 / 실기기: 별도 승인 | 서명 이미지 전송의 시작점 |
 | 3 | LocalPolicy · iBEC · 부트 인자 | 변경 필요 | 재접속 성공, nonce 재확인 | PC: 명령 순서 로그 / 실기기: 별도 승인 | `lpolrestore`, `setenv`, `saveenv`는 장치 상태를 바꿈 |
 | 4 | RecoveryOS 진입 | 신규 판정 필요 | iBEC 실행, RECOVERY 재접속 | PC: RECOVERY 가짜 장치 / 실기기: 읽기 전용 확인 | 상태를 바꾸는 명령을 보내지 않음 |
@@ -91,6 +92,7 @@
 - 정책 충돌: `FLAG_SHSHONLY`는 shsh 파일을 캐시 폴더에 쓴다. 티켓을 저장하지 않는 원칙과 충돌하므로 이 경로를 쓰지 않거나 쓰기를 막아야 한다 (벤더링 변경, 별도 승인).
 - 추가 요청 약 10곳 중 가상 Mac에서 실제로 나가는 것이 몇 개인지는 실행 전에는 알 수 없다 (미검증). 허용 개수를 정하지 않고, 차단 모드에서 시도된 종류만 기록해 보고한다.
 - 모든 TSS 요청은 curl 대체 계층(`curl_mbedtls.c`)을 지나므로 현재의 차단 모드·시도 카운터가 적용된다.
+- **LocalPolicy·RecoveryOS root ticket 응답 확인의 한계**: `libtatsu`는 AP(메인) 응답에서 `ApImg4Ticket`을 꺼내는 함수(`tss_response_get_ap_img4_ticket`)만 제공한다. LocalPolicy·RecoveryOS 응답에서 실제 티켓 필드를 꺼내는 전용 함수는 없다(`third_party/libtatsu/include/libtatsu/tss.h` 확인: 티켓 추출 함수는 AP·baseband·범용 blob 경로뿐). `idevicerestore.c`의 `get_local_policy_tss_response()`/`get_recoveryos_root_ticket_tss_response()` 자신도 이 두 단계에서 티켓 필드를 검증하지 않고 "응답이 plist로 왔다"만을 성공 신호로 쓴다 — 아래 §3.2는 같은 기준을 따른다. 즉 "Apple이 요청을 받아들여 답했다"까지만 확인됐고, "그 안에 쓸 수 있는 LocalPolicy/RecoveryOS 티켓이 들어있는가"는 미확인이다.
 
 ### 3.1 실기기 첫 TSS 요청 (build 149, 단발 1회 승인)
 
@@ -105,6 +107,18 @@
 - `tss probe: finished, result code 0` (0 = 티켓 발급됨). LocalPolicy·RecoveryOS 요청은 시도하지 않음 — 이 버튼의 범위는 첫 TSS(AP)까지다.
 
 **판정:** 이 장치(ECID)와 이 IPSW(macOS 15.6.1, 24G90) 조합에 대해 Apple의 서명 서버가 실제로 유효한 요청을 받아들이고 서명을 발급한다는 것을 확인했다. 이는 §2 "단계 1"의 안전 경계(자동 재시도 금지, ECID·nonce·ticket 저장·출력 금지)를 지킨 채 이뤄졌다. 다만 이 결과는 서명된 펌웨어 전송·DFU 재접속·LocalPolicy·RecoveryOS·실제 복원이 성립함을 보장하지 않는다 — 그 단계들은 전혀 별개로 승인·시험해야 한다(§9).
+
+### 3.2 실기기 LocalPolicy·RecoveryOS root ticket 연쇄 요청 (build 150, 단발 1회 승인)
+
+2026-11-20, 실기기(SM-S948N), 앱의 "TSS 연쇄 확인: AP→LocalPolicy→RecoveryOS (Apple 서버로 최대 3회 전송)" 버튼(`--tss-probe-lpol`, `host/tss_probe_core.c`의 `hv_tss_probe_core_chain()`). §3.1과 같은 장치 읽기·BuildManifest 식별로 시작해, AP 티켓이 발급된 뒤 자동으로 LocalPolicy → RecoveryOS root ticket 순서로 이어졌다. 사전 승인된 범위대로 각 요청 **정확히 1회**, 재시도 없음.
+
+- **단계 AP**: §3.1과 동일하게 `CLASS: ticket issued` (`ApImg4Ticket`, 5633바이트 — build 149와 크기 동일, 같은 BuildManifest·요청 구성이므로 일치가 자연스럽다).
+- **단계 LocalPolicy**: 14개 최상위 필드로 요청 구성(AP의 46개보다 적음 — `tss_request_add_local_policy_tags` 하나만 호출하는 더 좁은 요청이므로 예상과 일치) → 전송 → `CLASS: TSS accepted the request` (plist 응답 수신, 최상위 필드 2개). §3 주의사항대로, 이는 "Apple이 답했다"까지이며 응답 안에 실제로 쓸 수 있는 LocalPolicy 티켓이 들어있는지는 이 빌드에서 확인하지 못한다.
+- **단계 RecoveryOS**: 35개 최상위 필드로 요청 구성 → 전송 → `CLASS: TSS accepted the request` (plist 응답 수신, 최상위 필드 2개). 같은 한계가 적용된다.
+- `tss probe: all three stages ... were sent and answered. Nothing was stored.` / `finished, result code 0` (0 = 세 단계 모두 수락). 세 요청 모두 멈추지 않고 끝까지 진행됨 — 중간에 거부된 단계는 없었다.
+- ECID·nonce·요청 값·응답 값 모두 로그에 기록·출력되지 않음(정책대로).
+
+**판정:** 이 장치·IPSW 조합에 대해 Apple의 서명 서버가 AP 티켓 발급 후 이어지는 LocalPolicy·RecoveryOS root ticket 요청도 거부하지 않고 plist로 응답한다는 것을 확인했다. 이는 §2 "단계 1" 전체(TSS 3건)가 실기기에서 막히지 않고 끝까지 간다는 긍정적 신호다. 다만 §3의 주의사항대로 LocalPolicy·RecoveryOS 응답 안에 유효한 티켓 필드가 실제로 들어있는지는 별도로 확인된 바 없고(libtatsu에 전용 추출 함수가 없음), 서명된 이미지 전송·DFU 재접속·RecoveryOS 부팅·실제 복원 중 어느 것도 이 결과로 보장되지 않는다 — §2의 단계 2 이후는 전부 별개로 승인·시험해야 한다(§9).
 
 ## 4. DFU 재접속
 
@@ -243,7 +257,7 @@ iBSS 전송이 끝났다는 사실만으로 다음 단계로 가지 않는다.
 
 ## 9. 별도 승인이 필요한 항목
 
-- [x] 실제 Apple TSS 요청 — **AP(메인) 티켓만** (build 149, 단발 1회, 티켓 발급 확인, §3.1). LocalPolicy·RecoveryOS root ticket은 여전히 [ ] 미승인·미시도
+- [x] 실제 Apple TSS 요청 — AP(메인) 티켓 발급 확인(build 149, §3.1), **LocalPolicy·RecoveryOS root ticket 응답 수락 확인**(build 150, 단발 1회, §3.2). 단, LocalPolicy·RecoveryOS는 "응답(plist) 받음"까지만 — 응답 안의 티켓 필드 유효성은 [ ] 미검증(libtatsu에 전용 추출 함수 없음, §3 참조)
 - [ ] 서명 iBSS/iBEC 및 후속 이미지 전송, `lpolrestore` 등 장치 상태 변경 명령
 - [ ] 복원 실행 자체 (ASR, 루트 스트리밍)와 설치 디스크 쓰기, `macos_disk.img` 실제 생성
 - [x] 벤더링 소스 변경 (승인됨, 반영됨): `ipsw_open` fd 누수, usbmuxd 종료, DFU 핸들 정리, URLAsset·FDR 연결 정책 훅, SHSHONLY 티켓 파일 쓰기 차단 스위치

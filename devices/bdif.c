@@ -35,7 +35,16 @@ typedef struct {
    hypothesis is the ROM submitting a USB request to this queue and waiting, since nothing on the host side
    actually answers hv_vusb_take_request() in that build. These log a REG_UNK2/REG_QSEL/REG_CMD write (each rare)
    every time, and a REG_BUSY read or a usb_deliver() poll (either can be called every tick, i.e. very often) only
-   on a state change plus a throttled summary -- never forcing q->pending/q->done or synthesizing a request. */
+   on a state change plus a throttled summary -- never forcing q->pending/q->done or synthesizing a request.
+   [2026-11-21, explicitly approved, read-only] Extended with the CPU index and the guest PC of the access, since
+   cfg.cpus=2 and a REG_BUSY read's queue state alone doesn't say which CPU is polling or from where. Both come
+   from core/machine.h's hv_self/hv_mmio_diag_pc, which this read already runs under (bdif isn't self_locked, so
+   core/machine.c's hv_phys_read holds the device lock around this whole switch) -- no new parameter here or in
+   bdif_read()/hv_phys_read(), and no change to HvMachine.access_pc's own existing meaning. hv_self/hv_mmio_diag_pc
+   are each a CPU's own thread-local value (see their definitions), so there's no cross-CPU value to race on; both
+   are 0/NULL if this is somehow read outside a CPU's own dispatcher thread, which the two prints below show as
+   cpu=-1. A CPU index and a single PC is still just the PC of the instruction THAT read this register -- it says
+   nothing about where the machine's other CPU is executing at the same moment. */
 static int g_usbdiag_rom_on = -1;              /* -1: not yet observed */
 static uint32_t g_usbdiag_qsel = 0xffffffffu;
 static int g_usbdiag_busy_d0 = -1, g_usbdiag_busy_d1 = -1;
@@ -48,13 +57,14 @@ static uint64_t usb_read(HvBdif *b, uint64_t reg) {
     case REG_UNK1: return 0x420;
     case REG_BUSY: {
         int d0 = b->usb_q[0].done, d1 = b->usb_q[1].done;
+        int cpu_idx = hv_self ? (int)hv_self->index : -1;
         if (d0 != g_usbdiag_busy_d0 || d1 != g_usbdiag_busy_d1) {
-            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u (changed, %llu reads since last change)\n",
-                    d0, d1, b->usb_qsel, (unsigned long long)g_usbdiag_busy_reads);
+            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx (changed, %llu reads since last change)\n",
+                    d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc, (unsigned long long)g_usbdiag_busy_reads);
             g_usbdiag_busy_d0 = d0; g_usbdiag_busy_d1 = d1; g_usbdiag_busy_reads = 0;
         } else if ((g_usbdiag_busy_reads++ % 20000) == 0) {
-            fprintf(stderr, "bdif usb diag: REG_BUSY read x%llu with no change, q0.done=%d q1.done=%d qsel=%u\n",
-                    (unsigned long long)g_usbdiag_busy_reads, d0, d1, b->usb_qsel);
+            fprintf(stderr, "bdif usb diag: REG_BUSY read x%llu with no change, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx\n",
+                    (unsigned long long)g_usbdiag_busy_reads, d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc);
         }
         return b->usb_qsel < 2 ? (uint64_t)b->usb_q[b->usb_qsel].done : 0;
     }

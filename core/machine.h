@@ -389,6 +389,10 @@ void hv_cpu_reset(HvCpu *cpu, HvMachine *m); /* CPU 0 */
 void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index);
 /* The CPU this thread runs (NULL outside the dispatcher: tests, devices). */
 extern __thread HvCpu *hv_self;
+/* This CPU's own thread's current mem-emulation PC (core/memop.c's hv_mem_emulate()), for a device's own locked
+   diagnostic to read alongside hv_self's index -- see core/machine.c's definition for why this is separate from
+   HvMachine.access_pc. 0 outside a CPU's own dispatcher thread, same scope as hv_self above. */
+extern __thread uint64_t hv_mmio_diag_pc;
 void hv_dev_lock(HvMachine *m);
 void hv_dev_unlock(HvMachine *m);
 /* Ask another CPU to apply a TLBI (or HV_REQ_* work); returns the sequence to wait for. */

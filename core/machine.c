@@ -129,6 +129,17 @@ static int init_rest(HvMachine *m) {
 
 __thread HvCpu *hv_self;
 
+/* [2026-11-21, explicitly approved, read-only diagnostic] The guest PC of the load/store this CPU's own thread is
+   currently emulating, for devices::bdif.c's REG_BUSY USB diagnostic to report alongside hv_self's CPU index. This
+   is deliberately its OWN thread-local variable, not a read of HvMachine.access_pc (set in the same place, see
+   core/memop.c's hv_mem_emulate()): access_pc is a single machine-wide field several other diagnostics already key
+   off of, and widening its own existing meaning (or moving when it's written) risked changing what those other
+   logs report. Because this is __thread, each CPU's own run_loop (core/dispatch.c) thread keeps its own value with
+   no cross-CPU race to guard against -- unlike a shared HvMachine field, there's nothing here another CPU's thread
+   could overwrite between this being set and a device's locked read of it. NULL/0 outside a CPU's own dispatcher
+   thread (tests, a host-side poll), matching hv_self's own documented scope immediately above. */
+__thread uint64_t hv_mmio_diag_pc;
+
 void hv_dev_lock(HvMachine *m) {
     if (pthread_mutex_trylock(&m->dev_mu) == 0) return;
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;

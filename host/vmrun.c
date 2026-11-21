@@ -42,6 +42,7 @@
 #endif
 #ifdef HV_INSTALL_G6
 #include "install_g6.h"
+#include "pvg_lite.h"
 #endif
 #include "vmapple.h"
 
@@ -249,6 +250,37 @@ static void g_capture_screen(const char *snap, const char *tag) {
     else printf("vmrun %s screen: %s, nothing written\n", tag, screen_source_name(src));
     fflush(stdout);
 }
+
+#ifdef HV_INSTALL_G6
+/* [2026-11-21, explicitly approved, read-only diagnostic] G6 only: a second, separate BMP of the last PVG
+   surface the guest swapped (devices/pvg_lite.c's HV_PVG_TALLY surface decode, hv_pvg_lite_last_surface_bgra()
+   -- see its own comment for the safety/validity rules and why no channel reordering happens there), so it
+   can be compared side by side with g_capture_screen()'s boot_args/PVG-frame capture above rather than
+   overwrite it. Written to a sibling path derived from --snapshot's own (".../snapshot.bmp" ->
+   ".../snapshot_pvgsurface.bmp"), never to --snapshot's own file, and skipped entirely (nothing attempted)
+   if --snapshot was not given -- g_capture_screen() already logs that case for this tag. Must run before
+   hv_vm_stop() exactly like g_capture_screen(), for the same reason: once stopped, guest RAM is not
+   guaranteed still readable. */
+static void g_capture_pvg_surface(const char *snap, const char *tag) {
+    if (!snap) return;
+    HvVmapple *bd = hv_vm_board();
+    uint8_t *bgra = NULL;
+    uint32_t w = 0, h = 0;
+    if (hv_pvg_lite_last_surface_bgra(bd ? bd->pvg : NULL, &bgra, &w, &h) != 0) {
+        printf("vmrun %s pvgsurface: nothing to show (no swap yet, HV_PVG_TALLY off, an invalid descriptor, or not a 'BGRA' surface -- see any pvgpix line above)\n", tag);
+        fflush(stdout);
+        return;
+    }
+    char path[4096];
+    size_t n = strlen(snap);
+    if (n > 4 && n < sizeof path - 16 && !strcmp(snap + n - 4, ".bmp")) snprintf(path, sizeof path, "%.*s_pvgsurface.bmp", (int)(n - 4), snap);
+    else snprintf(path, sizeof path, "%.*s_pvgsurface.bmp", (int)(sizeof path - 16 < n ? sizeof path - 16 : n), snap);
+    if (write_bmp(path, bgra, (int)w, (int)h) == 0) printf("vmrun %s pvgsurface: %ux%u, written %s\n", tag, w, h, path);
+    else printf("vmrun %s pvgsurface: %ux%u, write failed (%s)\n", tag, w, h, path);
+    free(bgra);
+    fflush(stdout);
+}
+#endif
 
 /* A new auxiliary storage file the way Henge's iOS app makes one (ios/Henge/Native/henge-vm.c): a 24-byte header, zeros to 32 MB + 16 KB. */
 static int make_aux(const char *path) {
@@ -629,6 +661,7 @@ int main(int argc, char **argv) {
         int failed = hv_g6_finish(stdout, cfg.disk, cfg.aux);
         if (w == -1) { printf("vmrun RESULT: install g6 FAILED: the restore thread did not end; the process ends here without closing anything\n"); fflush(stdout); _exit(4); }
         g_capture_screen(snap, "g6");
+        g_capture_pvg_surface(snap, "g6");
         hv_vm_stop();   /* after the table: the thread and file descriptor counts were taken with the machine still running */
         double tsg6 = now();
         while (!EXITED() && now() - tsg6 < 5.0) usleep(10000);

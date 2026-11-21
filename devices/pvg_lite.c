@@ -257,23 +257,22 @@ static int surface_read(HvPvgLite *p, const uint32_t *pages, uint64_t npages, ui
     return 0;
 }
 
-/* [2026-11-21, explicitly approved, read-only diagnostic, per the review chain's "decode the mapped
-   surface's actual pixels" directive] HV_PVG_TALLY only: decodes a surface's descriptor (hv_pvg_lite_surface())
-   the same way pvg_metal.m's makeMappedTexture() does -- page list at +0, fourcc at +4, allocation at +0x18,
-   width at +0x20, height at +0x28, bytes-per-row at +0x30, first-page byte offset at +0x60 (that function's
-   own comment and field offsets; this is a read-only duplicate of its decode, never its vm_remap/Metal
-   path, so this works with no GPU backend at all -- the Android case) -- then walks its guest page list
-   (surface_read() above) over the full width x height region and reduces it to one bounded line: a
-   non-black pixel count (a pixel counts as non-black if its 4 raw bytes are not all zero, regardless of
-   which byte is alpha, so this needs no assumption about channel order) and a running hash, so whether the
-   surface already holds CPU-written content -- as opposed to a renderer ever drawing into it -- can be
-   checked without a GPU command ever having to be decoded, and without ever printing a raw pixel or guest
-   address to the log. Bounded throughout: refuses a width, height, row stride, allocation size or page
-   count bigger than a real display could plausibly need, rather than attempt a huge or runaway read; a
-   missing page or out-of-range descriptor field is reported and skipped, never guessed at. */
-static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
+/* Shared by tally_surface() and hv_pvg_lite_last_surface_bgra() below: decodes and bounds-checks a
+   surface's descriptor (hv_pvg_lite_surface()) and fetches its guest page list, exactly as pvg_metal.m's
+   makeMappedTexture() does -- page list at +0, fourcc at +4, allocation at +0x18, width at +0x20, height
+   at +0x28, bytes-per-row at +0x30, first-page byte offset at +0x60 (that function's own comment and field
+   offsets; this is a read-only duplicate of its decode, never its vm_remap/Metal path, so this works with
+   no GPU backend at all -- the Android case). `mapping` is re-read fresh from the live mapper table on
+   every call (hv_pvg_lite_surface() itself checks the table's present bit each time, not a cached result),
+   so a mapping that has since been unmapped is caught here, not assumed valid because it once was. Returns
+   0 and fills every *_out on success; -1 (nothing written to any *_out, one bounded diagnostic line printed
+   under `when`) if there is no descriptor, its fields are outside what a real display surface could
+   plausibly need (width/height/stride/allocation/page-count bounds, same as before), or its page list
+   itself is not readable. */
+static int decode_surface(HvPvgLite *p, uint64_t mapping, uint32_t *fourcc_out, uint64_t *sw_out, uint64_t *sh_out,
+                           uint64_t *row_out, uint32_t *first_out, const uint32_t **pages_out, uint64_t *npages_out, const char *when) {
     const uint8_t *desc = hv_pvg_lite_surface(p, (uint32_t)mapping);
-    if (!desc) { fprintf(stderr, "pvgpix %s mapping %llu: no descriptor\n", when, (unsigned long long)mapping); return; }
+    if (!desc) { fprintf(stderr, "pvgpix %s mapping %llu: no descriptor\n", when, (unsigned long long)mapping); return -1; }
     uint32_t list, fourcc, first;
     uint64_t alloc, row, sw, sh;
     memcpy(&list, desc, 4);
@@ -286,17 +285,47 @@ static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
     if (!(list & 1) || !sw || !sh || sw > 8192 || sh > 8192 || row < sw * 4 || row > 0x10000 || alloc > 64ull * 1024 * 1024) {
         fprintf(stderr, "pvgpix %s mapping %llu: descriptor out of bounds (fourcc %08x alloc %llx w %llu h %llu row %llu)\n",
                 when, (unsigned long long)mapping, fourcc, (unsigned long long)alloc, (unsigned long long)sw, (unsigned long long)sh, (unsigned long long)row);
-        return;
+        return -1;
     }
     uint64_t length = (alloc + first + 0x3fffull) & ~0x3fffull, npages = length >> 14;
     if (!npages || npages > 4096) {
         fprintf(stderr, "pvgpix %s mapping %llu: page count out of bounds (%llu)\n", when, (unsigned long long)mapping, (unsigned long long)npages);
-        return;
+        return -1;
     }
     const uint32_t *pages = hv_phys_ptr(p->m, (uint64_t)(list & ~1u) << 12, npages * 4);
-    if (!pages) { fprintf(stderr, "pvgpix %s mapping %llu: page list unreadable\n", when, (unsigned long long)mapping); return; }
-    uint64_t nonblack = 0, missing_rows = 0, hash = 1469598103934665603ull /* FNV-1a */;
-    static uint8_t rowbuf[8192 * 4]; /* bounded by the w<=8192 check above; reused across calls, not shared off this thread */
+    if (!pages) { fprintf(stderr, "pvgpix %s mapping %llu: page list unreadable\n", when, (unsigned long long)mapping); return -1; }
+    *fourcc_out = fourcc, *sw_out = sw, *sh_out = sh, *row_out = row, *first_out = first, *pages_out = pages, *npages_out = npages;
+    return 0;
+}
+
+/* [2026-11-21, explicitly approved, read-only diagnostic, per the review chain's "decode the mapped
+   surface's actual pixels" directive] HV_PVG_TALLY only: walks a decoded surface's guest page list
+   (surface_read() above) over its full width x height region and reduces it to one bounded line, without
+   ever printing a raw pixel or guest address: a non-black count over the whole 32-bit pixel (any of its 4
+   raw bytes nonzero, so this needs no assumption about channel order) AND, separately, a non-black count
+   and a distinct-value count over just its low 3 bytes -- for this surface's own fourcc, 0x42475241, the
+   FourCharCode 'BGRA' (the same plain-integer comparison style pvg_metal.m already uses for surface->fourcc,
+   e.g. `surface->fourcc == 'RGhA'`), alpha sits in the high byte of this native little-endian 32-bit word,
+   so masking it off isolates exactly the three colour bytes (whatever their own internal order, which does
+   not affect a zero test or a distinct-value count) -- plus a running hash over the raw 32-bit pixels, so
+   that whether the surface holds real, varied colour content, or e.g. a single opaque colour whose alpha
+   byte alone made the old all-32-bits test read "100% non-black", can be told apart without opening a BMP
+   (an all-3-bytes-zero RGB with a nonzero alpha gives nonblack_rgb 0 and distinct_rgb 1, which this surface
+   did not: see hv_pvg_lite_last_surface_bgra() for the actual image bytes on a 'BGRA' surface). For any
+   other fourcc the low-24-bits mask may not actually isolate colour from alpha; this still reports whatever
+   those bits are, since tally_surface() is a diagnostic over whatever the guest actually swapped, not only
+   'BGRA' surfaces -- hv_pvg_lite_last_surface_bgra() below is the one that refuses non-'BGRA' surfaces
+   rather than guess. Bounded throughout, same limits as decode_surface() above; a missing page is reported
+   and skipped, never guessed at. */
+static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
+    uint32_t fourcc, first;
+    uint64_t sw, sh, row, npages;
+    const uint32_t *pages;
+    if (decode_surface(p, mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, when) != 0) return;
+    uint64_t nonblack = 0, nonblack_rgb = 0, distinct_rgb = 0, missing_rows = 0, hash = 1469598103934665603ull /* FNV-1a */;
+    static uint8_t rowbuf[8192 * 4]; /* bounded by the w<=8192 check in decode_surface(); reused across calls, not shared off this thread */
+    static uint32_t rgbseen[1u << 19]; /* one bit per possible 24-bit RGB value (alpha masked off), same reuse rule as rowbuf; cleared below each call */
+    memset(rgbseen, 0, sizeof rgbseen);
     for (uint64_t y = 0; y < sh; y++) {
         if (surface_read(p, pages, npages, first + y * row, rowbuf, sw * 4)) { missing_rows++; continue; }
         for (uint64_t x = 0; x < sw; x++) {
@@ -304,11 +333,52 @@ static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
             memcpy(&px, rowbuf + x * 4, 4);
             if (px) nonblack++;
             hash = (hash ^ px) * 1099511628211ull;
+            uint32_t rgb = px & 0x00ffffffu, word = rgb >> 5, bit = rgb & 31;
+            if (rgb) nonblack_rgb++;
+            if (!(rgbseen[word] & (1u << bit))) rgbseen[word] |= (1u << bit), distinct_rgb++;
         }
     }
-    fprintf(stderr, "pvgpix %s mapping %llu %llux%llu fourcc %08x nonblack %llu/%llu missing_rows %llu/%llu hash %016llx\n",
-            when, (unsigned long long)mapping, (unsigned long long)sw, (unsigned long long)sh, fourcc,
-            (unsigned long long)nonblack, (unsigned long long)sw * sh, (unsigned long long)missing_rows, (unsigned long long)sh, (unsigned long long)hash);
+    fprintf(stderr, "pvgpix %s mapping %llu %llux%llu fourcc %08x nonblack32 %llu/%llu nonblack_rgb %llu/%llu distinct_rgb %llu missing_rows %llu/%llu hash %016llx\n",
+            when, (unsigned long long)mapping, (unsigned long long)sw, (unsigned long long)sh, fourcc, (unsigned long long)nonblack, (unsigned long long)sw * sh,
+            (unsigned long long)nonblack_rgb, (unsigned long long)sw * sh, (unsigned long long)distinct_rgb, (unsigned long long)missing_rows, (unsigned long long)sh,
+            (unsigned long long)hash);
+}
+
+/* [2026-11-21, explicitly approved, read-only diagnostic] HV_PVG_TALLY only: a malloc'd copy of the last
+   swapped surface's actual pixels, in the BGRA byte order host/vmrun.c's write_bmp() already expects (byte
+   0 = blue, 1 = green, 2 = red, 3 = alpha) -- which this surface's own fourcc, 0x42475241 ('BGRA'), already
+   matches byte-for-byte on a little-endian host (see tally_surface()'s own comment above on why that
+   integer, not the reversed-looking "ARGB" a raw byte-by-byte hex dump of it suggests, is the right reading
+   -- pvg_metal.m's plain `fourcc == 'RGhA'`-style comparisons already rely on the same convention), so no
+   channel reordering happens here: the bytes read off guest memory are written out unchanged. On success
+   (0), *out is a buffer of *width * *height * 4 bytes the caller owns and must free(); *out is left NULL
+   and -1 is returned, with nothing allocated, for no swap yet, an invalid or out-of-bounds descriptor (see
+   decode_surface() above), an unreadable page, or any fourcc other than 'BGRA' -- reordering a format this
+   code has not actually seen and verified would risk silently mislabelling colours, so it refuses instead
+   of guessing. */
+int hv_pvg_lite_last_surface_bgra(HvPvgLite *p, uint8_t **out, uint32_t *width, uint32_t *height) {
+    *out = NULL;
+    if (!p || !p->tally || !p->swaps) return -1;
+    uint32_t fourcc, first;
+    uint64_t sw, sh, row, npages;
+    const uint32_t *pages;
+    if (decode_surface(p, p->last_mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "bgra") != 0) return -1;
+    if (fourcc != 0x42475241u /* 'BGRA' */) {
+        fprintf(stderr, "pvgpix bgra mapping %llu: fourcc %08x is not 'BGRA' (0x42475241); refusing to guess a channel order, no copy made\n",
+                (unsigned long long)p->last_mapping, fourcc);
+        return -1;
+    }
+    uint8_t *buf = malloc(sw * sh * 4);
+    if (!buf) return -1;
+    for (uint64_t y = 0; y < sh; y++) {
+        if (surface_read(p, pages, npages, first + y * row, buf + y * sw * 4, sw * 4)) {
+            fprintf(stderr, "pvgpix bgra mapping %llu: row %llu unreadable, aborting copy\n", (unsigned long long)p->last_mapping, (unsigned long long)y);
+            free(buf);
+            return -1;
+        }
+    }
+    *out = buf, *width = (uint32_t)sw, *height = (uint32_t)sh;
+    return 0;
 }
 
 /* Read-only: the last display_swap()'s surface, decoded exactly as tally_surface() above, for a caller

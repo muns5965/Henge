@@ -93,4 +93,12 @@ void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, ui
    yet. */
 void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when);
 
+/* HV_PVG_TALLY diagnostic (read-only; same gating/validity rules as hv_pvg_lite_tally_surface above): a
+   malloc'd BGRA copy (caller frees it) of the last swapped surface's actual pixels, for a caller that wants
+   the real bytes -- e.g. to write them out as a BMP -- rather than tally_surface()'s one-line summary.
+   Returns 0 and fills out, width and height on success; -1 (nothing allocated, out left NULL) if there has
+   been no swap yet, the descriptor and page list do not check out, or the surface's fourcc is not 'BGRA'
+   (0x42475241) -- the only format this has verified the byte order of; see pvg_lite.c's own comment on it. */
+int hv_pvg_lite_last_surface_bgra(HvPvgLite *p, uint8_t **out, uint32_t *width, uint32_t *height);
+
 #endif

@@ -138,15 +138,46 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
    (documents f9250710/d3b7b4b0, independently re-derived from the same ROM bytes) converged on. This does NOT
    establish that a disk-validation failure is what sends this boot path into DFU -- that causal link is still
    unconfirmed; this probe only adds two more real-device data points toward it, same as every prior round. */
+/* [2026-11-21 round, D4 -- explicitly approved, read-only] Retargeted a third time. The previous round's point A
+   (0x10D2B8) fired with x0=0x70029010 (nonzero: the success branch) on a real device -- this is no longer an open
+   question, so this round drops it. Point B (0x10DF9C) still never fired, so it stays watched. The new finding
+   this round answers is from host/ui_runner_vm.c's own earlier design-doc gap, not from code here: a real-device
+   run of THIS binary (D1-D3's usb_on_normal_boot/usb_probe_on_normal_boot path), immediately after point A fired,
+   never produced a single hv_vm_boot_display() frame (299/299 "absent") and never logged a pvgmap/pvgdesc/pvgtally
+   line at all (devices/pvg_lite.c untouched this run) -- the CPU instead sat at pc=0x10C744/lr=0x10D510 for the
+   rest of the run (161M+ bdif REG_BUSY reads, q0.done staying 0), which devices/bdif.c's own diagnostic already
+   shows is a tight poll loop, but not what register state that loop is actually testing or whether it ever
+   changes. This round adds that exact address as a THIRD watched point (reusing point A's now-free slot) to get
+   one real register snapshot from it -- x0-x6 and sp, the same way point A/B's own x0/x4-x6 already answered
+   "which branch, with what argument" questions -- for independent Capstone disassembly of 0x10C744 (same
+   "ROM 구간 읽기"/"직접 분기 참조 검색" app features as before) to interpret. Since this address, unlike A/B, sits
+   inside a loop (hit potentially millions of times a second), logging every hit would both flood the log and add
+   nothing past the first hit if the registers never change -- so this logs the FIRST hit in full, then at most
+   once every 2 real seconds afterward (reusing this file's own now()), specifically so a change in those
+   registers over time (something DOES move, even though pc/lr do not) would still show up without flooding when
+   nothing does. This stays strictly observational: nothing here advances the loop, supplies a USB completion, or
+   changes what the guest sees -- see devices/bdif.c's own existing REG_BUSY/REG_CMD logging for the USB side of
+   this same wait, which this probe does not duplicate. */
 static void panic_probe_hook(HvCpu *cpu) {
     HvPanicHit hit = { .pc = cpu->pc, .lr = cpu->x[30], .sp = cpu->sp };
-    if (cpu->pc == 0x10d2b8ull) {
-        /* Point A, 0x10D2B8: right before "cbz x0, 0x10D2E0" executes -- x0 is 0x104E04's return value (which is
-           itself whatever 0x104B60, the slot's actual work function, returned), untouched by this hook. Zero means
-           the ROM is about to take 0x10D2E0's error path instead of 0x10D2BC's success path. */
+    if (cpu->pc == 0x10c744ull) {
+        /* Point C, 0x10C744 [D4]: the address a real [A] run was found parked at for the rest of the boot,
+           right after point A's success branch, with no display frame and no PVG activity ever following. Not
+           yet disassembled -- this only reports what the CPU's own registers hold there, for that disassembly
+           (via the app's own ROM-reading feature) to interpret against. First hit logged in full; later hits
+           only if at least 2 real seconds have passed since the last one logged, so a register that changes
+           while pc/lr stay fixed would still be visible without flooding this loop's otherwise-identical hits. */
+        static uint32_t c_hits;
+        static double c_last_logged;
+        double t = now();
+        if (!c_hits || t - c_last_logged >= 2.0) {
+            printf("ui_runner_vm: boot-branch probe C pc=10c744 hit #%u lr=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx sp=%#llx (loop point found parked in a real [A] run right after point A; register meaning not yet disassembled)\n",
+                   c_hits + 1, (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0], (unsigned long long)cpu->x[1], (unsigned long long)cpu->x[2],
+                   (unsigned long long)cpu->x[3], (unsigned long long)cpu->x[4], (unsigned long long)cpu->x[5], (unsigned long long)cpu->x[6], (unsigned long long)cpu->sp);
+            c_last_logged = t;
+        }
+        if (c_hits != UINT32_MAX) c_hits++;
         hit.x0 = cpu->x[0];
-        printf("ui_runner_vm: boot-branch probe A pc=10d2b8 lr=%#llx x0=%#llx (0x104E04/0x104B60 return value; zero -> error path 0x10D2E0)\n",
-               (unsigned long long)cpu->x[30], (unsigned long long)cpu->x[0]);
     } else {
         /* Point B, 0x10DF9C: the third known call site to 0x10C51C (the other two, 0x10CBDC and 0x10D14C, are
            already confirmed reached on every run). Simply firing at all answers the open "실기기 실행: 미관측"
@@ -167,7 +198,7 @@ static void panic_probe_hook(HvCpu *cpu) {
    those, but the shared engine does, so this stays defensive the same way host/vmrun.c's diag_probe_install()
    is. Either way normal guest boot proceeds -- a refused install never blocks the boot itself, only this one
    diagnostic. */
-#define HV_PANIC_PROBE_PC1 0x10d2b8ull /* point A: "cbz x0, 0x10D2E0" testing 0x104E04/0x104B60's return value */
+#define HV_PANIC_PROBE_PC1 0x10c744ull /* [D4] point C: the loop address a real [A] run was found parked at (point A, resolved, freed this slot) */
 #define HV_PANIC_PROBE_PC2 0x10df9cull /* point B: the third, previously-unconfirmed call site to 0x10C51C */
 static void panic_probe_install(void) {
     HvMachine *vm = hv_vm_machine();
@@ -178,7 +209,7 @@ static void panic_probe_install(void) {
     vm->stop_pc = HV_PANIC_PROBE_PC1;
     vm->stop_pc2 = HV_PANIC_PROBE_PC2;
     vm->stop_hook = panic_probe_hook;
-    printf("ui_runner_vm: boot-branch probe installed at %#llx (0x10D2B8 compare) / %#llx (0x10DF9C third call site)\n",
+    printf("ui_runner_vm: boot-branch probe installed at %#llx (0x10C744 wait-loop point C) / %#llx (0x10DF9C third call site, point B)\n",
            (unsigned long long)HV_PANIC_PROBE_PC1, (unsigned long long)HV_PANIC_PROBE_PC2);
 }
 

@@ -1,0 +1,78 @@
+# Diagnostic build only: no APK packaging, no phone execution and no TSS requests.
+# Intentionally scoped to the research branch; main and the existing [A] runner are unchanged.
+name: G4 UI Android link check
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port-g2b1
+    paths:
+      - host/ui_runner_vm_g4.c
+      - host/install.c
+      - host/install_g4.c
+      - host/runner_vm_core.c
+      - host/frame_shm.c
+      - host/display_buf.c
+      - tools/ui-runner-vm-g4-install-build.sh
+      - tools/engine-build.sh
+      - tools/devices-build.sh
+      - tools/restore-selftest-build.sh
+      - .github/workflows/g4-ui-link-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  g4-ui-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out research branch
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK r27c
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-r27c" >> "$GITHUB_ENV"
+
+      - name: Compile engine, virtual devices and VM for Android arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          export CC
+          EXTRA_LIBS="-llog" tools/engine-build.sh build-engine
+          EXTRA_LIBS="-llog" tools/devices-build.sh build-engine
+
+      - name: Compile Android restore stack (no restore is executed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          export CC
+          EXTRA_LIBS="" tools/restore-selftest-build.sh build-restore
+
+      - name: Link separate ui_runner_vm_g4 diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          export CC
+          EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-g4-install-build.sh build-engine build-restore
+          test -s build-engine/ui_runner_vm_g4
+          file build-engine/ui_runner_vm_g4
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h build-engine/ui_runner_vm_g4 | grep 'Machine:.*AArch64'
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep -q ' hv_g4_start$'
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep -q ' hv_runner_pump_frame$'
+
+      - name: Upload linked diagnostic for separate authorized testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runner-vm-g4-android-arm64
+          path: build-engine/ui_runner_vm_g4
+          if-no-files-found: error
+          retention-days: 7

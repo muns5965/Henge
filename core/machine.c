@@ -25,9 +25,11 @@ static void knobs_init(void) {
     for (int i = 0; i < HV_K_COUNT; i++)
         hv_knob[i] = getenv(hv_knob_names[i]) ? atoi(getenv(hv_knob_names[i])) : 0;
     if (getenv("HV_NO_RAS") && !*getenv("HV_NO_RAS")) hv_knob[HV_K_NO_RAS] = 1;
-    /* On unless asked: Golden Gate on the phone (2026-11-08) ran 200 process spawns ~3% faster with it, and none
-       of the checked skips (1 in 32 are checked, see sysreg.c) found an out-of-date entry. */
-    if (!getenv("HV_SWITCH_FLUSH")) hv_knob[HV_K_SWITCHFLUSH] = 2;
+    /* Off unless asked, since 2026-11-21: upstream Leviidev/Henge turned this off by default on
+       2026-11-09 after a checked skip on the phone found a kept user entry (a stack page) out of
+       date -- the exact failure mode this default risks, found the day after the comment this
+       replaced claimed none of the checked skips had found one. It was worth ~3% on a 200-process
+       spawn loop, not worth guest memory. HV_SWITCH_FLUSH=2 explicitly still enables it. */
     if (!getenv("HV_IJC_PAGES")) hv_knob[HV_K_IJCPAGES] = 1;
     if (!getenv("HV_DNS_PROXY")) hv_knob[HV_K_DNSPROXY] = 1;
 }
@@ -338,6 +340,26 @@ void hv_machine_kick_all(HvMachine *m) {
     for (int i = 0; i < m->ncpus; i++)
         if (m->cpus[i]) __atomic_store_n(&m->cpus[i]->exit_req, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
+}
+
+/* PSCI SYSTEM_OFF/RESET (core/exception.c's psci()) or a guest panic calls this to stop the
+   whole machine. kick_all() alone (exit_req + sev) only interrupts translated code; it is
+   never seen by a CPU parked in PSCI CPU_OFF, which sleeps in wait_while_off() on
+   pthread_cond_wait(&wake_cv, &wake_mu) with no timeout. So each CPU's halted is published
+   under that CPU's own wake_mu, and hv_cpu_wake() (which locks wake_mu and signals wake_cv,
+   not just kick_all's exit_req + sev) is used to wake it, exactly so wait_while_off()'s loop
+   re-checks halted and returns. Compare-exchange against 0 only: a CPU already halted keeps
+   whichever reason got there first. */
+void hv_machine_halt(HvMachine *m, int reason) {
+    for (int i = 0; i < m->ncpus; i++) if (m->cpus[i]) {
+        HvPerCpu *p = m->cpus[i]->pc_state;
+        pthread_mutex_lock(&p->wake_mu);
+        int expected = 0;
+        __atomic_compare_exchange_n(&m->cpus[i]->halted, &expected, reason, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        pthread_mutex_unlock(&p->wake_mu);
+    }
+    for (int i = 0; i < m->ncpus; i++)
+        if (m->cpus[i]) hv_cpu_wake(m->cpus[i]);
 }
 
 /* Device work is for CPU 0, which polls the devices. */

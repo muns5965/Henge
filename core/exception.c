@@ -215,9 +215,11 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
                 __atomic_store_n(&cpu->m->psci_halt_valid, 2, __ATOMIC_RELEASE); /* now actually publish it */
             }
         }
-        for (int i = 0; i < cpu->m->ncpus; i++) /* the whole machine stops */
-            if (cpu->m->cpus[i]) cpu->m->cpus[i]->halted = (uint32_t)fn == 0x84000008 ? 1 : 2;
-        hv_machine_kick_all(cpu->m);
+        /* hv_machine_halt() publishes halted under each CPU's own wake_mu and wakes it with
+           hv_cpu_wake(); a plain assignment + hv_machine_kick_all() here would never be seen by
+           a CPU parked in PSCI CPU_OFF (core/dispatch.c's wait_while_off() only re-checks halted
+           on a wake_cv signal, not on kick_all's exit_req/SEV alone). */
+        hv_machine_halt(cpu->m, (uint32_t)fn == 0x84000008 ? 1 : 2);
         return 0;
     case 0x8400000a: {                                       /* PSCI_FEATURES */
         uint32_t q = (uint32_t)cpu->x[1];
@@ -233,13 +235,24 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
         HvCpu *t = cpu_by_mpidr(cpu->m, cpu->x[1]);
         if (!t) return (uint64_t)-2;                         /* INVALID_PARAMETERS */
         if (!t->off) return (uint64_t)-4;                    /* ALREADY_ON */
-        while (!__atomic_load_n(&t->parked_off, __ATOMIC_SEQ_CST)) sched_yield(); /* still on its way out of CPU_OFF */
+        while (!__atomic_load_n(&t->parked_off, __ATOMIC_SEQ_CST)) {
+            if (cpu->halted || t->halted) return (uint64_t)-3; /* DENIED: machine is stopping */
+            sched_yield(); /* still on its way out of CPU_OFF */
+        }
         uint64_t mpidr = t->mpidr, entry = cpu->x[2], context = cpu->x[3];
         if ((uint32_t)fn == 0x84000003) entry = (uint32_t)entry, context = (uint32_t)context;
         /* As at reset: EL1h, MMU and caches off, everything masked. Its thread
            waits on wake_mu, so it cannot see the CPU half reset. */
         pthread_mutex_lock(&t->pc_state->wake_mu);
         HvPerCpu *pcs = t->pc_state;
+        if (cpu->halted || t->halted) {        /* re-check under t's wake_mu: hv_machine_halt()
+            publishes t->halted under this same lock, so this closes the gap between the loop
+            above and taking the lock here. (cpu->halted itself is not covered by this lock --
+            it is read atomically, never written here -- so this is not a guarantee against
+            every concurrent SYSTEM_OFF/RESET on the requesting cpu, only against t's.) */
+            pthread_mutex_unlock(&pcs->wake_mu);
+            return (uint64_t)-3;               /* DENIED: machine is stopping */
+        }
         hv_cpu_reset_index(t, cpu->m, t->index);
         t->mpidr = mpidr;
         t->pc = entry;

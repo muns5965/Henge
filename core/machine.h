@@ -418,4 +418,11 @@ void hv_cpu_kick(HvCpu *cpu);
    running block leave and ends a WFI sleep. */
 void hv_machine_wake(HvMachine *m);
 
+/* PSCI SYSTEM_OFF/RESET or a guest panic: publish `reason` (nonzero) into every CPU's
+   halted, each under that CPU's own wake_mu (so a CPU parked in PSCI CPU_OFF cannot miss
+   it -- see core/dispatch.c's wait_while_off, which only re-checks halted on a wake_cv
+   signal, never on exit_req/SEV alone), then wake every CPU. A CPU already halted keeps
+   its existing reason (first caller wins). */
+void hv_machine_halt(HvMachine *m, int reason);
+
 #endif

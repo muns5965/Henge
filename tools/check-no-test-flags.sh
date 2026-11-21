@@ -17,7 +17,10 @@
 #                           with it; set only by tools/vmrun-install-g3-build.sh (the vmrun_g3 program this ships as its own .so, never through the main engine/app CMake build -- see the source-location
 #                           check below)
 #   HV_INSTALL_G4           the G4 diagnostic of the install entry point through TSS, the DFU->Recovery firmware transfer and RecoveryOS entry (host/install_g4.h): host/install.c and host/vmrun.c compile
-#                           its hooks only with it; set only by tools/vmrun-install-g4-build.sh (the vmrun_g4 program this ships as its own .so, never through the main engine/app CMake build -- see the
+#                           its hooks only with it; set by tools/vmrun-install-g4-build.sh (the vmrun_g4 program, ships as its own .so, never through the main engine/app CMake build -- see the
+#                           source-location check below) and by tools/ui-runner-vm-g4-install-build.sh (the ui_runner_vm_g4 program: the same G4 hooks combined with host/ui_runner_vm.c's own
+#                           frame-sharing loop instead of host/vmrun.c's one-shot screenshot; host/ui_runner_vm.c itself is untouched and keeps its own installer=0 contract, checked separately by
+#                           tools/check-runner-vm-safe.sh). Neither is part of the main engine/app CMake build; see the
 #                           source-location check below)
 #   HV_INSTALL_G5           the G5 diagnostic of the install entry point through TSS, the DFU->Recovery firmware transfer, RecoveryOS entry and into restore_device() itself (host/install_g5.h):
 #                           host/install.c and host/vmrun.c compile its hooks only with it; set only by tools/vmrun-install-g5-build.sh (the vmrun_g5 program this ships as its own .so, never through the
@@ -76,9 +79,12 @@ if grep -rln "DHV_INSTALL_G3" tools android .github ios Makefile 2>/dev/null | g
 grep -q "hv_g3_extra_flags" host/install.c && ! grep -q "FLAG_STOP_AFTER_DFU_RECOVERY" host/install.c || bad "host/install.c does not go through the G3 hook, or names the stop-B flag"
 # the G3 program is its own binary (vmrun_g3 -> libvmrung3.so), never part of the main engine/app's own CMake source list
 if grep -rn "install_g3" android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "the main engine/app CMake build mentions host/install_g3"; fi
-# the G4 switch: only its own build script may set it (not the main engine/app CMake build, not iOS, not the Makefile; the CI workflow only calls the script by
-# name and never names the switch itself, so it needs no exemption here -- same as HV_INSTALL_G3 and tools/vmrun-install-g3-build.sh)
-if grep -rln "DHV_INSTALL_G4" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g4-build.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g4-build.sh sets -DHV_INSTALL_G4"; fi
+# the G4 switch: only its own two build scripts may set it (not the main engine/app CMake build, not iOS, not the Makefile; the CI workflow only calls a
+# script by name and never names the switch itself, so it needs no exemption here -- same as HV_INSTALL_G3 and tools/vmrun-install-g3-build.sh).
+# tools/ui-runner-vm-g4-install-build.sh is a SECOND, separate test-only diagnostic (host/ui_runner_vm_g4.c -> ui_runner_vm_g4, not vmrun_g4): it combines
+# the same G4 install hooks with host/ui_runner_vm.c's own frame-sharing loop to test whether G4's AppleLogo/RecoveryOS transfer reaches the shared-memory
+# display; host/ui_runner_vm.c itself is untouched and still forces installer=0 (checked by tools/check-runner-vm-safe.sh, unaffected by this).
+if grep -rln "DHV_INSTALL_G4" tools android .github ios Makefile 2>/dev/null | grep -v "^tools/vmrun-install-g4-build.sh$\|^tools/ui-runner-vm-g4-install-build.sh$\|^tools/check-no-test-flags.sh$" > /dev/null; then bad "something other than tools/vmrun-install-g4-build.sh or tools/ui-runner-vm-g4-install-build.sh sets -DHV_INSTALL_G4"; fi
 # only host/install_g4.c sets the RecoveryOS-entry stop; host/install.c keeps the plain flag-free source (checked above) and reaches it through hv_g4_extra_flags
 grep -q "hv_g4_extra_flags" host/install.c && ! grep -q "FLAG_STOP_AFTER_RECOVERYOS_ENTRY" host/install.c || bad "host/install.c does not go through the G4 hook, or names the stop-C flag"
 # the G4 program is its own binary (vmrun_g4 -> libvmrung4.so), never part of the main engine/app's own CMake source list

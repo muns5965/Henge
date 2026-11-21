@@ -435,6 +435,13 @@ int main(int argc, char **argv) {
         /* G6 runs G5's whole TSS+DFU->Recovery+RecoveryOS-entry+restored-handshake stage first, then the Reverse Proxy attempt and the restore-options
            plist construction before reaching stop E: budget past G5's 440s floor to leave room for the Reverse Proxy round-trip and cleanup. */
         if (seconds < 460) seconds = 460;
+        /* [2026-11-21, explicitly approved, read-only diagnostic] devices/pvg_lite.c's own tally_exec()/tally_buffer()/display_swap() already classify every
+           GPU command the guest submits (render/compute/blit/info, per-op counts, which surface mapping each swap names) when HV_PVG_TALLY is set -- this
+           has existed since before this round and runs whether or not a real Metal/GPU backend is present (channel_command() calls it before the
+           p->metal check), but nothing in this G6 binary ever turned it on, so every prior G6 run left that data uncollected. Setting it here, like
+           --irecv-probe's own setenv calls just above for HV_VUSB_LOG/HV_LIBUSB_LOG, only affects this HV_INSTALL_G6 build (a separate binary, vmrun_g6,
+           from G0-G5's and plain vmrun's); it does not touch any other mode's behavior or environment. */
+        setenv("HV_PVG_TALLY", "1", 1);
 #else
         fprintf(stderr, "vmrun: this build has no install entry point G6 diagnostic in it (--install-g6 unavailable)\n");
         return 2;

@@ -74,4 +74,14 @@ uint32_t hv_pvg_lite_bad_complete_logged(void);
 void hv_pvg_lite_set_mode(uint32_t width, uint32_t height);
 void hv_pvg_lite_set_size_mm(uint32_t width_mm, uint32_t height_mm);
 
+/* HV_PVG_TALLY diagnostic (read-only; set at creation time, before hv_pvg_lite_create -- see p->tally in
+   pvg_lite.c): a snapshot of the per-encoder-type command tally tally_exec()/tally_buffer() have accumulated
+   since creation, for a caller that wants the final counts even if the run ends before tally_exec()'s own
+   periodic (execs % 2000 == 0) dump ever fires -- which a short, bounded diagnostic run (such as one G6
+   attempt) usually will. counts_out, if non-NULL, must point at 6*256 uint64_t (the same [type][opcode] shape
+   tally_buffer() keeps internally: type 0 render, 1 compute, 2 blit, 4 info, per that function's own comment).
+   All-zero (execs and bad left at 0) if p is NULL or HV_PVG_TALLY was never set (p->tally off): this does not
+   turn tallying on, it only reads back what has already been counted. */
+void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, uint64_t counts_out[6][256]);
+
 #endif

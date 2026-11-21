@@ -289,6 +289,16 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
     if (p->log) fprintf(stderr, "hengevm: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
+    /* [2026-11-21, explicitly approved, read-only diagnostic] HV_PVG_TALLY only: one bounded line per swap
+       connecting it to the command tally tally_exec()/tally_buffer() have accumulated so far (execs/bad, and
+       the surface mapping this swap names) -- what a swap displayed, if anything, was built from the exec
+       commands counted up to this point, so this is the join between "a swap happened" (already logged above,
+       unconditionally) and "what GPU work preceded it" (tally_exec()'s own counts, otherwise only dumped every
+       2000 execs or never for a run shorter than that). Printed only when p->tally is set (HV_PVG_TALLY), so a
+       run with it off is completely unaffected; one line per swap, no raw command/object data, same bounded
+       style as tally_exec()'s own periodic dump. */
+    if (p->tally) fprintf(stderr, "pvgtally swap %llu mapping %llu port %u execs_so_far %llu bad_so_far %llu\n",
+                           (unsigned long long)p->swaps, (unsigned long long)mapping, args[0], (unsigned long long)p->execs, (unsigned long long)p->bad);
 }
 
 /* Task memory: the root page holds {table page, depth}; each level has 4096
@@ -805,6 +815,19 @@ static void iosfc_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     (void)size;
     if (off >= 0x1000 && off < 0x1040) p->io_regs[(off - 0x1000) / 8] = v;
     if (off == 0x1018) do_mapper(p);
+}
+
+/* See the doc comment in pvg_lite.h. Pure read-back of p->execs/p->bad/p->counts under no lock: the same
+   relaxed-read pattern tally_exec()'s own periodic dump already uses on these same fields from the device's
+   single update thread -- this adds a second reader (the diagnostic report, after the run has ended and the
+   device is quiescent), not a new field or a new write path. */
+void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, uint64_t counts_out[6][256]) {
+    if (execs) *execs = p ? p->execs : 0;
+    if (bad) *bad = p ? p->bad : 0;
+    if (counts_out) {
+        if (p) memcpy(counts_out, p->counts, sizeof p->counts);
+        else memset(counts_out, 0, 6 * 256 * sizeof(uint64_t));
+    }
 }
 
 HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_t iosfc_pa, int gfx_irq, int iosfc_irq) {

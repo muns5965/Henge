@@ -22,6 +22,7 @@
 #include "idevicerestore/src/log.h"
 #include "install.h"
 #include "net_guard.h"
+#include "pvg_lite.h"
 #include "usb_host.h"
 #include "vm.h"
 
@@ -518,6 +519,36 @@ int hv_g6_finish(FILE *out, const char *disk, const char *aux) {
                  total, d_sub, d_ok, (unsigned long long)(hv_libusb_data_transfer_bytes() - g_data_bytes0), d_bad, bh[1], bh[2], bh[3], bh[4], bh[5], bh[6],
                  d_bad ? "; bad completions: " : "", d_bad ? (dn ? detail : "(none held in the ring)") : "");
         (void)missing;
+    }
+    {
+        /* [2026-11-21, explicitly approved, read-only diagnostic] vmrun.c now sets HV_PVG_TALLY for this G6
+           binary only (see its own comment there), so devices/pvg_lite.c's tally_exec()/tally_buffer() have
+           been counting every GPU command the guest submitted by encoder type (0 render, 1 compute, 2 blit,
+           4 info -- devices/pvg_lite.c's own comment on tally_buffer()) for the whole run, whether or not a
+           real Metal/GPU backend exists. Reported here via hv_pvg_lite_tally_snapshot() (devices/pvg_lite.h)
+           because tally_exec()'s own internal dump only fires every 2000 execs and a G6 run may well end
+           before that -- this is the final-report path the review chain asked for, not a new counter.
+           Purely observational, never gates pass/fail, and this loop only ever prints a type/opcode/count
+           triple per nonzero cell (bounded by the fixed 6x256 table, no raw command or object data), capped
+           further at 32 entries printed so a guest that touches many distinct opcodes still produces one
+           bounded line instead of an unbounded dump. */
+        HvVmapple *bd = hv_vm_board();
+        uint64_t execs = 0, bad = 0, counts[6][256];
+        hv_pvg_lite_tally_snapshot(bd ? bd->pvg : NULL, &execs, &bad, counts);
+        static const char *type_name[6] = {"render", "compute", "blit", "?", "info", "?"};
+        char detail[900]; size_t dn = 0; int shown = 0, more = 0;
+        for (int t = 0; t < 6 && dn + 1 < sizeof detail; t++)
+            for (int op = 0; op < 256 && dn + 1 < sizeof detail; op++) {
+                if (!counts[t][op]) continue;
+                if (shown >= 32) { more++; continue; }
+                int n = snprintf(detail + dn, sizeof detail - dn, "%s%s/%d=%llu", shown ? " " : "", t < 6 ? type_name[t] : "?", op, (unsigned long long)counts[t][op]);
+                if (n > 0) dn += (size_t)n;
+                shown++;
+            }
+        row_info(out, "pvg_tally", "HV_PVG_TALLY: %llu GPU exec command(s) seen, %llu malformed (observational only, never gated; counts by encoder type/opcode%s): %s%s",
+                 (unsigned long long)execs, (unsigned long long)bad, bd && bd->pvg ? "" : " -- NO DEVICE (bd/pvg was NULL; nothing collected)",
+                 shown ? detail : "(none; either no GPU exec command (op 0x43) was ever seen, or none decoded cleanly enough for tally_buffer() to count it)",
+                 more ? " [+more, truncated at 32 distinct type/opcode cells]" : "");
     }
     FileId d1, a1;
     file_id(disk, &d1); file_id(aux, &a1);

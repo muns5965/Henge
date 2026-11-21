@@ -9,6 +9,8 @@ on:
       - research/android-port-g2b1
     paths:
       - host/ui_runner_vm_g4.c
+      - host/g4_ui_stop.h
+      - tests/test_g4_ui_stop.c
       - host/install.c
       - host/install_g4.c
       - host/runner_vm_core.c
@@ -30,6 +32,14 @@ jobs:
     steps:
       - name: Check out research branch
         uses: actions/checkout@v4
+
+      - name: Run native G4 cancellation-state regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -Ihost tests/test_g4_ui_stop.c -o /tmp/test_g4_ui_stop
+          /tmp/test_g4_ui_stop
 
       - name: Install Android NDK r27c
         shell: bash

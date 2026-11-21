@@ -132,7 +132,10 @@ static void test_life_and_input(void) {
     if (!app) { double t; int c = finish(&p, 5, &t); printf("   output:\n%s\n   exit %d\n", p.buf, c); return; }
     CHECK(wait_for(&p, "started pid", 5) && wait_for(&p, "config (the structure passed to hv_vm_create):", 5), "it announced itself and the structure it passes to hv_vm_create");
     CHECK(strstr(p.buf, "readonly_storage=1 no_net=1 no_sound=1 installer=0 identity=none host_jit=none") != NULL, "the printed structure: read-only, no network, no installer, no identity, no host JIT memory");
-    CHECK(strstr(p.buf, "usb device port present: 0 (must be 0)") != NULL, "the machine has no USB device port");
+    /* [2026-11-21] D1/D2 (approved) made ui_runner_vm.c always ask for the USB device port on this normal,
+       non-installer boot (cfg.usb_on_normal_boot = 1, host/vm.h); the printed line and its check moved from
+       "present: 0 (must be 0)" to "present: 1 (want 1)" to match. installer stays 0 throughout (checked above). */
+    CHECK(strstr(p.buf, "usb device port present: 1 (want 1)") != NULL, "the machine has the approved USB device port (non-installer boot, D1/D2)");
     CHECK(strstr(p.buf, "env: 0 HV_* variable(s) removed") != NULL, "no HV_* variables were set (none removed)");
     /* 11 valid commands of every kind and 2 invalid ones */
     int pushed = 0, bad_pushed = 0;
@@ -244,7 +247,12 @@ static void test_env(void) {
     CHECK(app != NULL, "running with the four variables set in its environment");
     CHECK(wait_for(&p, "env: 4 HV_* variable(s) removed", 5), "it removed exactly the four");
     CHECK(strstr(p.buf, "HV_RUN_INSTALLER") && strstr(p.buf, "HV_USB_ON_NORMAL") && strstr(p.buf, "HV_VUSB_PROBE") && strstr(p.buf, "HV_RAM_FILE") && !strstr(p.buf, "1,1"), "it names them (not their values)");
-    CHECK(strstr(p.buf, "usb device port present: 0 (must be 0)") != NULL, "no USB device port although HV_USB_ON_NORMAL was set (the engine would have made one)");
+    /* [2026-11-21] Was "present: 0 (must be 0)" when this scenario proved HV_USB_ON_NORMAL could not turn the
+       port on. D1/D2 (approved) now turns it on unconditionally for every normal boot, so that proof is moot;
+       what this scenario still must show is that the four HV_* variables set above change nothing about the
+       approved port state -- it stays exactly "1 (want 1)", the same value a run with no environment at all
+       gets (see test_life_and_input above), whether or not HV_USB_ON_NORMAL/HV_VUSB_PROBE were set. */
+    CHECK(strstr(p.buf, "usb device port present: 1 (want 1)") != NULL, "the approved USB device port state is unchanged by HV_USB_ON_NORMAL/HV_VUSB_PROBE being set");
     msleep(500);
     CHECK(access(ramfile, F_OK) != 0, "no RAM file was made although HV_RAM_FILE was set");
     say(&p, "quit\n");

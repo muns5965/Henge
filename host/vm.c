@@ -48,6 +48,15 @@ int hv_vm_ncpus(void) { return ncpus; }
 /* arm64 boot_args: {u16 Revision, u16 Version, u64 virtBase, physBase, memSize,
    topOfKernelData, Video {baseAddr, display, rowBytes, width, height, depth}, ...}.
    Found by scanning page starts for one whose physBase is the RAM base. */
+/* [2026-11-21, explicitly approved, D3] hv_vm_boot_display()'s second-priority source (after a real GPU
+   frame, before the boot_args RAM scan): the guest's own last-swapped PVG surface, copied into a buffer this
+   function owns and reuses across calls -- grown once, lazily, only the first time a surface too big for the
+   current capacity actually shows up, never malloc/free per call. 1920x1080 BGRA (~8.3 MB) is the one real
+   size seen on this device so far (builds 187/188), so that is the starting capacity; devices/pvg_lite.c's
+   decode_surface() refuses anything over 8192x8192 either way. */
+static uint8_t *pvg_live_buf;
+static size_t pvg_live_cap;
+
 int hv_vm_boot_display(HvBootDisplay *d) {
     /* What the guest's GPU has drawn, once it has drawn anything. */
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
@@ -56,8 +65,35 @@ int hv_vm_boot_display(HvBootDisplay *d) {
     uint32_t fw, fh;
     if (hv_pvg_lite_frame(pvg, &frame, &fw, &fh) == 0) {
         d->pixels = (uint8_t *)frame;
-        d->width = fw, d->height = fh, d->stride = fw * 4;
+        d->width = fw, d->height = fh, d->stride = fw * 4, d->source = HV_SCREEN_PVG;
         return 0;
+    }
+    /* No real GPU frame (certainly true on Android: host/pvg_metal_stub.c's hv_pvg_metal_frame() always
+       returns -1 there) -- try the surface the guest itself last swapped before falling back to the raw
+       boot_args scan below. Read-only and bounded exactly like that scan; see hv_pvg_lite_live_surface_bgra()'s
+       own comment for the locking/ownership contract that makes this safe to call continuously while the
+       guest keeps running. */
+    if (!pvg_live_cap) {
+        pvg_live_cap = 1920u * 1080u * 4u;
+        pvg_live_buf = malloc(pvg_live_cap);
+        if (!pvg_live_buf) pvg_live_cap = 0;
+    }
+    if (pvg_live_buf) {
+        uint32_t sw, sh;
+        size_t need = 0;
+        int rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, &need);
+        if (rc != 0 && need > pvg_live_cap) {
+            uint8_t *grown = realloc(pvg_live_buf, need);
+            if (grown) {
+                pvg_live_buf = grown, pvg_live_cap = need;
+                rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, NULL);
+            }
+        }
+        if (rc == 0) {
+            d->pixels = pvg_live_buf;
+            d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;
+            return 0;
+        }
     }
     static uint64_t found; /* RAM offset of boot_args */
     uint8_t *ram = board.ram;
@@ -92,19 +128,19 @@ int hv_vm_boot_display(HvBootDisplay *d) {
         if (q[1] >> 40 == 0xfffffe && w >= 320 && w <= 8192 && hh >= 200 && hh <= 8192 && base >= VMAPPLE_MEM &&
             base - VMAPPLE_MEM + row * hh <= size) {
             d->pixels = ram + (base - VMAPPLE_MEM);
-            d->width = (uint32_t)w, d->height = (uint32_t)hh, d->stride = (uint32_t)row;
+            d->width = (uint32_t)w, d->height = (uint32_t)hh, d->stride = (uint32_t)row, d->source = HV_SCREEN_BOOT_ARGS;
             return 0;
         }
     }
     return -1;
 }
-/* See the doc comment in vm.h. Same bounds check hv_vm_capture_screen uses below (board.ram/board.ram_size
-   are the exact range hv_vm_boot_display's own RAM scan validated its result against, just above) -- this
-   does not re-derive or guess anything new, it only exposes that one check to a caller who already has a
-   HvBootDisplay and does not want hv_vm_boot_display's result scaled down (hv_vm_capture_screen always does). */
+/* See the doc comment in vm.h: just reads back the `source` hv_vm_boot_display() itself already filled in,
+   rather than re-deriving it from the pixel pointer -- a pointer-range check alone cannot any longer tell
+   the GPU frame and the PVG-surface copy apart (host/vm.c's new pvg_live_buf), since neither lives in
+   board.ram. */
 int hv_vm_boot_display_source(const HvBootDisplay *d) {
     if (!d || !d->pixels || !d->width || !d->height || !d->stride) return HV_SCREEN_NONE;
-    return (d->pixels >= board.ram && d->pixels < board.ram + board.ram_size) ? HV_SCREEN_BOOT_ARGS : HV_SCREEN_PVG;
+    return d->source;
 }
 void hv_vm_set_poll(void (*poll)(void)) { extra_poll = poll; }
 
@@ -592,9 +628,9 @@ int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source, HvSc
             memcpy(drow + (size_t)x * 4, srow + (size_t)sx * 4, 4);
         }
     }
-    /* hv_vm_boot_display tries the PVG frame accessor before its own boot_args RAM scan, so a pixels pointer
-       inside guest RAM proves this came from that scan rather than the GPU frame (board.ram/ram_size are the
-       same bounds the scan itself checked against, just above). */
-    if (source) *source = (d.pixels >= board.ram && d.pixels < board.ram + board.ram_size) ? HV_SCREEN_BOOT_ARGS : HV_SCREEN_PVG;
+    /* hv_vm_boot_display() now fills d.source itself (HV_SCREEN_PVG, HV_SCREEN_PVG_SURFACE, or
+       HV_SCREEN_BOOT_ARGS) -- a pointer-range check alone could no longer tell the GPU frame and the new
+       PVG-surface copy apart, since neither lives in board.ram; see host/vm.h's doc comment on HvBootDisplay. */
+    if (source) *source = d.source;
     return 0;
 }

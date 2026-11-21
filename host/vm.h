@@ -64,16 +64,25 @@ int hv_vm_ncpus(void);
 typedef struct HvBootDisplay {
     const uint8_t *pixels;
     uint32_t width, height, stride;
+    /* [2026-11-21, explicitly approved, D3] Which of hv_vm_boot_display's three sources this frame actually
+       came from -- HV_SCREEN_PVG, HV_SCREEN_PVG_SURFACE, or HV_SCREEN_BOOT_ARGS (the same enum
+       hv_vm_capture_screen below uses) -- filled by hv_vm_boot_display() itself on every successful return.
+       A plain pointer-range check (inside board.ram or not) can no longer tell these apart on its own: the
+       new PVG-surface copy lives in its own host buffer, just like the GPU frame pointer does, so it is not
+       "in board.ram" either. Left as whatever it was before the call on failure (-1 return); callers follow
+       the existing contract of only reading pixels/width/height/stride (and now source) after success. */
+    int source;
 } HvBootDisplay;
 int hv_vm_boot_display(HvBootDisplay *d);
-/* Which of hv_vm_boot_display's own two sources (PVG GPU frame, or the boot_args RAM scan) a frame it already
-   returned came from -- HV_SCREEN_PVG or HV_SCREEN_BOOT_ARGS (the same enum hv_vm_capture_screen below uses),
-   or HV_SCREEN_NONE if d itself looks empty (zero size or a NULL pixels pointer). Does not call
-   hv_vm_boot_display again or change anything; it only classifies the HvBootDisplay the caller already has, by
-   the same guest-RAM-bounds check hv_vm_capture_screen uses internally -- for a caller (such as
-   host/install_g6.c's own periodic screen sample) that wants hv_vm_boot_display's full, unscaled frame AND to
-   know which source it came from, which hv_vm_capture_screen cannot give together since it always scales to
-   the caller's requested width x height. */
+/* Returns the HvBootDisplay's own `source` field (HV_SCREEN_PVG, HV_SCREEN_PVG_SURFACE, or
+   HV_SCREEN_BOOT_ARGS), or HV_SCREEN_NONE if d itself looks empty (zero size or a NULL pixels pointer).
+   Does not call hv_vm_boot_display again or change anything; it only reads back what the HvBootDisplay the
+   caller already has was filled with -- for a caller (such as host/install_g6.c's own periodic screen
+   sample) that wants hv_vm_boot_display's full, unscaled frame AND to know which source it came from, which
+   hv_vm_capture_screen cannot give together since it always scales to the caller's requested width x
+   height. Only ever meaningful on a `d` that came from hv_vm_boot_display() itself -- not one a test or
+   fake boot_display callback built by hand, which does not set `source` and is not expected to be passed
+   here (none in this codebase are). */
 int hv_vm_boot_display_source(const HvBootDisplay *d);
 
 /* Extra device work on CPU 0 each tick (Mac graphics). Set before hv_vm_start. */
@@ -150,13 +159,16 @@ int hv_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
 int hv_vm_snapshot(uint8_t *bgra, int width, int height);
 
-/* Which of the two independent sources (if either) produced the frame hv_vm_capture_screen below copied out:
-   HV_SCREEN_NONE neither has a frame yet; HV_SCREEN_PVG the GPU's own snapshot (hv_vm_snapshot's path, a
-   Metal-rendered frame); HV_SCREEN_BOOT_ARGS the raw framebuffer XNU's boot_args points at in guest RAM (the
-   Apple logo and progress bar while booting/installing, before any GPU driver takes the display -- what
-   hv_vm_boot_display's own fallback finds). Diagnostic only: this classification is informational and gates
-   nothing on its own. */
-enum { HV_SCREEN_NONE = 0, HV_SCREEN_PVG = 1, HV_SCREEN_BOOT_ARGS = 2 };
+/* Which of the independent sources (if any) produced the frame hv_vm_capture_screen below copied out, or
+   hv_vm_boot_display above returned: HV_SCREEN_NONE neither has a frame yet; HV_SCREEN_PVG the GPU's own
+   snapshot (hv_vm_snapshot's path, a Metal-rendered frame); HV_SCREEN_PVG_SURFACE [2026-11-21, explicitly
+   approved, D3] the guest's last-swapped PVG surface, read back and copied by hv_vm_boot_display itself when
+   there is no real GPU frame yet (certainly true on Android: host/pvg_metal_stub.c's hv_pvg_metal_frame()
+   always returns -1 there) -- see devices/pvg_lite.c's hv_pvg_lite_live_surface_bgra() for how; HV_SCREEN_
+   BOOT_ARGS the raw framebuffer XNU's boot_args points at in guest RAM (the Apple logo and progress bar
+   while booting/installing, before any GPU driver takes the display -- hv_vm_boot_display's last-resort
+   fallback). Diagnostic only: this classification is informational and gates nothing on its own. */
+enum { HV_SCREEN_NONE = 0, HV_SCREEN_PVG = 1, HV_SCREEN_BOOT_ARGS = 2, HV_SCREEN_PVG_SURFACE = 3 };
 /* The boot_args source frame's own size, before hv_vm_capture_screen scales it to the caller's width x height.
    Left all-zero when the frame came from hv_vm_snapshot (PVG) instead: that accessor already renders at exactly
    the requested size, so it has no separate "original" size of its own to report, and when *source comes back

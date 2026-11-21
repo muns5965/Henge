@@ -1,6 +1,7 @@
 #ifndef HENGEVM_PVG_LITE_H
 #define HENGEVM_PVG_LITE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "gicv3.h"
@@ -100,5 +101,17 @@ void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when);
    been no swap yet, the descriptor and page list do not check out, or the surface's fourcc is not 'BGRA'
    (0x42475241) -- the only format this has verified the byte order of; see pvg_lite.c's own comment on it. */
 int hv_pvg_lite_last_surface_bgra(HvPvgLite *p, uint8_t **out, uint32_t *width, uint32_t *height);
+
+/* General-purpose counterpart to hv_pvg_lite_last_surface_bgra() above, NOT gated by HV_PVG_TALLY: for a
+   caller (host/vm.c's hv_vm_boot_display(), called roughly every frame of the live VM display) that wants
+   this every tick without a malloc/free per call. Copies into the caller-owned buf (buf_cap bytes) instead
+   of allocating one; takes the machine's device lock for the whole validate+copy, the same lock the guest's
+   own swap/unmap already run under, so a racing guest-side remap cannot be read half-old/half-new -- see
+   pvg_lite.c's own comment for the full concurrency and ownership contract. Returns 0 and fills width/height
+   on success; -1 (buf untouched) if there has been no swap yet, the descriptor/page list do not check out,
+   the fourcc is not 'BGRA', or buf_cap is too small for the current surface -- in that last case only,
+   *need_out (if non-NULL) is set to the bytes needed (width*height*4) so the caller can grow once and retry;
+   0 in every other failure case. */
+int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out);
 
 #endif

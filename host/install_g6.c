@@ -367,7 +367,7 @@ static void g6_screen_poll(void) {
        instead of assuming -- and will say "pvg" correctly on its own, with no further change needed here, the
        day a real Android GPU backend replaces the stub. */
     int src = hv_vm_boot_display_source(&d);
-    const char *src_name = src == HV_SCREEN_PVG ? "pvg" : src == HV_SCREEN_BOOT_ARGS ? "boot_args" : "unknown";
+    const char *src_name = src == HV_SCREEN_PVG ? "pvg" : src == HV_SCREEN_PVG_SURFACE ? "pvg_surface" : src == HV_SCREEN_BOOT_ARGS ? "boot_args" : "unknown";
     uint64_t nonblack = 0, hash = 1469598103934665603ULL; /* FNV-1a 64, offset basis */
     for (uint32_t y = 0; y < d.height; y++) {
         const uint8_t *row = d.pixels + (size_t)y * d.stride;

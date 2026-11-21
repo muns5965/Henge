@@ -42,6 +42,11 @@ int hv_machine_add_mmio(HvMachine *m, uint64_t pa, uint64_t size, void *opaque, 
 }
 void hv_machine_wake(HvMachine *m) { (void)m; wakes++; }
 void hv_gicv3_pend(HvGic *g, int intid) { (void)g; pends++; last_intid = intid; }
+/* [2026-11-21, D2/D3] Real core/machine.c's device lock, needed only since hv_pvg_lite_live_surface_bgra()
+   (new this change) takes it; this test drives the device from one thread only, so a no-op stand-in is
+   faithful -- nothing here exercises the actual cross-thread exclusion that lock provides in the real engine. */
+void hv_dev_lock(HvMachine *m) { (void)m; }
+void hv_dev_unlock(HvMachine *m) { (void)m; }
 
 /* ---- the Metal side: a recorder ---- */
 typedef struct { int ch; uint32_t len; uint8_t d[9000]; } Sub;

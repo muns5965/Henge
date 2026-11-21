@@ -391,6 +391,58 @@ void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when) {
     tally_surface(p, p->last_mapping, when);
 }
 
+/* [2026-11-21, explicitly approved, D2/D3: decouple the live display path from HV_PVG_TALLY] General-purpose
+   counterpart to hv_pvg_lite_last_surface_bgra() above, for host/vm.c's hv_vm_boot_display() rather than a
+   G6-only diagnostic: NOT gated by p->tally (p->swaps/p->last_mapping are already updated unconditionally in
+   display_swap() below, regardless of HV_PVG_TALLY -- this needs no new tracking, only a caller that does not
+   require the env var), and writes into the CALLER's own buffer instead of malloc'ing a fresh one every call
+   -- host/vm.c's copy is reused across frames (a ~0.1 s cadence, per host/ui_runner_vm.c), not allocated and
+   freed each time.
+
+   Concurrency: decode_surface()'s descriptor/page-list validation and surface_read()'s page-by-page copy
+   happen at different times, during which the guest's own vCPU thread could swap, unmap, or remap this exact
+   mapping id. display_swap() and the mapper's unmap path both run under the machine's device lock (pvg_lite
+   is not a self_locked device -- see core/machine.h/.c's hv_dev_lock/hv_dev_unlock and the MMIO dispatch that
+   already holds it around every device but the GIC), so this function takes that same lock for its whole
+   validate+copy: a racing guest-side change is then either fully before or fully after this call, never
+   interleaved with it, the same guarantee the guest's own command processing already has.
+
+   Returns 0 and fills width/height on success (buf, of buf_cap bytes, now holds the whole surface, unchanged
+   byte order); -1, buf left untouched, for: no swap yet; an invalid/out-of-bounds descriptor or page list
+   (decode_surface()'s own checks); a fourcc other than 'BGRA' (0x42475241 -- the only byte order this code
+   has verified, same refusal as hv_pvg_lite_last_surface_bgra()); or a surface too large for buf_cap. In the
+   too-small case only, *need_out (if non-NULL) is set to the bytes the caller's buffer would need
+   (width*height*4) so it can grow once and retry -- 0 in every other failure case, since the size isn't yet
+   known or isn't the problem. Never partially fills buf. */
+int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out) {
+    if (need_out) *need_out = 0;
+    if (!p || !buf || !width || !height) return -1;
+    hv_dev_lock(p->m);
+    int rc = -1;
+    if (p->swaps) {
+        uint32_t fourcc, first;
+        uint64_t sw, sh, row, npages;
+        const uint32_t *pages;
+        if (decode_surface(p, p->last_mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "live") == 0) {
+            if (fourcc != 0x42475241u /* 'BGRA' */) {
+                fprintf(stderr, "pvgpix live mapping %llu: fourcc %08x is not 'BGRA' (0x42475241); refusing to guess a channel order\n",
+                        (unsigned long long)p->last_mapping, fourcc);
+            } else if (sw * sh * 4 > buf_cap) {
+                if (need_out) *need_out = (size_t)(sw * sh * 4);
+            } else {
+                int ok = 1;
+                for (uint64_t y = 0; y < sh && ok; y++) {
+                    if (surface_read(p, pages, npages, first + y * row, buf + y * sw * 4, sw * 4)) ok = 0;
+                }
+                if (ok) { *width = (uint32_t)sw, *height = (uint32_t)sh, rc = 0; }
+                else fprintf(stderr, "pvgpix live mapping %llu: a row became unreadable mid-copy, discarding this frame\n", (unsigned long long)p->last_mapping);
+            }
+        }
+    }
+    hv_dev_unlock(p->m);
+    return rc;
+}
+
 static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;

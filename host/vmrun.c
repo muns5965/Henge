@@ -211,7 +211,7 @@ static int write_bmp(const char *path, const uint8_t *bgra, int w, int h) {
 }
 
 static const char *screen_source_name(int s) {
-    return s == HV_SCREEN_PVG ? "PVG_FRAME" : s == HV_SCREEN_BOOT_ARGS ? "BOOT_ARGS_FRAME" : "NO_FRAME";
+    return s == HV_SCREEN_PVG ? "PVG_FRAME" : s == HV_SCREEN_PVG_SURFACE ? "PVG_SURFACE_FRAME" : s == HV_SCREEN_BOOT_ARGS ? "BOOT_ARGS_FRAME" : "NO_FRAME";
 }
 
 /* Henge: how many of the W*H pixels in a captured BGRA buffer are not pure black (B=G=R=0; alpha is not

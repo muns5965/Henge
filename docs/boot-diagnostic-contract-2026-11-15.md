@@ -383,6 +383,49 @@ underlying work function (`0x104B60`) and the still-no-display outcome mean -- t
 points and the synthetic-ROM coverage for them, same as every prior round added its own points first and
 confirmed them against a real device afterward.
 
+#### Real-device results under this round's hook (runs logged as "log 7" and "log 8")
+
+Two consecutive real-device runs (Galaxy S26 Ultra, the probe APK built from this round's commits) reproduced
+the same result:
+  - **Point A (`0x10D2B8`) is reached, with `lr=0x10D2A8` and `x0=0x70029010`** in both runs -- `lr` matches the
+    `0x10D2A4: bl 0x104E04` call site exactly, and `x0` is non-zero, so the `cbz x0,#0,0x10D2E0` error branch is
+    not taken on this boot path. This establishes only that `0x104E04` returns a non-NULL pointer here, not that
+    the object it points to is fully initialized, written to successfully afterward, or that boot proceeds
+    normally from there -- those remain unconfirmed.
+  - **Point B (`0x10DF9C`) is not reached** in either run. Whether that is because point A's success routes
+    execution away from the state-table-guard path point B sits behind, or some other reason, is not established
+    by this data alone -- the dependency between point A's outcome and point B's reachability is not yet shown by
+    these two logs.
+  - Both runs' full USB DFU enumeration completes identically (reset, device/configuration descriptors, string
+    descriptors including the `iBoot-10151.140.19` SRTG string, standard `GET_STATUS`/`GET_CONFIGURATION`, DFU
+    `GET_STATE`/`GET_STATUS` = `dfuIDLE`) -- consistent with the USB-port fix in this round holding on real
+    hardware, not just in CI.
+  - After that last DFU `GET_STATUS`, no further host-side USB request appears in either log. What repeats for
+    the rest of the run is `devices/bdif.c`'s `REG_BUSY` diagnostic read, consistently reporting `q0.done=0
+    q1.done=1 qsel=0` -- i.e. a receive-queue (`q0`) submission is still pending, never marked done, while the
+    *response* queue (`q1`) from the last completed transfer stays `done=1`. Log 8's last `REG_BUSY` print was
+    around 167,520,000 reads in. Both runs end via `ui_runner_vm`'s own `--seconds` time limit, with **no PSCI
+    `SYSTEM_RESET`/`SYSTEM_OFF` at all** and no display frame ever published (`display present 0 absent N`,
+    `frames published 0`).
+  - This specific combination (DFU enumeration completing, then `q0.done=0` persisting with no further host
+    request, no PSCI call, no display, until the time limit) has not been seen under the *prior* hook
+    configuration recorded earlier in this document -- those runs (under the retired `0x10D150`/`0x10D2B8`
+    pairing, before D1/D2's USB-port work) ended via `SYSTEM_RESET` from the `0x10C51C`/`0x10C590` type-mismatch
+    panic path, which the USB-port fix resolved. That the *current* configuration's own two logged runs (7 and 8)
+    agree with each other does establish this as this round's own reproducible outcome, not a one-off; it does
+    not by itself establish whether it is a normal DFU host-wait (D2's USB probe only enumerates -- it never
+    sends a DFU `DNLOAD`, so the guest legitimately may have nothing further to receive yet) or a sign that some
+    other initialization condition was never satisfied. Those two possibilities are not distinguished by
+    `REG_BUSY`'s repetition alone, since it says only that `q0` stayed unmarked, not what CPU-side code is
+     actually running while it stays that way.
+
+Priority for the next round, in order: (1) record this result here (done, this section) rather than treating it
+as a new finding each time it reproduces; (2) instrument where the CPU's PC actually is during the post-DFU
+`q0.done=0` stretch -- a limited sample or change-triggered capture, not a continuous per-instruction trace,
+since that would itself perturb the timing being measured; (3) use that to tell apart "the ROM is correctly
+waiting for a host request D2's probe does not send" from "the ROM is stuck re-entering the same wait for an
+unrelated reason" before deciding whether a next diagnostic point is even needed.
+
 ## How this gets used
 
 For a limited ROM boot trial -- the first one already happened once, on a real device, right after this

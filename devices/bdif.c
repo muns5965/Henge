@@ -44,7 +44,13 @@ typedef struct {
    are each a CPU's own thread-local value (see their definitions), so there's no cross-CPU value to race on; both
    are 0/NULL if this is somehow read outside a CPU's own dispatcher thread, which the two prints below show as
    cpu=-1. A CPU index and a single PC is still just the PC of the instruction THAT read this register -- it says
-   nothing about where the machine's other CPU is executing at the same moment. */
+   nothing about where the machine's other CPU is executing at the same moment.
+   [2026-11-21, explicitly approved, read-only] Also adds lr (hv_self->x[30], the return address the reading
+   instruction's own function was called with). A real-device dump of 0x10C744 itself (where pc always points)
+   showed it's a tiny, generic two-instruction "read an indexed register through a bounds-checked base pointer"
+   accessor with no loop of its own -- reused for more than just this USB device, so pc alone doesn't say which
+   caller's loop is doing the repeating; lr does. x[30] is already on HvCpu (core/cpu.h), so this needs nothing
+   new: no additional thread-local, no signature change anywhere. */
 static int g_usbdiag_rom_on = -1;              /* -1: not yet observed */
 static uint32_t g_usbdiag_qsel = 0xffffffffu;
 static int g_usbdiag_busy_d0 = -1, g_usbdiag_busy_d1 = -1;
@@ -58,13 +64,14 @@ static uint64_t usb_read(HvBdif *b, uint64_t reg) {
     case REG_BUSY: {
         int d0 = b->usb_q[0].done, d1 = b->usb_q[1].done;
         int cpu_idx = hv_self ? (int)hv_self->index : -1;
+        uint64_t lr = hv_self ? hv_self->x[30] : 0;
         if (d0 != g_usbdiag_busy_d0 || d1 != g_usbdiag_busy_d1) {
-            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx (changed, %llu reads since last change)\n",
-                    d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc, (unsigned long long)g_usbdiag_busy_reads);
+            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx lr=%#llx (changed, %llu reads since last change)\n",
+                    d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc, (unsigned long long)lr, (unsigned long long)g_usbdiag_busy_reads);
             g_usbdiag_busy_d0 = d0; g_usbdiag_busy_d1 = d1; g_usbdiag_busy_reads = 0;
         } else if ((g_usbdiag_busy_reads++ % 20000) == 0) {
-            fprintf(stderr, "bdif usb diag: REG_BUSY read x%llu with no change, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx\n",
-                    (unsigned long long)g_usbdiag_busy_reads, d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc);
+            fprintf(stderr, "bdif usb diag: REG_BUSY read x%llu with no change, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx lr=%#llx\n",
+                    (unsigned long long)g_usbdiag_busy_reads, d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc, (unsigned long long)lr);
         }
         return b->usb_qsel < 2 ? (uint64_t)b->usb_q[b->usb_qsel].done : 0;
     }

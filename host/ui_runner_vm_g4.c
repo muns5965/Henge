@@ -20,20 +20,34 @@
      - a default RAM of 2048 MiB (host/vmrun.c's own proven G4 setting; host/ui_runner_vm.c's 256 MiB default is for a non-installer boot's much
        smaller footprint and was never run against G4).
      - the G4 run and the frame-publishing loop run concurrently (host/vmrun.c's G4 runs them strictly in sequence: start -> block in hv_g4_wait() ->
-       one snapshot -> stop). hv_install_start (host/install.c, what hv_g4_start calls into after its own up-to-60s USB-online wait) already runs the
-       restore on its own pthread and publishes completion through hv_install_result(), polled by hv_g4_wait(); this binary keeps that exact contract
-       (reviewed and confirmed: hv_g4_finish's pass row requires g_waited==1, which ONLY hv_g4_wait sets -- polling hv_install_result() directly from
-       this binary's own loop instead of calling hv_g4_wait would leave g_waited at its initial -2 and make hv_g4_finish report a false FAILED even
-       after a real success) by running hv_g4_wait() on its OWN dedicated thread (g4_control_thread below), so it can block for its full budget
-       without blocking this binary's 100ms frame-pump cadence or its ability to notice a user "quit"/signal/time-limit promptly.
-     - shutdown ownership: this binary's main loop is the ONLY caller of hv_install_cancel() for an early stop (guarded by g_cancel_sent so it is
-       sent at most once, never racing hv_g4_wait()'s own internal "ask it to stop once if it does not end" after its cap_ms -- that happens only
-       AFTER cap_ms, by which point this binary's own 450s --seconds default has already triggered its own early-stop attempt or the run finished).
-       Shutdown order (reviewed): stop requested (quit/signal/app-closed/time-limit/G4-thread-done) -> hv_install_cancel() at most once -> pthread_join
-       the control thread (it has already called hv_g4_wait() and, per the next point, hv_g4_finish() internally) -> stop frame supply -> hv_vm_stop()
-       -> publish STOPPED. hv_g4_finish() is called from INSIDE g4_control_thread, strictly after hv_g4_wait() returns on that same thread -- never
-       from the main thread while the control thread might still be running -- so the disk/aux hash check and the usb/network counters it reports are
-       never read mid-run.
+       one snapshot -> stop). hv_g4_start() ITSELF (its own up-to-60s wait for the guest to come online, then the real TSS request and
+       hv_install_start(), host/install.c's already-async call that pthread_creates the restore worker and returns) now runs on the control thread
+       too (g4_control_thread below), not on main -- an earlier draft called it from main before creating that thread, which blocked the frame-pump
+       loop and stdin handling for up to 60s before they ever ran once (reviewed and corrected). The restore worker publishes completion through
+       hv_install_result(), polled by hv_g4_wait(); this binary keeps that exact contract (reviewed and confirmed: hv_g4_finish's pass row requires
+       g_waited==1, which ONLY hv_g4_wait sets -- polling hv_install_result() directly instead of calling hv_g4_wait would leave g_waited at its
+       initial -2 and make hv_g4_finish report a false FAILED even after a real success) by keeping both hv_g4_start() and hv_g4_wait() on this one
+       dedicated thread, so neither can block this binary's 100ms frame-pump cadence or its ability to notice a user "quit"/signal/time-limit
+       promptly.
+     - creating the control thread BEFORE calling hv_g4_start() (rather than after, as an earlier draft had it) removes a real danger a review
+       caught: if thread creation itself fails, hv_g4_start() -- and so hv_install_start()'s restore worker -- was never called from here, so there
+       is no started restore to cancel, wait for, or clean up; the caller can call hv_vm_stop() immediately, same as any other pre-G4 failure.
+     - shutdown ownership: this binary's main loop is the ONLY caller of hv_install_cancel() for an early stop, through the single cancel_once()
+       helper (guarded by g_cancel_sent so it is sent at most once) called from EVERY early-exit path (quit, signal, app-closed, time-limit,
+       input-closed, input-error, not only the ones an earlier draft covered) -- so pthread_join below is never left waiting behind an uncancelled
+       restore because of which path happened to exit the loop. This never races hv_g4_wait()'s own internal "ask it to stop once if it does not
+       end" after its cap_ms (380s, timed from whenever hv_g4_start() itself finishes coming online -- independent of this binary's own --seconds
+       budget, which starts counting from thread creation; either timer may elapse first depending on how long the USB-online wait took, and
+       cancel_once()'s own guard is what keeps that harmless either way).
+       Shutdown order (reviewed, and extended by a further review after implementation): stop requested -> cancel_once() -> pthread_join the control
+       thread (it has already called hv_g4_start(), hv_g4_wait(), and hv_g4_finish() internally, in that order, matching host/vmrun.c's own call
+       order) -> check hv_g4_wait()'s own return value, now that the thread has been joined: -1 ("it did not end at all") means, per
+       host/install_g4.h, that NOTHING may be freed or closed and the caller must simply end the process -- so this binary does exactly that
+       (_exit(), no hv_vm_stop(), no hv_vm_flush_disks(), no hv_shm_close()/hv_runner_destroy(), mirroring how host/vmrun.c itself skips its own
+       screen capture and hv_vm_stop() on that same -1) -- otherwise stop frame supply -> hv_vm_stop() -> publish STOPPED as usual. hv_g4_finish()
+       itself is still called unconditionally from inside g4_control_thread right after hv_g4_wait() returns (matching host/vmrun.c, which calls it
+       even on a -1 wait result: it is documented as a post-hoc report of file hashes and usb/network counters, not something that itself frees or
+       closes anything) -- never from the main thread while the control thread might still be running, so what it reports is never read mid-run.
      - restored_start_restore() (third_party/idevicerestore/src/restore.c) IS linked into this binary, exactly as it already is into vmrun_g4: G4's
        protection is NOT link-time absence (reviewed and corrected from an earlier draft of this comment) but two independent control-flow stops --
        install_g4.c's own FLAG_STOP_AFTER_RECOVERYOS_ENTRY and the vendored tool's separate, independent HV_STOP_AFTER_RECOVERYOS_ENTRY compiled into
@@ -47,10 +61,14 @@
    time it is actually invoked, not just compiled. Building this file does not invoke anything; running it does.
 
    Arguments: --shm PATH --rom F --disk F --aux F --ipsw F --ecid HEX (all required, ecid must be nonzero) --workdir DIR (default ".")
-   --ram-mb N (default 2048) --cpus N (default 2) --jit-mb N (default 64) --seconds N (overall process budget; default 450, i.e. G4's own 380s+20s
-   margin plus 50s for this binary's own startup/shutdown) --stop-wait-ms N (default 5000, same meaning as host/ui_runner_vm.c's).
-   Standard input: "quit" or end of input = stop; "status" = one status line. Exit codes: 0 stopped and confirmed, G4 passed; 1 settings refused, the
-   machine could not be made, or G4 failed; 2 bad arguments or the shared file could not be made; 3 the stop was NOT confirmed within the wait.
+   --ram-mb N (default 2048) --cpus N (default 2) --jit-mb N (default 64) --seconds N (overall process budget, timed from when the control thread
+   is created; default 450 as a generous margin -- NOT a guarantee of firing before or after hv_g4_wait()'s own internal 380s+20s cap, which is
+   timed separately, from whenever hv_g4_start()'s own up-to-60s USB-online wait finishes; cancel_once()'s own guard makes the order harmless
+   either way) --stop-wait-ms N (default 5000, same meaning as host/ui_runner_vm.c's).
+   Standard input: "quit" or end of input = stop; "status" = one status line. Exit codes: 0 stopped and confirmed, G4 passed; 1 settings refused,
+   the machine could not be made, G4 did not start, or G4 ran but failed; 2 bad arguments or the shared file could not be made; 3 the stop was NOT
+   confirmed within the wait; 4 hv_g4_wait() returned -1 (the run did not end even after cancellation): per host/install_g4.h nothing could be
+   safely freed or closed, so the process ends immediately instead (see g4_control_thread and the shutdown sequence in main).
    Output: "ui_runner_vm_g4: ..." lines, the same "ui_runner_vm_g4 <tag>: ..." status line host/ui_runner_vm.c prints (same stats), and one
    "ui_runner_vm_g4 RESULT: ..." at the end. */
 #define _GNU_SOURCE
@@ -130,18 +148,47 @@ static void status_line(const char *tag) {
     fflush(stdout);
 }
 
-/* Runs on its own thread so hv_g4_wait()'s own blocking contract (reviewed: must be called, and called exactly
-   once, for hv_g4_finish()'s g_waited==1 pass condition to ever be true) never stalls the main loop's frame pump.
-   Calls hv_g4_finish() itself, on this same thread, strictly after hv_g4_wait() returns -- never from main while
-   this thread might still be running. */
-static int g_g4_finish_failed = -1; /* -1 not yet run, 0 passed, >0 that many FAILED rows */
-static atomic_int g_g4_done;
+/* Runs hv_g4_start() AND hv_g4_wait() on its own thread, in that order -- matching host/vmrun.c's own call order --
+   so neither one's blocking (hv_g4_start()'s own up-to-60s USB-online wait, hv_g4_wait()'s own up to ~400s) ever
+   stalls the main loop's frame pump or its stdin handling. Also calls hv_g4_finish() itself, on this same thread,
+   strictly after hv_g4_wait() returns -- never from main while this thread might still be running. Creating this
+   thread BEFORE any of that runs (see main) means a pthread_create() failure never races an already-started
+   restore: if this thread is never created, hv_g4_start() is never called either, and there is nothing to cancel,
+   wait for, or clean up (reviewed: an earlier draft called hv_g4_start() from main before creating this thread,
+   which both blocked the frame-pump loop for up to 60s and left exactly that race open on a create failure). */
+typedef struct {
+    HvVirtioUsb *usb;
+    const char *ipsw, *workdir;
+    uint64_t ecid;
+} G4StartArgs;
+static int g_g4_finish_failed = -1;   /* -1 not yet run (also true while g_g4_start_failed, where it never runs), 0 passed, >0 that many FAILED rows */
+static atomic_int g_g4_start_failed;  /* 1: hv_g4_start() itself failed -- no restore worker was ever created, hv_g4_wait()/hv_g4_finish() were never called */
+static atomic_int g_g4_wait_rc;       /* hv_g4_wait()'s own return value (1/0/-1), or 0 (its "needed the cancel" value) while unset -- only meaningful once g_g4_done is 1 and g_g4_start_failed is 0 */
+static atomic_int g_g4_done;          /* this thread has nothing further to publish, however it got there */
+static atomic_int g_cancel_sent;      /* cancel_once()'s own guard, shared with every early-exit path in main's loop */
 static const char *g_disk_path, *g_aux_path;
-static void *g4_control_thread(void *arg) {
-    (void)arg;
-    hv_g4_wait(380000); /* G4's own proven budget (host/vmrun.c): recovery_enter_restore()'s ~30s internal wait plus idevicerestore's own up-to-300s
-                            wait for MODE_RESTORE, on top of the TSS+DFU->Recovery stage. Its return value only distinguishes ended-by-itself from
-                            needed-the-cancel from never-ended; hv_g4_finish()'s table below is the actual verdict this binary reports. */
+static void cancel_once(void) {
+    /* The ONLY caller of hv_install_cancel(): called from every early-exit path in main's loop (not only some of
+       them, as an earlier draft had it), so pthread_join is never left waiting behind an uncancelled restore
+       because of which condition happened to end the loop. Safe to call even if hv_g4_start() has not finished
+       its own USB-online wait yet (there is simply nothing to cancel yet in that case). */
+    if (!atomic_load(&g_cancel_sent) && !atomic_load(&g_g4_done)) { hv_install_cancel(); atomic_store(&g_cancel_sent, 1); }
+}
+static void *g4_control_thread(void *argp) {
+    G4StartArgs *a = (G4StartArgs *)argp;
+    if (hv_g4_start(a->usb, a->ipsw, a->workdir, a->ecid) != 0) {
+        atomic_store(&g_g4_start_failed, 1);
+        atomic_store(&g_g4_done, 1);
+        return NULL;
+    }
+    int w = hv_g4_wait(380000); /* G4's own proven budget (host/vmrun.c): recovery_enter_restore()'s ~30s internal wait plus idevicerestore's own
+                                    up-to-300s wait for MODE_RESTORE, on top of the TSS+DFU->Recovery stage, plus its own up to 20s past that cap
+                                    if a cancel was needed. 1: it ended by itself, 0: it needed the cancel, -1: it did not end at all. */
+    atomic_store(&g_g4_wait_rc, w);
+    /* Called unconditionally, even when w == -1 -- matching host/vmrun.c, which calls hv_g4_finish() before ever
+       checking w itself. It is documented as a post-hoc report (file hashes, usb/network counters), not something
+       that frees or closes machine resources, so w == -1's "nothing may be freed or closed" does not apply to it;
+       it applies to what main does AFTER joining this thread (see main's shutdown sequence). */
     g_g4_finish_failed = hv_g4_finish(stdout, g_disk_path, g_aux_path);
     atomic_store(&g_g4_done, 1);
     return NULL;
@@ -241,32 +288,27 @@ int main(int argc, char **argv) {
     hv_runner_set_ready(g_run, 1);
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
-    /* hv_g4_start() itself waits up to 60s for the guest to come online on the bus, then makes the REAL TSS
-       request and starts the restore thread (host/install.c's hv_install_start, already async: it pthread_creates
-       its own worker and returns). That up-to-60s wait runs on THIS (main) thread, same as host/vmrun.c -- it is
-       a one-time startup cost, not part of the steady-state frame-pump loop below. */
-    printf("ui_runner_vm_g4: starting G4 (TSS personalization + DFU->Recovery + RecoveryOS entry, stop C) -- this makes a REAL request to Apple's signing server\n");
-    fflush(stdout);
-    if (bd->vusb ? hv_g4_start(bd->vusb, ipsw, workdir, ecid) != 0 : 1) {
-        printf("ui_runner_vm_g4 RESULT: FAILED, install g4 did not start\n");
-        hv_vm_stop();
-        hv_shm_set_state(g_shm, HV_SHM_STOPPED);
-        return 1;
-    }
-
+    /* hv_g4_start() itself (up to 60s waiting for the guest to come online, then the REAL TSS request and
+       host/install.c's hv_install_start()) now runs ON the control thread, together with hv_g4_wait(), so it is
+       created FIRST and hv_g4_start() is never called from here: if creating this thread fails, no restore has
+       been started by anything this binary did, and hv_vm_stop() right below is immediately safe (reviewed; see
+       the top-of-file comment and g4_control_thread). */
+    static G4StartArgs g4args; /* must outlive this call; file-scope is fine, one VM per process */
+    g4args.usb = bd->vusb; g4args.ipsw = ipsw; g4args.workdir = workdir; g4args.ecid = ecid;
     pthread_t ctrl_th;
-    if (pthread_create(&ctrl_th, NULL, g4_control_thread, NULL) != 0) {
+    if (pthread_create(&ctrl_th, NULL, g4_control_thread, &g4args) != 0) {
         fprintf(stderr, "ui_runner_vm_g4: could not start the G4 control thread\n");
-        printf("ui_runner_vm_g4 RESULT: FAILED, could not start the G4 control thread\n");
+        printf("ui_runner_vm_g4 RESULT: FAILED, could not start the G4 control thread (hv_g4_start() was never called, nothing to clean up)\n");
         hv_vm_stop();
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
         return 1;
     }
+    printf("ui_runner_vm_g4: G4 control thread started (TSS personalization + DFU->Recovery + RecoveryOS entry, stop C, once the guest is online) -- this makes a REAL request to Apple's signing server\n");
+    fflush(stdout);
 
     const char *why_stop = "quit";
     double tstart = now(), next_frame = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
-    int cancel_sent = 0;
     for (;;) {
         int stop_now = 0;
         if (atomic_load(&g_sig)) { why_stop = "signal"; stop_now = 1; }
@@ -274,28 +316,19 @@ int main(int argc, char **argv) {
         else if (atomic_load(&g_exited)) { why_stop = "the machine stopped itself"; stop_now = 1; }
         else if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; stop_now = 1; }
         else if (atomic_load(&g_g4_done)) { why_stop = "g4 ended"; stop_now = 1; }
-        if (stop_now) {
-            /* This loop is the only caller of hv_install_cancel(): sent at most once (cancel_sent), so it never
-               races hv_g4_wait()'s own internal cancel-after-380s on the control thread -- by the time that could
-               fire, this binary's own 450s default has already requested a stop here first. A g4-ended stop skips
-               the cancel (nothing left to cancel). */
-            if (!cancel_sent && !atomic_load(&g_g4_done)) { hv_install_cancel(); cancel_sent = 1; }
-            break;
-        }
+        if (stop_now) { cancel_once(); break; }
         struct pollfd p = {0, POLLIN, 0};
         int r = poll(&p, 1, 10);
-        if (r < 0 && errno != EINTR) { why_stop = "input error"; break; }
+        if (r < 0 && errno != EINTR) { why_stop = "input error"; cancel_once(); break; }
         if (r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR))) {
             char c;
             ssize_t n = read(0, &c, 1);
-            if (n == 0) { why_stop = "input closed"; break; }
-            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; break; }
+            if (n == 0) { why_stop = "input closed"; cancel_once(); break; }
+            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; cancel_once(); break; }
             if (c == '\n') {
                 inl[ll] = 0; ll = 0;
-                if (!strcmp(inl, "quit")) {
-                    if (!cancel_sent && !atomic_load(&g_g4_done)) { hv_install_cancel(); cancel_sent = 1; }
-                    why_stop = "quit"; break;
-                } else if (!strcmp(inl, "status")) status_line("status");
+                if (!strcmp(inl, "quit")) { cancel_once(); why_stop = "quit"; break; }
+                else if (!strcmp(inl, "status")) status_line("status");
                 else ignored++;
             } else if (ll + 1 < sizeof inl) inl[ll++] = c;
         }
@@ -307,14 +340,32 @@ int main(int argc, char **argv) {
         hv_shm_heartbeat(g_shm);
     }
 
-    /* Join the control thread BEFORE anything else: hv_g4_finish() (called on that thread, right after
-       hv_g4_wait() returns there) must see the machine still running and the restore thread's own state settled
-       -- reading disk/aux hashes or usb/network counters while either might still be changing was the exact
-       ordering mistake an earlier draft of this design made and a review caught. This can block for a while
-       (hv_g4_wait()'s own up to 20s past its cap, or up to the remainder of its 380s budget if the cancel above
-       does not land quickly) -- that wait is hv_g4_wait()'s own documented contract, not something this binary
-       can shorten further without changing that function. */
+    /* Join the control thread BEFORE anything else: it has already called hv_g4_start(), hv_g4_wait(), and
+       hv_g4_finish() internally, in that order (matching host/vmrun.c's own call order), so hv_g4_finish()'s
+       report and hv_g4_wait()'s return value are both settled by the time join returns -- reading them, or
+       stopping/flushing the machine, before that was the exact ordering mistake an earlier draft of this design
+       made and a review caught. This can block for a while (hv_g4_start()'s own up to 60s USB-online wait, plus
+       hv_g4_wait()'s own up to ~400s) -- that is hv_g4_start()'s/hv_g4_wait()'s own documented contract, not
+       something this binary can shorten further without changing those functions. cancel_once() above already
+       asked it to stop early, from every path that could reach here. */
     pthread_join(ctrl_th, NULL);
+
+    int g4_start_failed = atomic_load(&g_g4_start_failed);
+    int g4_wait_rc = atomic_load(&g_g4_wait_rc);
+    if (!g4_start_failed && g4_wait_rc == -1) {
+        /* host/install_g4.h, hv_g4_wait()'s own contract: -1 ("it did not end at all", even after the cancel
+           above and its own further 20s) means "nothing may be freed or closed: the caller ends the process."
+           host/vmrun.c's own G4 path honors exactly this by skipping its screen capture and hv_vm_stop() on that
+           same -1 and exiting immediately; this binary does the same -- no hv_vm_stop(), no hv_vm_flush_disks(),
+           no hv_shm_close()/hv_runner_destroy(). hv_g4_finish() itself already ran (inside the control thread,
+           unconditionally) and is safe to report: it is a read-only post-hoc report, not something that frees or
+           closes anything. */
+        status_line("final");
+        printf("ui_runner_vm_g4 RESULT: FAILED, g4 did not end even after cancellation -- nothing can be safely freed or closed, ending the process now (why %s, g4 FAILED rows=%d)\n",
+               why_stop, g_g4_finish_failed);
+        fflush(stdout);
+        _exit(4);
+    }
 
     hv_shm_set_state(g_shm, HV_SHM_STOPPING);
     hv_runner_set_ready(g_run, 0);
@@ -328,8 +379,9 @@ int main(int argc, char **argv) {
     status_line("final");
     printf("ui_runner_vm_g4 RESULT: %s (%s), g4 %s (FAILED rows=%d), ignored input lines %ld\n",
            confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop,
-           g_g4_finish_failed == 0 ? "passed" : g_g4_finish_failed > 0 ? "FAILED" : "did not run to a verdict", g_g4_finish_failed, ignored);
+           g4_start_failed ? "did not start" : g_g4_finish_failed == 0 ? "passed" : g_g4_finish_failed > 0 ? "FAILED" : "did not run to a verdict",
+           g_g4_finish_failed, ignored);
     fflush(stdout);
     if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
-    return (!confirmed) ? 3 : (g_g4_finish_failed == 0) ? 0 : 1;
+    return (!confirmed) ? 3 : g4_start_failed ? 1 : (g_g4_finish_failed == 0) ? 0 : 1;
 }

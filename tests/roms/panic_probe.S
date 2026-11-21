@@ -1,56 +1,66 @@
 /* [C1-4] Exercises host/ui_runner_vm.c's Android boot-branch probe end to end: panic_probe_install()'s two
-   stop_pc addresses (0x10D150 / 0x10D2B8 -- the two places inside 0x10D0B8, the function whose return value the
-   earlier round's probe found gates the confirmed panic call at 0x107238, where it can return 0 to its own
-   caller; see docs/boot-diagnostic-contract-2026-11-15.md), core/cpu.h's HvCpu.panic_first/panic_last/panic_hits
-   capture in panic_probe_hook(), core/exception.c's psci() copying them into the machine-wide snapshot, and
-   host/vm.c's hv_vm_panic_probe() accessor.
+   stop_pc addresses, core/cpu.h's HvCpu.panic_first/panic_last/panic_hits capture in panic_probe_hook(),
+   core/exception.c's psci() copying them into the machine-wide snapshot, and host/vm.c's hv_vm_panic_probe()
+   accessor.
 
-   (An earlier round of this same probe watched 0x1071C4/0x107214 -- the two conditions immediately upstream of
-   the panic call itself -- and a real device confirmed both branches are taken with the predicted values. A
-   round before that watched 0x105F2C/0x105F9C, the panic-helper entries. See git history for those versions of
-   this file and of host/ui_runner_vm.c's hook/install functions if either round ever needs to be repeated.)
+   [2026-11-21, updated for the current hook contract] The hook is now installed at 0x10D2B8 (point A: the
+   earlier round's second address, "cbz x0,#0,0x10D2E0" testing 0x104E04's return value, the FULL 64-bit
+   register -- no masking at this address, unlike the retired 0x10D150 point) and 0x10DF9C (point B: a third,
+   previously-unobserved call site to 0x10C51C, reached only if a global state-table slot is still zero; see
+   host/ui_runner_vm.c's "[2026-11-21 round]" comment and docs/boot-diagnostic-contract-2026-11-15.md). Point B's
+   hook records only cpu->x[4] into hit.x0 (HvPanicHit has no x4/x5/x6 fields of its own) and prints x4/x5/x6
+   directly to stdout at the moment it fires, so tools/c1vm-test.sh checks the two immediate print lines for
+   x4/x5/x6, not the final PANIC_DIAG snapshot, for x5/x6. This file no longer visits the retired 0x10D150
+   address (it is not one of the hook's two current stop_pc values, so a visit there would simply never fire the
+   hook); see git history for the version of this file and of host/ui_runner_vm.c's hook/install functions that
+   covered that and earlier rounds (0x1071C4/0x107214, 0x105F2C/0x105F9C) if any of them ever needs to be
+   repeated.
 
    This ROM is built for VMAPPLE_FIRMWARE-relative addressing (tools/build-asm-rom.sh strips to a raw .text image
-   loaded starting at devices/vmapple.h's VMAPPLE_FIRMWARE = 0x100000), so .org below places code at the EXACT
-   guest addresses the real ROM's two checks inside 0x10D0B8 sit at -- this file is not a stand-in for the real
-   ROM's logic, only for its two addresses.
+   loaded starting at devices/vmapple.h's VMAPPLE_FIRMWARE = 0x100000), so .org below places code at the exact
+   guest addresses the hook is installed at -- this file is not a stand-in for the real ROM's logic at either
+   address (point B in particular is not a claim that the real ROM's 0x10DF9C call site is actually reached on
+   any real boot; that is a separate, real-device question docs/boot-diagnostic-contract-2026-11-15.md tracks),
+   only a way to exercise the hook's own install/capture/snapshot/reset machinery at the two addresses it
+   currently watches.
 
    Sequence:
-     1. visit gate1 (0x10D150, the real ROM's "cbz w0,#0,0x10D184" testing 0x10C51C's return value) with
-        x0 = 0x1_00002222 (upper 32 bits deliberately nonzero, sp = 0x70020000                      (-> first hit)
-     2. set x0 = 0x5_00006666 (the real ROM's "cbz x0,#0,0x10D2E0" tests the FULL 64-bit register, unlike gate1)
-     3. visit gate2 (0x10D2B8) with sp = 0x70030000                                                 (-> second/last hit)
+     1. visit gateA (0x10D2B8) with x0 = 0x1_00002222 (upper 32 bits deliberately nonzero, to prove this point
+        captures the FULL 64-bit register, unlike the retired 0x10D150 point), sp = 0x70020000   (-> first hit)
+     2. set x4 = 0x6666, x5 = 0x7777, x6 = 0x8888 (three distinct fixed values, so a mix-up between them would be
+        caught), sp = 0x70030000
+     3. visit gateB (0x10DF9C)                                                                 (-> second/last hit)
      4. PSCI SYSTEM_RESET
 
-   A passing run must report hits=2, first.{pc=0x10d150,x0=0x2222,sp=0x70020000} (x1/x2/x3 stay 0; the hook masks
-   x0 to 32 bits at this address, since the real cbz there only tests w0 -- this proves the mask is applied, not
-   just that some value came through), last.{pc=0x10d2b8,x0=0x500006666,sp=0x70030000} (x0 here is the FULL
-   64-bit value, unmasked, since the real cbz there tests all 64 bits -- this proves the hook does NOT mask at
-   this address). Together these prove the hook reads the right width at each address, not just that it fires
-   twice. */
+   A passing run must report hits=2, first.{pc=0x10d2b8, x0=0x100002222, x1=x2=x3=0, sp=0x70020000} (the full,
+   unmasked 64-bit value -- this proves point A is captured at full width), last.{pc=0x10df9c, x0=0x6666 (=x4,
+   the only one of x4/x5/x6 the final snapshot can hold), x1=x2=x3=0, sp=0x70030000}. Separately, the immediate
+   print line for point B must show x4=0x6666 x5=0x7777 x6=0x8888 -- tools/c1vm-test.sh checks that line too,
+   since x5/x6 never reach the structured snapshot. */
 .text
 .global _start
 _start:
     movz  x0, #0x2222
-    movk  x0, #0x1, lsl #32        // x0 = 0x100002222: what 0x10C51C would have returned, w0-tested (32-bit)
+    movk  x0, #0x1, lsl #32        // x0 = 0x100002222: nonzero upper 32 bits, to prove point A is unmasked
     movz  x9, #0x0000
     movk  x9, #0x7002, lsl #16     // sp = 0x70020000
     mov   sp, x9
-    b     gate1
+    b     gateA
 
-.org 0xd150
-gate1:
-    nop                            // probe fires here: captures w0 only (masked to 32 bits) -> expect 0x2222
-    movz  x0, #0x6666
-    movk  x0, #0x5, lsl #32        // x0 = 0x500006666: what 0x104E04 would have returned, x0-tested (64-bit)
+.org 0xd2b8
+gateA:
+    nop                            // probe fires here (point A): captures the full 64-bit x0 -> expect 0x100002222
+    movz  x4, #0x6666
+    movz  x5, #0x7777
+    movz  x6, #0x8888              // three distinct values: x4 is the only one the final snapshot can hold (last.x0)
     movz  x9, #0x0000
     movk  x9, #0x7003, lsl #16     // sp = 0x70030000
     mov   sp, x9
-    b     gate2
+    b     gateB
 
-.org 0xd2b8
-gate2:
-    nop                            // probe fires here: captures the full 64-bit x0 -> expect 0x500006666
+.org 0xdf9c
+gateB:
+    nop                            // probe fires here (point B): hit.x0 <- x4 (0x6666); x4/x5/x6 also printed directly
     movz  w0, #0x0009
     movk  w0, #0x8400, lsl #16     // w0 = 0x84000009 (PSCI SYSTEM_RESET)
     mov   x1, #0

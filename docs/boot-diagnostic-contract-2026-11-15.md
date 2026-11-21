@@ -319,17 +319,20 @@ re-deriving the raw ROM bytes (recovered from this session's own pre-compaction 
 context no longer held them) and decoding every field (`opc`, `Rn`, `Rt`, `imm12`) independently.
 
 Both paths above are consistent with the observed final return value 0, so which one the real device actually
-takes -- an early failure at `0x10C51C`, or reaching `0x10D2B8` and failing there (`0x104E04` returning 0) -- is
-not yet distinguished. The probe was retargeted again (same single-slot constraint as before) to these two
-addresses to measure that directly:
+takes -- an early failure at `0x10C51C`, or reaching `0x10D2B8` and failing there (`0x104E04` returning 0) -- was
+not distinguished yet at this point in the investigation. The probe was retargeted (same single-slot constraint
+as before) to these two addresses to measure that directly:
   - `0x10D150`: `.x0` holds `w0`, masked to 32 bits (the `cbz` there only tests the low 32 bits)
   - `0x10D2B8`: `.x0` holds the full, unmasked 64-bit `x0` (the `cbz` there tests all 64 bits, unlike `0x10D150`)
-Covered by the current `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check: a synthetic ROM
-visits `0x10D150` with `x0=0x1_00002222` (upper bits deliberately set, to prove the hook's 32-bit mask is really
-applied there), then `0x10D2B8` with `x0=0x5_00006666` (to prove the *second* address is captured unmasked), then
-resets -- a passing run must report `hits=2`, `first.x0=0x2222` and `last.x0=0x500006666`.
+This round's own synthetic-ROM coverage (`tests/roms/panic_probe.S` / `tools/c1vm-test.sh`'s "panic probe" check,
+as they stood at the time) visited `0x10D150` with `x0=0x1_00002222`, then `0x10D2B8` with `x0=0x5_00006666`, then
+reset -- `hits=2`, `first.x0=0x2222`, `last.x0=0x500006666`. **This specific 0x10D150/0x10D2B8 pairing is no
+longer the current hook contract** -- superseded by the 2026-11-21 round below, which moved the hook to a
+different pair of addresses after a real-device run resolved the question this pairing was measuring. Historical
+real-device results captured under this pairing (if any are recorded elsewhere in this document) describe that
+pairing's addresses and stay as recorded; they are not restated under the new addresses below.
 
-Still open, gated on this round's measurement: whether `0x10C51C`'s failure (if that is what happened) traces to
+Still open, gated on that round's measurement: whether `0x10C51C`'s failure (if that is what happened) traces to
 a Henge device/MMIO gap, and separately, what `0x104E04` and the `0x7002B470`-based 3-byte table are actually
 for -- `devices/cfg.c` was compared field-by-field against QEMU's independent `hw/vmapple` reimplementation of
 the same AVPBooter boot process (same `VMAPPLE_CONFIG` base `0x00400000`, same field layout) and found to match
@@ -337,6 +340,48 @@ closely, so a misplaced or mis-shaped config struct is no longer a live hypothes
 not pre-populate the `0x7002A000`-`0x7002B000` RAM region, which weakens (without disproving) the idea that a
 *host* is supposed to fill it -- the `0x7002B470`-`0x7002B472` writes found this round show at least part of
 that region is self-maintained by the ROM's own code instead.
+
+### 2026-11-21 round: USB-port mismatch resolved; hook moved to 0x10D2B8/0x10DF9C
+
+With D1/D2 (the explicitly-approved work exposing a USB device port and starting `host/usb_host.c`'s
+non-destructive enumeration probe on a normal, non-installer boot too), a real-device run showed the
+`0x10C51C`/`0x10C590` USB-device-type mismatch tracked above is resolved (`mismatch=0`) and the full DFU
+enumeration sequence completes -- but the boot still does not reach a display. Independent Capstone disassembly
+of the ROM bytes (read back via the app's own read-only tools, not executed) found: (a) a disk
+block-read-and-validate pair of functions (entered via `lr=0x10CBE0`, one of `0x10C51C`'s three call sites) that
+report distinct AVPBooter error codes (`0x40200102`/`0103`) on failure; (b) a **third**, previously-unobserved
+call site to `0x10C51C` at `0x10DF9C`, reached only if a global state-table slot at a fixed data address is
+still zero (an ordering guard, not obviously disk- or DFU-related); (c) `0x104E04` (the generic 6-slot
+object-pool allocator called from `0x10D2A4` above, reached once the `0x10C51C`/`0x10C590` type check passes) --
+neither its own underlying work function (`0x104B60`) nor `0x10DF9C`'s reachability on an actual run has been
+confirmed from a real device yet.
+
+The hook (`host/ui_runner_vm.c`'s `panic_probe_install()`/`panic_probe_hook()`, same single `stop_pc`/`stop_pc2`
+slot as every earlier round) was retargeted to these two addresses to get that directly:
+  - **Point A, `0x10D2B8`**: the same `cbz x0,#0,0x10D2E0` as the prior round's second address; `.x0` holds the
+    full, unmasked 64-bit `x0` (`0x104E04`'s return value), exactly as before -- this address's semantics did not
+    change, only its role (now point A, not the prior round's second point).
+  - **Point B, `0x10DF9C`**: the newly-found third call site. The hook captures `x4`/`x5`/`x6` (the same
+    "expected type / options" args `0x10C51C`'s own entry takes at the other two call sites, for comparison) --
+    but `core/cpu.h`'s `HvPanicHit` has no `x4`/`x5`/`x6` fields of its own, so only `x4` is stored into `hit.x0`
+    (reusing the generic field, same as every prior round reused `x0`/`sp` generically); `x4`/`x5`/`x6` are also
+    printed directly to stdout the moment the hook fires, since the structured `PANIC_DIAG` snapshot cannot hold
+    all three.
+  - `0x10D150` is retired: it is no longer either `stop_pc` value, so a ROM that visits only it would never fire
+    the hook at all.
+
+Covered by the current `tests/roms/panic_probe.S` and `tools/c1vm-test.sh`'s "panic probe" check (updated
+2026-11-21 to match): a synthetic ROM visits `0x10D2B8` with `x0=0x1_00002222` (upper bits deliberately set, to
+prove this address is still captured unmasked), then sets `x4=0x6666`/`x5=0x7777`/`x6=0x8888` (three distinct
+values) before visiting `0x10DF9C`, then resets -- a passing run must report `hits=2`,
+`first={pc=0x10d2b8, x0=0x100002222}`, `last={pc=0x10df9c, x0=0x6666}` (`x4`, the only one of the three the
+snapshot can hold), **and**, separately, immediate print lines showing `x4=0x6666 x5=0x7777 x6=0x8888` at point
+B -- the synthetic ROM proves the hook's own install/capture/snapshot/reset machinery works at the two addresses
+it now watches; it is not itself evidence that a real device actually reaches `0x10DF9C` on any real boot. Still
+open, from a real device: whether `0x10DF9C` is actually reached on any run, and if so what `0x104E04`'s
+underlying work function (`0x104B60`) and the still-no-display outcome mean -- this round only adds the probe
+points and the synthetic-ROM coverage for them, same as every prior round added its own points first and
+confirmed them against a real device afterward.
 
 ## How this gets used
 

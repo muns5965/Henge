@@ -82,6 +82,7 @@
 #include <unistd.h>
 
 #include "frame_shm.h"
+#include "g4_ui_stop.h"
 #include "install_g4.h"
 #include "runner_vm_core.h"
 #include "vm.h"
@@ -163,18 +164,17 @@ static int g_g4_finish_failed = -1;   /* -1 not yet run (also true while g_g4_st
 static atomic_int g_g4_start_failed;  /* 1: hv_g4_start() itself failed -- no restore worker was ever created, hv_g4_wait()/hv_g4_finish() were never called */
 static atomic_int g_g4_wait_rc;       /* hv_g4_wait()'s own return value (1/0/-1), or 0 (its "needed the cancel" value) while unset -- only meaningful once g_g4_done is 1 and g_g4_start_failed is 0 */
 static atomic_int g_g4_done;          /* this thread has nothing further to publish, however it got there */
-static atomic_int g_stop_requested;   /* persists across a cancellation attempt made before a restore session exists */
+static HvG4UiStop g_stop;         /* cancellation state is shared with the isolated native regression test */
 static const char *g_disk_path, *g_aux_path;
 static void request_stop(void) {
-    /* This can run while hv_g4_start() is waiting for USB online, before a
-       restore session exists. A refused early cancel is NOT a delivered cancel. */
-    atomic_store(&g_stop_requested, 1);
-    hv_install_cancel();
+    /* A pre-session cancel may be refused; the shared stop state survives
+       until the G4 control thread can retry after the session starts. */
+    hv_g4_ui_request_stop(&g_stop, hv_install_cancel);
 }
 static void *g4_control_thread(void *argp) {
     G4StartArgs *a = (G4StartArgs *)argp;
     /* A stop already requested before this thread runs must not initiate G4. */
-    if (atomic_load(&g_stop_requested)) {
+    if (!hv_g4_ui_start_allowed(&g_stop)) {
         atomic_store(&g_g4_start_failed, 1);
         atomic_store(&g_g4_done, 1);
         return NULL;
@@ -187,7 +187,7 @@ static void *g4_control_thread(void *argp) {
     /* If main requested stop before the restore session existed, retry after
        hv_g4_start() has established it. If main requests stop after this load,
        main's own cancel is made after session start. */
-    if (atomic_load(&g_stop_requested)) hv_install_cancel();
+    hv_g4_ui_after_start(&g_stop, hv_install_cancel);
     int w = hv_g4_wait(380000); /* G4's own proven budget (host/vmrun.c): recovery_enter_restore()'s ~30s internal wait plus idevicerestore's own
                                     up-to-300s wait for MODE_RESTORE, on top of the TSS+DFU->Recovery stage, plus its own up to 20s past that cap
                                     if a cancel was needed. 1: it ended by itself, 0: it needed the cancel, -1: it did not end at all. */

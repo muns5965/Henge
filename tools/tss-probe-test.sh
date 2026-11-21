@@ -22,6 +22,9 @@ for f in $TP/libtatsu/src/*.c; do
 done
 $CC -O2 -Wall -std=gnu11 -D_GNU_SOURCE -DHV_RZ_ALLOW_HTTP_TEST -Ihost -I$TP/curl_include -I$ZB -I$TP/libzip/lib -c host/remote_zip.c -o "$O/tp/remote_zip.o"
 $CC -O2 -Wall -std=gnu11 -D_GNU_SOURCE -DHV_TSS_HTTPS_ONLY -Ihost -I$TP/libplist/include -I$TP/libtatsu/include -I$TP/libimobiledevice-glue/include -c host/tss_probe_core.c -o "$O/tp/tss_probe_core.o"
+# host/tss_probe_core.c calls sha384() (libtomcrypt via libimobiledevice-glue); self-contained
+# (its only includes are its own src/common.h and the public sha.h), so just this one file.
+$CC -O2 -w -std=gnu11 -D_GNU_SOURCE -I$TP/libimobiledevice-glue/include -c $TP/libimobiledevice-glue/src/sha512.c -o "$O/tp/sha512.o"
 $CC -O2 -Wall -std=gnu11 -Ihost -c tests/test_tss_probe.c -o "$O/tp/test_tss_probe.o"
 $CC -o "$O/test_tss_probe" $O/tp/*.o "$O/curl_mbedtls.o" $O/obj/*.o "$ZB/lib/libzip.a" -lz -lpthread -lm
 echo "linked  $O/test_tss_probe"

@@ -158,6 +158,20 @@ static void usb_deliver(HvBdif *b) {
     uint32_t room = 0;
     usb_xfer(b, q->pending, 1, NULL, 0, &room);
     uint32_t payload = m.data ? m.len : 0;
+    /* [2026-11-21, reviewed defect fix, approved] 6 + payload is computed in 32 bits below; a payload within 6 of
+       UINT32_MAX would wrap it to a small value and undersize the malloc() that follows. No reachable path today
+       produces a payload anywhere near this size (EP0 control transfers are bounded by the 16-bit wLength, and the
+       bulk OUT chunk size defaults to 16 KB), but nothing enforced that, so this is guarded explicitly rather than
+       left to rely on that absence. Treated the same as a malloc() failure below: the request is dropped, not
+       retried -- that is an existing, unchanged limitation of this function (see the next two comments), not
+       something this guard introduces. */
+    if (payload > 0xffffffffu - 6u) {
+        fprintf(stderr, "bdif usb: request ep %#x len %u would overflow the response header computation, dropping\n", m.ep, payload);
+        free(m.data);
+        q->done = 1;
+        q->pending = 0;
+        return;
+    }
     uint8_t *tmp = malloc(6 + payload);
     if (tmp) {
         memcpy(tmp, &m.len, 4);
@@ -165,8 +179,21 @@ static void usb_deliver(HvBdif *b) {
         tmp[5] = m.type;
         if (payload) memcpy(tmp + 6, m.data, payload);
         if (room < 6 + payload) fprintf(stderr, "bdif usb: request ep %#x len %u does not fit a %u-byte buffer\n", m.ep, payload, room);
-        usb_xfer(b, q->pending, 1, tmp, 6 + payload, NULL);
+        /* [2026-11-21, reviewed defect fix, approved] usb_xfer()'s return (the bytes it actually copied) was
+           previously discarded; a short copy -- from the room shortfall just logged above, or from a descriptor
+           read/guest-memory failure inside usb_xfer() itself -- was indistinguishable from a full one. This now
+           reports the mismatch. It does not change q->done/q->pending: making a short copy retryable or otherwise
+           visible to the ROM is a host<->guest protocol question (what the ROM would see instead) that needs its
+           own design and approval, not a logging change. */
+        uint32_t copied = usb_xfer(b, q->pending, 1, tmp, 6 + payload, NULL);
+        if (copied != 6 + payload)
+            fprintf(stderr, "bdif usb: request ep %#x len %u: only %u of %u bytes actually reached the guest\n",
+                    m.ep, payload, copied, 6 + payload);
         free(tmp);
+    } else {
+        /* [2026-11-21, reviewed defect fix, approved] malloc() failure here was previously silent -- the response
+           was dropped (same as above) but nothing said so. Logging only; q->done/q->pending below are unchanged. */
+        fprintf(stderr, "bdif usb: request ep %#x len %u: malloc(%u) failed, response not delivered\n", m.ep, payload, 6 + payload);
     }
     free(m.data);
     q->done = 1;

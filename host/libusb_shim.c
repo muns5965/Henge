@@ -304,7 +304,19 @@ static void run(Xfer *x) {
            which must fit the guest's buffer (16 KB, usbmux's receive size; a
            bigger one panics the guest's driver). So send it in pieces. */
         static int chunk;
-        if (!chunk) chunk = getenv("HV_USB_OUT_CHUNK") ? atoi(getenv("HV_USB_OUT_CHUNK")) : 16384;
+        if (!chunk) {
+            const char *env = getenv("HV_USB_OUT_CHUNK");
+            chunk = env ? atoi(env) : 16384;
+            /* [2026-11-21, reviewed defect fix, approved] atoi() on a non-numeric, zero, negative or
+               out-of-range string previously flowed straight into the chunking loop below and into
+               hv_vusb_send()'s uint32_t len parameter unchecked -- a non-positive chunk would not advance
+               `off` (or would underflow the uint32_t cast), stalling or corrupting the transfer. Only the
+               default's positivity was ever relied on, never enforced for the override. */
+            if (chunk <= 0) {
+                if (env) fprintf(stderr, "libusb shim: HV_USB_OUT_CHUNK=%s is not a positive integer, using the default 16384\n", env);
+                chunk = 16384;
+            }
+        }
         acks = 0;
         if (t->length == 0) { /* a zero-length packet: this link delimits transfers itself */
             complete(x, LIBUSB_TRANSFER_COMPLETED, 0);

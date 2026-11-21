@@ -361,7 +361,7 @@ static void *secondary_thread(void *arg) {
     HvCpu *c = arg;
     hv_vm_cpu_qos();
     int r = hv_run(c);
-    if (!c->halted)
+    if (!__atomic_load_n(&c->halted, __ATOMIC_ACQUIRE))
         fprintf(stderr, "hengevm: cpu %u stopped (%s) at pc %llx el%u\n", c->index, hv_vm_reason_name(r),
                 (unsigned long long)c->pc, c->el);
     return NULL;
@@ -404,7 +404,7 @@ void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
 }
 
 void hv_vm_stop(void) {
-    for (int i = 0; i < ncpus; i++) cpus[i].halted = 3; /* the dispatchers stop at the next block */
+    for (int i = 0; i < ncpus; i++) __atomic_store_n(&cpus[i].halted, 3, __ATOMIC_RELEASE); /* the dispatchers stop at the next block */
     hv_machine_kick_all(&m);
     for (int i = 0; i < ncpus; i++) hv_cpu_wake(&cpus[i]);
 }

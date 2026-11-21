@@ -236,7 +236,8 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
         if (!t) return (uint64_t)-2;                         /* INVALID_PARAMETERS */
         if (!t->off) return (uint64_t)-4;                    /* ALREADY_ON */
         while (!__atomic_load_n(&t->parked_off, __ATOMIC_SEQ_CST)) {
-            if (cpu->halted || t->halted) return (uint64_t)-3; /* DENIED: machine is stopping */
+            if (__atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE) || __atomic_load_n(&t->halted, __ATOMIC_ACQUIRE))
+                return (uint64_t)-3; /* DENIED: machine is stopping */
             sched_yield(); /* still on its way out of CPU_OFF */
         }
         uint64_t mpidr = t->mpidr, entry = cpu->x[2], context = cpu->x[3];
@@ -245,11 +246,13 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn, uint64_t pc) {
            waits on wake_mu, so it cannot see the CPU half reset. */
         pthread_mutex_lock(&t->pc_state->wake_mu);
         HvPerCpu *pcs = t->pc_state;
-        if (cpu->halted || t->halted) {        /* re-check under t's wake_mu: hv_machine_halt()
-            publishes t->halted under this same lock, so this closes the gap between the loop
-            above and taking the lock here. (cpu->halted itself is not covered by this lock --
-            it is read atomically, never written here -- so this is not a guarantee against
-            every concurrent SYSTEM_OFF/RESET on the requesting cpu, only against t's.) */
+        if (__atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE) || __atomic_load_n(&t->halted, __ATOMIC_ACQUIRE)) {
+            /* re-check under t's wake_mu: hv_machine_halt() takes this same lock before its
+               compare-exchange on t->halted, so this specific check is serialized against it.
+               cpu->halted is not covered by that lock (hv_machine_halt locks cpu's OWN wake_mu
+               to set it, a different lock) -- the atomic load here only makes the read itself
+               well-defined, not a guarantee against every concurrent SYSTEM_OFF/RESET on the
+               requesting cpu, only against t's. */
             pthread_mutex_unlock(&pcs->wake_mu);
             return (uint64_t)-3;               /* DENIED: machine is stopping */
         }
@@ -323,9 +326,10 @@ int hv_exception_insn(HvCpu *cpu, uint32_t insn, uint64_t pc) {
     }
     if (opc == 0 && ll == 2 && cpu->el == 1) { /* HVC: the hypervisor's PSCI and vmapple's PAC calls */
         cpu->x[0] = psci(cpu, cpu->x[0], pc);
-        if (!cpu->halted && !cpu->off) return 0; /* like a call: the block carries on (xnu makes one per context switch) */
+        int halted_now = __atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE);
+        if (!halted_now && !cpu->off) return 0; /* like a call: the block carries on (xnu makes one per context switch) */
         cpu->pc = pc + 4;
-        cpu->exit_reason = cpu->halted ? HV_EXIT_HALT : HV_EXIT_BRANCH; /* CPU_OFF: the dispatcher parks it */
+        cpu->exit_reason = halted_now ? HV_EXIT_HALT : HV_EXIT_BRANCH; /* CPU_OFF: the dispatcher parks it */
         return 1;
     }
     if (opc == 1 && ll == 0) { /* BRK */

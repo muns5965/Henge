@@ -57,7 +57,7 @@ static void pvpanic_write(void *opaque, uint64_t off, uint64_t v, unsigned size)
         p += sizeof key - 1;
     }
     if (v & 1)
-        for (int i = 0; i < b->ncpus; i++) b->cpu[i].halted = 4;
+        for (int i = 0; i < b->ncpus; i++) __atomic_store_n(&b->cpu[i].halted, 4, __ATOMIC_RELEASE);
 }
 
 /* Not in QEMU's vmapple, which targets macOS 12 guests. iBootStage2 (Sequoia)

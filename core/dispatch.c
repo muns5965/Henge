@@ -275,7 +275,8 @@ static void *fast_resume(HvCpu *cpu) {
     if (off < 0) off = getenv("HV_NO_FAST_RESUME") != NULL;
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
-    if (off || !m->chain || m->trace || m->log >= 2 || !p || cpu->pc == m->stop_pc || cpu->pc == m->stop_pc2 || cpu->halted || cpu->off) { if (m->stats_interval) m->stats.fr_fail[0]++; return NULL; }
+    if (off || !m->chain || m->trace || m->log >= 2 || !p || cpu->pc == m->stop_pc || cpu->pc == m->stop_pc2 ||
+        __atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE) || cpu->off) { if (m->stats_interval) m->stats.fr_fail[0]++; return NULL; }
     if (__atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) || __atomic_load_n(&m->flush_pending, __ATOMIC_RELAXED) ||
         __atomic_load_n(&m->stw_active, __ATOMIC_RELAXED)) {
         if (m->stats_interval) m->stats.fr_fail[1]++;
@@ -824,7 +825,7 @@ static void wait_while_off(HvCpu *cpu) {
     park(cpu);
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
-    while (__atomic_load_n(&cpu->off, __ATOMIC_ACQUIRE) && !cpu->halted) {
+    while (__atomic_load_n(&cpu->off, __ATOMIC_ACQUIRE) && !__atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE)) {
         p->wake_pending = 0;
         pthread_cond_wait(&p->wake_cv, &p->wake_mu);
     }
@@ -930,7 +931,7 @@ static int run_loop(HvCpu *cpu, int one) {
             continue;
         }
         hv_cpu_process_requests(cpu);
-        if (cpu->halted) return HV_EXIT_HALT;
+        if (__atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE)) return HV_EXIT_HALT;
         if (cpu->off) {
             wait_while_off(cpu); /* comes back after CPU_ON, reset to its entry point */
             pending_chain = NULL;

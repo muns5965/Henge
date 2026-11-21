@@ -84,4 +84,13 @@ void hv_pvg_lite_set_size_mm(uint32_t width_mm, uint32_t height_mm);
    turn tallying on, it only reads back what has already been counted. */
 void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, uint64_t counts_out[6][256]);
 
+/* HV_PVG_TALLY diagnostic (read-only; same gating as hv_pvg_lite_tally_snapshot above): decodes the most
+   recent display_swap()'s surface descriptor and walks its guest page list the way pvg_metal.m's
+   makeMappedTexture() does, logging one bounded line (non-black pixel count and a hash over the whole
+   surface, never raw pixel bytes) under the label `when`. For a caller that wants to see whether a
+   surface's actual guest-memory content changed between the swap that named it and some later point (e.g.
+   right before a run ends). A no-op if p is NULL, HV_PVG_TALLY was never set, or there has been no swap
+   yet. */
+void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when);
+
 #endif

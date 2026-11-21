@@ -59,6 +59,7 @@ struct HvPvgLite {
     int root_pending, iosfc_pending;
     uint64_t display_pa;
     uint64_t swaps;
+    uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
     /* The last stamp handed to the worker per channel, and who is being drained. */
     uint32_t submitted[MAX_CHANNELS];
     uint32_t draining;
@@ -234,6 +235,92 @@ static void display_ack(HvPvgLite *p, uint32_t seq) {
 }
 
 static int task_read(HvPvgLite *p, uint32_t task, uint64_t off, void *to, uint32_t n);
+
+/* Reads `n` bytes starting at logical offset `off` into a mapped surface, through its page list exactly
+   as makeMappedTexture() (pvg_metal.m) walks it: `off` is split into a 16 KB page index and an in-page
+   offset, each page looked up in `pages` (physical >> 12, bit 0 present, one entry per 16 KB -- the same
+   table hv_pvg_lite_surface()'s caller reads via hv_pvg_lite_phys()/hv_phys_ptr()), and never spans two of
+   hv_phys_ptr()'s own calls past what one page holds. Returns -1 (nothing written beyond what already
+   succeeded) for a page past `npages`, a page marked absent, or guest RAM that is not actually there --
+   matching makeMappedTexture()'s "surface %llu has no pages" refusal instead of reading past it. */
+static int surface_read(HvPvgLite *p, const uint32_t *pages, uint64_t npages, uint64_t off, void *to, uint64_t n) {
+    uint8_t *d = to;
+    while (n) {
+        uint64_t pg = off >> 14, o = off & 0x3fff, c = 0x4000 - o;
+        if (c > n) c = n;
+        if (pg >= npages || !(pages[pg] & 1)) return -1;
+        uint8_t *q = hv_phys_ptr(p->m, ((uint64_t)(pages[pg] & ~1u) << 12) + o, c);
+        if (!q) return -1;
+        memcpy(d, q, c);
+        d += c, off += c, n -= c;
+    }
+    return 0;
+}
+
+/* [2026-11-21, explicitly approved, read-only diagnostic, per the review chain's "decode the mapped
+   surface's actual pixels" directive] HV_PVG_TALLY only: decodes a surface's descriptor (hv_pvg_lite_surface())
+   the same way pvg_metal.m's makeMappedTexture() does -- page list at +0, fourcc at +4, allocation at +0x18,
+   width at +0x20, height at +0x28, bytes-per-row at +0x30, first-page byte offset at +0x60 (that function's
+   own comment and field offsets; this is a read-only duplicate of its decode, never its vm_remap/Metal
+   path, so this works with no GPU backend at all -- the Android case) -- then walks its guest page list
+   (surface_read() above) over the full width x height region and reduces it to one bounded line: a
+   non-black pixel count (a pixel counts as non-black if its 4 raw bytes are not all zero, regardless of
+   which byte is alpha, so this needs no assumption about channel order) and a running hash, so whether the
+   surface already holds CPU-written content -- as opposed to a renderer ever drawing into it -- can be
+   checked without a GPU command ever having to be decoded, and without ever printing a raw pixel or guest
+   address to the log. Bounded throughout: refuses a width, height, row stride, allocation size or page
+   count bigger than a real display could plausibly need, rather than attempt a huge or runaway read; a
+   missing page or out-of-range descriptor field is reported and skipped, never guessed at. */
+static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
+    const uint8_t *desc = hv_pvg_lite_surface(p, (uint32_t)mapping);
+    if (!desc) { fprintf(stderr, "pvgpix %s mapping %llu: no descriptor\n", when, (unsigned long long)mapping); return; }
+    uint32_t list, fourcc, first;
+    uint64_t alloc, row, sw, sh;
+    memcpy(&list, desc, 4);
+    memcpy(&fourcc, desc + 4, 4);
+    memcpy(&alloc, desc + 0x18, 8);
+    memcpy(&sw, desc + 0x20, 8);
+    memcpy(&sh, desc + 0x28, 8);
+    memcpy(&row, desc + 0x30, 8);
+    memcpy(&first, desc + 0x60, 4);
+    if (!(list & 1) || !sw || !sh || sw > 8192 || sh > 8192 || row < sw * 4 || row > 0x10000 || alloc > 64ull * 1024 * 1024) {
+        fprintf(stderr, "pvgpix %s mapping %llu: descriptor out of bounds (fourcc %08x alloc %llx w %llu h %llu row %llu)\n",
+                when, (unsigned long long)mapping, fourcc, (unsigned long long)alloc, (unsigned long long)sw, (unsigned long long)sh, (unsigned long long)row);
+        return;
+    }
+    uint64_t length = (alloc + first + 0x3fffull) & ~0x3fffull, npages = length >> 14;
+    if (!npages || npages > 4096) {
+        fprintf(stderr, "pvgpix %s mapping %llu: page count out of bounds (%llu)\n", when, (unsigned long long)mapping, (unsigned long long)npages);
+        return;
+    }
+    const uint32_t *pages = hv_phys_ptr(p->m, (uint64_t)(list & ~1u) << 12, npages * 4);
+    if (!pages) { fprintf(stderr, "pvgpix %s mapping %llu: page list unreadable\n", when, (unsigned long long)mapping); return; }
+    uint64_t nonblack = 0, missing_rows = 0, hash = 1469598103934665603ull /* FNV-1a */;
+    static uint8_t rowbuf[8192 * 4]; /* bounded by the w<=8192 check above; reused across calls, not shared off this thread */
+    for (uint64_t y = 0; y < sh; y++) {
+        if (surface_read(p, pages, npages, first + y * row, rowbuf, sw * 4)) { missing_rows++; continue; }
+        for (uint64_t x = 0; x < sw; x++) {
+            uint32_t px;
+            memcpy(&px, rowbuf + x * 4, 4);
+            if (px) nonblack++;
+            hash = (hash ^ px) * 1099511628211ull;
+        }
+    }
+    fprintf(stderr, "pvgpix %s mapping %llu %llux%llu fourcc %08x nonblack %llu/%llu missing_rows %llu/%llu hash %016llx\n",
+            when, (unsigned long long)mapping, (unsigned long long)sw, (unsigned long long)sh, fourcc,
+            (unsigned long long)nonblack, (unsigned long long)sw * sh, (unsigned long long)missing_rows, (unsigned long long)sh, (unsigned long long)hash);
+}
+
+/* Read-only: the last display_swap()'s surface, decoded exactly as tally_surface() above, for a caller
+   (such as install_g6.c's final report) that wants one more check at some later point -- e.g. right before
+   G6 finishes -- to see whether that same surface's content has changed since the swap that named it.
+   `when` is only a label for the one log line this produces. No-op (nothing logged) if p is NULL, HV_PVG_TALLY
+   was never set, or there has been no swap yet to check. */
+void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when) {
+    if (!p || !p->tally || !p->swaps) return;
+    tally_surface(p, p->last_mapping, when);
+}
+
 static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;
@@ -285,6 +372,7 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
         }
     }
     p->swaps++;
+    p->last_mapping = mapping;
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
@@ -299,6 +387,9 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
        style as tally_exec()'s own periodic dump. */
     if (p->tally) fprintf(stderr, "pvgtally swap %llu mapping %llu port %u execs_so_far %llu bad_so_far %llu\n",
                            (unsigned long long)p->swaps, (unsigned long long)mapping, args[0], (unsigned long long)p->execs, (unsigned long long)p->bad);
+    /* [2026-11-21, explicitly approved, read-only diagnostic] same gate as the line above: what the swap
+       actually put on screen, decoded from the surface's own guest memory rather than from GPU commands. */
+    if (p->tally) tally_surface(p, mapping, "swap");
 }
 
 /* Task memory: the root page holds {table page, depth}; each level has 4096
@@ -587,7 +678,10 @@ static void channel_command(HvPvgLite *p, const uint32_t *table, uint32_t size, 
         }
         return;
     }
-    if (op == 0x43 && p->tally) tally_exec(p, table, size, rd, hdr[1], skip);
+    /* pvg_metal.m's hv_pvg_metal_submit() treats 0x43 and 0x45 identically ([r exec:...] for both, same
+       {task, resources, buffers} argument layout tally_exec() already parses) -- counting only 0x43 here
+       would undercount real GPU exec commands by whichever of the two the guest happens to use. */
+    if ((op == 0x43 || op == 0x45) && p->tally) tally_exec(p, table, size, rd, hdr[1], skip);
     if (p->metal) return; /* in order, on its worker */
     if (op != 1 && op != 2 && op != 8) return;
     if (op == 8 && n < 40) return;   /* as in hv_pvg_lite_command: a swap is 10 words; a shorter one is refused, not padded with zeros */

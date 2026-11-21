@@ -547,8 +547,14 @@ int hv_g6_finish(FILE *out, const char *disk, const char *aux) {
             }
         row_info(out, "pvg_tally", "HV_PVG_TALLY: %llu GPU exec command(s) seen, %llu malformed (observational only, never gated; counts by encoder type/opcode%s): %s%s",
                  (unsigned long long)execs, (unsigned long long)bad, bd && bd->pvg ? "" : " -- NO DEVICE (bd/pvg was NULL; nothing collected)",
-                 shown ? detail : "(none; either no GPU exec command (op 0x43) was ever seen, or none decoded cleanly enough for tally_buffer() to count it)",
+                 shown ? detail : "(none; either no GPU exec command (op 0x43 or 0x45, both of which pvg_metal.m treats as an exec submission) was ever seen, or none decoded cleanly enough for tally_buffer() to count it)",
                  more ? " [+more, truncated at 32 distinct type/opcode cells]" : "");
+        /* [2026-11-21, explicitly approved, read-only diagnostic] One more look at the same surface
+           display_swap() last named, right before G6 finishes -- devices/pvg_lite.c's own stderr line (not
+           a row: same style as the "pvgtally swap ..." line it follows on from), so a build 185-style run
+           (one swap, zero tallied execs) also shows whether that swap's surface picked up content later in
+           the run even without any further swap, which the per-swap "pvgpix swap ..." line alone cannot. */
+        hv_pvg_lite_tally_surface(bd ? bd->pvg : NULL, "g6_finish");
     }
     FileId d1, a1;
     file_id(disk, &d1); file_id(aux, &a1);

@@ -94,10 +94,17 @@ static void redact_name(char *line) {
         }
     }
 }
-static int filter_line(const char *line) {
+static int filter_line(char *line) {
     int sens = looks_sensitive(line);
     for (int i = 0; k_ok[i]; i++)
-        if (!sens && !strncmp(line, k_ok[i], strlen(k_ok[i]))) { fputs(line, stdout); __atomic_add_fetch(&g_lines_shown, 1, __ATOMIC_SEQ_CST); return 1; }
+        /* [2026-11-21, explicitly approved, read-only safety fix] A whitelisted line (e.g. idevicerestore's own "Identified
+           device as ..." / "Device Product ..." status lines) can still have the bare ECID embedded in it as plain decimal
+           or hex text -- looks_sensitive() above only catches long hex-digit runs (>=32) or an "ECID"/"Nonce"/"Ticket" line
+           prefix, neither of which a short ECID numeral embedded mid-line would trigger. redact_name() was written for
+           exactly this (it was already filling g_ecid_dec/_hex/_HEX in hv_g3_begin()) but was never actually called on a
+           line before printing it -- it sat here as dead code behind the (void)redact_name; cast below. Calling it here,
+           on the mutable line buffer, before fputs, closes that gap without changing which lines pass the whitelist. */
+        if (!sens && !strncmp(line, k_ok[i], strlen(k_ok[i]))) { redact_name(line); fputs(line, stdout); __atomic_add_fetch(&g_lines_shown, 1, __ATOMIC_SEQ_CST); return 1; }
     __atomic_add_fetch(&g_lines_withheld, 1, __ATOMIC_SEQ_CST);
     if (sens) __atomic_add_fetch(&g_lines_sensitive, 1, __ATOMIC_SEQ_CST);
     return 0;
@@ -456,7 +463,6 @@ int hv_g3_finish(FILE *out, const char *disk, const char *aux) {
         row(out, "local_writes", snap_ok && added == 0 && removed == 0 && changed == 0, "work directory top-level entries: %d new, %d removed, %d changed (none expected; stop B never reaches a write)", added, removed, changed);
         row(out, "ticket_files", snap_ok && ticketish == 0, "%d new entry(ies) named like a signing ticket (shsh/ticket/img4/apimg); none expected (hv_no_ticket_files, the session's default)", ticketish);
     }
-    (void)redact_name;
     (void)g_tss_enabled;
     (void)g_macos_variant;
     if (g_failed == 0 && g_meta == 0)

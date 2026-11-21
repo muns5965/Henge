@@ -965,6 +965,27 @@ static int run_loop(HvCpu *cpu, int one) {
             pending_chain = NULL; /* every call must come back through here */
         }
 
+        /* [2026-11-21, explicitly approved, read-only] Limited per-CPU PC sampling for the Android USB/boot-stall
+           investigation (docs/boot-diagnostic-contract-2026-11-15.md): devices/bdif.c's REG_BUSY diagnostic only
+           sees a CPU at the moment it touches that one MMIO register, so by itself it says nothing about a CPU
+           stuck somewhere else entirely -- a different device, a plain compute/poll loop, EL1 housekeeping.
+           Samples once every 200000 dispatched blocks, per CPU (its own g_pcdiag_count slot, indexed by
+           cpu->index, so CPU 0 and CPU 1 never share or race on state) -- not on PC change, unlike bdif.c's
+           diagnostic, because cpu->pc changes on almost every block during ordinary execution and an on-change
+           print here would flood the log; a fixed block interval keeps this to a steady, bounded rate whether the
+           CPU is spinning on one PC or running through many. Reads only cpu->pc/cpu->el and a static counter;
+           never touches control flow, timing-sensitive state, or anything a guest can observe. A synthetic-ROM
+           run with this compiled in must still produce byte-identical panic-probe/frame results to one without
+           (tools/c1vm-test.sh) -- the sample count is high enough that tools/roms/panic_probe.S's handful of
+           blocks will typically never cross a 200000-block boundary and print nothing, which is fine: this is a
+           real-boot-only diagnostic aid, not something every synthetic test is expected to exercise. */
+        if (cpu->index < HV_MAX_CPUS) {
+            static uint64_t g_pcdiag_count[HV_MAX_CPUS];
+            if ((g_pcdiag_count[cpu->index]++ % 200000) == 0)
+                fprintf(stderr, "hengevm: cpu %u pc sample #%llu pc=%#llx el=%u\n", cpu->index,
+                        (unsigned long long)g_pcdiag_count[cpu->index], (unsigned long long)cpu->pc, (unsigned)cpu->el);
+        }
+
         if ((m->log || m->gen_checks) && cpu->el && (cpu->sctlr_el1 & 1) && !((cpu->pc >> 55) & 1) && cpu->pc >= 0x100000000ull) { /* EL1 at a user address: how did we get here? */
             static int reported;
             if (reported++ < 4) {

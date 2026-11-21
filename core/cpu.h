@@ -171,10 +171,11 @@ typedef struct HvCpu {
     uint32_t index;          /* which CPU: m->percpu[index] holds its caches and interrupt lines */
     struct HvPerCpu *pc_state;
     uint64_t icount;         /* blocks entered, for tests and stats */
-    _Atomic int halted;      /* SYSTEM_OFF(1) / SYSTEM_RESET(2) / guest panic: the machine stops.
-                                Atomic so CPU_ON (core/exception.c) can read another CPU's halted
-                                without that CPU's own wake_mu; see hv_machine_halt() in
-                                core/machine.c for the only place that sets it. */
+    int halted;              /* SYSTEM_OFF(1) / SYSTEM_RESET(2) / guest panic: the machine stops.
+                                Set only by hv_machine_halt() (core/machine.c), under the compare-
+                                exchange builtins it uses, same as off/parked_off below -- not
+                                _Atomic-qualified, so it stays usable with the __atomic_* builtins
+                                the rest of this file uses (clang rejects mixing the two). */
     int off;                 /* PSCI: powered off (a secondary not started yet, or CPU_OFF) until CPU_ON */
     int parked_off;          /* off, and its thread is waiting (so CPU_ON may reset it) */
 

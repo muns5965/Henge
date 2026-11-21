@@ -32,14 +32,12 @@
      - creating the control thread BEFORE calling hv_g4_start() (rather than after, as an earlier draft had it) removes a real danger a review
        caught: if thread creation itself fails, hv_g4_start() -- and so hv_install_start()'s restore worker -- was never called from here, so there
        is no started restore to cancel, wait for, or clean up; the caller can call hv_vm_stop() immediately, same as any other pre-G4 failure.
-     - shutdown ownership: this binary's main loop is the ONLY caller of hv_install_cancel() for an early stop, through the single cancel_once()
-       helper (guarded by g_cancel_sent so it is sent at most once) called from EVERY early-exit path (quit, signal, app-closed, time-limit,
-       input-closed, input-error, not only the ones an earlier draft covered) -- so pthread_join below is never left waiting behind an uncancelled
-       restore because of which path happened to exit the loop. This never races hv_g4_wait()'s own internal "ask it to stop once if it does not
-       end" after its cap_ms (380s, timed from whenever hv_g4_start() itself finishes coming online -- independent of this binary's own --seconds
-       budget, which starts counting from thread creation; either timer may elapse first depending on how long the USB-online wait took, and
-       cancel_once()'s own guard is what keeps that harmless either way).
-       Shutdown order (reviewed, and extended by a further review after implementation): stop requested -> cancel_once() -> pthread_join the control
+     - shutdown ownership: every early-exit path in main records a durable stop request and attempts hv_install_cancel().
+       A cancel attempted before hv_g4_start() creates a restore session cannot be accepted; the control thread
+       checks that durable request both before starting G4 and after the start returns, retrying cancellation
+       once the session exists. Duplicate cancels are idempotent in the registry. G4's own wait timeout and
+       the main process time limit have independent clocks; neither one's ordering is assumed.
+       Shutdown order (reviewed, and extended by a further review after implementation): stop requested -> request_stop() -> pthread_join the control
        thread (it has already called hv_g4_start(), hv_g4_wait(), and hv_g4_finish() internally, in that order, matching host/vmrun.c's own call
        order) -> check hv_g4_wait()'s own return value, now that the thread has been joined: -1 ("it did not end at all") means, per
        host/install_g4.h, that NOTHING may be freed or closed and the caller must simply end the process -- so this binary does exactly that
@@ -63,8 +61,8 @@
    Arguments: --shm PATH --rom F --disk F --aux F --ipsw F --ecid HEX (all required, ecid must be nonzero) --workdir DIR (default ".")
    --ram-mb N (default 2048) --cpus N (default 2) --jit-mb N (default 64) --seconds N (overall process budget, timed from when the control thread
    is created; default 450 as a generous margin -- NOT a guarantee of firing before or after hv_g4_wait()'s own internal 380s+20s cap, which is
-   timed separately, from whenever hv_g4_start()'s own up-to-60s USB-online wait finishes; cancel_once()'s own guard makes the order harmless
-   either way) --stop-wait-ms N (default 5000, same meaning as host/ui_runner_vm.c's).
+   timed separately, from whenever hv_g4_start()'s own up-to-60s USB-online wait finishes; a durable request and
+   post-start retry handle cancellations submitted before the restore session exists) --stop-wait-ms N (default 5000, same meaning as host/ui_runner_vm.c's).
    Standard input: "quit" or end of input = stop; "status" = one status line. Exit codes: 0 stopped and confirmed, G4 passed; 1 settings refused,
    the machine could not be made, G4 did not start, or G4 ran but failed; 2 bad arguments or the shared file could not be made; 3 the stop was NOT
    confirmed within the wait; 4 hv_g4_wait() returned -1 (the run did not end even after cancellation): per host/install_g4.h nothing could be
@@ -165,22 +163,31 @@ static int g_g4_finish_failed = -1;   /* -1 not yet run (also true while g_g4_st
 static atomic_int g_g4_start_failed;  /* 1: hv_g4_start() itself failed -- no restore worker was ever created, hv_g4_wait()/hv_g4_finish() were never called */
 static atomic_int g_g4_wait_rc;       /* hv_g4_wait()'s own return value (1/0/-1), or 0 (its "needed the cancel" value) while unset -- only meaningful once g_g4_done is 1 and g_g4_start_failed is 0 */
 static atomic_int g_g4_done;          /* this thread has nothing further to publish, however it got there */
-static atomic_int g_cancel_sent;      /* cancel_once()'s own guard, shared with every early-exit path in main's loop */
+static atomic_int g_stop_requested;   /* persists across a cancellation attempt made before a restore session exists */
 static const char *g_disk_path, *g_aux_path;
-static void cancel_once(void) {
-    /* The ONLY caller of hv_install_cancel(): called from every early-exit path in main's loop (not only some of
-       them, as an earlier draft had it), so pthread_join is never left waiting behind an uncancelled restore
-       because of which condition happened to end the loop. Safe to call even if hv_g4_start() has not finished
-       its own USB-online wait yet (there is simply nothing to cancel yet in that case). */
-    if (!atomic_load(&g_cancel_sent) && !atomic_load(&g_g4_done)) { hv_install_cancel(); atomic_store(&g_cancel_sent, 1); }
+static void request_stop(void) {
+    /* This can run while hv_g4_start() is waiting for USB online, before a
+       restore session exists. A refused early cancel is NOT a delivered cancel. */
+    atomic_store(&g_stop_requested, 1);
+    hv_install_cancel();
 }
 static void *g4_control_thread(void *argp) {
     G4StartArgs *a = (G4StartArgs *)argp;
+    /* A stop already requested before this thread runs must not initiate G4. */
+    if (atomic_load(&g_stop_requested)) {
+        atomic_store(&g_g4_start_failed, 1);
+        atomic_store(&g_g4_done, 1);
+        return NULL;
+    }
     if (hv_g4_start(a->usb, a->ipsw, a->workdir, a->ecid) != 0) {
         atomic_store(&g_g4_start_failed, 1);
         atomic_store(&g_g4_done, 1);
         return NULL;
     }
+    /* If main requested stop before the restore session existed, retry after
+       hv_g4_start() has established it. If main requests stop after this load,
+       main's own cancel is made after session start. */
+    if (atomic_load(&g_stop_requested)) hv_install_cancel();
     int w = hv_g4_wait(380000); /* G4's own proven budget (host/vmrun.c): recovery_enter_restore()'s ~30s internal wait plus idevicerestore's own
                                     up-to-300s wait for MODE_RESTORE, on top of the TSS+DFU->Recovery stage, plus its own up to 20s past that cap
                                     if a cancel was needed. 1: it ended by itself, 0: it needed the cancel, -1: it did not end at all. */
@@ -316,18 +323,18 @@ int main(int argc, char **argv) {
         else if (atomic_load(&g_exited)) { why_stop = "the machine stopped itself"; stop_now = 1; }
         else if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; stop_now = 1; }
         else if (atomic_load(&g_g4_done)) { why_stop = "g4 ended"; stop_now = 1; }
-        if (stop_now) { cancel_once(); break; }
+        if (stop_now) { request_stop(); break; }
         struct pollfd p = {0, POLLIN, 0};
         int r = poll(&p, 1, 10);
-        if (r < 0 && errno != EINTR) { why_stop = "input error"; cancel_once(); break; }
+        if (r < 0 && errno != EINTR) { why_stop = "input error"; request_stop(); break; }
         if (r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR))) {
             char c;
             ssize_t n = read(0, &c, 1);
-            if (n == 0) { why_stop = "input closed"; cancel_once(); break; }
-            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; cancel_once(); break; }
+            if (n == 0) { why_stop = "input closed"; request_stop(); break; }
+            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; request_stop(); break; }
             if (c == '\n') {
                 inl[ll] = 0; ll = 0;
-                if (!strcmp(inl, "quit")) { cancel_once(); why_stop = "quit"; break; }
+                if (!strcmp(inl, "quit")) { request_stop(); why_stop = "quit"; break; }
                 else if (!strcmp(inl, "status")) status_line("status");
                 else ignored++;
             } else if (ll + 1 < sizeof inl) inl[ll++] = c;
@@ -346,7 +353,7 @@ int main(int argc, char **argv) {
        stopping/flushing the machine, before that was the exact ordering mistake an earlier draft of this design
        made and a review caught. This can block for a while (hv_g4_start()'s own up to 60s USB-online wait, plus
        hv_g4_wait()'s own up to ~400s) -- that is hv_g4_start()'s/hv_g4_wait()'s own documented contract, not
-       something this binary can shorten further without changing those functions. cancel_once() above already
+       something this binary can shorten further without changing those functions. request_stop() above already
        asked it to stop early, from every path that could reach here. */
     pthread_join(ctrl_th, NULL);
 

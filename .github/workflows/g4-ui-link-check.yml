@@ -66,7 +66,36 @@ jobs:
           test -s build-engine/ui_runner_vm_g4
           file build-engine/ui_runner_vm_g4
           "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h build-engine/ui_runner_vm_g4 | grep 'Machine:.*AArch64'
-          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep -q ' hv_g4_start$'
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep ' hv_g4_start
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep ' hv_runner_pump_frame
+
+      - name: Upload linked diagnostic for separate authorized testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runner-vm-g4-android-arm64
+          path: build-engine/ui_runner_vm_g4
+          if-no-files-found: error
+          retention-days: 7
+ > /dev/null
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep -q ' hv_runner_pump_frame$'
+
+      - name: Upload linked diagnostic for separate authorized testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runner-vm-g4-android-arm64
+          path: build-engine/ui_runner_vm_g4
+          if-no-files-found: error
+          retention-days: 7
+ > /dev/null
+
+      - name: Upload linked diagnostic for separate authorized testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runner-vm-g4-android-arm64
+          path: build-engine/ui_runner_vm_g4
+          if-no-files-found: error
+          retention-days: 7
+ > /dev/null
           "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" build-engine/ui_runner_vm_g4 | grep -q ' hv_runner_pump_frame$'
 
       - name: Upload linked diagnostic for separate authorized testing

@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          clang -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+          clang -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined -pthread \
             -Ihost tests/test_g4_ui_stop.c -o /tmp/test_g4_ui_stop
           /tmp/test_g4_ui_stop
 

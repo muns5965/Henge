@@ -66,6 +66,15 @@ typedef struct HvBootDisplay {
     uint32_t width, height, stride;
 } HvBootDisplay;
 int hv_vm_boot_display(HvBootDisplay *d);
+/* Which of hv_vm_boot_display's own two sources (PVG GPU frame, or the boot_args RAM scan) a frame it already
+   returned came from -- HV_SCREEN_PVG or HV_SCREEN_BOOT_ARGS (the same enum hv_vm_capture_screen below uses),
+   or HV_SCREEN_NONE if d itself looks empty (zero size or a NULL pixels pointer). Does not call
+   hv_vm_boot_display again or change anything; it only classifies the HvBootDisplay the caller already has, by
+   the same guest-RAM-bounds check hv_vm_capture_screen uses internally -- for a caller (such as
+   host/install_g6.c's own periodic screen sample) that wants hv_vm_boot_display's full, unscaled frame AND to
+   know which source it came from, which hv_vm_capture_screen cannot give together since it always scales to
+   the caller's requested width x height. */
+int hv_vm_boot_display_source(const HvBootDisplay *d);
 
 /* Extra device work on CPU 0 each tick (Mac graphics). Set before hv_vm_start. */
 void hv_vm_set_poll(void (*poll)(void));

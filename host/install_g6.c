@@ -349,10 +349,24 @@ static void g6_screen_poll(void) {
     double rel = (t - g_scr_t0_ms) / 1000.0;
     HvBootDisplay d;
     if (hv_vm_boot_display(&d) != 0 || !d.pixels || !d.width || !d.height || !d.stride) {
-        printf("install g6: screen t=+%.1fs raw boot_args: none yet\n", rel);
+        printf("install g6: screen t=+%.1fs: no frame yet (neither PVG nor boot_args)\n", rel);
         fflush(stdout);
         return;
     }
+    /* [2026-11-21, explicitly approved, read-only diagnostic fix] hv_vm_boot_display() tries a PVG GPU frame
+       before falling back to the boot_args RAM scan (host/vm.c), but this print used to always say "raw
+       boot_args" regardless of which one actually supplied the frame -- the exact gap docs/boot-diagnostic-
+       contract-2026-11-15.md's stage 3 flags as "known gap C-1" ("hv_vm_boot_display() does not report back...
+       WHICH of the two sources actually produced a present frame"). On this Android build specifically the
+       label happened to always be correct in practice, because host/pvg_metal_stub.c's hv_pvg_metal_frame()
+       always returns -1 (no Metal/real GPU backend exists here), so hv_vm_boot_display() can in fact only ever
+       reach the boot_args branch -- but the print did not know that, it simply assumed it. hv_vm_boot_display_
+       source() (host/vm.c, added alongside this fix) classifies the HvBootDisplay already in hand, the same
+       way hv_vm_capture_screen() already does internally, so this line now says which source it actually was
+       instead of assuming -- and will say "pvg" correctly on its own, with no further change needed here, the
+       day a real Android GPU backend replaces the stub. */
+    int src = hv_vm_boot_display_source(&d);
+    const char *src_name = src == HV_SCREEN_PVG ? "pvg" : src == HV_SCREEN_BOOT_ARGS ? "boot_args" : "unknown";
     uint64_t nonblack = 0, hash = 1469598103934665603ULL; /* FNV-1a 64, offset basis */
     for (uint32_t y = 0; y < d.height; y++) {
         const uint8_t *row = d.pixels + (size_t)y * d.stride;
@@ -363,8 +377,8 @@ static void g6_screen_poll(void) {
         }
     }
     uint64_t total = (uint64_t)d.width * (uint64_t)d.height;
-    printf("install g6: screen t=+%.1fs raw boot_args %ux%u stride %u nonblack %llu/%llu (%.3f%%) hash %016llx\n",
-           rel, d.width, d.height, d.stride, (unsigned long long)nonblack, (unsigned long long)total,
+    printf("install g6: screen t=+%.1fs source=%s %ux%u stride %u nonblack %llu/%llu (%.3f%%) hash %016llx\n",
+           rel, src_name, d.width, d.height, d.stride, (unsigned long long)nonblack, (unsigned long long)total,
            100.0 * (double)nonblack / (double)total, (unsigned long long)hash);
     fflush(stdout);
     if (nonblack > 0 && !g_scr_seen_nonblack) {

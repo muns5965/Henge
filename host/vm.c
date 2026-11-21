@@ -98,6 +98,14 @@ int hv_vm_boot_display(HvBootDisplay *d) {
     }
     return -1;
 }
+/* See the doc comment in vm.h. Same bounds check hv_vm_capture_screen uses below (board.ram/board.ram_size
+   are the exact range hv_vm_boot_display's own RAM scan validated its result against, just above) -- this
+   does not re-derive or guess anything new, it only exposes that one check to a caller who already has a
+   HvBootDisplay and does not want hv_vm_boot_display's result scaled down (hv_vm_capture_screen always does). */
+int hv_vm_boot_display_source(const HvBootDisplay *d) {
+    if (!d || !d->pixels || !d->width || !d->height || !d->stride) return HV_SCREEN_NONE;
+    return (d->pixels >= board.ram && d->pixels < board.ram + board.ram_size) ? HV_SCREEN_BOOT_ARGS : HV_SCREEN_PVG;
+}
 void hv_vm_set_poll(void (*poll)(void)) { extra_poll = poll; }
 
 /* psci_halt_valid: 0 none, 1 a writer has claimed the slot and may still be filling it (never safe to

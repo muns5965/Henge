@@ -114,7 +114,7 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 - **확인한 게스트 명령 처리 경로에서 Vulkan Draw에 연결되는 것(encType 0, compute 인너 연산):** `compute_inner_ops.c`의 0x00·0x01·0x03·0x06·0x07이 `lagfx_emit_pending_draw`(`draw_emit.c:739`)를 호출하고, `lagfx_vk_draw_record_and_submit_bound`(`draw_emit.c:1149, 1216`)를 거쳐 `vkCmdDraw` 또는 `vkCmdDrawIndexed`(`vulkan/draw_record.c:218, 223`)에 닿습니다. 이는 소스 호출 관계이며, 전체 경로를 전수 검증하거나 실제 게스트 명령으로 실행한 결과가 아닙니다. 내부 커서·합성 경로(`cursor.c:264`, `composite.c:270`)의 `vkCmdDraw`는 게스트 명령 경로가 아니므로 제외합니다.
 - **Draw 게이트(encType 0):** `lagfx_emit_pending_draw`는 `pending_pipeline.valid`와 `render_pass_desc.valid`가 모두 참일 때만 그립니다(`draw_emit.c:739–742`). 두 플래그는 encType 0의 `0x001a RenderDescribeRenderPass`(`op_render_describe_render_pass`, `compute_inner_ops.c:458`, 설정 `:554`)와 `0x0074 SetRenderPipelineState`(`op_set_render_pipeline_state`, `:1094`, 설정 `:1499`, `:1631`)가 설정합니다. 따라서 최소 시퀀스는 태스크 생성 → 0x1a → 0x74 → 그리기 명령입니다.
 - **0x1a 구분:** encType 2의 `render_inner_ops.c` 0x1a(`:296–335`)는 설명자 파싱과 로그만 수행하고 태스크 상태를 설정하지 않습니다. 위 게이트를 여는 것은 encType 0의 0x1a입니다. 두 핸들러가 같은 번호를 쓰므로 혼동하지 않아야 합니다. 짧은 페이로드 경로는 "parsed"라고 기록하지만 실제로는 파싱하지 않으므로 로그 문구를 신뢰하면 안 됩니다.
-- **대체 셰이더 위험:** `op_set_render_pipeline_state`는 번역이 실패하면 번들 삼각형 셰이더로 대체합니다(`compute_inner_ops.c:1631` 부근, 로그 `op_0x74 Option 3: substituted triangle shaders`). 번역은 `PHASE6_TRANSLATE`가 기본으로 켜져 있습니다(`LAGFX_DISABLE_PHASE6_TRANSLATE`로 끔). 따라서 G1 판정은 "using TRANSLATED shaders" 로그가 있고 "Option 3" 로그가 없을 때만 유효합니다. 그렇지 않으면 대체 셰이더가 그린 삼각형을 게스트 셰이더 결과로 오인합니다.
+- **대체 셰이더 위험:** `op_set_render_pipeline_state`는 번역이 실패하면 번들 삼각형 셰이더로 대체합니다(`compute_inner_ops.c:1631` 부근, 로그 `op_0x74 Option 3: substituted triangle shaders`). 번역은 `PHASE6_TRANSLATE`가 기본으로 켜져 있습니다(`LAGFX_DISABLE_PHASE6_TRANSLATE`로 끔). 따라서 G1 판정은 "using TRANSLATED shaders" 로그가 있고 "Option 3" 로그가 없을 때만 유효합니다. 그렇지 않으면 대체 셰이더가 그린 삼각형을 게스트 셰이더 결과로 오인합니다. 대체는 Draw 시점에도 일어날 수 있습니다(`draw_emit.c:725–734`, "resolve/alloc/translate failure degrades to skip/substitute"). 따라서 설정 시점 로그만으로는 부족하고, Draw 시점의 진입점이 `main`인지(`draw_emit.c:792–793`) 함께 확인해야 합니다.
 - **encType 2 스텁 범위:** `render_inner_ops.c`의 Draw 계열(`:82` 이후)은 로그만 남기고 0을 반환하는 `TODO Stage 30` 스텁입니다. `translate/render_encoder.c`의 `lagfx_translate_render_draw`는 호출하는 곳이 없습니다. 0x1a를 제외한 나머지 encType 2 연산은 아직 전수 확인하지 않았습니다.
 - **encType 위치:** 세그먼트 헤더의 바이트 +4가 encType입니다(`exec_cmdbuf.c:288`). encType 4는 블릿과 InfoDecoder 응답을 함께 씁니다.
 - **Compute:** `vkCmdDispatch` 호출이 없습니다. NOT IMPLEMENTED가 소스와 일치합니다.
@@ -124,8 +124,14 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
   - 링: Henge 루트 링은 페이지 목록 간접 참조입니다(`devices/pvg_lite.c:166–170` 부근). libapplegfx ch0는 단일 `ring_base`에서 읽고, 래핑 시 두 번째 DMA를 씁니다(`channel_0_dispatcher.c` DMA 구간).
   - 배리어: Henge는 `skip = (hdr[0] >> 16) * 8`을 건너뜁니다(`pvg_lite.c:784`). libapplegfx ch0는 페이로드를 +12에 고정하고 건너뛰지 않습니다.
   - opcode 0x01·0x02·0x08: libapplegfx ch0에서는 DELETE_TASK·MAP_MEMORY2·DELETE_RESOURCE이고, Henge 디스플레이 채널에서는 page·ack·swap입니다(`pvg_lite.c:812–813, 834–836`). 같은 번호를 다른 계층에서 다르게 씁니다.
-- **G1 최소 시퀀스 (소스 추정, 실행 미검증):** 태스크 생성(ch0 DEFINE_TASK2, 태스크가 살아 있어야 함) → EXEC_INDIRECT2(0x20) 안의 encType 0 세그먼트에서 0x001a → 0x0074 → 0x0001 또는 0x0000. 리소스 바인딩(MAP_MEMORY2 등)이 번역 경로에 필요한지는 확인하지 않았습니다. 입력은 libapplegfx 자체 형식으로 새로 구성해야 하며, 픽셀과 완료 상태 판정 기준도 아직 정하지 않았습니다.
-- **G2 캡처 현황:** Henge의 `HV_PVG_TALLY`는 명령 종류와 개수를 셉니다(`pvg_lite.c:1059`, `tally_exec` `:763`). encType은 기록하지 않습니다. 따라서 게스트가 어떤 encType을 쓰는지 알려면 세그먼트 헤더 바이트 +4를 기록하는 패치가 필요합니다. 이 패치는 Henge 소스 변경이라 승인 대상입니다. Henge의 HVF 경로는 macOS에서만 실행되므로 이 Linux 환경에서는 캡처할 수 없습니다. Linux에서 실행되는 것은 프로토콜 절반뿐입니다(`tools/pvg-test.sh`, 장치 모델만 구동하고 게스트는 없음).
+- **G1 최소 시퀀스 (소스 추정, 실행 미검증, 충분조건 아님):** 태스크 생성(ch0 DEFINE_TASK2, 태스크가 살아 있어야 함) → EXEC_INDIRECT2(0x20) 안의 encType 0 세그먼트에서 0x001a(본문 48바이트 이상이어야 게이트가 열림, `compute_inner_ops.c:484`) → 0x0074 → 0x0001 또는 0x0000.
+- **G1 추가 의존성 (미확인):** 리소스 바인딩(MAP_MEMORY2 등), 유효한 정점·셰이더 데이터, render target의 실제 매핑. 0x1a 필드 레이아웃은 주석상 추정이며 신뢰도가 PARTIAL입니다(`compute_inner_ops.c:463–475`). 따라서 게이트가 열린다는 사실과 유효한 렌더 타깃이 구성된다는 사실은 다릅니다.
+- **G1 PASS 조건 (제안, 시험 설계 전 단계):**
+  1. 번역 로그가 있고 "Option 3" 로그가 없어야 합니다.
+  2. Draw 시점의 진입점이 `main`이어야 합니다. `triangle_vertex`가 쓰이면 실패로 봅니다.
+  3. 진단 환경변수가 없어야 합니다. `LAGFX_M2_SOLIDFRAG`(프래그먼트를 단색으로 바꿈), `LAGFX_SKIP_PIPES`, `LAGFX_LEGACY_DRAW01`, `LAGFX_DISABLE_PHASE6_TRANSLATE`가 대상입니다. `/tmp/lagfx_skip.txt`도 없어야 합니다. Draw마다 다시 읽기 때문입니다(`draw_emit.c:744–752`).
+  4. 픽셀 판정과 완료 상태 판정을 함께 통과해야 합니다. 로그 문자열만으로 판정하지 않습니다.
+- **G2 캡처 현황 (기존 수단으로 부분 확보 가능, 패치 불필요):** `HV_PVG_TRACE_FILE`로 지정한 파일이 존재하면 `pvg_lite.c:876–884`가 모든 장치 명령을 stderr에 한 줄씩 씁니다. 항목은 ch, `op`(헤더 워드 전체. 상위 16비트가 배리어 개수), len, stamp, 페이로드 앞 32바이트입니다. 세그먼트 헤더는 배리어 뒤에 놓이므로, 페이로드 offset (배리어 개수×8)에서 바이트 +4가 encType입니다. 한계는 명령당 32바이트뿐이라 세그먼트 전체와 뒤의 인너 명령은 보이지 않는다는 점입니다. `HV_PVG_TALLY`는 encType을 기록하지 않으므로 이 목적에는 쓰지 않습니다. 이 캡처는 Henge의 HVF 실행이 필요해 macOS에서 해야 합니다. 로그 분석은 Linux에서 할 수 있습니다. 세그먼트 전체가 필요해지면 그때 패치를 승인 대상으로 검토합니다.
 
 ## 이 문서의 한계
 

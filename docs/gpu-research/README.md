@@ -7,9 +7,12 @@
 
 | 저장소 | 브랜치 | 커밋 SHA | 비고 |
 |---|---|---|---|
-| muns5965/henge | research/android-port | 082a4ebe35ea5a50fd94ebb53b6a011277ca7670 | 이 문서의 기준 브랜치 |
+| muns5965/henge | research/android-port | 082a4ebe35ea5a50fd94ebb53b6a011277ca7670 | 분석 기준점 |
+| muns5965/henge | research/android-port | 45c004f12eb73d64b10eaccaed7595a847d32804 | 이 문서 추가 커밋 |
 | muns5965/henge | main | 17e9ed9de5dd2aead31468c55ad4af0cd8df7a9b | 비교용, 수정 금지 |
 | muns5965/libapplegfx-vulkan | main | 7574eac0d7396a9f49366f007c7fbeb44245826c | 포크 기준선 |
+
+외부 저장소의 기준 SHA는 [project-comparison.md](project-comparison.md)에 있습니다.
 
 ## 문서 목록
 
@@ -22,7 +25,7 @@
 - [test-matrix.md](test-matrix.md): 단계별 시험 결과
 - [open-issues.md](open-issues.md): 미해결 문제와 차단 사항
 - [implementation-plan.md](implementation-plan.md): 구현 순서와 완료 기준
-- [sources/](sources/): 저장소별 조사 기록
+- [sources/](sources/): 저장소별 조사 기록 (6개)
 
 ## 기존 문서와의 관계
 
@@ -34,6 +37,7 @@
 | docs/agents/colorprobe.md | GPU 화면 색상 처리의 실측 기록 |
 | docs/g4-real-device-baseline-2026-11-22.md | Android 실기기 부팅 기준선 |
 | docs/g6-vs-general-launcher-gap-2026-11-22.md | 복원 실행과 일반 VM 실행의 차이 |
+| docs/licensing.md | 외부 코드 라이선스 목록 (라이선스 판단의 기준) |
 
 ## 작성 규칙
 
@@ -41,4 +45,5 @@
 2. 근거를 확인하지 못했으면 "미확인"으로 적고 추측하지 않습니다.
 3. 해석이 바뀌면 최초 판단과 정정 근거를 함께 남깁니다.
 4. 기술 판단은 `project-comparison.md`의 상태 체계(채택·조건부 채택·참고·보류·미확인)를 따릅니다.
-5. 이 문서는 구현 변경이 아니며, `pvg_lite.c`·VM 메모리·실행 경로를 수정하지 않습니다.
+5. 라이선스 판단은 법률 검토를 대신하지 않으며, 보류 항목으로 기록합니다.
+6. 이 문서는 구현 변경이 아니며, `pvg_lite.c`·VM 메모리·실행 경로를 수정하지 않습니다.

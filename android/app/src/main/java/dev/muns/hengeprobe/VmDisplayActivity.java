@@ -16,6 +16,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -80,6 +81,11 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private static native void nativeUseRunner(boolean on);
     private static native int nativeAttachRunner(String path, long pid);
     private static native void nativeRunnerAppClose();
+    // [2026-11-22] The guest's current picture size (width in the high 32 bits, height in the low 32 bits; 0
+    // before the first frame) -- host/ui_jni.c's impl_nativeFrameSize(). Used by fitSurfaceToFrame() below so
+    // this screen's SurfaceView is sized to the guest's own aspect ratio instead of the full (differently
+    // shaped) phone screen; see that method's comment for why a full-screen SurfaceView distorts the picture.
+    private static native long nativeFrameSize();
 
     // the same numbers as host/touch_input.h
     private static final int T_DOWN = 0, T_UP = 1, T_MOVE = 2, T_CANCEL = 3;
@@ -96,6 +102,9 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private boolean surfaceReady;
     private boolean started;                // nativeStart() succeeded
     private boolean vmStarted;               // VmRunnerLauncher actually started a process for this screen instance
+    // The last frame size fitSurfaceToFrame() actually laid the SurfaceView out for, read only from the render
+    // thread (never the UI thread) -- so a same-size frame is a no-op instead of posting a relayout every tick.
+    private int fitW, fitH;
 
     private volatile Process runner;
     private volatile long runnerPid;
@@ -415,6 +424,7 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
                     lastStatus = now;
                     final String s = nativeStatus() + "\n" + runnerLine;
                     ui.post(() -> { if (!dead && status != null) status.setText(s); });
+                    fitSurfaceToFrame();
                 }
                 long wait = 16 - (SystemClock.uptimeMillis() - now);
                 if (wait > 0) try { Thread.sleep(wait); } catch (InterruptedException e) { break; }
@@ -434,6 +444,39 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
         if (t.isAlive()) return false;
         renderThread = null;
         return true;
+    }
+
+    // [2026-11-22] surface's own LayoutParams starts as MATCH_PARENT x MATCH_PARENT (the whole screen) -- fine
+    // for the phone's own, fixed-shape screen, but the guest's picture has its own aspect ratio (whatever the
+    // guest reports through host/vm.h's HvBootDisplay), which does not generally match the phone's. host/ui_jni.c's
+    // native renderer already sizes the ANativeWindow's BUFFER to the guest's own width/height (never stretched
+    // there); the stretch instead happened one level up, in Android's own surface compositor, which fills
+    // whatever rectangle the SurfaceView is LAID OUT at -- the full screen -- by scaling that fixed-size buffer
+    // onto it independently on each axis. Re-sizing the SurfaceView itself to the guest's own ratio (letterboxed
+    // within the available screen area, centered) removes that second, uncontrolled scale: Android then scales
+    // the buffer uniformly to fill the correctly-shaped rectangle. Called off the render thread every ~250 ms
+    // (piggybacking on the existing status-text throttle, not every frame); does nothing until nativeFrameSize()
+    // reports a first frame, and does nothing more once this size has already been applied once.
+    private void fitSurfaceToFrame() {
+        long packed = nativeFrameSize();
+        int w = (int) (packed >>> 32), h = (int) packed;
+        if (w <= 0 || h <= 0 || (w == fitW && h == fitH)) return;
+        fitW = w; fitH = h;
+        ui.post(() -> {
+            if (dead || surface == null) return;
+            ViewGroup parent = (ViewGroup) surface.getParent();
+            int pw = parent != null ? parent.getWidth() : 0, ph = parent != null ? parent.getHeight() : 0;
+            if (pw <= 0 || ph <= 0) return;   // not laid out yet -- the next tick tries again
+            // fit w x h inside pw x ph, preserving its ratio (letterboxed/pillarboxed), then center it
+            int targetW, targetH;
+            if ((long) w * ph > (long) h * pw) { targetW = pw; targetH = (int) ((long) h * pw / w); }
+            else { targetH = ph; targetW = (int) ((long) w * ph / h); }
+            if (targetW <= 0 || targetH <= 0) return;
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surface.getLayoutParams();
+            if (lp.width == targetW && lp.height == targetH) return;
+            lp.width = targetW; lp.height = targetH; lp.gravity = Gravity.CENTER;
+            surface.setLayoutParams(lp);
+        });
     }
 
     // Guarded by `started`, not by any assumption about Surface-vs-nativeStart() timing (nativeStart() runs

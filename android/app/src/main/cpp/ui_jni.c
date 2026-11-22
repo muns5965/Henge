@@ -362,6 +362,23 @@ static jstring impl_nativeStatus(JNIEnv *env) {
     return (*env)->NewStringUTF(env, s);
 }
 
+/* [2026-11-22] The guest's current picture size, read back by VmDisplayActivity/VmDisplayG4Activity so each can
+   size its own SurfaceView to match it. impl_nativeRender() above sets g_win_w/g_win_h (under g_win_mu) to
+   whatever hv_dispbuf_size() reports for the picture it just blitted -- the guest's own width/height, not the
+   phone's. ANativeWindow_setBuffersGeometry() is already called with that same size, so the ANativeWindow's
+   buffer is never stretched; but a SurfaceView's LAYOUT size is a separate, Java-side thing, and if that layout
+   is the full screen (a different aspect ratio from the guest's picture) Android's own surface compositor
+   stretches the buffer to fill it, independently on each axis -- the distortion a real G4 run first showed.
+   This accessor is how Java learns what to size the SurfaceView to instead. Packed into one jlong (width in the
+   high 32 bits) so a caller gets a matching width/height pair from one call, never a width from one frame and a
+   height from the next. 0 (0,0) before the first frame. */
+static jlong impl_nativeFrameSize(void) {
+    pthread_mutex_lock(&g_win_mu);
+    jlong r = ((jlong)(uint32_t)g_win_w << 32) | (jlong)(uint32_t)g_win_h;
+    pthread_mutex_unlock(&g_win_mu);
+    return r;
+}
+
 /* VmDisplayActivity's status text: the same frame/runner counters as impl_nativeStatus() above, without the
    synthetic screen's touch-calibration diagnostics (there is no simulated target to converge on with a real
    guest). g_guest.x/y is still meaningful here: in runner mode impl_nativeTick() fills it from the shared file's
@@ -426,6 +443,7 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeTick(JNI
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_status_vm(env); }
+JNIEXPORT jlong JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeFrameSize(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeFrameSize(); }
 
 /* ---- JNI exports: VmDisplayG4Activity (G4-track, real VM) -- same impl_* functions, see the note above nativeStart ---- */
 
@@ -444,3 +462,4 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeTick(J
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_status_vm(env); }
+JNIEXPORT jlong JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeFrameSize(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeFrameSize(); }

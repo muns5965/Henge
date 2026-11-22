@@ -4,20 +4,22 @@
 # VmRunnerG4Launcher.java); these checks only back it up. They find direct uses; they cannot find a name that is
 # built up at run time or a different way of starting a process.
 #
-# Unlike check-c13-source.sh, this build's own switch is a literal false: running host/ui_runner_vm_g4.c always
-# makes a real Apple TSS request and drives the guest through DFU->Recovery->RecoveryOS the moment it starts (see
-# VmRunnerG4Launcher.java's own header comment) -- there is no "observation only" mode for it to fall back to. So
-# this script additionally requires the literal to be false, not just a literal; a change flipping it to true is
-# refused here and needs a change to this script itself, which is its own separate, explicit approval.
+# Running host/ui_runner_vm_g4.c always makes a real Apple TSS request and drives the guest through
+# DFU->Recovery->RecoveryOS the moment it starts (see VmRunnerG4Launcher.java's own header comment) -- there is
+# no "observation only" mode for it to fall back to. So unlike check-c13-source.sh's own switch, which this
+# script otherwise mirrors, this one is not neutral about which literal is required: it was false (Phase 2:
+# plumbing only) until a fresh, explicit approval turned real execution on; it is now the literal true, by
+# that same approval, the same way VmRunnerLauncher's own switch is already true in this build. A later change
+# back to false, or any change to this requirement itself, needs its own fresh, explicit approval in turn.
 #
 # Usage: tools/check-g4ui-launcher-source.sh
 cd "$(dirname "$0")/.." || exit 1
 J=android/app/src/main/java/dev/muns/hengeprobe; L=$J/VmRunnerG4Launcher.java
 fail=0; bad() { echo "FAIL $*"; fail=1; }
 [ -f "$L" ] || { echo "FAIL missing $L"; exit 1; }
-# the switch: declared once, a literal false (never computed, never true), read only inside the launcher
+# the switch: declared once, a literal true (never computed, never false), read only inside the launcher
 n=$(grep -cE 'static final boolean START_ENABLED' $L); [ "$n" = 1 ] || bad "START_ENABLED must be declared once (found $n)"
-grep -qE 'static final boolean START_ENABLED = false;' $L || bad "START_ENABLED must be the literal false in this build (flipping it to true needs a change to this script too)"
+grep -qE 'static final boolean START_ENABLED = true;' $L || bad "START_ENABLED must be the literal true in this build (turning real execution back off needs a change to this script too)"
 x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerLauncher.java:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher (or VmRunnerLauncher's own, unrelated switch):"; echo "$x"; }
 # the process: one ProcessBuilder in the launcher; the check comes before it
 n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must have exactly one ProcessBuilder (found $n)"
@@ -90,5 +92,5 @@ if [ -f "$GV" ]; then
     done
   fi
 fi
-[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process, the [G4 UI] info screen starts no process and cannot name the [A] runner, VmDisplayG4Activity drives the SHM/JNI pipeline only through VmRunnerG4Launcher and cannot name the [A] launcher, and every native method it declares has a matching JNI export"
+[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal true, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process, the [G4 UI] info screen starts no process and cannot name the [A] runner, VmDisplayG4Activity drives the SHM/JNI pipeline only through VmRunnerG4Launcher and cannot name the [A] launcher, and every native method it declares has a matching JNI export"
 exit $fail

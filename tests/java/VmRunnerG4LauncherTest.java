@@ -10,14 +10,13 @@ import java.util.List;
 /** Plain-java test: javac -d out android/.../VmRunnerG4Launcher.java tests/java/VmRunnerG4LauncherTest.java &&
  *  java -cp out dev.muns.hengeprobe.VmRunnerG4LauncherTest
  *
- *  Written for START_ENABLED=false (Phase 2: plumbing only, real execution stays off). Every valid call must be
- *  refused with REFUSAL and reach the spawner zero times, whatever the arguments are -- there is no "observation
- *  only" mode for this binary (see VmRunnerG4Launcher's own header comment), so unlike VmRunnerLauncherTest this
- *  file does not need a START_ENABLED-conditional branch: the disabled-path assertions are unconditional. What
- *  VmRunnerLauncherTest already covers for the shared shape (null/missing paths refused before any spawn, a
- *  failing real exec handled without a crash or a stray file, isPackaged) is covered here too, plus the three
- *  G4-specific required options (--ipsw --ecid --workdir) and the fact that START_ENABLED being false must never
- *  depend on anything computed at runtime. */
+ *  Written for either value of START_ENABLED, the same way VmRunnerLauncherTest already is for VmRunnerLauncher's
+ *  own switch: the checks that only made sense while the switch was off ("blocked: not started, reason given"
+ *  with REFUSAL, "spawned == 0" for a fully valid call) are conditioned on VmRunnerG4Launcher.START_ENABLED, not
+ *  hardcoded to one side of it -- a later, separately-approved flip of the switch does not, by itself, make this
+ *  file wrong. What stays true regardless of the switch -- a missing/null path or a missing/empty ecid is still
+ *  refused before any spawn, a failing real exec is still handled without a crash or a stray file, buildCommand's
+ *  exact option list and RUN_SECONDS's floor -- is still checked unconditionally. */
 public class VmRunnerG4LauncherTest {
     static int fails;
     static int spawned;
@@ -41,10 +40,10 @@ public class VmRunnerG4LauncherTest {
         String ecid = "0x1122334455";
         VmRunnerG4Launcher.Spawner counting = (List<String> c) -> { spawned++; throw new java.io.IOException("must not be called"); };
 
-        check("this build ships with real execution off", !VmRunnerG4Launcher.START_ENABLED);
         check("START_ENABLED and startEnabled() agree with each other", VmRunnerG4Launcher.START_ENABLED == VmRunnerG4Launcher.startEnabled());
+        System.out.println("(this build: VmRunnerG4Launcher.START_ENABLED = " + VmRunnerG4Launcher.START_ENABLED + ")");
 
-        // null/missing arguments are refused before any spawn is attempted
+        // null/missing arguments are refused before any spawn is attempted, regardless of the switch
         VmRunnerG4Launcher.Result r = VmRunnerG4Launcher.startWith(counting, null, null, null, null, null, null, null, null);
         check("null arguments refused before any spawn", !r.started && r.process == null && spawned == 0);
         r = VmRunnerG4Launcher.startWith(counting, dir, shm, rom, disk, aux, ipsw, null, workdir);
@@ -54,18 +53,19 @@ public class VmRunnerG4LauncherTest {
         r = VmRunnerG4Launcher.startWith(counting, dir, shm, rom, disk, aux, ipsw, "", workdir);
         check("an empty ecid string is refused before any spawn", !r.started && r.process == null && spawned == 0);
 
-        // even a fully valid, well-formed call never reaches the spawner while the switch is off
+        // a fully valid, well-formed call: reaches the spawner only once the switch is on
         FakeProcess fake = new FakeProcess();
         VmRunnerG4Launcher.Spawner succeeding = (List<String> c) -> fake;
         r = VmRunnerG4Launcher.startWith(succeeding, dir, shm, rom, disk, aux, ipsw, ecid, workdir);
-        check("fully valid arguments are still refused with REFUSAL while START_ENABLED is false",
-                !r.started && r.process == null && r.reason.equals(VmRunnerG4Launcher.REFUSAL));
+        check("valid arguments: start() reports started and returns the spawner's process iff the switch is on",
+                VmRunnerG4Launcher.START_ENABLED ? (r.started && r.process == fake) : (!r.started && r.process == null && r.reason.equals(VmRunnerG4Launcher.REFUSAL)));
 
-        // a real exec of a nonexistent program must fail safely -- no crash, no process, no stray file
+        // a real exec of a nonexistent program must fail safely -- no crash, no process, no stray file -- whatever
+        // the switch is (when the switch is off this is refused before exec is even attempted)
         String[] before = dir.list(); java.util.Arrays.sort(before);
         VmRunnerG4Launcher.Result real = VmRunnerG4Launcher.start(dir, new File(dir, "x1"), new File(dir, "x2"), new File(dir, "x3"), new File(dir, "x4"), ipsw, ecid, workdir);
         String[] after = dir.list(); java.util.Arrays.sort(after);
-        check("a real start() call (disabled) does not start and creates no file", !real.started && java.util.Arrays.equals(before, after));
+        check("a real start() call of a nonexistent program does not start and creates no file", !real.started && java.util.Arrays.equals(before, after));
 
         check("isPackaged false when the library is absent", !VmRunnerG4Launcher.isPackaged(dir) && !VmRunnerG4Launcher.isPackaged(null));
         Files.write(new File(dir, VmRunnerG4Launcher.LIB_NAME).toPath(), new byte[] {0});

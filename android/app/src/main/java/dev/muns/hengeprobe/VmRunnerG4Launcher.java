@@ -11,13 +11,14 @@ import java.util.List;
  * (that class's own header comment explains why: a single compile-time literal, checked first, before any
  * command is even built, with its own CI source check).
  *
- * START_ENABLED is false in this build: Phase 2 (this class) only connects the Java/JNI/SHM plumbing to the
- * already-packaged binary (Phase 1, .github/workflows/android-apk.yml). It does not turn real execution on.
- * Running host/ui_runner_vm_g4.c makes a REAL request to Apple's signing server and drives the virtual guest
- * through DFU->Recovery->RecoveryOS (see that file's own header comment) the moment it is actually started --
- * unlike VmRunnerLauncher's ui_runner_vm, there is no way to invoke this binary "for observation only". Turning
- * this switch on is therefore not a routine follow-up to this change: it needs its own fresh, explicit approval,
- * the same way enabling restore_device()/restored_start_restore() anywhere in this project would.
+ * START_ENABLED is true in this build, by a fresh, explicit approval given for exactly this change (the same
+ * kind of approval this project has already given, and already exercised, for the G0-G6 restore-diagnostic
+ * buttons in MainActivity.java -- this is the same category of real Apple TSS request and real guest restore
+ * progress, just reached through this UI-rendering binary instead of those text-log diagnostics). Running
+ * host/ui_runner_vm_g4.c makes a REAL request to Apple's signing server and drives the virtual guest through
+ * DFU->Recovery->RecoveryOS (see that file's own header comment) the moment it is actually started -- there is
+ * no way to invoke this binary "for observation only". A later change to turn it back off is, symmetrically,
+ * its own fresh, explicit approval too.
  *
  * No Android classes are used, so tests/java/VmRunnerG4LauncherTest.java runs on a plain JVM.
  */
@@ -26,7 +27,7 @@ public final class VmRunnerG4Launcher {
 
     /** The one switch. tools/check-g4ui-launcher-source.sh requires exactly this declaration and a literal
      *  true/false, exactly like tools/check-c13-source.sh does for VmRunnerLauncher.START_ENABLED. */
-    static final boolean START_ENABLED = false;
+    static final boolean START_ENABLED = true;
 
     static final String LIB_NAME = "libuirunnervmg4.so";
     static final String REFUSAL = "이 빌드에서는 G4 UI 실행이 비활성입니다(START_ENABLED=" + START_ENABLED + ")";

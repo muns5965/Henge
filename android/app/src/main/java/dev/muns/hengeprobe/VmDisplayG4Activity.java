@@ -45,11 +45,12 @@ import java.util.concurrent.TimeUnit;
  *  onCreate() checks VmRunnerG4Launcher.startEnabled() FIRST -- before nativeStart(), before reading or
  *  validating any of the six paths below, before touching any file -- exactly the same order the other real-VM
  *  screen already uses for its own switch, and for the same reason: when G4 execution is blocked there is
- *  nothing to display and nothing to prepare, so neither should happen. VmRunnerG4Launcher's own switch is a
- *  literal false in this build with no "observation only" mode (see that class's own header comment: starting
- *  the G4 runner always makes a real Apple TSS request and drives the guest through DFU->Recovery->RecoveryOS
- *  the moment it starts) -- so in this build, this screen only ever shows the refusal text below and goes no
- *  further. Flipping that switch is a separate change with its own fresh, explicit approval.
+ *  nothing to display and nothing to prepare, so neither should happen. VmRunnerG4Launcher's own switch has no
+ *  "observation only" mode (see that class's own header comment: starting the G4 runner always makes a real
+ *  Apple TSS request and drives the guest through DFU->Recovery->RecoveryOS the moment it starts, whichever way
+ *  the switch currently reads) -- in THIS build the switch is a literal true, by a fresh, explicit approval
+ *  given for exactly this, so once the six paths below validate, this screen actually starts the G4 runner for
+ *  real. A later change back to false, or any other change to this behavior, needs its own fresh approval.
  *
  *  rom/disk/aux/ipsw/ecid/workdir: this screen does not default, download or create any of the first five. All
  *  five must be given as explicit Intent extra values ("rom", "disk", "aux", "ipsw", "ecid", "workdir") and the

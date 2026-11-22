@@ -616,15 +616,16 @@ public class MainActivity extends Activity {
         c13Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c13Note);
         // [G4 UI] information screen, same shape as [C1-3] above but for the G4 diagnostic runner's
-        // Java launcher. It starts nothing itself; it only reports
-        // VmRunnerG4Launcher's own switch (VmRunnerG4Launcher.startEnabled()), which is a literal false in
-        // this build with no "observation only" mode.
+        // Java launcher. It starts nothing itself; it only reports VmRunnerG4Launcher's own switch
+        // (VmRunnerG4Launcher.startEnabled()), whichever way that currently reads in this build -- this note's
+        // own text below is written not to hardcode either state, since the switch has already changed once.
         final Button g4uiButton = new Button(this);
         g4uiButton.setText("[G4 UI] G4 복원 진단 실행기 정보");
         g4uiButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmRunnerG4Activity.class)));
         root.addView(g4uiButton);
         final TextView g4uiNote = new TextView(this);
-        g4uiNote.setText("G4 UI 진단 바이너리가 APK에 들어 있는지와 실행이 켜져 있는지 꺼져 있는지를 보여 줍니다. 이 화면 자체는 프로세스를 시작하지 않고, Apple 서버로 어떤 요청도 보내지 않습니다. 이 빌드에서는 실행이 비활성입니다.");
+        g4uiNote.setText("G4 UI 진단 바이너리가 APK에 들어 있는지와 실행이 켜져 있는지 꺼져 있는지를 보여 줍니다. 이 화면 자체는 프로세스를 시작하지 않고, Apple 서버로 어떤 요청도 보내지 않습니다. 실제로 켜져 있는지는 화면을 열어서 확인하세요(이 빌드에서는 "
+                + (VmRunnerG4Launcher.startEnabled() ? "활성입니다 — [A-G4] 버튼을 누르면 실제로 Apple 서버에 요청이 갑니다." : "비활성입니다.") + ")");
         g4uiNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(g4uiNote);
         // [A] The real VM's screen. Whether this can ever start a process is decided entirely by
@@ -680,7 +681,9 @@ public class MainActivity extends Activity {
         // separate from the existing G4 install-diagnostic button's own workdir (so the two distinct G4
         // binaries never share one), created here the same way that button already creates its own.
         final Button vmDisplayG4Button = new Button(this);
-        vmDisplayG4Button.setText("[A-G4] G4 VM 화면(이 빌드에서는 실행 비활성)");
+        vmDisplayG4Button.setText(VmRunnerG4Launcher.startEnabled()
+                ? "[A-G4] G4 VM 화면(실행 활성 — 실제 Apple 서버 요청)"
+                : "[A-G4] G4 VM 화면(이 빌드에서는 실행 비활성)");
         final boolean[] vmDisplayG4Busy = {false};
         vmDisplayG4Button.setOnClickListener(v -> {
             if (vmDisplayG4Busy[0]) return;
@@ -736,7 +739,10 @@ public class MainActivity extends Activity {
         });
         root.addView(vmDisplayG4Button);
         final TextView vmDisplayG4Note = new TextView(this);
-        vmDisplayG4Note.setText("기존 ROM·디스크·AUX·IPSW·ECID 경로를 그대로 전달합니다(아무것도 내려받거나 새로 만들지 않습니다; workdir만 이 화면 전용 빈 디렉터리를 새로 만듭니다). 실제로 시작되는지는 VmRunnerG4Launcher의 활성화 여부가 따로 결정하며, 이 빌드에서는 비활성입니다(화면을 열어도 아무 프로세스도 시작되지 않고 Apple 서버로 어떤 요청도 보내지 않습니다).");
+        vmDisplayG4Note.setText("기존 ROM·디스크·AUX·IPSW·ECID 경로를 그대로 전달합니다(아무것도 내려받거나 새로 만들지 않습니다; workdir만 이 화면 전용 빈 디렉터리를 새로 만듭니다). 실제로 시작되는지는 VmRunnerG4Launcher의 활성화 여부가 따로 결정합니다. "
+                + (VmRunnerG4Launcher.startEnabled()
+                        ? "이 빌드에서는 실행이 활성입니다 — 다섯 경로가 모두 있으면 이 화면을 여는 순간 실제 Apple 서명 서버에 요청을 보내고 가상 게스트를 DFU→Recovery→RecoveryOS까지 진행시킵니다(관찰 전용 모드 없음)."
+                        : "이 빌드에서는 비활성입니다(화면을 열어도 아무 프로세스도 시작되지 않고 Apple 서버로 어떤 요청도 보내지 않습니다)."));
         vmDisplayG4Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(vmDisplayG4Note);
 

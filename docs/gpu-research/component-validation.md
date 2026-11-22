@@ -139,6 +139,9 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
   - *`HV_PVG_TALLY`는 encType을 기록합니다.* `tally_buffer`가 `counts[type][opcode]`로 집계하고(`:748`), 실행 2000회마다 `pvgtally type opcode count`를 출력합니다(`:774`). 이전에 "encType을 기록하지 않는다"고 쓴 것도 틀렸습니다.
   - *한계:* 집계값이라 개별 명령의 순서나 세그먼트 조합은 보이지 않습니다. 실행이 2000회 미만이면 출력이 없습니다. 태스크 주소 변환 실패는 `bad` 카운터로만 집계됩니다.
   - *실행 환경:* HVF 실행이 필요하므로 macOS에서 캡처합니다. 집계 로그의 분석은 Linux에서 할 수 있습니다.
+  - *집계 조회 경로 (읽기 전용 확인):* `hv_pvg_lite_tally_snapshot`(`pvg_lite.c:1040`)의 호출처는 `host/install_g6.c:537` 하나뿐입니다. G6 진단 빌드(`HV_INSTALL_G6`)의 최종 보고에서만 호출되며, 일반 실행의 종료 경로에는 없습니다. 이 빌드는 설치 단계(stop E)까지만 진행하므로 드로잉 분포를 얻는 데 쓰지 않습니다.
+  - *encType 의미 차이:* Henge 주석(`pvg_lite.c:696–697`)은 0 render, 1 compute, 2 blit, 4 info입니다. libapplegfx `exec_cmdbuf.c:140–160`은 0·1 compute, 2 render, 4 blit(+InfoDecoder), 5 protection입니다. 5는 두 쪽 모두 보호 옵션 프리앰블로 다룹니다(`pvg_lite.c` `tally_buffer`의 type 5 처리). 0·2·4는 이름이 다릅니다. libapplegfx의 encType 0 테이블 자체가 SetRenderPipelineState, DrawPrimitives 같은 렌더 연산이므로, exec_cmdbuf의 "compute" 주석이 낡았을 가능성이 있습니다. 이는 소스 내부 근거로 본 추정이며, 숫자 일치만으로 호환성을 인정하지 않습니다.
+  - *G2 절차 (macOS, 패치 불필요, 실행 미수행):* 일반 실행을 `HV_PVG_TALLY=1`로 돌리고 stderr의 `pvgtally type opcode count` 줄을 수집합니다. 주기 출력은 2000회마다 나오므로 그보다 많은 GPU 명령이 나오는 워크로드를 씁니다. 결과 해석은 Henge와 libapplegfx의 encType 이름 차이를 고려해 명령 페이로드와 함께 봅니다.
 
 ## 이 문서의 한계
 

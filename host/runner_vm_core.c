@@ -15,6 +15,7 @@ struct HvRunner {
     HvRunnerStats st;
     uint8_t *bounce;            /* our own copy of the picture, tightly packed: what the shared file receives */
     uint32_t bw, bh;
+    int last_source;            /* the HvBootDisplay.source of the most recent successful fetch_cb; read back in hv_runner_pump_frame */
     int fetch_error;
 };
 
@@ -109,6 +110,11 @@ static int fetch_cb(void *ctx, const uint8_t **pixels, uint32_t *width, uint32_t
     }
     for (uint32_t y = 0; y < d.height; y++) memcpy(r->bounce + (size_t)y * need, d.pixels + (size_t)y * d.stride, (size_t)need);
     r->bw = d.width; r->bh = d.height;
+    /* d.source directly, NOT hv_vm_boot_display_source(&d): that accessor lives in host/vm.c, and this module links
+       nothing of host/vm.c (see this file's own header comment) so a test can stand a recorder in for the machine.
+       Reading the field is equivalent here anyway -- the checks just above already proved d is not "empty" in that
+       accessor's sense (non-NULL pixels, non-zero width and height), the only case where it would override source. */
+    r->last_source = d.source;
     r->st.display_present++;
     *pixels = r->bounce; *width = d.width; *height = d.height; *stride_bytes = (uint32_t)need;
     return 0;
@@ -119,7 +125,15 @@ int hv_runner_pump_frame(HvRunner *r) {
     int rc = hv_dispbuf_pull(r->db, fetch_cb, r);
     if (rc == HV_DISP_NEW) {
         int s = hv_shm_publish(r->shm, r->bounce, r->bw, r->bh, r->bw * 4u);
-        if (s == 1) r->st.frames_published++; else r->st.shm_errors++;
+        if (s == 1) {
+            r->st.frames_published++;
+            switch (r->last_source) {
+            case HV_SCREEN_PVG: r->st.frames_from_pvg++; break;
+            case HV_SCREEN_PVG_SURFACE: r->st.frames_from_pvg_surface++; break;
+            case HV_SCREEN_BOOT_ARGS: r->st.frames_from_boot_args++; break;
+            default: r->st.frames_from_unknown_source++; break;
+            }
+        } else r->st.shm_errors++;
     } else if (rc == HV_DISP_REJECTED) r->st.call_errors++;
     return rc;
 }

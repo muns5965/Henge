@@ -89,14 +89,15 @@ static HvShm *open_running(pid_t pid, double sec) {
     return NULL;
 }
 
-typedef struct { unsigned long long popped, disp, skipped, rejected, calls, queries, dpres, dabs, pvalid, pabs, cerr, serr, frames, rpush, rpop, rdrop, wasked, wrefused, nettx, netrx; } Line;
+typedef struct { unsigned long long popped, disp, skipped, rejected, calls, queries, dpres, dabs, pvalid, pabs, cerr, serr, frames, fpvg, fpvgsurf, fbootargs, funknown, rpush, rpop, rdrop, wasked, wrefused, nettx, netrx; } Line;
 static int parse_line(const char *text, const char *tag, Line *o) {
     char key[40]; snprintf(key, sizeof key, "ui_runner_vm %s:", tag);
     const char *p = strstr(text, key); if (!p) return 0;
     const char *last = p; while ((p = strstr(p + 1, key))) last = p;
-    int n = sscanf(last, "ui_runner_vm %*[a-z]: pid %*d cmds popped %llu dispatched %llu skipped %llu rejected %llu | calls %llu queries %llu | display present %llu absent %llu | pointer valid %llu absent %llu | call_errors %llu shm_errors %llu | frames published %llu | ring pushed %llu popped %llu dropped %llu | disk writes asked %llu refused %llu | net frames tx %llu rx %llu",
-                   &o->popped, &o->disp, &o->skipped, &o->rejected, &o->calls, &o->queries, &o->dpres, &o->dabs, &o->pvalid, &o->pabs, &o->cerr, &o->serr, &o->frames, &o->rpush, &o->rpop, &o->rdrop, &o->wasked, &o->wrefused, &o->nettx, &o->netrx);
-    return n == 20;
+    int n = sscanf(last, "ui_runner_vm %*[a-z]: pid %*d cmds popped %llu dispatched %llu skipped %llu rejected %llu | calls %llu queries %llu | display present %llu absent %llu | pointer valid %llu absent %llu | call_errors %llu shm_errors %llu | frames published %llu (pvg %llu pvg_surface %llu boot_args %llu unknown %llu) | ring pushed %llu popped %llu dropped %llu | disk writes asked %llu refused %llu | net frames tx %llu rx %llu",
+                   &o->popped, &o->disp, &o->skipped, &o->rejected, &o->calls, &o->queries, &o->dpres, &o->dabs, &o->pvalid, &o->pabs, &o->cerr, &o->serr, &o->frames,
+                   &o->fpvg, &o->fpvgsurf, &o->fbootargs, &o->funknown, &o->rpush, &o->rpop, &o->rdrop, &o->wasked, &o->wrefused, &o->nettx, &o->netrx);
+    return n == 24;
 }
 
 static Proc start_runner(const char *const *extra) {

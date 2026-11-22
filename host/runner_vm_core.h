@@ -26,6 +26,16 @@
      call_errors     answers that broke the function's own contract (a picture with no pixels, a size that cannot be, a pointer outside 0..65535)
      shm_errors      the shared file's lock could not be taken, or a picture was refused, in a call this module made
      frames_published  pictures copied into the shared file
+     frames_from_pvg / frames_from_pvg_surface / frames_from_boot_args / frames_from_unknown_source
+       [2026-11-22] A breakdown of frames_published by hv_vm_boot_display's own HvBootDisplay.source
+       (host/vm.h's HV_SCREEN_PVG / HV_SCREEN_PVG_SURFACE / HV_SCREEN_BOOT_ARGS), read directly off the
+       HvBootDisplay the boot_display call already filled -- NOT through vm.h's hv_vm_boot_display_source(),
+       which lives in host/vm.c and would break this module's own promise above to link nothing of host/vm.c.
+       Counted at publish time -- only when hv_runner_pump_frame actually copies a NEW picture into the
+       shared file -- never at every successful boot_display call, so the four always sum to exactly
+       frames_published; frames_from_unknown_source is for a boot_display answer that does not set source at
+       all (stays HV_SCREEN_NONE), which a hand-built test or fake HvRunnerApi never does (see vm.h's own
+       doc comment on hv_vm_boot_display_source) and a real run never should.
    Single-threaded: one thread owns an HvRunner and makes every call on it. */
 #include <stddef.h>
 #include <stdint.h>
@@ -49,6 +59,7 @@ typedef struct {
     uint64_t calls_made, queries_made;
     uint64_t display_present, display_absent, pointer_valid, pointer_absent;
     uint64_t call_errors, shm_errors, frames_published;
+    uint64_t frames_from_pvg, frames_from_pvg_surface, frames_from_boot_args, frames_from_unknown_source;
 } HvRunnerStats;
 
 typedef struct HvRunner HvRunner;

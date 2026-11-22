@@ -44,11 +44,15 @@ static int g_dmode = D_ABSENT;
 static uint8_t *g_dpix;      /* the "guest's" framebuffer */
 static uint32_t g_dw = 320, g_dh = 200, g_dstride = 320 * 4 + 64;
 static int g_dcalls;
+/* What D_PRESENT puts in HvBootDisplay.source. Defaults to HV_SCREEN_NONE (0): this recorder, like every other
+   hand-built HvRunnerApi in this codebase (see vm.h's own doc comment on hv_vm_boot_display_source), does not set
+   source unless a test asks it to via g_dsource, below. */
+static int g_dsource = HV_SCREEN_NONE;
 static int r_display(HvBootDisplay *d) {
     g_dcalls++;
     switch (g_dmode) {
     case D_ABSENT: return -1;
-    case D_PRESENT: d->pixels = g_dpix; d->width = g_dw; d->height = g_dh; d->stride = g_dstride; return 0;
+    case D_PRESENT: d->pixels = g_dpix; d->width = g_dw; d->height = g_dh; d->stride = g_dstride; d->source = g_dsource; return 0;
     case D_NULLPIX: d->pixels = NULL; d->width = g_dw; d->height = g_dh; d->stride = g_dstride; return 0;
     case D_ZEROW: d->pixels = g_dpix; d->width = 0; d->height = g_dh; d->stride = g_dstride; return 0;
     case D_ZEROH: d->pixels = g_dpix; d->width = g_dw; d->height = 0; d->stride = g_dstride; return 0;
@@ -180,6 +184,49 @@ static void test_picture(void) {
     HvRunnerStats b = stats(r);
     CHECK(b.queries_made == a.queries_made, "after close: no query counted");
     free(g_dpix); hv_runner_destroy(r); hv_shm_close(rs); hv_shm_close(app);
+}
+
+/* ---- frame source breakdown: HvBootDisplay.source, read back by hv_vm_boot_display_source(), must land in exactly
+   one of frames_published's four buckets, and the four must always sum back to frames_published ---- */
+static void test_frame_source(void) {
+    HvShm *app, *rs = mk_shm("src.shm", &app);
+    HvRunner *r = hv_runner_create(&API, rs);
+    g_dpix = malloc((size_t)g_dstride * g_dh);
+    hv_testpattern(g_dpix, g_dw, g_dh, g_dstride, 1, 0, 0);
+    g_dmode = D_PRESENT;
+
+    /* unset source, as every existing fake HvRunnerApi in this codebase leaves it: counted as unknown, not silently
+       folded into any named bucket */
+    g_dsource = HV_SCREEN_NONE;
+    HvRunnerStats a = stats(r);
+    CHECK(hv_runner_pump_frame(r) == HV_DISP_NEW, "unset source: still published");
+    HvRunnerStats b = stats(r);
+    CHECK(b.frames_published == a.frames_published + 1 && b.frames_from_unknown_source == a.frames_from_unknown_source + 1
+          && b.frames_from_pvg == a.frames_from_pvg && b.frames_from_pvg_surface == a.frames_from_pvg_surface && b.frames_from_boot_args == a.frames_from_boot_args,
+          "unset source counted as unknown, not any named bucket");
+
+    /* each named source, one changed picture at a time so each pull sees HV_DISP_NEW */
+    struct { int source; const char *name; } cases[] = {
+        {HV_SCREEN_PVG, "pvg"}, {HV_SCREEN_PVG_SURFACE, "pvg_surface"}, {HV_SCREEN_BOOT_ARGS, "boot_args"},
+    };
+    for (int i = 0; i < 3; i++) {
+        hv_testpattern(g_dpix, g_dw, g_dh, g_dstride, i + 10, i, i);  /* changed picture: forces HV_DISP_NEW */
+        g_dsource = cases[i].source;
+        a = stats(r);
+        CHECK(hv_runner_pump_frame(r) == HV_DISP_NEW, "%s: published", cases[i].name);
+        b = stats(r);
+        uint64_t got = cases[i].source == HV_SCREEN_PVG ? b.frames_from_pvg - a.frames_from_pvg
+                     : cases[i].source == HV_SCREEN_PVG_SURFACE ? b.frames_from_pvg_surface - a.frames_from_pvg_surface
+                     : b.frames_from_boot_args - a.frames_from_boot_args;
+        CHECK(b.frames_published == a.frames_published + 1 && got == 1, "%s: counted in its own bucket, nowhere else", cases[i].name);
+    }
+    HvRunnerStats f = stats(r);
+    CHECK(f.frames_published == f.frames_from_pvg + f.frames_from_pvg_surface + f.frames_from_boot_args + f.frames_from_unknown_source,
+          "the four buckets always sum to frames_published (%llu = %llu+%llu+%llu+%llu)",
+          (unsigned long long)f.frames_published, (unsigned long long)f.frames_from_pvg, (unsigned long long)f.frames_from_pvg_surface,
+          (unsigned long long)f.frames_from_boot_args, (unsigned long long)f.frames_from_unknown_source);
+    g_dsource = HV_SCREEN_NONE;
+    free(g_dpix); hv_runner_close_display(r); hv_runner_destroy(r); hv_shm_close(rs); hv_shm_close(app);
 }
 
 /* ---- pointer ---- */
@@ -378,6 +425,7 @@ int main(void) {
     test_env();
     test_commands();
     test_picture();
+    test_frame_source();
     test_pointer();
     test_threads();
     test_readonly_disk();

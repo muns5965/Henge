@@ -111,8 +111,12 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 소스 추적 결과입니다. 이 절의 내용은 실행으로 확인한 것이 아닙니다.
 
 - **진입점:** ch0 `0x20`(EXEC_INDIRECT2)이 `lagfx_compute_exec_cmdbuf`(`src/handlers/compute/exec_cmdbuf.c:480`)로 가고, `inner_walk_segment`(`:172`)가 인너 명령을 나눕니다(`src/dispatchers/channel_0_dispatcher.c:107–108`).
-- **Vulkan Draw까지 닿는 경로(encType 0, compute 인너 연산):** `compute_inner_ops.c`의 0x00·0x01·0x03·0x06·0x07이 `lagfx_emit_pending_draw`(`draw_emit.c:739`)를 호출하고, `lagfx_vk_draw_record_and_submit_bound`(`draw_emit.c:1149, 1216`)를 거쳐 `vkCmdDraw` 또는 `vkCmdDrawIndexed`(`vulkan/draw_record.c:218, 223`)에 닿습니다. 소스상 Vulkan Draw에 닿는 경로는 이것뿐입니다.
-- **스텁인 경로(encType 2, render 인너 연산):** `render_inner_ops.c`의 Draw 계열(`:82` 이후)은 로그만 남기고 0을 반환하는 `TODO Stage 30` 스텁입니다. `translate/render_encoder.c`의 `lagfx_translate_render_draw`는 호출하는 곳이 없습니다.
+- **확인한 게스트 명령 처리 경로에서 Vulkan Draw에 연결되는 것(encType 0, compute 인너 연산):** `compute_inner_ops.c`의 0x00·0x01·0x03·0x06·0x07이 `lagfx_emit_pending_draw`(`draw_emit.c:739`)를 호출하고, `lagfx_vk_draw_record_and_submit_bound`(`draw_emit.c:1149, 1216`)를 거쳐 `vkCmdDraw` 또는 `vkCmdDrawIndexed`(`vulkan/draw_record.c:218, 223`)에 닿습니다. 이는 소스 호출 관계이며, 전체 경로를 전수 검증하거나 실제 게스트 명령으로 실행한 결과가 아닙니다. 내부 커서·합성 경로(`cursor.c:264`, `composite.c:270`)의 `vkCmdDraw`는 게스트 명령 경로가 아니므로 제외합니다.
+- **Draw 게이트(encType 0):** `lagfx_emit_pending_draw`는 `pending_pipeline.valid`와 `render_pass_desc.valid`가 모두 참일 때만 그립니다(`draw_emit.c:739–742`). 두 플래그는 encType 0의 `0x001a RenderDescribeRenderPass`(`op_render_describe_render_pass`, `compute_inner_ops.c:458`, 설정 `:554`)와 `0x0074 SetRenderPipelineState`(`op_set_render_pipeline_state`, `:1094`, 설정 `:1499`, `:1631`)가 설정합니다. 따라서 최소 시퀀스는 태스크 생성 → 0x1a → 0x74 → 그리기 명령입니다.
+- **0x1a 구분:** encType 2의 `render_inner_ops.c` 0x1a(`:296–335`)는 설명자 파싱과 로그만 수행하고 태스크 상태를 설정하지 않습니다. 위 게이트를 여는 것은 encType 0의 0x1a입니다. 두 핸들러가 같은 번호를 쓰므로 혼동하지 않아야 합니다. 짧은 페이로드 경로는 "parsed"라고 기록하지만 실제로는 파싱하지 않으므로 로그 문구를 신뢰하면 안 됩니다.
+- **대체 셰이더 위험:** `op_set_render_pipeline_state`는 번역이 실패하면 번들 삼각형 셰이더로 대체합니다(`compute_inner_ops.c:1631` 부근, 로그 `op_0x74 Option 3: substituted triangle shaders`). 번역은 `PHASE6_TRANSLATE`가 기본으로 켜져 있습니다(`LAGFX_DISABLE_PHASE6_TRANSLATE`로 끔). 따라서 G1 판정은 "using TRANSLATED shaders" 로그가 있고 "Option 3" 로그가 없을 때만 유효합니다. 그렇지 않으면 대체 셰이더가 그린 삼각형을 게스트 셰이더 결과로 오인합니다.
+- **encType 2 스텁 범위:** `render_inner_ops.c`의 Draw 계열(`:82` 이후)은 로그만 남기고 0을 반환하는 `TODO Stage 30` 스텁입니다. `translate/render_encoder.c`의 `lagfx_translate_render_draw`는 호출하는 곳이 없습니다. 0x1a를 제외한 나머지 encType 2 연산은 아직 전수 확인하지 않았습니다.
+- **encType 위치:** 세그먼트 헤더의 바이트 +4가 encType입니다(`exec_cmdbuf.c:288`). encType 4는 블릿과 InfoDecoder 응답을 함께 씁니다.
 - **Compute:** `vkCmdDispatch` 호출이 없습니다. NOT IMPLEMENTED가 소스와 일치합니다.
 - **실제 게스트 명령 캡처:** `tests/traces/m2-m3-init-2026-04-21.trace`는 초기화 MMIO 쓰기와 GET_DEVICE_INFO만 담고 있습니다. draw·exec 명령은 없습니다.
 - **프레이밍 차이 (소스 대조, `pvg-protocol.md`와 일치):**
@@ -120,7 +124,8 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
   - 링: Henge 루트 링은 페이지 목록 간접 참조입니다(`devices/pvg_lite.c:166–170` 부근). libapplegfx ch0는 단일 `ring_base`에서 읽고, 래핑 시 두 번째 DMA를 씁니다(`channel_0_dispatcher.c` DMA 구간).
   - 배리어: Henge는 `skip = (hdr[0] >> 16) * 8`을 건너뜁니다(`pvg_lite.c:784`). libapplegfx ch0는 페이로드를 +12에 고정하고 건너뛰지 않습니다.
   - opcode 0x01·0x02·0x08: libapplegfx ch0에서는 DELETE_TASK·MAP_MEMORY2·DELETE_RESOURCE이고, Henge 디스플레이 채널에서는 page·ack·swap입니다(`pvg_lite.c:812–813, 834–836`). 같은 번호를 다른 계층에서 다르게 씁니다.
-- **G1 미확정 사항:** 위 경로를 실제 최소 명령으로 구동한 적이 없습니다. 입력 명령 시퀀스(DEFINE_TASK2, MAP_MEMORY2, EXEC_INDIRECT2 인너 헤더)는 libapplegfx 자체 형식으로 새로 구성해야 하며, 픽셀과 완료 상태 판정 기준도 아직 정하지 않았습니다.
+- **G1 최소 시퀀스 (소스 추정, 실행 미검증):** 태스크 생성(ch0 DEFINE_TASK2, 태스크가 살아 있어야 함) → EXEC_INDIRECT2(0x20) 안의 encType 0 세그먼트에서 0x001a → 0x0074 → 0x0001 또는 0x0000. 리소스 바인딩(MAP_MEMORY2 등)이 번역 경로에 필요한지는 확인하지 않았습니다. 입력은 libapplegfx 자체 형식으로 새로 구성해야 하며, 픽셀과 완료 상태 판정 기준도 아직 정하지 않았습니다.
+- **G2 캡처 현황:** Henge의 `HV_PVG_TALLY`는 명령 종류와 개수를 셉니다(`pvg_lite.c:1059`, `tally_exec` `:763`). encType은 기록하지 않습니다. 따라서 게스트가 어떤 encType을 쓰는지 알려면 세그먼트 헤더 바이트 +4를 기록하는 패치가 필요합니다. 이 패치는 Henge 소스 변경이라 승인 대상입니다. Henge의 HVF 경로는 macOS에서만 실행되므로 이 Linux 환경에서는 캡처할 수 없습니다. Linux에서 실행되는 것은 프로토콜 절반뿐입니다(`tools/pvg-test.sh`, 장치 모델만 구동하고 게스트는 없음).
 
 ## 이 문서의 한계
 

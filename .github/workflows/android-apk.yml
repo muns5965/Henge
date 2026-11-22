@@ -40,6 +40,9 @@ on:
       - tools/vmrun-install-g6-build.sh
       - tools/ui-runner-vm-g4-install-build.sh
       - tools/ui-runner-vm-build.sh
+      - tools/ui-runner-vm-installed-build.sh
+      - tools/check-runner-vm-installed-safe.sh
+      - tools/check-installed-launcher-source.sh
       - tools/check-runner-vm-safe.sh
       - tools/check-c13-source.sh
       - third_party/idevicerestore/**
@@ -158,6 +161,17 @@ jobs:
           # Optional: the APK goes without this diagnostic if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-g4-install-build.sh build-engine build-restore \
             && cp build-engine/ui_runner_vm_g4 android/app/src/main/jniLibs/arm64-v8a/libuirunnervmg4.so || echo "::warning::ui_runner_vm_g4 did not build; the APK goes without that diagnostic"
+          # ui_runner_vm_installed (libuirunnervmi.so): the installed-disk boot runner (normal non-installer boot, read-only storage,
+          # nonzero --ecid). Only the [A-INST] readiness screen refers to it; VmRunnerInstalledLauncher.START_ENABLED=false, so nothing
+          # can start it. OPTIONAL for now: if it fails to build the APK still goes out, but the build says so loudly (warning + summary)
+          # because an APK without it cannot boot an installed disk; make it required once installed-disk boot is actually being tested.
+          if CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-installed-build.sh build-engine \
+              && cp build-engine/ui_runner_vm_installed android/app/src/main/jniLibs/arm64-v8a/libuirunnervmi.so; then
+            echo "- libuirunnervmi.so (installed-disk runner): included" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::ui_runner_vm_installed did not build; the APK has NO installed-disk runner (libuirunnervmi.so)"
+            echo "- **libuirunnervmi.so (installed-disk runner): MISSING from this APK**" >> "$GITHUB_STEP_SUMMARY"
+          fi
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \
             && cp build-engine/ui_runner android/app/src/main/jniLibs/arm64-v8a/libuirunner.so || echo "::warning::the C1-1 runner did not build; the APK goes without that button's program"

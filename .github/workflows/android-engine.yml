@@ -56,6 +56,7 @@ on:
       - tools/check-runner-vm-safe.sh
       - tools/ui-runner-vm-build.sh
       - tools/check-g4ui-launcher-source.sh
+      - tools/check-installed-launcher-source.sh
       - tools/ui-runner-vm-g4-install-build.sh
       - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java
       - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Verdict.java
@@ -169,6 +170,14 @@ jobs:
           mkdir -p build-java-g4ui
           javac -encoding UTF-8 -d build-java-g4ui android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java tests/java/VmRunnerG4LauncherTest.java
           java -cp build-java-g4ui dev.muns.hengeprobe.VmRunnerG4LauncherTest
+
+      - name: "Test the installed-disk launcher (plain java: with START_ENABLED=false every call, even a fully valid one, is refused and reaches the spawner zero times; blank/missing images and bad ECID/seed are refused; the readiness report writes nothing) and its source rules"
+        run: |
+          bash -n tools/check-installed-launcher-source.sh
+          tools/check-installed-launcher-source.sh
+          mkdir -p build-java-inst
+          javac -encoding UTF-8 -d build-java-inst android/app/src/main/java/dev/muns/hengeprobe/VmRunnerInstalledLauncher.java android/app/src/main/java/dev/muns/hengeprobe/VmInstalledDiag.java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmRunnerInstalledLauncherTest.java
+          java -cp build-java-inst dev.muns.hengeprobe.VmRunnerInstalledLauncherTest
 
       - name: "Test the G4 UI verdict logic (plain java: exit code 4 is always FAILED whether or not a RESULT line arrived; exit 0 is a PASS candidate only when the RESULT line itself says 'g4 passed'; a missing/duplicate/mismatched RESULT line, an unfinished reader, or an overflowed result-line count are all FAILED or NO_VERDICT, never a pass)"
         run: |

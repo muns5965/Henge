@@ -30,6 +30,11 @@
         <activity
             android:name=".VmRunnerG4Activity"
             android:exported="false" />
+        <!-- [A-INST] readiness screen of the installed-disk boot path; starts nothing, reads no Intent extras, never
+             names the other runners' launchers. Not exported. -->
+        <activity
+            android:name=".VmRunnerInstalledActivity"
+            android:exported="false" />
         <!-- [A] The real VM's screen. Process creation stays with VmRunnerLauncher (START_ENABLED=false in this
              build); this Activity only attaches to its shared file and renders. Not exported: nothing outside
              this app may launch it or hand it Intent extras (rom/disk/aux paths). -->

@@ -628,6 +628,17 @@ public class MainActivity extends Activity {
                 + (VmRunnerG4Launcher.startEnabled() ? "활성입니다 — [A-G4] 버튼을 누르면 실제로 Apple 서버에 요청이 갑니다." : "비활성입니다.") + ")");
         g4uiNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(g4uiNote);
+        // [A-INST] readiness screen of the installed-disk boot path (VmRunnerInstalledLauncher; its start switch is off in this build).
+        // A diagnostic only: it lists which files exist and whether the runner is in this APK; it starts nothing and
+        // cannot tell whether macOS is installed on any disk.
+        final Button instButton = new Button(this);
+        instButton.setText("[A-INST] 설치 디스크 부팅 준비 상태");
+        instButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmRunnerInstalledActivity.class)));
+        root.addView(instButton);
+        final TextView instNote = new TextView(this);
+        instNote.setText("설치된 디스크로 부팅하는 실행기가 APK에 있는지, 외부 vm/ 폴더에 rom.bin·disk.img·aux.img가 있는지를 보여 줍니다. 부팅 버튼이 아니며 아무것도 시작하지 않습니다. 파일이 있어도 macOS가 설치됐는지는 알 수 없습니다.");
+        instNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(instNote);
         // [A] The real VM's screen. Whether this can ever start a process is decided entirely by
         // VmRunnerLauncher.startEnabled(), checked first thing in VmDisplayActivity.onCreate() before anything
         // else is read or touched -- this button's own job is only to find the same rom/disk/aux this app's

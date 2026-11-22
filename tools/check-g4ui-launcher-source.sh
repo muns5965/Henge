@@ -20,7 +20,7 @@ fail=0; bad() { echo "FAIL $*"; fail=1; }
 # the switch: declared once, a literal true (never computed, never false), read only inside the launcher
 n=$(grep -cE 'static final boolean START_ENABLED' $L); [ "$n" = 1 ] || bad "START_ENABLED must be declared once (found $n)"
 grep -qE 'static final boolean START_ENABLED = true;' $L || bad "START_ENABLED must be the literal true in this build (turning real execution back off needs a change to this script too)"
-x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerLauncher.java:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher (or VmRunnerLauncher's own, unrelated switch):"; echo "$x"; }
+x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerLauncher.java:" | grep -v "^$J/VmRunnerInstalledLauncher.java:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher (or VmRunnerLauncher's own, unrelated switch):"; echo "$x"; }
 # the process: one ProcessBuilder in the launcher; the check comes before it
 n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must have exactly one ProcessBuilder (found $n)"
 l1=$(grep -n 'if (!START_ENABLED)' $L | head -1 | cut -d: -f1); l2=$(grep -n 'spawner.spawn(' $L | head -1 | cut -d: -f1)

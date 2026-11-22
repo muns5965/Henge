@@ -56,8 +56,11 @@
 | 기존 `triangle_*.spv` (엔트리 `triangle_vertex`/`triangle_fragment`) | 기본값 `main` | `VkResult=-13` (`VK_ERROR_UNKNOWN`) |
 | 기존 `triangle_*.spv` | `ENTRY_V=triangle_vertex ENTRY_F=triangle_fragment` | PASS (A5 0 불일치) |
 | 기존 `reference_vert.spv`/`reference_frag.spv` (GLSL 기준, 엔트리 `main`) | 기본값 `main` | PASS |
+| 기존 `triangle_*.spv`, libapplegfx e2e 바이너리 (E1·E2) | 기본값 `main` (`tests/triangle-lavapipe-e2e.c` 624·628행) | `VkResult=-13` (2회 재현) |
+| 기존 `triangle_*.spv`, libapplegfx e2e 바이너리 (E2) | `OpEntryPoint` 이름으로 변경 (인터셉터, 나머지 동일) | `VkResult=0`, 기존 e2e 픽셀 검증 통과 (3회) |
+| `air2spv` 산출 `triangle_*.spv` (1496·644바이트, 엔트리 `main`) (E3) | 기본 설정 | e2e 통과 (3회) |
 
-따라서 `VkResult=-13`의 원인은 이 환경에서 엔트리 이름 불일치로 확인되었습니다. 변환 결과가 틀렸다는 근거는 아닙니다. libapplegfx의 e2e 시험(`tests/triangle-lavapipe-e2e.c`)은 엔트리 이름을 지정하지 않으므로 같은 조건에서 같은 실패가 날 수 있습니다. 이는 코드를 읽어 얻은 추론이며, libapplegfx의 e2e 시험을 직접 실행해 확인한 것은 아닙니다.
+따라서 `VkResult=-13`의 원인은 엔트리 이름 불일치로 확인되었습니다(E1·E2). 이는 llc 산출 입력과 lavapipe에 한정된 결과입니다. 변환 결과가 틀렸다는 근거는 아닙니다. 이전 기록의 "e2e는 엔트리 이름을 지정하지 않는다"는 잘못된 기술이었습니다. 이 시험은 `"main"`을 명시합니다.
 
 ## 해석 한계
 

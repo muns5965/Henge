@@ -22,7 +22,7 @@ SKIP 3건의 원인
 |---|---|---|
 | shader translate | `/opt/homebrew/opt/llvm@20/bin/llc` 하드코딩 | BLOCKED |
 | pipeline build | 같은 하드코딩 경로 | BLOCKED |
-| triangle e2e | `LAGFX_TRIANGLE_SPV_DIR` 미설정. env 설정 후 실행하면 기본 설정(`USE_APPLE_SPV=1`)에서 **FAIL** (VkResult=-13). `USE_APPLE_SPV=0`에서는 PASS | FAIL 확인, 근본 원인 추정 |
+| triangle e2e | `LAGFX_TRIANGLE_SPV_DIR` 미설정. env 설정 후 실행하면 기본 설정(`USE_APPLE_SPV=1`)에서 **FAIL** (VkResult=-13). `USE_APPLE_SPV=0`에서는 PASS | FAIL 확인. 원인 확인: 엔트리 이름 불일치 (E1·E2, 이름만 바꾸면 PASS). 신규 `air2spv` 산출은 PASS (E3) |
 
 ## T1 Android 준비 (소스 확인)
 
@@ -85,7 +85,7 @@ pvg-vulkan 실행 참고:
 | A4 파이프라인 생성 | PASS | 엔트리 이름 `main`, `VkResult=0` |
 | A5 픽셀 | PASS | 삼각형 내부·외부 3724픽셀 0 불일치. 음성 대조군(드로우 제거)은 1012 불일치로 실패 검출 |
 
-**`VkResult=-13` 원인 (확인됨, 이 환경):** 저장소의 기존 `examples/triangle/out/triangle_*.spv`는 엔트리 이름이 `triangle_vertex`/`triangle_fragment`입니다. 파이프라인 생성 시 이름을 `main`으로 주면 -13이 나옵니다. 엔트리 이름을 맞추면 PASS입니다. libapplegfx의 e2e 시험은 엔트리 이름을 지정하지 않으므로(코드 읽기 기준) 같은 조건에서 같은 실패가 날 것으로 추론됩니다. 이 추론은 e2e 시험을 직접 실행해 확인하지 않았습니다.
+**`VkResult=-13` 원인 (확인됨, 이 환경):** 기존 llc 산출 `triangle_*.spv`는 엔트리가 `triangle_vertex`/`triangle_fragment`이고, 파이프라인에 `main`을 주면 -13이 납니다. 같은 바이너리에서 `pName`만 바꾸면 libapplegfx e2e가 통과합니다(E2, 3회 반복). `air2spv` 산출(엔트리 `main`)은 인터셉터 없이 e2e를 통과합니다(E3, 3회 반복). 상세는 `component-validation.md` E절.
 
 **한계:** 이 PASS는 Vulkan 파이프라인 경로이며 libapplegfx의 PVG 명령 처리 경로를 거치지 않았습니다. 또한 A2 산출은 변환기가 새로 만든 SPIR-V이며, 기존 `.spv`는 증거로 쓰지 않았습니다.
 

@@ -33,7 +33,7 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 |---|---|---|
 | 초기화·기본 명령 | PASS (파싱 중심) | 단위시험 71개 PASS. 구조·반환값 확인 |
 | 렌더 타겟 픽셀 | PASS (픽셀 1점) | `vulkan render`에서 (32,32) readback 1점만 비교 |
-| triangle e2e (기본 설정) | **FAIL** (env 설정 실행) | `USE_APPLE_SPV=1`에서 Apple SPV 파이프라인 생성 VkResult=-13. 원인은 엔트리 이름 불일치(기존 SPV 엔트리 `triangle_vertex`, 파이프라인은 `main` 지정)로 확인됨. 자세한 내용은 아래 E절 |
+| triangle e2e (기본 설정) | **FAIL** (env 설정 실행) | `USE_APPLE_SPV=1`에서 Apple SPV 파이프라인 생성 VkResult=-13. 원인은 엔트리 이름 불일치(기존 SPV 엔트리 `triangle_vertex`, 파이프라인은 `main` 지정)로 확인됨 (E1·E2). 자세한 내용은 아래 E절 |
 | triangle e2e (`USE_APPLE_SPV=0`) | PASS | 중앙·모서리 2점 비교 |
 | shader translate | BLOCKED | 시험이 `/opt/homebrew/opt/llvm@20/bin/llc`를 하드코딩 (`tests/shader_translate_test.c:19–20`) |
 | pipeline build | BLOCKED | 같은 하드코딩 경로 (`tests/pipeline_build_test.c:34–35`) |
@@ -155,7 +155,19 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 | A5 Draw·readback | PASS | 삼각형 내부·외부 3724픽셀 기대값 일치. 경계 1px 띠(372픽셀)는 판정에서 제외하고 보고만 함 |
 | 음성 대조군 (드로우 제거) | 실패 검출 (의도된 결과) | 1012픽셀 불일치, 경계 빨강 0 |
 
-**`VkResult=-13` 원인:** 기존 `triangle_*.spv`(llc 경로 산출)는 엔트리가 `triangle_vertex`/`triangle_fragment`입니다. 이 이름 대신 `main`으로 파이프라인을 만들면 -13(VK_ERROR_UNKNOWN)이 나고, 이름을 맞추면 PASS입니다. 따라서 -13은 이 환경에서 변환 오류가 아니라 엔트리 이름 불일치로 확인되었습니다. libapplegfx e2e 시험이 엔트리 이름을 지정하지 않는다는 것은 코드 읽기로 확인한 사실이며, e2e를 직접 실행해 같은 결과를 본 것은 아닙니다.
+**`VkResult=-13` 원인 (E절, libapplegfx e2e 직접 계측):**
+
+| 시험 | 입력 SPIR-V | 파이프라인 `pName` | 결과 |
+|---|---|---|---|
+| E1 기준선 | 기존 llc 산출 `triangle_*.spv` (vertex 1108B, fragment 408B) | `main` (테스트 624·628행) | `VkResult=-13` (2회) |
+| E2 이름 대조 | E1과 동일 | `OpEntryPoint` 이름 (`triangle_vertex`/`triangle_fragment`) | `VkResult=0`, 기존 e2e 픽셀 검증 통과 (3회) |
+| E3 신규 변환 | `air2spv` 산출 (vertex 1496B, fragment 644B, 엔트리 `main`) | `main` | e2e 통과 (3회) |
+
+- **실패 지점:** `tests/triangle-lavapipe-e2e.c`의 Apple 파이프라인 호출(632행)입니다. 두 모듈 생성은 모두 `VkResult=0`입니다. `pipeline.c`·`composite.c`는 이 실행에서 호출되지 않았습니다(호출 기록은 파이프라인 생성 2회뿐).
+- **계측 방식:** 소스를 수정하지 않았습니다. `LD_PRELOAD` 인터셉터로 `vkCreateShaderModule`과 `vkCreateGraphicsPipelines`를 기록했습니다. E2는 같은 인터셉터가 `pName`만 바꿨습니다. 인터셉터 소스는 저장소에 넣지 않았습니다.
+- **입력 SHA-256 (전체):** E1·E2 vertex `d6fec3f99ae820fe9778b0e1c80bbe7a2e5c6e2fc0553844cdb4fac9d3da44f1`, fragment `e95c0334622ea76c52b8a9008b1d07218d1c0dca1be3bf7852da658f8ea0b23b`. E3 vertex `92d17cd3aae2bfa842cf7fdeb064f9b4dfaaed75a9a17ebd6a142960ddb17886`, fragment `63aa24e8c104fa5de85ecc91180c775dab26993ca63fe351cba3e5f982d0bf85`. 참조 GLSL은 `04c0af06…`, `a6eddb75…`.
+- **판정 한계:** 이 결과는 lavapipe와 위 두 입력에 한정됩니다. e2e의 픽셀 검사는 중앙·모서리 기준이며 전체 픽셀 비교가 아닙니다. PVG 명령 처리 경로는 실행하지 않았습니다. 테스트 주석이 우려한 Mesa NIR 시그니처 문제는 이 입력에서 나타나지 않았습니다.
+- **정정:** 이전에 "e2e 시험은 엔트리 이름을 지정하지 않는다"고 쓴 것은 틀렸습니다. 시험은 `"main"`을 명시합니다.
 
 **판정 한계**
 - 이 시험은 Vulkan 파이프라인을 직접 만들었습니다. libapplegfx의 PVG 명령 처리 경로를 거치지 않았습니다. 따라서 이 PASS는 "변환기가 만든 SPIR-V가 이 삼각형을 그린다"는 뜻이며, 명령 처리 경로가 정상이라는 뜻이 아닙니다.

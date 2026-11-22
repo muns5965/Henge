@@ -55,6 +55,9 @@ on:
       - tools/check-c13-source.sh
       - tools/check-runner-vm-safe.sh
       - tools/ui-runner-vm-build.sh
+      - tools/check-g4ui-launcher-source.sh
+      - tools/ui-runner-vm-g4-install-build.sh
+      - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java
       - tests/java/**
       - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
       - android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java
@@ -156,6 +159,14 @@ jobs:
           mkdir -p build-java-c13
           javac -encoding UTF-8 -d build-java-c13 android/app/src/main/java/dev/muns/hengeprobe/VmRunnerLauncher.java tests/java/VmRunnerLauncherTest.java
           java -cp build-java-c13 dev.muns.hengeprobe.VmRunnerLauncherTest
+
+      - name: "Test the G4 UI launcher (plain java: every call, even a fully valid one, is refused with REFUSAL and reaches the spawner zero times while START_ENABLED=false; buildCommand's exact option list; RUN_SECONDS >= 460) and its source rules"
+        run: |
+          bash -n tools/check-g4ui-launcher-source.sh
+          tools/check-g4ui-launcher-source.sh
+          mkdir -p build-java-g4ui
+          javac -encoding UTF-8 -d build-java-g4ui android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java tests/java/VmRunnerG4LauncherTest.java
+          java -cp build-java-g4ui dev.muns.hengeprobe.VmRunnerG4LauncherTest
 
       - name: "Test the nativeStart() return-value decision both screens share (plain java: r==0 is the only success, r==1/-1/-2 are all failures)"
         run: |

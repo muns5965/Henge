@@ -9,13 +9,17 @@ fail=0; bad() { echo "FAIL $*"; fail=1; }
 # the switch: declared once, a literal true/false (never computed), read only inside the launcher
 n=$(grep -cE 'static final boolean START_ENABLED' $L); [ "$n" = 1 ] || bad "START_ENABLED must be declared once (found $n)"
 grep -qE 'static final boolean START_ENABLED = (true|false);' $L || bad "START_ENABLED must be a literal true or false in this build"
-x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher:"; echo "$x"; }
+# VmRunnerG4Launcher.java (G4 UI, Phase 2) declares its own, separate START_ENABLED/LIB_NAME for libuirunnervmg4.so
+# and is checked by its own tools/check-g4ui-launcher-source.sh; excluded here so the two launchers' same-named
+# switches don't false-flag each other.
+G4L=$J/VmRunnerG4Launcher.java
+x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:" | grep -v "^$G4L:"); [ -z "$x" ] || { bad "START_ENABLED named outside the launcher:"; echo "$x"; }
 # the process: one ProcessBuilder in the launcher; the check comes before it
 n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must have exactly one ProcessBuilder (found $n)"
 l1=$(grep -n 'if (!START_ENABLED)' $L | head -1 | cut -d: -f1); l2=$(grep -n 'spawner.spawn(' $L | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ]; } || bad "the START_ENABLED check must come before spawn (lines '$l1' '$l2')"
 # nobody else names the runner file or the launcher's spawner, and the two screens create no process
-x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerActivity.java:.*VmRunnerLauncher.LIB_NAME"); [ -z "$x" ] || { bad "the VM runner file is named outside the launcher:"; echo "$x"; }
+x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerActivity.java:.*VmRunnerLauncher.LIB_NAME" | grep -v "^$G4L:"); [ -z "$x" ] || { bad "the VM runner file is named outside the launcher:"; echo "$x"; }
 x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity creates a process:"; echo "$x"; }
 x=$(grep -nE 'getIntent|getExtra|getStringExtra|getBooleanExtra' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity reads the Intent:"; echo "$x"; }
 grep -A3 'VmRunnerActivity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerActivity must be exported=false"

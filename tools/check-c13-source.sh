@@ -19,7 +19,9 @@ n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must hav
 l1=$(grep -n 'if (!START_ENABLED)' $L | head -1 | cut -d: -f1); l2=$(grep -n 'spawner.spawn(' $L | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ]; } || bad "the START_ENABLED check must come before spawn (lines '$l1' '$l2')"
 # nobody else names the runner file or the launcher's spawner, and the two screens create no process
-x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerActivity.java:.*VmRunnerLauncher.LIB_NAME" | grep -v "^$G4L:"); [ -z "$x" ] || { bad "the VM runner file is named outside the launcher:"; echo "$x"; }
+# (VmRunnerG4Activity.java's own, separate, correctly-scoped references to libuirunnervmg4.so/LIB_NAME are
+# checked by tools/check-g4ui-launcher-source.sh instead, so they are excluded here entirely)
+x=$(grep -rnE 'uirunnervm|LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerActivity.java:.*VmRunnerLauncher.LIB_NAME" | grep -v "^$G4L:" | grep -v "^$J/VmRunnerG4Activity.java:"); [ -z "$x" ] || { bad "the VM runner file is named outside the launcher:"; echo "$x"; }
 x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity creates a process:"; echo "$x"; }
 x=$(grep -nE 'getIntent|getExtra|getStringExtra|getBooleanExtra' $J/VmRunnerActivity.java); [ -z "$x" ] || { bad "VmRunnerActivity reads the Intent:"; echo "$x"; }
 grep -A3 'VmRunnerActivity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerActivity must be exported=false"

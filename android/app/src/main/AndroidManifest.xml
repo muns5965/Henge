@@ -25,6 +25,11 @@
         <activity
             android:name=".VmRunnerActivity"
             android:exported="false" />
+        <!-- [G4 UI] information screen of the G4 UI diagnostic runner; starts nothing, same shape as VmRunnerActivity
+             above but for VmRunnerG4Launcher/libuirunnervmg4.so. Not exported, no Intent extras are read. -->
+        <activity
+            android:name=".VmRunnerG4Activity"
+            android:exported="false" />
         <!-- [A] The real VM's screen. Process creation stays with VmRunnerLauncher (START_ENABLED=false in this
              build); this Activity only attaches to its shared file and renders. Not exported: nothing outside
              this app may launch it or hand it Intent extras (rom/disk/aux paths). -->

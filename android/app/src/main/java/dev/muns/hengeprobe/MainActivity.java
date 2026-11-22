@@ -615,6 +615,18 @@ public class MainActivity extends Activity {
         c13Note.setText("VM 실행기가 APK에 들어 있는지와 시작이 켜져 있는지 꺼져 있는지를 보여 줍니다. 이 화면 자체는 프로세스를 시작하지 않습니다.");
         c13Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(c13Note);
+        // [G4 UI] information screen, same shape as [C1-3] above but for the G4 diagnostic runner's
+        // Java launcher. It starts nothing itself; it only reports
+        // VmRunnerG4Launcher's own switch (VmRunnerG4Launcher.startEnabled()), which is a literal false in
+        // this build with no "observation only" mode.
+        final Button g4uiButton = new Button(this);
+        g4uiButton.setText("[G4 UI] G4 복원 진단 실행기 정보");
+        g4uiButton.setOnClickListener(v -> startActivity(new android.content.Intent(this, VmRunnerG4Activity.class)));
+        root.addView(g4uiButton);
+        final TextView g4uiNote = new TextView(this);
+        g4uiNote.setText("G4 UI 진단 바이너리가 APK에 들어 있는지와 실행이 켜져 있는지 꺼져 있는지를 보여 줍니다. 이 화면 자체는 프로세스를 시작하지 않고, Apple 서버로 어떤 요청도 보내지 않습니다. 이 빌드에서는 실행이 비활성입니다.");
+        g4uiNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(g4uiNote);
         // [A] The real VM's screen. Whether this can ever start a process is decided entirely by
         // VmRunnerLauncher.startEnabled(), checked first thing in VmDisplayActivity.onCreate() before anything
         // else is read or touched -- this button's own job is only to find the same rom/disk/aux this app's

@@ -23,8 +23,9 @@ x=$(grep -rn 'START_ENABLED' $J --include=*.java | grep -v "^$L:" | grep -v "^$J
 n=$(grep -c 'new ProcessBuilder' $L); [ "$n" = 1 ] || bad "the launcher must have exactly one ProcessBuilder (found $n)"
 l1=$(grep -n 'if (!START_ENABLED)' $L | head -1 | cut -d: -f1); l2=$(grep -n 'spawner.spawn(' $L | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ]; } || bad "the START_ENABLED check must come before spawn (lines '$l1' '$l2')"
-# nobody else names the runner file
-x=$(grep -rnE 'uirunnervmg4|VmRunnerG4Launcher\.LIB_NAME' $J --include=*.java | grep -v "^$L:"); [ -z "$x" ] || { bad "the G4 UI runner file is named outside the launcher:"; echo "$x"; }
+# nobody else names the runner file (VmRunnerG4Activity.java's own read-only references are checked
+# separately, below, by name-reference rules stronger than this one)
+x=$(grep -rnE 'uirunnervmg4|VmRunnerG4Launcher\.LIB_NAME' $J --include=*.java | grep -v "^$L:" | grep -v "^$J/VmRunnerG4Activity.java:"); [ -z "$x" ] || { bad "the G4 UI runner file is named outside the launcher:"; echo "$x"; }
 # the contract with the native runner: every option host/ui_runner_vm_g4.c requires (--shm --rom --disk --aux
 # --ipsw, plus --ecid and --workdir, worded separately in its own "are required"/"Arguments:" lines) must be among
 # the options buildCommand adds, and buildCommand may add nothing beyond what the runner's own "Arguments:" line
@@ -56,5 +57,16 @@ for f in VmRunnerG4Verdict.java VmRunnerG4Run.java; do
   [ -f "$P" ] || continue
   x=$(grep -n 'new ProcessBuilder\|START_ENABLED' $P); [ -z "$x" ] || { bad "$f must never create a process or read START_ENABLED:"; echo "$x"; }
 done
-[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process"
+# Phase 4a: [G4 UI]'s information screen (VmRunnerG4Activity.java) mirrors [C1-3]'s VmRunnerActivity on
+# purpose and must keep every one of that same screen's safety properties -- plus one more of its own: it
+# must never even NAME VmRunnerLauncher or VmDisplayActivity, so opening it can never, even by accident,
+# start the unrelated [A] runner instead (the exact risk a review raised before this file existed).
+GA=$J/VmRunnerG4Activity.java
+if [ -f "$GA" ]; then
+  x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(' $GA); [ -z "$x" ] || { bad "VmRunnerG4Activity creates a process:"; echo "$x"; }
+  x=$(grep -nE 'getIntent|getExtra|getStringExtra|getBooleanExtra' $GA); [ -z "$x" ] || { bad "VmRunnerG4Activity reads the Intent:"; echo "$x"; }
+  x=$(grep -nE 'VmRunnerLauncher|VmDisplayActivity' $GA); [ -z "$x" ] || { bad "VmRunnerG4Activity must never name VmRunnerLauncher or VmDisplayActivity (risk of accidentally starting [A]):"; echo "$x"; }
+  grep -A3 'VmRunnerG4Activity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerG4Activity must be exported=false"
+fi
+[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process, the [G4 UI] info screen starts no process and cannot name the [A] runner"
 exit $fail

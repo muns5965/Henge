@@ -46,6 +46,8 @@ NDK를 로컬에서 받을 수 없습니다. GitHub 러너 워크플로로 진�
 
 ## T5 외부 구현 실행 검증 (1차, 기존 시험 수정 없이 실행)
 
+> 최초 기준선 기록입니다. libapplegfx triangle의 후속 검증 결과(E1–E3, 엔트리 이름 대조, `air2spv` 입력)는 `component-validation.md` E절을 참조하십시오.
+
 | 프로젝트 | 커밋 | 결과 요약 | 상세 |
 |---|---|---|---|
 | libapplegfx-vulkan | 7574eac0 | 기본 실행 72 OK / 3 SKIP. triangle은 env 설정 시 FAIL, 픽셀 비교 1점 | component-validation.md A절 |

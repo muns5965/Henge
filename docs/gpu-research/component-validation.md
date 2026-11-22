@@ -102,9 +102,25 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 
 | 기능 | libapplegfx-vulkan | pvg-vulkan | 비교 가능 여부 |
 |---|---|---|---|
-| triangle 렌더링 | FAIL (기본), PASS (`USE_APPLE_SPV=0`) | draw 픽스처 부재로 BLOCKED | 불가. 입력이 다름 |
+| triangle 렌더링 (Vulkan 직접 경로) | e2e: 기본 설정 FAIL (llc 입력, E1), 엔트리 교정 시 PASS (E2), `air2spv` 입력 PASS (E3). PVG 명령 경로는 NOT RUN (F절) | draw 픽스처 부재로 BLOCKED | 불가. 입력·경로가 다름 |
 | compute | NOT IMPLEMENTED | PASS 3 | 기능 범위가 달라 비교 불가 |
 | blit/copy | 2 opcode 호출 경로 확인, 시험은 파싱 중심 | Vulkan 경로 없음 | 불가 |
+
+## F. libapplegfx PVG 실행 경로 추적 (읽기 전용, 실행 시험 없음)
+
+소스 추적 결과입니다. 이 절의 내용은 실행으로 확인한 것이 아닙니다.
+
+- **진입점:** ch0 `0x20`(EXEC_INDIRECT2)이 `lagfx_compute_exec_cmdbuf`(`src/handlers/compute/exec_cmdbuf.c:480`)로 가고, `inner_walk_segment`(`:172`)가 인너 명령을 나눕니다(`src/dispatchers/channel_0_dispatcher.c:107–108`).
+- **Vulkan Draw까지 닿는 경로(encType 0, compute 인너 연산):** `compute_inner_ops.c`의 0x00·0x01·0x03·0x06·0x07이 `lagfx_emit_pending_draw`(`draw_emit.c:739`)를 호출하고, `lagfx_vk_draw_record_and_submit_bound`(`draw_emit.c:1149, 1216`)를 거쳐 `vkCmdDraw` 또는 `vkCmdDrawIndexed`(`vulkan/draw_record.c:218, 223`)에 닿습니다. 소스상 Vulkan Draw에 닿는 경로는 이것뿐입니다.
+- **스텁인 경로(encType 2, render 인너 연산):** `render_inner_ops.c`의 Draw 계열(`:82` 이후)은 로그만 남기고 0을 반환하는 `TODO Stage 30` 스텁입니다. `translate/render_encoder.c`의 `lagfx_translate_render_draw`는 호출하는 곳이 없습니다.
+- **Compute:** `vkCmdDispatch` 호출이 없습니다. NOT IMPLEMENTED가 소스와 일치합니다.
+- **실제 게스트 명령 캡처:** `tests/traces/m2-m3-init-2026-04-21.trace`는 초기화 MMIO 쓰기와 GET_DEVICE_INFO만 담고 있습니다. draw·exec 명령은 없습니다.
+- **프레이밍 차이 (소스 대조, `pvg-protocol.md`와 일치):**
+  - PFN 단위: Henge는 `<<14`(16KB), libapplegfx는 `<<12`(4KB) (`src/doorbell.c:168, 200`).
+  - 링: Henge 루트 링은 페이지 목록 간접 참조입니다(`devices/pvg_lite.c:166–170` 부근). libapplegfx ch0는 단일 `ring_base`에서 읽고, 래핑 시 두 번째 DMA를 씁니다(`channel_0_dispatcher.c` DMA 구간).
+  - 배리어: Henge는 `skip = (hdr[0] >> 16) * 8`을 건너뜁니다(`pvg_lite.c:784`). libapplegfx ch0는 페이로드를 +12에 고정하고 건너뛰지 않습니다.
+  - opcode 0x01·0x02·0x08: libapplegfx ch0에서는 DELETE_TASK·MAP_MEMORY2·DELETE_RESOURCE이고, Henge 디스플레이 채널에서는 page·ack·swap입니다(`pvg_lite.c:812–813, 834–836`). 같은 번호를 다른 계층에서 다르게 씁니다.
+- **G1 미확정 사항:** 위 경로를 실제 최소 명령으로 구동한 적이 없습니다. 입력 명령 시퀀스(DEFINE_TASK2, MAP_MEMORY2, EXEC_INDIRECT2 인너 헤더)는 libapplegfx 자체 형식으로 새로 구성해야 하며, 픽셀과 완료 상태 판정 기준도 아직 정하지 않았습니다.
 
 ## 이 문서의 한계
 
@@ -117,7 +133,7 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 
 ## C. 1단계 픽셀 하네스 (Vulkan 자체 동작, 셰이더·AIR 없음)
 
-하네스: `/home/claude/validation/harness/stage1_pixels.c` (외부 저장소 밖에 있으며, 이 저장소에는 결과 요약만 기록합니다)
+하네스: `tests/gpu-validation/stage1_pixels.c` (이 저장소에 커밋됨, 4bd901b)
 
 | 시험 | 내용 | 상태 |
 |---|---|---|

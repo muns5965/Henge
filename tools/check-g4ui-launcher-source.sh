@@ -48,5 +48,13 @@ if echo "$jav" | grep -qx -- '--seconds'; then
   n=$(grep -oE 'static final int RUN_SECONDS = [0-9]+;' $L | grep -oE '[0-9]+')
   { [ -n "$n" ] && [ "$n" -ge 460 ]; } || bad "VmRunnerG4Launcher.RUN_SECONDS must be a literal int >= 460 (the proven G4 floor), found '$n'"
 fi
-[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher"
+# Phase 3's result-judgment classes (VmRunnerG4Verdict.java, VmRunnerG4Run.java) only ever observe a Process
+# the caller already made -- they must never construct one themselves or read the launcher's switch, so that
+# nothing in that judgment path could ever become a second way to start real execution.
+for f in VmRunnerG4Verdict.java VmRunnerG4Run.java; do
+  P=$J/$f
+  [ -f "$P" ] || continue
+  x=$(grep -n 'new ProcessBuilder\|START_ENABLED' $P); [ -z "$x" ] || { bad "$f must never create a process or read START_ENABLED:"; echo "$x"; }
+done
+[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process"
 exit $fail

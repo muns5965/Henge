@@ -58,6 +58,8 @@ on:
       - tools/check-g4ui-launcher-source.sh
       - tools/ui-runner-vm-g4-install-build.sh
       - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java
+      - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Verdict.java
+      - android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Run.java
       - tests/java/**
       - android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java
       - android/app/src/main/java/dev/muns/hengeprobe/RomSliceResultSlot.java
@@ -167,6 +169,18 @@ jobs:
           mkdir -p build-java-g4ui
           javac -encoding UTF-8 -d build-java-g4ui android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Launcher.java tests/java/VmRunnerG4LauncherTest.java
           java -cp build-java-g4ui dev.muns.hengeprobe.VmRunnerG4LauncherTest
+
+      - name: "Test the G4 UI verdict logic (plain java: exit code 4 is always FAILED whether or not a RESULT line arrived; exit 0 is a PASS candidate only when the RESULT line itself says 'g4 passed'; a missing/duplicate/mismatched RESULT line, an unfinished reader, or an overflowed result-line count are all FAILED or NO_VERDICT, never a pass)"
+        run: |
+          mkdir -p build-java-g4verdict
+          javac -encoding UTF-8 -d build-java-g4verdict android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Verdict.java tests/java/VmRunnerG4VerdictTest.java
+          java -cp build-java-g4verdict dev.muns.hengeprobe.VmRunnerG4VerdictTest
+
+      - name: "Test the G4 UI process drain (plain java, real child processes, no VM/Android/network/Apple TSS request: a child writing well past a pipe buffer before exiting does not deadlock; a RESULT line printed immediately before exit is still collected; exit code 4 is FAILED whether or not a RESULT line arrived; a process that outlives its timeout is force-killed and reported as timed out, never a pass)"
+        run: |
+          mkdir -p build-java-g4run
+          javac -encoding UTF-8 -d build-java-g4run android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Verdict.java android/app/src/main/java/dev/muns/hengeprobe/VmRunnerG4Run.java tests/java/VmRunnerG4RunTest.java
+          java -cp build-java-g4run dev.muns.hengeprobe.VmRunnerG4RunTest
 
       - name: "Test the nativeStart() return-value decision both screens share (plain java: r==0 is the only success, r==1/-1/-2 are all failures)"
         run: |

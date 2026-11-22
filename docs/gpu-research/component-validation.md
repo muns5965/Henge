@@ -130,8 +130,15 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
   1. 번역 로그가 있고 "Option 3" 로그가 없어야 합니다.
   2. Draw 시점의 진입점이 `main`이어야 합니다. `triangle_vertex`가 쓰이면 실패로 봅니다.
   3. 진단 환경변수가 없어야 합니다. `LAGFX_M2_SOLIDFRAG`(프래그먼트를 단색으로 바꿈), `LAGFX_SKIP_PIPES`, `LAGFX_LEGACY_DRAW01`, `LAGFX_DISABLE_PHASE6_TRANSLATE`가 대상입니다. `/tmp/lagfx_skip.txt`도 없어야 합니다. Draw마다 다시 읽기 때문입니다(`draw_emit.c:744–752`).
-  4. 픽셀 판정과 완료 상태 판정을 함께 통과해야 합니다. 로그 문자열만으로 판정하지 않습니다.
-- **G2 캡처 현황 (기존 수단으로 부분 확보 가능, 패치 불필요):** `HV_PVG_TRACE_FILE`로 지정한 파일이 존재하면 `pvg_lite.c:876–884`가 모든 장치 명령을 stderr에 한 줄씩 씁니다. 항목은 ch, `op`(헤더 워드 전체. 상위 16비트가 배리어 개수), len, stamp, 페이로드 앞 32바이트입니다. 세그먼트 헤더는 배리어 뒤에 놓이므로, 페이로드 offset (배리어 개수×8)에서 바이트 +4가 encType입니다. 한계는 명령당 32바이트뿐이라 세그먼트 전체와 뒤의 인너 명령은 보이지 않는다는 점입니다. `HV_PVG_TALLY`는 encType을 기록하지 않으므로 이 목적에는 쓰지 않습니다. 이 캡처는 Henge의 HVF 실행이 필요해 macOS에서 해야 합니다. 로그 분석은 Linux에서 할 수 있습니다. 세그먼트 전체가 필요해지면 그때 패치를 승인 대상으로 검토합니다.
+  4. `pending_pipeline.translated == true`를 로그가 아니라 상태값으로 확인합니다. vertex·fragment 모듈이 번역 결과에서 왔는지도 확인합니다(번들 셰이더 모듈 핸들과 다른지 비교).
+  5. 픽셀 판정과 완료 상태 판정을 함께 통과해야 합니다. 로그 문자열만으로 판정하지 않습니다.
+  - 두 단계를 구분합니다. *상태 게이트 통과*(`pending_pipeline.valid`와 `render_pass_desc.valid`가 참)는 실제 Draw 통과가 아닙니다. 리소스 해석이나 파이프라인 생성이 실패하면 조기 반환할 수 있습니다(`draw_emit.c`의 "degrades to skip/substitute" 경로).
+- **G2 캡처 현황 (정정, 패치 불필요):**
+  - *외곽 trace* (`HV_PVG_TRACE_FILE`, `pvg_lite.c:876–884`)는 외곽 링 명령의 헤더와 페이로드 앞 32바이트만 기록합니다. 세그먼트 헤더는 여기에 없습니다. 이전에 "배리어 뒤 offset +4가 encType"이라고 쓴 것은 외곽 페이로드와 내부 세그먼트를 혼동한 잘못된 기술이었습니다.
+  - *실행 명령의 참조 경로:* `0x43`·`0x45` 페이로드는 {task, resources, buffers}입니다(`pvg_lite.c:763–767`). 버퍼 항목의 (offset, length)는 태스크 주소 공간의 오프셋입니다. `tally_buffer`(`:698`)가 `task_read`(`:538`)로 그 위치를 읽고, 8바이트 세그먼트 헤더에서 hdr[0]은 크기, hdr[1]&0xff는 encType을 얻습니다. `task_read`는 태스크 루트 페이지 표를 거쳐 물리 메모리를 읽습니다.
+  - *`HV_PVG_TALLY`는 encType을 기록합니다.* `tally_buffer`가 `counts[type][opcode]`로 집계하고(`:748`), 실행 2000회마다 `pvgtally type opcode count`를 출력합니다(`:774`). 이전에 "encType을 기록하지 않는다"고 쓴 것도 틀렸습니다.
+  - *한계:* 집계값이라 개별 명령의 순서나 세그먼트 조합은 보이지 않습니다. 실행이 2000회 미만이면 출력이 없습니다. 태스크 주소 변환 실패는 `bad` 카운터로만 집계됩니다.
+  - *실행 환경:* HVF 실행이 필요하므로 macOS에서 캡처합니다. 집계 로그의 분석은 Linux에서 할 수 있습니다.
 
 ## 이 문서의 한계
 

@@ -1127,45 +1127,11 @@ public class MainActivity extends Activity {
     private static final String ROM_URL = "https://updates.cdn-apple.com/2024SummerFCS/fullrestores/062-52859/932E0A8F-6644-4759-82DA-F8FA8DEA806A/UniversalMac_14.6.1_23G93_Restore.ipsw";
     private static final long ROM_BLOCK_OFFSET = 5349700747L;
     private static final int ROM_BLOCK_LENGTH = 859848;
-    /** The accepted ROM's size and SHA-256 are defined once, in RomSlice (the slice reader must use the same ones). Same values, same constant types as before. */
-    private static final int ROM_LENGTH = (int) RomSlice.EXPECTED_LENGTH;
-    private static final String ROM_SHA256 = RomSlice.EXPECTED_SHA256;
-
-    /** True if the file is exactly the known AVPBooter ROM (size and SHA-256). */
-    private static boolean isGenuineRom(File f) {
-        if (!f.isFile() || f.length() != ROM_LENGTH) return false;
-        try (FileInputStream in = new FileInputStream(f)) {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-            StringBuilder hex = new StringBuilder();
-            for (byte b : md.digest()) hex.append(String.format("%02x", b));
-            return hex.toString().equals(ROM_SHA256);
-        } catch (Exception e) {
-            return false;
-        }
-    }
+    /** True if the file is exactly the known AVPBooter ROM (size and SHA-256). The decision lives in VmRomCheck (shared with the [A-INST] report). */
+    private static boolean isGenuineRom(File f) { return VmRomCheck.isGenuine(f); }
 
     /** One line about a ROM candidate: existence, size, SHA-256 verdict. Read-only: no network, nothing is created or deleted. */
-    private static String romInfo(File f) {
-        if (!f.exists()) return "없음";
-        if (!f.isFile()) return "파일이 아님";
-        String sha = "?";
-        try (FileInputStream in = new FileInputStream(f)) {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-            StringBuilder hex = new StringBuilder();
-            for (byte b : md.digest()) hex.append(String.format("%02x", b));
-            sha = hex.toString();
-        } catch (Exception e) {
-            sha = "읽기 실패: " + e;
-        }
-        boolean ok = f.length() == ROM_LENGTH && sha.equals(ROM_SHA256);
-        return "있음, " + f.length() + "바이트 (기대 " + ROM_LENGTH + "), SHA-256 " + sha + " → " + (ok ? "정상" : "손상/다른 파일");
-    }
+    private static String romInfo(File f) { return VmRomCheck.info(f); }
 
     /**
      * A usable ROM without any network: the external vm/rom.bin if it is the genuine one, else the cached private copy if genuine.

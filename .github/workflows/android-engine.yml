@@ -176,8 +176,10 @@ jobs:
           bash -n tools/check-installed-launcher-source.sh
           tools/check-installed-launcher-source.sh
           mkdir -p build-java-inst
-          javac -encoding UTF-8 -d build-java-inst android/app/src/main/java/dev/muns/hengeprobe/VmRunnerInstalledLauncher.java android/app/src/main/java/dev/muns/hengeprobe/VmInstalledDiag.java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmRunnerInstalledLauncherTest.java
+          javac -encoding UTF-8 -d build-java-inst android/app/src/main/java/dev/muns/hengeprobe/VmRunnerInstalledLauncher.java android/app/src/main/java/dev/muns/hengeprobe/VmInstalledDiag.java android/app/src/main/java/dev/muns/hengeprobe/VmRomCheck.java android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmRunnerInstalledLauncherTest.java
           java -cp build-java-inst dev.muns.hengeprobe.VmRunnerInstalledLauncherTest
+          javac -encoding UTF-8 -d build-java-inst android/app/src/main/java/dev/muns/hengeprobe/VmRomCheck.java android/app/src/main/java/dev/muns/hengeprobe/RomSlice.java android/app/src/main/java/dev/muns/hengeprobe/VmInstalledDiag.java android/app/src/main/java/dev/muns/hengeprobe/VmRunnerInstalledLauncher.java android/app/src/main/java/dev/muns/hengeprobe/VmEcid.java tests/java/VmRomCheckTest.java
+          java -cp build-java-inst dev.muns.hengeprobe.VmRomCheckTest
 
       - name: "Test the G4 UI verdict logic (plain java: exit code 4 is always FAILED whether or not a RESULT line arrived; exit 0 is a PASS candidate only when the RESULT line itself says 'g4 passed'; a missing/duplicate/mismatched RESULT line, an unfinished reader, or an overflowed result-line count are all FAILED or NO_VERDICT, never a pass)"
         run: |

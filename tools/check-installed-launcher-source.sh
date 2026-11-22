@@ -42,6 +42,19 @@ for f in $A $D; do
   x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(|getIntent|getExtra|getStringExtra|getBooleanExtra|FileOutputStream|FileWriter|Files\.write|createNewFile|\.mkdir|\.delete\(|renameTo' $f); [ -z "$x" ] || { bad "$f creates a process, reads the Intent or writes a file:"; echo "$x"; }
   x=$(grep -nE 'VmRunnerLauncher|VmRunnerG4Launcher|VmDisplayActivity|VmDisplayG4Activity|VmRunnerInstalledLauncher\.start\(|VmEcid\.loadOrCreate' $f); [ -z "$x" ] || { bad "$f names another runner/screen, start(), or loadOrCreate:"; echo "$x"; }
 done
+# ROM decision shared with MainActivity: VmRomCheck reads only (no network/process/write), the report never hashes or opens files itself
+# (only VmRomCheck hashes, and only the small ROM), and MainActivity's isGenuineRom/romInfo delegate to it.
+RC=$J/VmRomCheck.java
+x=$(grep -nE 'ProcessBuilder|Runtime\.getRuntime|\.exec\(|URL|HttpURLConnection|Socket|FileOutputStream|FileWriter|Files\.write|createNewFile|\.mkdir|\.delete\(|renameTo' $RC); [ -z "$x" ] || { bad "VmRomCheck must only read:"; echo "$x"; }
+x=$(grep -nE 'FileInputStream|MessageDigest|RandomAccessFile|URL|Socket' $D); [ -z "$x" ] || { bad "VmInstalledDiag must not open/hash files or use the network itself:"; echo "$x"; }
+grep -q 'VmRomCheck.isGenuine(f)' $J/MainActivity.java || bad "MainActivity.isGenuineRom must delegate to VmRomCheck.isGenuine"
+grep -q 'VmRomCheck.info(f)' $J/MainActivity.java || bad "MainActivity.romInfo must delegate to VmRomCheck.info"
+x=$(grep -n 'MessageDigest' $J/MainActivity.java | grep -iE 'rom' ); [ -z "$x" ] || { bad "MainActivity must not keep its own ROM hashing:"; echo "$x"; }
+# the IPSW size/name the report compares against must be the downloader's own compiled-in ones
+CSZ=$(sed -n 's/^#define IPSW_SIZE \([0-9]*\)ULL.*/\1/p' tests/ipsw_dl_tool.c); CNM=$(sed -n 's/^#define IPSW_NAME "\(.*\)"/\1/p' tests/ipsw_dl_tool.c)
+JSZ=$(sed -n 's/.*IPSW_EXPECTED_BYTES = \([0-9]*\)L;.*/\1/p' $D); JNM=$(sed -n 's/.*IPSW_NAME = "\(.*\)";.*/\1/p' $D)
+{ [ -n "$CSZ" ] && [ "$CSZ" = "$JSZ" ]; } || bad "VmInstalledDiag.IPSW_EXPECTED_BYTES ('$JSZ') must equal tests/ipsw_dl_tool.c IPSW_SIZE ('$CSZ')"
+{ [ -n "$CNM" ] && [ "$CNM" = "$JNM" ]; } || bad "VmInstalledDiag.IPSW_NAME ('$JNM') must equal tests/ipsw_dl_tool.c IPSW_NAME ('$CNM')"
 grep -A3 'VmRunnerInstalledActivity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerInstalledActivity must be exported=false"
 [ $fail = 0 ] && echo "OK  installed-disk launcher source rules: START_ENABLED declared once as the literal false and checked first, one ProcessBuilder after it, options match what ui_runner_vm_installed requires/accepts (no loosening option), RUN_SECONDS bounded, blank images refused, runner file named only in the launcher, the [A-INST] screen and report start nothing, write nothing and cannot name the other runners"
 exit $fail

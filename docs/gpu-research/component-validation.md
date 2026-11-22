@@ -33,7 +33,7 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 |---|---|---|
 | 초기화·기본 명령 | PASS (파싱 중심) | 단위시험 71개 PASS. 구조·반환값 확인 |
 | 렌더 타겟 픽셀 | PASS (픽셀 1점) | `vulkan render`에서 (32,32) readback 1점만 비교 |
-| triangle e2e (기본 설정) | **FAIL** (env 설정 실행) | `USE_APPLE_SPV=1`에서 Apple SPV 파이프라인 생성 VkResult=-13. 원인은 추정이며 재현하지 않음 |
+| triangle e2e (기본 설정) | **FAIL** (env 설정 실행) | `USE_APPLE_SPV=1`에서 Apple SPV 파이프라인 생성 VkResult=-13. 원인은 엔트리 이름 불일치(기존 SPV 엔트리 `triangle_vertex`, 파이프라인은 `main` 지정)로 확인됨. 자세한 내용은 아래 E절 |
 | triangle e2e (`USE_APPLE_SPV=0`) | PASS | 중앙·모서리 2점 비교 |
 | shader translate | BLOCKED | 시험이 `/opt/homebrew/opt/llvm@20/bin/llc`를 하드코딩 (`tests/shader_translate_test.c:19–20`) |
 | pipeline build | BLOCKED | 같은 하드코딩 경로 (`tests/pipeline_build_test.c:34–35`) |
@@ -141,3 +141,23 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 | pvg-vulkan | `render_tri.air` 등 | 저장소에 없음 (BLOCKED 확인) |
 
 후속: 위 픽스처 중 출처가 확인되고 libapplegfx 또는 pvg-vulkan의 입력 구조와 맞는 것만 2단계 Draw 시험에 사용합니다. 출처가 확인되지 않으면 해당 Draw 시험은 BLOCKED로 둡니다.
+
+## E. libapplegfx air2spv 경로: triangle.air A1–A5 (실행 확인)
+
+입력: `examples/triangle/out/triangle.air` (출처: `build_spirv.sh`가 macOS `xcrun metal`로 생성한다고 설명. 이 사본의 생성 과정은 미확인). 재현 도구와 기대 결과는 `tests/gpu-validation/`에 있습니다.
+
+| 단계 | 상태 | 근거 |
+|---|---|---|
+| A1 AIR 파일 읽기 | PASS | `lagfx_air_module_open` status=0. 함수 `triangle_vertex`, `triangle_fragment` 확인 |
+| A2 AIR→SPIR-V (스텁 폴백 없음) | PASS | vertex 1496 bytes, fragment 644 bytes를 `translate_function`으로 생성. 로그에 `falling back`·`emitting reference` 표식 0건. 두 blob 모두 폴백 스텁 바이트와 다름. 같은 입력 두 번 실행 시 해시 동일 |
+| A3 spirv-val | BLOCKED | 도구 미설치. 이 단계 PASS가 없으므로 A4·A5를 SPIR-V 유효성의 근거로 쓰지 않음 |
+| A4 파이프라인 생성 | PASS | 생성된 SPIR-V 엔트리 `main`, `vkCreateGraphicsPipelines` VkResult=0 |
+| A5 Draw·readback | PASS | 삼각형 내부·외부 3724픽셀 기대값 일치. 경계 1px 띠(372픽셀)는 판정에서 제외하고 보고만 함 |
+| 음성 대조군 (드로우 제거) | 실패 검출 (의도된 결과) | 1012픽셀 불일치, 경계 빨강 0 |
+
+**`VkResult=-13` 원인:** 기존 `triangle_*.spv`(llc 경로 산출)는 엔트리가 `triangle_vertex`/`triangle_fragment`입니다. 이 이름 대신 `main`으로 파이프라인을 만들면 -13(VK_ERROR_UNKNOWN)이 나고, 이름을 맞추면 PASS입니다. 따라서 -13은 이 환경에서 변환 오류가 아니라 엔트리 이름 불일치로 확인되었습니다. libapplegfx e2e 시험이 엔트리 이름을 지정하지 않는다는 것은 코드 읽기로 확인한 사실이며, e2e를 직접 실행해 같은 결과를 본 것은 아닙니다.
+
+**판정 한계**
+- 이 시험은 Vulkan 파이프라인을 직접 만들었습니다. libapplegfx의 PVG 명령 처리 경로를 거치지 않았습니다. 따라서 이 PASS는 "변환기가 만든 SPIR-V가 이 삼각형을 그린다"는 뜻이며, 명령 처리 경로가 정상이라는 뜻이 아닙니다.
+- A2 산출은 변환기가 새로 만든 SPIR-V입니다. 기존 `.spv`는 증거로 쓰지 않았습니다.
+- 드라이버는 CPU(lavapipe)입니다.

@@ -60,6 +60,35 @@ pvg-vulkan 실행 참고:
 - AIR 픽스처가 저장소에 없어 draw 검증은 전혀 실행되지 않았습니다(BLOCKED).
 - 단일 프로세스 cargo 실행에서는 패닉 전파로 9개가 추가 실패하므로, 개별 프로세스 결과를 기준으로 했습니다.
 
+## T6 Stage 1 픽셀 하네스 (실행 확인, 셰이더 없음)
+
+재현 도구: `tests/gpu-validation/stage1_pixels.c`. 기대 결과: `tests/gpu-validation/expected-results.md`.
+
+| 시험 | 결과 |
+|---|---|
+| T1 전체 클리어 (4096픽셀 전부) | PASS |
+| T2 렌더 패스 사각형 클리어 (4096픽셀 전부) | PASS |
+| T3 버퍼→이미지 복사 3회 | PASS ×3 |
+| 음성 대조군 (기대값 오류) | 불일치 검출 (35픽셀), 의도된 실패 |
+
+이 결과는 Vulkan 기본 동작에 대한 것이며, libapplegfx나 pvg-vulkan의 구현 결과가 아닙니다.
+
+## T7 libapplegfx air2spv 경로: triangle.air의 A1–A5 (실행 확인)
+
+입력: `examples/triangle/out/triangle.air` (sha256 `5ceb1569…e414`). 재현: `tests/gpu-validation/run_triangle_chain.sh`.
+
+| 단계 | 결과 | 근거 |
+|---|---|---|
+| A1 AIR 열기 | PASS | `lagfx_air_module_open` status=0, 함수 `triangle_vertex`, `triangle_fragment` |
+| A2 SPIR-V 변환 | PASS | `translate_function` 두 단계 모두 OK. 로그에 폴백 표식 0건. 생성 바이트가 폴백 스텁과 다름 |
+| A3 spirv-val | BLOCKED | 도구 미설치. A4·A5 결과는 SPIR-V 유효성 근거가 아님 |
+| A4 파이프라인 생성 | PASS | 엔트리 이름 `main`, `VkResult=0` |
+| A5 픽셀 | PASS | 삼각형 내부·외부 3724픽셀 0 불일치. 음성 대조군(드로우 제거)은 1012 불일치로 실패 검출 |
+
+**`VkResult=-13` 원인 (확인됨, 이 환경):** 저장소의 기존 `examples/triangle/out/triangle_*.spv`는 엔트리 이름이 `triangle_vertex`/`triangle_fragment`입니다. 파이프라인 생성 시 이름을 `main`으로 주면 -13이 나옵니다. 엔트리 이름을 맞추면 PASS입니다. libapplegfx의 e2e 시험은 엔트리 이름을 지정하지 않으므로(코드 읽기 기준) 같은 조건에서 같은 실패가 날 것으로 추론됩니다. 이 추론은 e2e 시험을 직접 실행해 확인하지 않았습니다.
+
+**한계:** 이 PASS는 Vulkan 파이프라인 경로이며 libapplegfx의 PVG 명령 처리 경로를 거치지 않았습니다. 또한 A2 산출은 변환기가 새로 만든 SPIR-V이며, 기존 `.spv`는 증거로 쓰지 않았습니다.
+
 ## 외부 구현의 시험 존재 여부 (참고)
 
 "시험 존재"는 소스에 시험 함수가 있다는 뜻일 뿐 통과를 뜻하지 않습니다.

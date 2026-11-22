@@ -23,6 +23,8 @@
 - [vulkan-backend.md](vulkan-backend.md): 렌더링·메모리·동기화
 - [android-port.md](android-port.md): NDK·bionic·기기 호환성
 - [test-matrix.md](test-matrix.md): 단계별 시험 결과
+- [component-validation.md](component-validation.md): 기능별 실행 검증표 (PASS·FAIL·SKIP·BLOCKED·NOT RUN·NOT IMPLEMENTED)
+- 재현 도구와 기대 결과: [`tests/gpu-validation/`](../../tests/gpu-validation/) (README.md, expected-results.md)
 - [open-issues.md](open-issues.md): 미해결 문제와 차단 사항
 - [implementation-plan.md](implementation-plan.md): 구현 순서와 완료 기준
 - [sources/](sources/): 저장소별 조사 기록 (6개)

@@ -99,7 +99,7 @@
 
 ## 5. 완료 스탬프·펜스
 
-**Henge에서 확인된 결함 (정정 포함):**
+**Henge 완료 스탬프: 무조건 기록은 확인, 역순·순환 위험은 미재현 (재현 시험 전에는 결함으로 판정하지 않음):**
 - `devices/pvg_lite.c:612`(`hv_pvg_lite_complete`)은 `:621`에서 `__atomic_store_n(s, stamp, RELEASE)`로 **무조건** 기록합니다. 단조 가드가 없습니다.
 - 배리어 비교는 `:905–909`에서 부호 있는 차이로 합니다. `:937–938`, `:924`도 무조건 기록입니다.
 - 호출처: `pvg_metal.m:1843–1851`(MTLCommandBuffer completed handler), `:1857–1859`(`finishChannel`).
@@ -107,12 +107,14 @@
 
 | 프로젝트 | 실제 위치 | 판단 |
 |---|---|---|
-| Henge | 위 참조 | **재구현 우선 후보:** 스탬프 기록을 "target보다 클 때만 갱신"으로 바꿔야 함 |
-| libapplegfx | `stamp.c:28`(`lagfx_advance_stamp_cell`), `:55`(`next = max(target, cur+1)`, 최소 1), `:71`(`lagfx_protocol_complete_stamp_slot`), `:100`(`complete_stamp`). 호출처: `dispatchers/channel_0_dispatcher.c:494`, `channel_display_dispatcher.c:295`, `channel_compute_dispatcher.c:437`, `handlers/compute/exec_cmdbuf.c:580`. CLAUDE.md의 "0 금지, 단조" 규칙과 일치 | 단조 규칙을 Henge에 그대로 이식 가능. 셀 읽기-쓰기는 원자적이지 않음 (단일 writer 가정) |
+| Henge | 위 참조 | 수정 후보이나 확정 아님. 역순 완료 재현 시험 후 채택 여부를 결정 |
+| libapplegfx | `stamp.c:28`(`lagfx_advance_stamp_cell`), `:55`(`next = max(target, cur+1)`, 최소 1), `:71`(`lagfx_protocol_complete_stamp_slot`), `:100`(`complete_stamp`). 호출처: `dispatchers/channel_0_dispatcher.c:494`, `channel_display_dispatcher.c:295`, `channel_compute_dispatcher.c:437`, `handlers/compute/exec_cmdbuf.c:580`. CLAUDE.md의 "0 금지, 단조" 규칙과 일치 | 단조 규칙은 참고 후보. 32비트 순환은 처리하지 않는 것으로 보이며(순환 비교 코드 미확인), 셀 읽기-쓰기는 원자적이지 않음 (단일 writer 가정) |
 | pvg-vulkan | `runtime/drain/mod.rs:1600`(`write_stamp`): `:1565`(`stamp_word_ordered_on_gpu`), 쓰기 전 `settle_guest_writes`·`quiesce_guest_reads`로 게스트 쓰기를 먼저 확정. `backend/vulkan/engine/stamp_completion.rs:208`(`reserve`, timeline fetch_add AcqRel), `:279`(`run`), `:115`(`announce`) → `device/mod.rs:306`(`announce_stamp_interrupt`) | "게스트 쓰기 확정 후 스탬프 쓰기" 순서 원칙을 차용 |
 | reims-vgpu | `reims-vgpu-graphics/src/ring.rs:576`(`post`): 데이터 기록 후 PRODUCER Release, `:612–613`(`COMPLETED_SEQNO`를 `fetch_max(Release)`로 단조 기록), `:478`(`rearm_or_raise`, SeqCst fence와 armed swap) | `fetch_max` 패턴이 Henge 수정에 가장 가까움 |
 
-**정정 기록:** 앞선 문서는 Henge 스탬프 관련 항목을 "보류"로만 두었습니다. 함수 단위 확인 결과 무조건 기록이라는 결함이 확인되었으며, 이는 libapplegfx와 reims의 단조 규칙과 반대입니다.
+**정정 기록:** 초안은 이 항목을 "확인된 결함"으로 적었으나 과장된 표현이었습니다. 확인된 사실은 무조건 기록이라는 점뿐입니다. 역순 완료, 32비트 순환, 동시 완료 경쟁, 게스트 대기 해제 동작은 아직 재현하지 않았습니다.
+
+**재현 시험 조건 (미실행):** (1) 같은 채널에서 완료 콜백을 역순으로 발생시켜 값이 후퇴하는지 확인, (2) 32비트 순환 시 비교가 어떻게 되는지 확인, (3) 여러 완료 경로의 동시 기록 경쟁, (4) 게스트 대기 해제가 기대대로 되는지 확인. 이 시험 후에만 단조 갱신 채택을 검토합니다.
 
 ## 6. 완료 인터럽트 벡터
 
@@ -126,7 +128,7 @@
 ## 7. Henge와의 차이 요약
 
 - 메모리: Henge는 경계 검사 후 원시 포인터를 돌려주고, pvg-vulkan은 경계를 타입으로 강제합니다.
-- 스탬프: Henge는 무조건 기록하고, libapplegfx와 reims는 단조 기록합니다. Henge 수정의 가장 직접적인 후보입니다.
+- 스탬프: Henge는 무조건 기록하고, libapplegfx와 reims는 단조 규칙을 둡니다. 차이는 확인되었으나, Henge에 결함이 있는지는 재현 시험 전까지 미정입니다.
 - 인터럽트: Henge의 벡터 방식은 현행 유지하고, 벡터 0 규칙은 libapplegfx와 같습니다.
 
 ## 8. 미확인 항목

@@ -25,7 +25,7 @@ SHA는 저장소 HEAD 기준입니다. 0BSD는 LICENSE 본문의 허가 문구�
 | 기능 | libapplegfx-vulkan | Henge (research) | 기타 후보 | 근거 수준 | 채택 상태 |
 |---|---|---|---|---|---|
 | Vulkan 초기화 | 실제 경로 구현 | 해당 없음 | reims-vgpu (Vulkan 가상 GPU) | lavapipe 실행 시험 통과 | 조건부 채택 |
-| 렌더 명령 연결 | 약 10/95 연결 | Android용 GPU 명령 실행 백엔드 미구현 | - | CLAUDE.md 54행 | 조건부 채택 |
+| 렌더 명령 연결 | Vulkan 호출 경로 확인: draw 5개, blit 2개 (함수 단위 조사이며 구현률이 아님) | Android용 GPU 명령 실행 백엔드 미구현 | pvg-vulkan: draw·dispatch·copy·present 호출 경로가 소스에 있음 (실행 미확인) | 소스 확인 (vulkan-backend.md 1절) | 조건부 채택 |
 | PVG 명령 디스패치 | 외곽 명령 체계 | 채널 명령 1·2·8·0x38·0x44·0x43·0x45 | pvg-vulkan-wire 직렬화 레코드 | 소스 함수 확인 | 보류 (계층 대조 필요) |
 | 메모리 aliasing | memfd + MAP_FIXED, mremap (Linux 전용) | VM 메모리 함수 접근 | reims-vgpu (방식 미확인) | 소스 함수 확인 | 보류 |
 | AIR → SPIR-V 변환 | 구현 존재, 일부 시험 SKIP | 해당 없음 | metal2vulkan (AIR→Vulkan 파이프라인) | 일부 시험 PASS, 2건 SKIP | 조건부 채택 |
@@ -35,9 +35,10 @@ SHA는 저장소 HEAD 기준입니다. 0BSD는 LICENSE 본문의 허가 문구�
 
 ## 선정 결정 (현재 단계)
 
-- libapplegfx-vulkan의 Vulkan 렌더링 코드는 직접 사용 후보입니다. 실기기 시험을 거쳐 채택 여부를 정합니다.
+- libapplegfx-vulkan은 참고 및 시험 후보입니다. Vulkan 호출 경로는 draw 5개, blit 2개로 확인되었으며, 실기기 시험 전까지 채택하지 않습니다.
+- pvg-vulkan과 metal2vulkan은 우선 검토 후보입니다. 실제 Android GPU 시험과 인터페이스 검증 전에는 채택을 확정하지 않습니다.
 - 명령 해석과 메모리 연결부는 Henge와 인터페이스가 달라 "어댑터 필요"로 분류합니다.
 - metal2vulkan과 libapplegfx의 셰이더 변환은 같은 영역입니다. 기능 비교 전까지 어느 쪽도 채택하지 않습니다.
 - pvg-vulkan과 reims-vgpu는 QEMU·macOS 게스트 목표가 libapplegfx와 겹치므로, 함수 단위 비교 후 채택 여부를 정합니다.
 - 라이선스: Henge는 GPL-2.0-or-later입니다. LGPL-3.0(pvg-vulkan)과 이중 라이선스(metal2vulkan, reims-vgpu)의 결합 조건은 법률 검토가 필요하며, 이 문서는 법률 판단을 대신하지 않습니다.
-- 이번 단계까지 함수 단위 비교는 PVG 프레이밍과 명령 번호 대조만 수행했습니다. 메모리·셰이더·렌더링 비교는 남아 있습니다.
+- 함수 단위 비교 수행 범위: PVG 프레이밍과 명령 번호 대조(pvg-protocol.md), 메모리·동기화(vulkan-backend.md 2~6절), 셰이더 변환(metal-shader.md), 렌더·블릿·컴퓨트·표시(vulkan-backend.md 1절). 모두 소스 확인이며 실행 검증은 없습니다.

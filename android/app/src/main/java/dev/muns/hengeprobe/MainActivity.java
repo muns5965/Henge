@@ -670,6 +670,75 @@ public class MainActivity extends Activity {
         vmDisplayNote.setText("기존 일반/설치기 부팅 시험이 이미 찾아 둔 ROM·디스크·AUX 경로를 그대로 전달합니다. 셋 중 하나라도 없으면 아무것도 만들지 않고 실행을 거부합니다. 실제로 시작되는지는 VmRunnerLauncher의 활성화 여부가 따로 결정합니다.");
         vmDisplayNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(vmDisplayNote);
+        // [A-G4] The G4-track counterpart of [A] above. Whether this can ever start a process is decided
+        // entirely by VmRunnerG4Launcher.startEnabled(), checked first thing in VmDisplayG4Activity.onCreate()
+        // before anything else is read or touched -- this button's own job is only to LOCATE what G4 needs
+        // (rom/disk/aux, same ones the normal-boot and [A] buttons already use; the IPSW already downloaded by
+        // 'IPSW 다운로드'; the ECID already created by a prior installer/G-series run) and hand their paths on as
+        // Intent extras, or refuse outright if any is missing -- it never downloads, creates, or generates any
+        // of them itself. workdir is the one exception: a scratch directory for G4's own restore work files,
+        // separate from the existing G4 install-diagnostic button's own workdir (so the two distinct G4
+        // binaries never share one), created here the same way that button already creates its own.
+        final Button vmDisplayG4Button = new Button(this);
+        vmDisplayG4Button.setText("[A-G4] G4 VM 화면(이 빌드에서는 실행 비활성)");
+        final boolean[] vmDisplayG4Busy = {false};
+        vmDisplayG4Button.setOnClickListener(v -> {
+            if (vmDisplayG4Busy[0]) return;
+            vmDisplayG4Busy[0] = true;
+            new Thread(() -> {
+                StringBuilder acc = new StringBuilder();
+                File base = new File(getExternalFilesDir(null), "vm");
+                File priv = new File(getFilesDir(), "vm");
+                File rom = findLocalRom(acc); // local-only: never downloads
+                File disk = new File(base, "disk.img").isFile() ? new File(base, "disk.img") : new File(priv, "blank_disk.img");
+                File aux = new File(base, "aux.img").isFile() ? new File(base, "aux.img") : new File(priv, "blank_aux.img");
+                File ipsw = new File(ipswDir(), "UniversalMac_15.6.1_24G90_Restore.ipsw"); // never downloads
+                File ecidFile = new File(priv, VmEcid.FILE);
+                final String refusal; final String ecidHex; final File workdir;
+                if (rom == null) {
+                    refusal = "ROM이 없어 실행하지 않았습니다. 먼저 일반 또는 설치기 부팅 시험으로 ROM을 받아 두세요 (이 버튼은 다운로드하지 않습니다). 네트워크 요청은 하지 않았습니다.\n" + acc;
+                    ecidHex = null; workdir = null;
+                } else if (!disk.isFile() || !aux.isFile()) {
+                    refusal = "디스크 또는 aux 파일이 아직 없습니다(" + disk.getName() + ", " + aux.getName() + "). 이 화면은 저장장치를 만들지 않습니다. 먼저 일반 또는 설치기 부팅 시험을 한 번 실행해 파일을 만든 뒤 다시 누르세요.\n" + acc;
+                    ecidHex = null; workdir = null;
+                } else if (!ipsw.isFile()) {
+                    refusal = "받아 둔 IPSW가 없습니다(" + ipsw.getName() + "). 'IPSW 다운로드'로 먼저 받으세요. 이 화면은 다운로드하지 않습니다.\n" + acc;
+                    ecidHex = null; workdir = null;
+                } else if (!ecidFile.isFile()) {
+                    refusal = "이 VM의 ECID 파일이 아직 없습니다(" + VmEcid.FILE + "). 이 화면은 ECID를 만들지 않습니다. 먼저 설치기 또는 G0/G2/G3/G4/G5/G6 부팅 시험을 한 번 실행하세요.\n" + acc;
+                    ecidHex = null; workdir = null;
+                } else {
+                    VmEcid.Result er = VmEcid.loadOrCreate(priv); // the file above already exists, so this only loads it
+                    if (er.status != VmEcid.Status.LOADED) {
+                        refusal = "ECID 파일을 읽지 못했습니다(" + er.detail + "). 이 화면은 ECID를 만들지 않습니다.\n" + acc;
+                        ecidHex = null; workdir = null;
+                    } else {
+                        refusal = null;
+                        ecidHex = String.format("0x%x", er.value);
+                        workdir = new File(getFilesDir(), "rs_g4ui"); // this binary's own scratch directory, never shared with the other G4 binary's "rs_g4"
+                        workdir.mkdirs();
+                    }
+                }
+                final File romF = rom, diskF = disk, auxF = aux, ipswF = ipsw;
+                runOnUiThread(() -> {
+                    vmDisplayG4Busy[0] = false;
+                    if (refusal != null) { show(refusal); return; }
+                    android.content.Intent i = new android.content.Intent(this, VmDisplayG4Activity.class);
+                    i.putExtra("rom", romF.getAbsolutePath());
+                    i.putExtra("disk", diskF.getAbsolutePath());
+                    i.putExtra("aux", auxF.getAbsolutePath());
+                    i.putExtra("ipsw", ipswF.getAbsolutePath());
+                    i.putExtra("ecid", ecidHex);
+                    i.putExtra("workdir", workdir.getAbsolutePath());
+                    startActivity(i);
+                });
+            }).start();
+        });
+        root.addView(vmDisplayG4Button);
+        final TextView vmDisplayG4Note = new TextView(this);
+        vmDisplayG4Note.setText("기존 ROM·디스크·AUX·IPSW·ECID 경로를 그대로 전달합니다(아무것도 내려받거나 새로 만들지 않습니다; workdir만 이 화면 전용 빈 디렉터리를 새로 만듭니다). 실제로 시작되는지는 VmRunnerG4Launcher의 활성화 여부가 따로 결정하며, 이 빌드에서는 비활성입니다(화면을 열어도 아무 프로세스도 시작되지 않고 Apple 서버로 어떤 요청도 보내지 않습니다).");
+        vmDisplayG4Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(vmDisplayG4Note);
 
         // Shows and exports vm/snapshot.bmp -- the one-shot capture G0-G6 and the normal/installer boot test all
         // write to the same shared path whenever --snapshot is given (host/vmrun.c's g_capture_screen()/the normal

@@ -68,5 +68,27 @@ if [ -f "$GA" ]; then
   x=$(grep -nE 'VmRunnerLauncher|VmDisplayActivity' $GA); [ -z "$x" ] || { bad "VmRunnerG4Activity must never name VmRunnerLauncher or VmDisplayActivity (risk of accidentally starting [A]):"; echo "$x"; }
   grep -A3 'VmRunnerG4Activity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmRunnerG4Activity must be exported=false"
 fi
-[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process, the [G4 UI] info screen starts no process and cannot name the [A] runner"
+# The G4-track counterpart of the app's OTHER real-VM screen (VmDisplayG4Activity.java): unlike the [G4 UI] info
+# screen above, this one's whole job is to drive the real SHM/JNI pipeline through VmRunnerG4Launcher -- so it
+# legitimately names that launcher -- but it must never be able to start or even name the OTHER, unrelated
+# runner launcher (the exact risk a review raised before this file existed), and all process creation for it
+# must still go through VmRunnerG4Launcher alone, never a ProcessBuilder of its own.
+GV=$J/VmDisplayG4Activity.java
+if [ -f "$GV" ]; then
+  x=$(grep -nE 'VmRunnerLauncher' $GV); [ -z "$x" ] || { bad "VmDisplayG4Activity must never name the app's OTHER runner launcher (risk of accidentally starting [A]):"; echo "$x"; }
+  x=$(grep -n 'new ProcessBuilder' $GV); [ -z "$x" ] || { bad "VmDisplayG4Activity must not create a process itself:"; echo "$x"; }
+  grep -q 'VmRunnerG4Launcher\.start(' $GV || bad "VmDisplayG4Activity must start the G4 runner only through VmRunnerG4Launcher.start(...)"
+  grep -A3 'VmDisplayG4Activity' android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="false"' || bad "VmDisplayG4Activity must be exported=false"
+  # every native method VmDisplayG4Activity declares must have a matching JNI export in the native glue code,
+  # the same name-based binding every other screen on this pipeline already relies on (JNI binds by the
+  # caller's fully-qualified class name) -- a mismatch here would only surface at runtime, once execution is
+  # ever turned on, so this check catches it ahead of that.
+  CPP=android/app/src/main/cpp/ui_jni.c
+  if [ -f "$CPP" ]; then
+    for m in $(grep -oE 'private static native [A-Za-z.]+ native[A-Za-z]+' $GV | grep -oE 'native[A-Za-z]+'); do
+      grep -q "Java_dev_muns_hengeprobe_VmDisplayG4Activity_${m}(" $CPP || bad "VmDisplayG4Activity.$m has no matching JNI export Java_dev_muns_hengeprobe_VmDisplayG4Activity_$m in $CPP"
+    done
+  fi
+fi
+[ $fail = 0 ] && echo "OK  G4 UI launcher source rules: START_ENABLED declared once as the literal false, one ProcessBuilder after the check, the options match what ui_runner_vm_g4 requires/accepts, runner file named only in VmRunnerG4Launcher, the Phase 3 judgment classes create no process, the [G4 UI] info screen starts no process and cannot name the [A] runner, VmDisplayG4Activity drives the SHM/JNI pipeline only through VmRunnerG4Launcher and cannot name the [A] launcher, and every native method it declares has a matching JNI export"
 exit $fail

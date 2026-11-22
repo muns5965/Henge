@@ -88,14 +88,17 @@ static int fetch_shm(void *ctx, const uint8_t **px, uint32_t *w, uint32_t *h, ui
 }
 
 /* This module's whole native pipeline (g_gate/g_buf/g_touch/g_shm, all of it) is ONE singleton, used by whichever
-   screen is in front: DisplayTestActivity (C0+B0, synthetic guest, no virtual machine) or VmDisplayActivity (A-track,
-   real VM, see host/ui_runner_vm.c). Both read/write the SAME shared-memory protocol (host/frame_shm.h) on the far
-   end -- the runner process differs (libuirunner.so vs libuirunnervm.so, started by DisplayTestActivity itself vs
-   VmRunnerLauncher respectively), not this side's handling of it. So every impl_* function below is written once and
-   exported under BOTH classes' JNI names (JNI binds by the caller's fully-qualified class name, so a single native
-   method cannot otherwise serve two Java classes). Only nativeStatus differs: the synthetic screen's touch-
-   calibration diagnostics (target/conv/settled) do not apply to a real guest, so VmDisplayActivity gets its own,
-   smaller status text built from the same underlying counters. */
+   screen is in front: DisplayTestActivity (C0+B0, synthetic guest, no virtual machine), VmDisplayActivity (A-track,
+   real VM, see host/ui_runner_vm.c), or VmDisplayG4Activity (the G4-track counterpart, see host/ui_runner_vm_g4.c).
+   All three read/write the SAME shared-memory protocol (host/frame_shm.h) on the far end -- the runner process and
+   its own Java launcher differ (libuirunner.so started by DisplayTestActivity itself, libuirunnervm.so started by
+   VmRunnerLauncher, libuirunnervmg4.so started by VmRunnerG4Launcher), not this side's handling of it. So every
+   impl_* function below is written once and exported under EACH class's own JNI names (JNI binds by the caller's
+   fully-qualified class name, so a single native method cannot otherwise serve more than one Java class). Only
+   nativeStatus differs: the synthetic screen's touch-calibration diagnostics (target/conv/settled) do not apply to
+   a real guest, so VmDisplayActivity and VmDisplayG4Activity both get the same smaller, real-guest status text
+   (impl_status_vm), built from the same underlying counters. The three screens never run at once (one native
+   singleton backs all of them), which is fine: they are alternative screens, not simultaneous ones. */
 
 /* 0: built and open. 1: already running. -1: building failed. -2: the previous instance is still closing or being freed (not yet released): nothing was built. */
 static jint impl_nativeStart(void) {
@@ -423,3 +426,21 @@ JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeTick(JNI
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
 JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
 JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_VmDisplayActivity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_status_vm(env); }
+
+/* ---- JNI exports: VmDisplayG4Activity (G4-track, real VM) -- same impl_* functions, see the note above nativeStart ---- */
+
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeStart(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeStart(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeDestroy(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeDestroy(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeSetSurface(JNIEnv *env, jclass cls, jobject surface) { (void)cls; impl_nativeSetSurface(env, surface); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeSetView(JNIEnv *env, jclass cls, jfloat w, jfloat h) { (void)env; (void)cls; impl_nativeSetView(w, h); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeSetFeedback(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeSetFeedback(on); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeUseRunner(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; impl_nativeUseRunner(on); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeAttachRunner(JNIEnv *env, jclass cls, jstring jpath, jlong pid) { (void)cls; return impl_nativeAttachRunner(env, jpath, pid); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeRunnerAppClose(JNIEnv *env, jclass cls) { (void)env; (void)cls; impl_nativeRunnerAppClose(); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeRender(JNIEnv *env, jclass cls) { (void)env; (void)cls; return impl_nativeRender(); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeTouch(JNIEnv *env, jclass cls, jint action, jint id, jfloat x, jfloat y, jlong t_ms) { (void)env; (void)cls; impl_nativeTouch(action, id, x, y, t_ms); }
+JNIEXPORT void JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeTick(JNIEnv *env, jclass cls, jlong t_ms) { (void)env; (void)cls; impl_nativeTick(t_ms); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeKey(JNIEnv *env, jclass cls, jint keycode, jboolean down) { (void)env; (void)cls; return impl_nativeKey(keycode, down); }
+JNIEXPORT jint JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeKeyMapped(JNIEnv *env, jclass cls, jint keycode) { (void)env; (void)cls; return impl_nativeKeyMapped(keycode); }
+JNIEXPORT jstring JNICALL Java_dev_muns_hengeprobe_VmDisplayG4Activity_nativeStatus(JNIEnv *env, jclass cls) { (void)cls; return impl_status_vm(env); }

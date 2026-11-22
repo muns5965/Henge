@@ -37,6 +37,13 @@
             android:name=".VmDisplayActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
+        <!-- [A-G4] The G4-track counterpart of VmDisplayActivity above: same native SHM/JNI pipeline, same
+             switch discipline, but through VmRunnerG4Launcher (START_ENABLED=false in this build) instead.
+             Not exported; only this app may launch it or hand it Intent extras (rom/disk/aux/ipsw/ecid/workdir). -->
+        <activity
+            android:name=".VmDisplayG4Activity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize" />
         <!-- Shows and exports vm/snapshot.bmp (G0-G6's and the normal/installer boot test's one-shot screen
              capture). Not exported: nothing outside this app may launch it. -->
         <activity

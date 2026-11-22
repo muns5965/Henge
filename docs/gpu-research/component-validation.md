@@ -112,3 +112,32 @@ PASS의 종류를 나눕니다. "파싱 PASS"는 구조·반환값만 확인한 
 - 실행 환경은 CPU 가상 Vulkan(lavapipe)입니다. 실제 GPU 결과가 아닙니다.
 - 로그에는 환경 변수 덤프가 포함되어 있습니다. 외부 공유 전 확인이 필요합니다.
 - metal2vulkan, reims-vgpu, Indium, Henge Android는 아직 실행하지 않았습니다.
+
+---
+
+## C. 1단계 픽셀 하네스 (Vulkan 자체 동작, 셰이더·AIR 없음)
+
+하네스: `/home/claude/validation/harness/stage1_pixels.c` (외부 저장소 밖에 있으며, 이 저장소에는 결과 요약만 기록합니다)
+
+| 시험 | 내용 | 상태 |
+|---|---|---|
+| T1 full clear | 전체 이미지 클리어, 4096픽셀 전부 비교 | PASS |
+| T2 rect clear | 렌더 패스에서 사각형 클리어, 경계 포함 전부 비교 | PASS |
+| T3 buffer→image | 픽셀별 패턴 복사, 3회 반복 | PASS ×3 |
+| 음성 대조군 | 기대값을 일부러 틀리게 바꿔 실패 확인 | FAIL (의도된 결과, 35픽셀 검출) |
+
+이 결과가 보여주는 것: lavapipe의 clear·복사·readback 경로가 독립 계산한 기대값과 일치합니다.
+보여주지 않는 것: libapplegfx나 pvg-vulkan의 구현 정확성, 실기기 GPU 동작, 삼각형 래스터화, 셰이더 연산.
+
+## D. AIR 입력 픽스처 조사 (출처 미확인, 사용 가능 여부 미판정)
+
+| 위치 | 파일 | 출처 상태 |
+|---|---|---|
+| libapplegfx `examples/triangle/out/` | `triangle.air`, `triangle.metallib` | `build_spirv.sh`가 `xcrun metal`(macOS)로 생성한다고 설명. 이 사본의 생성 과정은 미확인 |
+| libapplegfx `tests/fixtures/` | `default.metallib`, `triangle.metallib` | 출처 미확인 |
+| metal2vulkan `fixtures/public/` | 다수의 `.air` | 저장소가 public 픽스처로 분류. 출처 문서 미확인 |
+| reims-vgpu `metallibs/` | 여러 `.metallib` | 출처 미확인. pvg-vulkan 입력 구조와 호환 여부 미확인 |
+| Indium `test/` | 여러 `.metallib` | 출처 미확인 |
+| pvg-vulkan | `render_tri.air` 등 | 저장소에 없음 (BLOCKED 확인) |
+
+후속: 위 픽스처 중 출처가 확인되고 libapplegfx 또는 pvg-vulkan의 입력 구조와 맞는 것만 2단계 Draw 시험에 사용합니다. 출처가 확인되지 않으면 해당 Draw 시험은 BLOCKED로 둡니다.

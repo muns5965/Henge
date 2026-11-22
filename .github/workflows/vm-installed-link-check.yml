@@ -1,0 +1,74 @@
+# Diagnostic build only: no APK packaging, no phone execution, no disk writes and no restore of any kind.
+# Builds and statically checks host/ui_runner_vm_installed.c, the third sibling of host/ui_runner_vm.c (always
+# ecid=0/seed=0) and host/ui_runner_vm_g4.c (installer=1): a normal, non-installer boot that is allowed a nonzero
+# machine identity, for booting an already-personalized disk. See host/ui_runner_vm_installed.c's own top-of-file
+# comment for the full reasoning. Mirrors g4-ui-link-check.yml's structure.
+name: VM installed-disk mode link check
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+      - research/android-port-g2b1
+    paths:
+      - host/ui_runner_vm_installed.c
+      - host/runner_vm_core.c
+      - host/runner_vm_core.h
+      - host/frame_shm.c
+      - host/display_buf.c
+      - tools/ui-runner-vm-installed-build.sh
+      - tools/check-runner-vm-installed-safe.sh
+      - tools/engine-build.sh
+      - tools/devices-build.sh
+      - .github/workflows/vm-installed-link-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  vm-installed-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out research branch
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK r27c
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-r27c" >> "$GITHUB_ENV"
+
+      - name: Compile engine and virtual devices for Android arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          export CC
+          EXTRA_LIBS="-llog" tools/engine-build.sh build-engine
+          EXTRA_LIBS="-llog" tools/devices-build.sh build-engine
+
+      - name: Build and statically check ui_runner_vm_installed (Android arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+          NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          export CC NM READELF
+          EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-installed-build.sh build-engine
+          test -s build-engine/ui_runner_vm_installed
+          file build-engine/ui_runner_vm_installed
+          "$READELF" -h build-engine/ui_runner_vm_installed | grep 'Machine:.*AArch64'
+          "$NM" build-engine/ui_runner_vm_installed | grep ' hv_runner_pump_frame$' > /dev/null
+
+      - name: Upload linked Android diagnostic for separate authorized testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runner-vm-installed-android-arm64
+          path: build-engine/ui_runner_vm_installed
+          if-no-files-found: error
+          retention-days: 7

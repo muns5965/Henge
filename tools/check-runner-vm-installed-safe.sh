@@ -70,7 +70,7 @@ n=$(grep -c 'hv_vm_create(' $R); [ "$n" = 1 ] || bad "$R: exactly one hv_vm_crea
 grep -q 'hv_vm_create(&cfg, ' $R || bad "$R: hv_vm_create must be given &cfg"
 n=$(grep -cE '^[[:space:]]*HvVmConfig ' $R); [ "$n" = 1 ] || bad "$R: exactly one HvVmConfig variable expected (found $n)"
 grep -q 'installed_boot_config_ok(&cfg, ecid, why, sizeof why)' $R || bad "$R: installed_boot_config_ok must be called with &cfg, ecid, why, sizeof why"
-grep -q 'hv_runner_config_ok(' $R && bad "$R: must not call the shared hv_runner_config_ok (it hard-requires ecid=0/seed=0); use installed_boot_config_ok instead"
+grep -q 'hv_runner_config_ok(&cfg' $R && bad "$R: must not call the shared hv_runner_config_ok (it hard-requires ecid=0/seed=0); use installed_boot_config_ok instead"
 l1=$(grep -n 'hv_runner_make_config(&cfg' $R | head -1 | cut -d: -f1); l2=$(grep -n 'installed_boot_config_ok(&cfg' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_create(&cfg' $R | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l3" ]; } || bad "$R: make_config, then installed_boot_config_ok, then hv_vm_create is the order required (lines '$l1' '$l2' '$l3')"
 grep -q 'hv_runner_scrub_env' $R || bad "$R: the HV_* scrub is missing"

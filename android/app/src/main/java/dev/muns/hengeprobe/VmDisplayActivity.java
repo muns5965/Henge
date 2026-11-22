@@ -102,9 +102,11 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     private boolean surfaceReady;
     private boolean started;                // nativeStart() succeeded
     private boolean vmStarted;               // VmRunnerLauncher actually started a process for this screen instance
-    // The last frame size fitSurfaceToFrame() actually laid the SurfaceView out for, read only from the render
-    // thread (never the UI thread) -- so a same-size frame is a no-op instead of posting a relayout every tick.
-    private int fitW, fitH;
+    // The frame size and parent size fitSurfaceToFrame() actually laid the SurfaceView out for -- read AND
+    // written only inside that method's ui.post() lambda (i.e. only ever on the UI thread, never the render
+    // thread that calls fitSurfaceToFrame() itself), so no synchronization is needed between the two. Set
+    // only once setLayoutParams() has actually been called with matching values -- see that method's comment.
+    private int appliedFrameW, appliedFrameH, appliedParentW, appliedParentH;
 
     private volatile Process runner;
     private volatile long runnerPid;
@@ -456,26 +458,41 @@ public class VmDisplayActivity extends Activity implements SurfaceHolder.Callbac
     // within the available screen area, centered) removes that second, uncontrolled scale: Android then scales
     // the buffer uniformly to fill the correctly-shaped rectangle. Called off the render thread every ~250 ms
     // (piggybacking on the existing status-text throttle, not every frame); does nothing until nativeFrameSize()
-    // reports a first frame, and does nothing more once this size has already been applied once.
+    // reports a first frame.
+    //
+    // [2026-11-22, fixed after review] The "already applied" state (appliedFrameW/H, appliedParentW/H above)
+    // is read AND written only inside the ui.post() lambda below -- i.e. only ever on the UI thread -- and only
+    // after setLayoutParams() has actually run with those exact values. The first version of this method
+    // instead recorded "already handled" on the CALLING (render) thread before knowing whether the post()ed
+    // lambda could do anything: on the very first frame (or right after a config change), the parent is not
+    // laid out yet (getWidth()/getHeight() still 0), the lambda returned without applying anything, but the
+    // frame size was already marked done -- so no later tick ever retried, and a config change that resized
+    // the parent without changing the guest's own resolution was never picked up either. Always posting (the
+    // lambda itself is cheap: at most a few int reads when nothing has changed) and deciding "done" only where
+    // the actual work happens fixes both: a failed attempt leaves nothing recorded, so the next tick tries
+    // again, and a parent-size change alone (e.g. rotation) no longer matches appliedParentW/H, so it recomputes
+    // even with the same guest resolution.
     private void fitSurfaceToFrame() {
         long packed = nativeFrameSize();
         int w = (int) (packed >>> 32), h = (int) packed;
-        if (w <= 0 || h <= 0 || (w == fitW && h == fitH)) return;
-        fitW = w; fitH = h;
+        if (w <= 0 || h <= 0) return;
         ui.post(() -> {
             if (dead || surface == null) return;
             ViewGroup parent = (ViewGroup) surface.getParent();
             int pw = parent != null ? parent.getWidth() : 0, ph = parent != null ? parent.getHeight() : 0;
-            if (pw <= 0 || ph <= 0) return;   // not laid out yet -- the next tick tries again
+            if (pw <= 0 || ph <= 0) return;   // not laid out yet; nothing recorded, so the next tick retries
+            if (w == appliedFrameW && h == appliedFrameH && pw == appliedParentW && ph == appliedParentH) return;   // already exactly this fit
             // fit w x h inside pw x ph, preserving its ratio (letterboxed/pillarboxed), then center it
             int targetW, targetH;
             if ((long) w * ph > (long) h * pw) { targetW = pw; targetH = (int) ((long) h * pw / w); }
             else { targetH = ph; targetW = (int) ((long) w * ph / h); }
             if (targetW <= 0 || targetH <= 0) return;
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surface.getLayoutParams();
-            if (lp.width == targetW && lp.height == targetH) return;
-            lp.width = targetW; lp.height = targetH; lp.gravity = Gravity.CENTER;
-            surface.setLayoutParams(lp);
+            if (lp.width != targetW || lp.height != targetH || lp.gravity != Gravity.CENTER) {
+                lp.width = targetW; lp.height = targetH; lp.gravity = Gravity.CENTER;
+                surface.setLayoutParams(lp);
+            }
+            appliedFrameW = w; appliedFrameH = h; appliedParentW = pw; appliedParentH = ph;
         });
     }
 

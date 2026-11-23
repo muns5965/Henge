@@ -74,6 +74,10 @@ typedef int (*HvG7DiskCreate)(const char *dir, char *note, int cap);
 int hv_g7_pair_begin(const char *dir, HvG7DiskCreate create_disk, char *note, int cap);
 /* IN_PROGRESS -> DONE (atomic rename of a new state file). Only the caller that has CONFIRMED a complete restore may call it. */
 int hv_g7_pair_finish(const char *dir, char *note, int cap);
+/* The state right after hv_g7_pair_begin and BEFORE the machine is created: state is in_progress, the disk is the 128 GiB regular file, the AUX is a regular file of
+   HV_G7_AUX_BYTES with the 24-byte header, and the AUX is byte-identical to its initial copy. The last point holds ONLY until a guest has run: once the restore has
+   started the guest may legitimately change the AUX, so this must never be called after the machine has been started. Read-only. Returns 0 or -1 (note says why). */
+int hv_g7_pair_verify_initial(const char *dir, char *note, int cap);
 /* Moves the pair (disk, AUX, initial copy, state file) into g7_quarantine_<tag>/ by rename. Nothing is deleted or overwritten; an existing target is refused.
    tag: 1..32 of [a-z0-9_-]. Returns the number of items moved, or -1. */
 int hv_g7_pair_quarantine(const char *dir, const char *tag, char *note, int cap);

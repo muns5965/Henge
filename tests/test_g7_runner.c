@@ -25,13 +25,15 @@ static int g_fail;
 #define ECID 0x0013579bdf024681ULL
 #define ECID_HEX "13579bdf024681"
 
-static struct { int pair, vm, restore, seq; int order_pair, order_vm, order_restore; HvVmConfig cfg; char disk[400], aux[400]; int cfg_runner_ok, ro; int fail_pair, fail_vm, fail_restore; } rec;
+static struct { int pair, vm, restore, seq; int order_pair, order_vm, order_restore; HvVmConfig cfg; char disk[400], aux[400]; int cfg_runner_ok, ro; int fail_pair, fail_vm, fail_restore; const char *tamper_dir; } rec;
 static void rec_reset(void) { memset(&rec, 0, sizeof rec); }
 
 static int api_pair(const char *dir, char *note, int cap) {
     rec.pair++; rec.order_pair = ++rec.seq;
     if (rec.fail_pair) { snprintf(note, (size_t)cap, "injected"); return -1; }
-    return hv_g7_pair_begin(dir, hv_install_disk_create, note, cap);
+    int r = hv_g7_pair_begin(dir, hv_install_disk_create, note, cap);
+    if (r == 0 && rec.tamper_dir) { char p[400]; snprintf(p, sizeof p, "%s/%s", dir, HV_G7_AUX_NAME); int fd = open(p, O_WRONLY); if (fd >= 0) { (void)!pwrite(fd, "X", 1, 1u << 20); close(fd); } }
+    return r;
 }
 static int api_vm(const HvVmConfig *c, char *err, size_t n) {
     char why[100];
@@ -140,10 +142,15 @@ int main(void) {
         CHECK(!strcmp(rec.cfg.aux, want) && hv_g7_config_ok(&rec.cfg, s.dir, ECID, why, sizeof why) == 0, "...exactly dir/macos_aux.img, and that structure passes the G7 validator");
         CHECK(rec.cfg_runner_ok == 0, "...and does NOT pass the G0-G6 runner validator");
         CHECK(hv_g7_pair_state(s.dir, NULL, 0) == HV_G7_PAIR_IN_PROGRESS, "the pair is in_progress: nothing in the runner marks it done");
+        CHECK(hv_g7_pair_verify_initial(s.dir, NULL, 0) == 0, "the pair the run made is intact");
         /* a second run must be refused: the directory is no longer clean */
         rec_reset();
         CHECK(hv_g7_run(&s.r, &API, &res) == -1 && res.verdict == HV_G7_REFUSED && res.stage == HV_G7_STAGE_PREFLIGHT && calls() == 0, "a second run is refused by the preflight, with no call");
         /* failures */
+        /* a pair that was damaged between its creation and the machine must never reach the machine */
+        Set bad = good("badpair"); rec_reset();
+        rec.tamper_dir = bad.dir;
+        CHECK(hv_g7_run(&bad.r, &API, &res) == -1 && res.verdict == HV_G7_FAILED && res.stage == HV_G7_STAGE_PAIR && rec.vm == 0 && rec.restore == 0, "a pair whose AUX changed after it was made never reaches the machine (%s)", res.reason);
         Set f1 = good("f1"); rec_reset(); rec.fail_pair = 1;
         CHECK(hv_g7_run(&f1.r, &API, &res) == -1 && res.verdict == HV_G7_FAILED && res.stage == HV_G7_STAGE_PAIR && rec.vm == 0 && rec.restore == 0, "pair failure: no machine, no restore");
         Set f2 = good("f2"); rec_reset(); rec.fail_vm = 1;

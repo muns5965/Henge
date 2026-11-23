@@ -150,8 +150,13 @@ int hv_g7_preflight(const HvG7Input *in, HvG7Report *rep) {
     char note[300];
     int dfd = open_dir(in->dir);
     if (dfd < 0) { add(rep, "directory", HV_G7_BLOCK, "cannot open the pair directory: %s", strerror(errno)); return -1; }
-    if (!dir_trusted(dfd)) add(rep, "directory", HV_G7_BLOCK, "the pair directory is not owned by this user or is writable by group/others");
-    else add(rep, "directory", HV_G7_PASS, "the pair directory is private");
+    {
+        struct stat ds;
+        char how[80] = "";
+        if (fstat(dfd, &ds) == 0) snprintf(how, sizeof how, " (mode %04o, %s)", (unsigned)(ds.st_mode & 07777), ds.st_uid == geteuid() ? "owned by this user" : "owned by another user");
+        if (!dir_trusted(dfd)) add(rep, "directory", HV_G7_BLOCK, "the pair directory is not owned by this user or is writable by group/others%s", how);
+        else add(rep, "directory", HV_G7_PASS, "the pair directory is private%s", how);
+    }
 
     HvG7PairState ps = state_at(dfd, note, sizeof note);
     if (ps == HV_G7_PAIR_NONE) add(rep, "state", HV_G7_PASS, "%s", note);
@@ -326,6 +331,34 @@ int hv_g7_pair_begin(const char *dir, HvG7DiskCreate create_disk, char *note, in
     }
     close(dfd);
     NOTE("a pair was made: disk, AUX, a copy of the AUX, state=in_progress");
+    return 0;
+}
+
+int hv_g7_pair_verify_initial(const char *dir, char *note, int cap) {
+    int dfd = open_dir(dir);
+    if (dfd < 0) { NOTE("cannot open the directory: %s", strerror(errno)); return -1; }
+    char n2[200];
+    if (state_at(dfd, n2, sizeof n2) != HV_G7_PAIR_IN_PROGRESS) { close(dfd); NOTE("not an in_progress pair: %s", n2); return -1; }
+    struct stat sd, sa, si;
+    if (present(dfd, HV_INSTALL_DISK_NAME, &sd) != 1 || !S_ISREG(sd.st_mode) || (uint64_t)sd.st_size != HV_INSTALL_DISK_BYTES) { close(dfd); NOTE("the disk is not a regular file of the design size"); return -1; }
+    if (present(dfd, HV_G7_AUX_NAME, &sa) != 1 || !S_ISREG(sa.st_mode) || (uint64_t)sa.st_size != HV_G7_AUX_BYTES) { close(dfd); NOTE("the AUX is not a regular file of the expected size"); return -1; }
+    if (present(dfd, HV_G7_AUX_INITIAL_NAME, &si) != 1 || !S_ISREG(si.st_mode) || (uint64_t)si.st_size != HV_G7_AUX_BYTES) { close(dfd); NOTE("the AUX copy is not a regular file of the expected size"); return -1; }
+    int a = openat(dfd, HV_G7_AUX_NAME, O_RDONLY | O_NOFOLLOW | O_CLOEXEC), b = openat(dfd, HV_G7_AUX_INITIAL_NAME, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    close(dfd);
+    if (a < 0 || b < 0) { if (a >= 0) close(a); if (b >= 0) close(b); NOTE("the AUX or its copy cannot be opened"); return -1; }
+    static unsigned char x[65536], y[65536];
+    int same = 1;
+    unsigned char hdr[HV_G7_AUX_HEADER_BYTES];
+    if (pread(a, hdr, sizeof hdr, 0) != (ssize_t)sizeof hdr || memcmp(hdr, AUX_HEADER, sizeof hdr)) same = -1;
+    for (off_t off = 0; same == 1 && (uint64_t)off < HV_G7_AUX_BYTES; off += (off_t)sizeof x) {
+        ssize_t n = pread(a, x, sizeof x, off), m = pread(b, y, sizeof y, off);
+        if (n <= 0 || n != m) { same = 0; break; }
+        if (memcmp(x, y, (size_t)n)) same = 0;
+    }
+    close(a); close(b);
+    if (same == -1) { NOTE("the AUX does not start with the expected 24-byte header"); return -1; }
+    if (!same) { NOTE("the AUX differs from its initial copy (valid only before a machine has run)"); return -1; }
+    NOTE("pair intact: disk and AUX as made, AUX identical to its initial copy");
     return 0;
 }
 

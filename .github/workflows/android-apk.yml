@@ -22,6 +22,8 @@ on:
       - tests/**
       - tools/engine-build.sh
       - tools/devices-build.sh
+      - tools/g7-probe-build.sh
+      - tools/check-g7-probe-safe.sh
       - tools/curltool-build.sh
       - tools/bmprobe-build.sh
       - tools/ipswdl-build.sh
@@ -171,6 +173,15 @@ jobs:
           else
             echo "::warning::ui_runner_vm_installed did not build; the APK has NO installed-disk runner (libuirunnervmi.so)"
             echo "- **libuirunnervmi.so (installed-disk runner): MISSING from this APK**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # g7_probe (libg7probe.so): the read-only G7 preflight behind the "[G7-PRE]" screen. No machine, no restore, no network, no write (tools/check-g7-probe-safe.sh checks the binary).
+          # OPTIONAL: without it the screen says plainly that the program is missing; the build records included/MISSING in the summary.
+          if CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/g7-probe-build.sh build-g7probe \
+              && cp build-g7probe/g7_probe android/app/src/main/jniLibs/arm64-v8a/libg7probe.so; then
+            echo "- libg7probe.so (G7 preflight): included" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::g7_probe did not build; the APK has NO G7 preflight program (libg7probe.so)"
+            echo "- **libg7probe.so (G7 preflight): MISSING from this APK**" >> "$GITHUB_STEP_SUMMARY"
           fi
           # The C1-1 runner (the "[C1-1]" button): synthetic mode, no virtual machine, no network code (tools/check-runner-safe.sh checks the binary). Optional: the APK goes without that button's program if it fails.
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" PF_THREADLIB="" tools/ui-runner-build.sh build-engine \

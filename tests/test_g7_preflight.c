@@ -321,6 +321,41 @@ int main(void) {
         CHECK(hv_g7_pair_quarantine(d, "t1", note, sizeof note) == -1 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_IN_PROGRESS, "quarantine into an existing tag is refused and the new pair is untouched");
         CHECK(exists(q, HV_INSTALL_DISK_NAME), "the old quarantined pair is intact");
     }
+    {   /* verify_initial: only for a pair that has just been made */
+        char *d = newdir("verify"); char p[400];
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "verify on an empty directory: refused (%s)", note);
+        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "verify: pair made");
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == 0, "a fresh pair is intact (%s)", note);
+        snprintf(p, sizeof p, "%s/%s", d, HV_G7_AUX_NAME);
+        int fd = open(p, O_WRONLY); (void)!pwrite(fd, "X", 1, 1u << 20); close(fd);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "one byte changed in the AUX: the AUX no longer equals its copy (%s)", note);
+        fd = open(p, O_WRONLY); (void)!pwrite(fd, "\0", 1, 1u << 20); close(fd);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == 0, "restored: intact again");
+        fd = open(p, O_WRONLY); (void)!pwrite(fd, "Z", 1, 3); close(fd);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "a byte of the header changed: refused");
+        fd = open(p, O_WRONLY); (void)!pwrite(fd, "\xfe", 1, 3); close(fd);
+        {   /* the header is checked on its own: change AUX and its copy the same way, so they still match each other */
+            char pi[400]; snprintf(pi, sizeof pi, "%s/%s", d, HV_G7_AUX_INITIAL_NAME);
+            fd = open(p, O_WRONLY); (void)!pwrite(fd, "Z", 1, 3); close(fd);
+            int fi = open(pi, O_WRONLY); (void)!pwrite(fi, "Z", 1, 3); close(fi);
+            CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "AUX and its copy both carry a wrong header: refused by the header check (%s)", note);
+            fd = open(p, O_WRONLY); (void)!pwrite(fd, "\xfe", 1, 3); close(fd);
+            fi = open(pi, O_WRONLY); (void)!pwrite(fi, "\xfe", 1, 3); close(fi);
+            CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == 0, "header restored in both: intact");
+        }
+        char dp[400]; snprintf(dp, sizeof dp, "%s/%s", d, HV_INSTALL_DISK_NAME); truncate(dp, 1ULL << 30);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "a disk of the wrong size: refused");
+        truncate(dp, (off_t)HV_INSTALL_DISK_BYTES);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == 0, "restored: intact again");
+        char ip[400]; snprintf(ip, sizeof ip, "%s/%s", d, HV_G7_AUX_INITIAL_NAME); unlink(ip);
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "the AUX copy missing: refused");
+        CHECK(hv_g7_pair_finish(d, note, sizeof note) == -1, "(finish refuses the inconsistent pair)");
+    }
+    {   /* a done pair is not "just made" */
+        char *d = newdir("verify_done");
+        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0 && hv_g7_pair_finish(d, note, sizeof note) == 0, "verify_done: pair made and finished");
+        CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "verify refuses a pair that is not in_progress");
+    }
     {   /* rollback: the disk step fails (file size limit), so the state file made first must go again */
         char *d = newdir("rollback");
         struct rlimit old, lim; getrlimit(RLIMIT_FSIZE, &old); lim = old; lim.rlim_cur = 1ULL << 30; setrlimit(RLIMIT_FSIZE, &lim);

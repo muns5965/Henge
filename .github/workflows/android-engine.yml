@@ -73,6 +73,8 @@ on:
       - tools/g7-preflight-test.sh
       - tools/g7-probe-test.sh
       - tools/check-g7-probe-safe.sh
+      - tools/check-g7-probe-launcher-source.sh
+      - tools/g7-probe-build.sh
       - host/g7_probe.c
       - host/g7_preflight.c
       - host/g7_preflight.h
@@ -172,6 +174,15 @@ jobs:
           mkdir -p build-java-c13
           javac -encoding UTF-8 -d build-java-c13 android/app/src/main/java/dev/muns/hengeprobe/VmRunnerLauncher.java tests/java/VmRunnerLauncherTest.java
           java -cp build-java-c13 dev.muns.hengeprobe.VmRunnerLauncherTest
+
+      - name: "Test the G7 probe launcher (plain java, fake spawner, no real process: MISSING lib/ROM/ECID refused before any spawn, exact option list, exit-code meanings, ECID masked, timeout destroys, output capped) and its source rules"
+        run: |
+          bash -n tools/check-g7-probe-launcher-source.sh
+          tools/check-g7-probe-launcher-source.sh
+          mkdir -p build-java-g7
+          J=android/app/src/main/java/dev/muns/hengeprobe
+          javac -encoding UTF-8 -d build-java-g7 $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7ProbeLauncherTest.java
+          java -cp build-java-g7 dev.muns.hengeprobe.G7ProbeLauncherTest
 
       - name: "Test the G4 UI launcher (plain java: every call, even a fully valid one, is refused with REFUSAL and reaches the spawner zero times while START_ENABLED=false; buildCommand's exact option list; RUN_SECONDS >= 460) and its source rules"
         run: |

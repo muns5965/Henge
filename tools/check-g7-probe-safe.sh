@@ -4,7 +4,7 @@
 # strings of the execution stages, which exist only in a build with HV_G7_MOCK_EXECUTION. A search of symbols and strings is a help, not a proof; the dynamic half is the
 # strace run of tools/g7-probe-test.sh.
 set -u
-B=${1:?binary}; NM=${NM:-nm}; fail=0
+B=${1:?binary}; NM=${NM:-nm}; READELF=${READELF:-readelf}; fail=0
 bad() { echo "FAIL $*"; fail=1; }
 syms=$($NM -D "$B" 2>/dev/null; $NM "$B" 2>/dev/null)
 for s in hv_vm_create hv_vm_start hv_vm_board hv_install_start hv_install_disk_create hv_install_disk_reset hv_g7_pair_begin hv_g7_pair_finish hv_g7_pair_quarantine hv_disk_open hv_disk_write \
@@ -15,8 +15,8 @@ done
 for str in "configuration refused before the machine" "the machine was not created" "the restore did not start" "run through the recorder"; do
   strings -a "$B" | grep -qF "$str" && bad "binary contains the execution-stage text: $str"
 done
-if command -v readelf >/dev/null 2>&1; then
-  libs=$(readelf -d "$B" 2>/dev/null | grep NEEDED | sed 's/.*\[\(.*\)\]/\1/' | grep -vE '^(libc\.so|libm\.so|libdl\.so|ld-linux|libpthread\.so)' )
+if command -v "$READELF" >/dev/null 2>&1; then
+  libs=$($READELF -d "$B" 2>/dev/null | grep NEEDED | sed 's/.*\[\(.*\)\]/\1/' | grep -vE '^(libc\.so|libm\.so|libdl\.so|ld-linux|libpthread\.so)' )
   [ -z "$libs" ] || bad "unexpected shared libraries: $libs"
 fi
 [ $fail = 0 ] && echo "OK  g7_probe static check: no machine, restore, network, process-start, write or disk-creation symbol, no execution-stage text, only the C library"

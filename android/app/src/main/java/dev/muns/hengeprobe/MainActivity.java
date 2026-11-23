@@ -639,6 +639,15 @@ public class MainActivity extends Activity {
         instNote.setText("설치된 디스크로 부팅하는 실행기가 APK에 있는지, 외부 vm/ 폴더에 rom.bin·disk.img·aux.img가 있는지를 보여 줍니다. 부팅 버튼이 아니며 아무것도 시작하지 않습니다. 파일이 있어도 macOS가 설치됐는지는 알 수 없습니다.");
         instNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         root.addView(instNote);
+        // [G7-PRE] The G7 preflight on this phone's real files: starts only g7_probe (G7ProbeLauncher), a program that reads files and exits.
+        final Button g7Button = new Button(this);
+        g7Button.setText("[G7-PRE] G7 사전검사 (읽기 전용)");
+        g7Button.setOnClickListener(v -> startActivity(new android.content.Intent(this, G7ProbeActivity.class)));
+        root.addView(g7Button);
+        final TextView g7Note = new TextView(this);
+        g7Note.setText("ROM·IPSW·ECID·저장공간·디렉터리 권한을 G7 사전검사로 확인합니다. 복원·디스크 생성·Apple 요청은 하지 않습니다.");
+        g7Note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        root.addView(g7Note);
         // [A] The real VM's screen. Whether this can ever start a process is decided entirely by
         // VmRunnerLauncher.startEnabled(), checked first thing in VmDisplayActivity.onCreate() before anything
         // else is read or touched -- this button's own job is only to find the same rom/disk/aux this app's

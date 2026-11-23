@@ -2,6 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
+def hengeVersionCode() {
+    def v = System.getenv('HENGE_VERSION_CODE')
+    if (v) return Integer.parseInt(v)
+    if (System.getenv('GITHUB_ACTIONS')) throw new GradleException('HENGE_VERSION_CODE is not set in CI (tools/ci-version-code.sh)')
+    return 1
+}
+
 android {
     namespace 'dev.muns.hengeprobe'
     compileSdk 34
@@ -17,9 +24,10 @@ android {
         applicationId 'dev.muns.hengeprobe'
         minSdk 30          // memfd_create is in bionic from API 30
         targetSdk 34
-        // CI's run number, so each build is newer than the one installed and an
-        // update over the old APK is accepted.
-        versionCode Integer.parseInt(System.getenv('GITHUB_RUN_NUMBER') ?: '1')
+        // CI passes HENGE_VERSION_CODE from tools/ci-version-code.sh (seconds since 2026-01-01 UTC), the SAME rule in the general APK and the G7 execution APK workflows, so a later build always has
+        // a higher code and an update over the installed app is accepted. (The run number is per workflow and cannot be compared across them.) A CI build without it fails instead of falling back.
+        // Local builds keep 1.
+        versionCode hengeVersionCode()
         versionName '0.2+' + (System.getenv('GITHUB_SHA') ?: 'local').take(7)
         ndk {
             abiFilters 'arm64-v8a'

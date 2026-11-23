@@ -2,7 +2,9 @@ package dev.muns.hengeprobe;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -35,9 +37,12 @@ public final class G7ExecLauncher {
     static final String IPSW_NAME = "UniversalMac_15.6.1_24G90_Restore.ipsw";
     static final long IPSW_BYTES = 16_814_137_790L;
     static final int CANCEL_GRACE_SECONDS = 90;   /* the runner's own grace is 60 s */
-    static final int MAX_LOG_BYTES = 256 * 1024;
+    /** One log file PER RUN (never appended to, never overwritten: CREATE_NEW), at most MAX_LOG_BYTES of streamed output plus a closing block of a few KiB. Runs are only possible while no
+     *  install file exists, so the total stays small. When the limit is reached the streamed output stops, but the last g7-result line, the tail and the exit code are still written. */
+    static final int MAX_LOG_BYTES = 200 * 1024;
     static final int TAIL_BYTES = 6000;
-    static final String LOG_NAME = "g7_run_log.txt";
+    static final String LOG_PREFIX = "g7_run_";
+    static final String LOG_SUFFIX = ".txt";
     static final String WORK_NAME = "g7work";
 
     interface Spawner { Process spawn(List<String> command) throws IOException; }
@@ -84,6 +89,12 @@ public final class G7ExecLauncher {
         Start(boolean started, String message, Run run) { this.started = started; this.message = message; this.run = run; }
     }
 
+    /** The run of this app process, independent of any Activity: a recreated screen (rotation, back and forth) finds it here and can read it and cancel it. If Android ends the app process the
+     *  run ends with it (it is a child of the app); the log then has "g7-start" and no "g7-exit". */
+    private static volatile Run CURRENT;
+    public static Run current() { return CURRENT; }
+    private static final Object START_LOCK = new Object();
+
     /** A running (or finished) process of the execution build. */
     public static final class Run {
         private final Process proc;
@@ -91,7 +102,9 @@ public final class G7ExecLauncher {
         private volatile int exit = Integer.MIN_VALUE;
         private volatile boolean cancelAsked;
         private final long ecid;
+        volatile String logName = "";
         Run(Process p, long ecid) { this.proc = p; this.ecid = ecid; }
+        public String logName() { return logName; }
         public boolean finished() { return exit != Integer.MIN_VALUE; }
         public int exitCode() { return exit; }
         public synchronized String tail() { return tail.toString(); }
@@ -163,47 +176,98 @@ public final class G7ExecLauncher {
         if (rom == null || ecid <= 0) return new Start(false, "ROM 또는 ECID를 확인하지 못해 시작하지 않았습니다.", null);
         File work = new File(filesDir, WORK_NAME);
         if (!work.isDirectory() && !work.mkdirs()) return new Start(false, "작업 디렉터리를 만들지 못해 시작하지 않았습니다.", null);
-        File log = new File(filesDir, LOG_NAME);
-        FileOutputStream logOut;
-        try { logOut = new FileOutputStream(log, true); }
-        catch (IOException e) { return new Start(false, "로그 파일을 열지 못해 시작하지 않았습니다.", null); }
-        Process p;
-        try { p = spawner.spawn(buildCommand(nativeLibDir, privVmDir, rom, work, ipswSha256.toLowerCase())); }
-        catch (IOException e) { try { logOut.close(); } catch (IOException ignored) { } return new Start(false, "실행 파일을 시작하지 못했습니다: " + mask(String.valueOf(e.getMessage()), ecid), null); }
-        final Run run = new Run(p, ecid);
+        synchronized (START_LOCK) {
+            Run cur = CURRENT;
+            if (cur != null && !cur.finished()) return new Start(false, "이미 실행 중인 G7 프로세스가 있어 시작하지 않았습니다.", null);
+            File log = new File(filesDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + LOG_SUFFIX);
+            OutputStream logOut;
+            try { logOut = Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE); }   // never overwrites an earlier log
+            catch (IOException e) { return new Start(false, "로그 파일을 열지 못해 시작하지 않았습니다.", null); }
+            Process p;
+            try { p = spawner.spawn(buildCommand(nativeLibDir, privVmDir, rom, work, ipswSha256.toLowerCase())); }
+            catch (IOException e) { try { logOut.close(); } catch (IOException ignored) { } return new Start(false, "실행 파일을 시작하지 못했습니다: " + mask(String.valueOf(e.getMessage()), ecid), null); }
+            final Run run = new Run(p, ecid);
+            run.logName = log.getName();
+            CURRENT = run;
+            streamToLog(run, p, logOut, ecid);
+            return new Start(true, "시작했습니다. 화면을 켜 둔 채 이 앱을 앞에 두세요. 취소는 [취소] 버튼입니다.", run);
+        }
+    }
+
+    private static void streamToLog(final Run run, final Process p, final OutputStream lo, final long ecid) {
         final InputStream in = p.getInputStream();
-        final FileOutputStream lo = logOut;
         Thread t = new Thread(() -> {
-            ByteArrayOutputStream line = new ByteArrayOutputStream();
-            long written = 0;
+            long written = 0; boolean truncated = false;
+            StringBuilder line = new StringBuilder();
+            String lastResult = "";
             try {
+                lo.write(("g7-start: " + System.currentTimeMillis() + "\n").getBytes(StandardCharsets.UTF_8));
                 byte[] b = new byte[2048]; int n;
                 while ((n = in.read(b)) > 0) {
                     String s = mask(new String(b, 0, n, StandardCharsets.UTF_8), ecid);
                     run.append(s);
-                    if (written < MAX_LOG_BYTES) { byte[] o = s.getBytes(StandardCharsets.UTF_8); int k = (int) Math.min(o.length, MAX_LOG_BYTES - written); lo.write(o, 0, k); written += k; }
+                    for (int i = 0; i < s.length(); i++) {   // remember the last g7-result line even when the log is full
+                        char c = s.charAt(i);
+                        if (c == '\n') { if (line.indexOf("g7-result:") == 0) lastResult = line.toString(); line.setLength(0); }
+                        else if (line.length() < 1024) line.append(c);
+                    }
+                    if (!truncated) {
+                        byte[] o = s.getBytes(StandardCharsets.UTF_8);
+                        int k = (int) Math.min(o.length, MAX_LOG_BYTES - written);
+                        lo.write(o, 0, k); written += k;
+                        if (k < o.length) truncated = true;
+                    }
                 }
             } catch (IOException ignored) { }
+            if (line.indexOf("g7-result:") == 0) lastResult = line.toString();
             int code;
             try { code = p.waitFor(); } catch (InterruptedException e) { code = -1; Thread.currentThread().interrupt(); }
-            String end = "\ng7-exit: " + code + "\n";
-            run.append(end);
-            try { lo.write(end.getBytes(StandardCharsets.UTF_8)); lo.flush(); lo.close(); } catch (IOException ignored) { }
+            try {
+                if (truncated) {
+                    lo.write(("\n--- log limit reached: the output after this point is not kept here; the last result line and the tail follow ---\n"
+                            + (lastResult.isEmpty() ? "" : lastResult + "\n") + "--- tail ---\n" + run.tail()).getBytes(StandardCharsets.UTF_8));
+                }
+                String end = "\ng7-exit: " + code + "\n";
+                lo.write(end.getBytes(StandardCharsets.UTF_8)); lo.flush(); lo.close();
+            } catch (IOException ignored) { }
+            run.append("\ng7-exit: " + code + "\n");
             run.exit = code;
         });
         t.setDaemon(true);
         t.start();
-        return new Start(true, "시작했습니다. 화면을 켜 둔 채 이 앱을 앞에 두세요. 취소는 [취소] 버튼입니다.", run);
     }
 
-    /** The last part of the run log, for a screen that was closed and opened again. Reads only. */
-    public static String readLogTail(File filesDir, int maxBytes) {
-        File f = new File(filesDir, LOG_NAME);
-        if (!f.isFile()) return "";
+    /** The newest run log (by name), or null. */
+    static File newestLog(File filesDir) {
+        File[] l = filesDir.listFiles((d, n) -> n.startsWith(LOG_PREFIX) && n.endsWith(LOG_SUFFIX));
+        if (l == null || l.length == 0) return null;
+        java.util.Arrays.sort(l);
+        return l[l.length - 1];
+    }
+
+    /** What the newest log says about the last run when no run of this process is known: "" (no log), running-or-interrupted (g7-start without g7-exit), or the exit line. Reads only. */
+    public static String lastRunNote(File filesDir) {
+        Run r = CURRENT;
+        if (r != null && !r.finished()) return "이 앱 프로세스에서 실행 중입니다.";
+        File f = newestLog(filesDir);
+        if (f == null) return "";
+        String t = readTail(f, 400000);
+        if (t.contains("g7-exit:")) return "마지막 실행이 끝났습니다(" + f.getName() + ").";
+        if (t.contains("g7-start:")) return "마지막 실행 로그(" + f.getName() + ")에 종료 기록이 없어 정상 종료 여부를 확인할 수 없습니다(앱 프로세스가 끝났을 수 있음). 설치 쌍(g7_state.txt)을 다시 검사하세요.";
+        return "";
+    }
+
+    static String readTail(File f, int maxBytes) {
         try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r")) {
             long len = r.length(); int n = (int) Math.min(len, maxBytes);
             byte[] b = new byte[n]; r.seek(len - n); r.readFully(b);
             return new String(b, StandardCharsets.UTF_8);
         } catch (IOException e) { return ""; }
+    }
+
+    /** The last part of the newest run log, for a screen that was closed and opened again. Reads only. */
+    public static String readLogTail(File filesDir, int maxBytes) {
+        File f = newestLog(filesDir);
+        return f == null ? "" : readTail(f, maxBytes);
     }
 }

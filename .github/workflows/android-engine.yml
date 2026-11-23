@@ -24,6 +24,9 @@ on:
       - tools/check-g7exec-launcher-source.sh
       - tools/g7-exec-launcher-test.sh
       - tools/g7exec-apk-check-test.sh
+      - tools/apk-version-test.sh
+      - tools/ci-version-code.sh
+      - tools/check-apk-update.sh
       - tools/check-g7exec-apk.sh
       - tools/engine-build.sh
       - tools/devices-build.sh
@@ -203,6 +206,7 @@ jobs:
           tools/check-g7exec-launcher-source.sh
           tools/g7-exec-launcher-test.sh build-java-g7exec
           tools/g7exec-apk-check-test.sh build-g7exec-apkcheck
+          tools/apk-version-test.sh build-apkversion
 
       - name: "Test the G4 UI launcher (plain java: every call, even a fully valid one, is refused with REFUSAL and reaches the spawner zero times while START_ENABLED=false; buildCommand's exact option list; RUN_SECONDS >= 460) and its source rules"
         run: |

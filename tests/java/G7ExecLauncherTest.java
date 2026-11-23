@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -46,7 +47,7 @@ public class G7ExecLauncherTest {
 
         check("the committed switch is OFF", !G7ExecLauncher.START_ENABLED);
         G7ExecLauncher.Start s = G7ExecLauncher.start(lib, ext, priv, files, G7ExecLauncher.APPROVAL_PHRASE, SHA);
-        check("the real entry point refuses while the switch is off (nothing created)", !s.started && s.message.contains("꺼져") && new File(files, G7ExecLauncher.WORK_NAME).list() == null && !new File(files, G7ExecLauncher.LOG_NAME).exists());
+        check("the real entry point refuses while the switch is off (nothing created)", !s.started && s.message.contains("꺼져") && new File(files, G7ExecLauncher.WORK_NAME).list() == null && G7ExecLauncher.newestLog(files) == null);
 
         // preflight looks only (never spawns, never creates)
         G7ExecLauncher.Preflight pf = G7ExecLauncher.preflightWith(ROMS, lib, ext, priv);
@@ -109,7 +110,40 @@ public class G7ExecLauncherTest {
         File files2 = Files.createTempDirectory("files2").toFile();
         s = G7ExecLauncher.startWith(spawner(new FakeProcess(big.toString(), 2, false)), ROMS, true, lib, ext, priv, files2, G7ExecLauncher.APPROVAL_PHRASE, SHA);
         for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
-        check("the log is bounded", new File(files2, G7ExecLauncher.LOG_NAME).length() <= G7ExecLauncher.MAX_LOG_BYTES + 64 && s.run.tail().length() <= G7ExecLauncher.TAIL_BYTES + 64);
+        check("the log is bounded", G7ExecLauncher.newestLog(files2).length() <= G7ExecLauncher.MAX_LOG_BYTES + 3 * G7ExecLauncher.TAIL_BYTES && s.run.tail().length() <= G7ExecLauncher.TAIL_BYTES + 64);
+
+        // the final result survives a full log; every run has its own file, nothing is appended to or overwritten
+        File files4 = Files.createTempDirectory("files4").toFile();
+        s = G7ExecLauncher.startWith(spawner(new FakeProcess(big + "\ng7-result: outcome=FAILED last_step=7 pair=in_progress\n", 2, false)), ROMS, true, lib, ext, priv, files4, G7ExecLauncher.APPROVAL_PHRASE, SHA);
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        String full = new String(Files.readAllBytes(G7ExecLauncher.newestLog(files4).toPath()), StandardCharsets.UTF_8);
+        check("log limit reached: the marker, the last g7-result line and the exit code are still in the file", full.contains("log limit reached") && full.contains("g7-result: outcome=FAILED last_step=7") && full.contains("g7-exit: 2"));
+        check("the file starts with g7-start", full.startsWith("g7-start: "));
+        String first = s.run.logName();
+        Thread.sleep(5);
+        s = G7ExecLauncher.startWith(spawner(new FakeProcess("second\n", 2, false)), ROMS, true, lib, ext, priv, files4, G7ExecLauncher.APPROVAL_PHRASE, SHA);
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        File[] logs = files4.listFiles((d, n) -> n.startsWith(G7ExecLauncher.LOG_PREFIX));
+        check("a second run writes a second file; the first one is untouched", logs.length == 2 && !s.run.logName().equals(first) && new File(files4, first).length() > G7ExecLauncher.MAX_LOG_BYTES / 2);
+        check("readLogTail reads the newest run", G7ExecLauncher.readLogTail(files4, 1000).contains("second"));
+
+        // the run state is process-wide, not the screen's: a "recreated" screen gets the same run, can cancel it, and a second start is refused while it runs
+        File files5 = Files.createTempDirectory("files5").toFile();
+        FakeProcess live = new FakeProcess("", 143, true);
+        s = G7ExecLauncher.startWith(spawner(live), ROMS, true, lib, ext, priv, files5, G7ExecLauncher.APPROVAL_PHRASE, SHA);
+        check("current() returns the started run (what a recreated screen would read)", s.started && G7ExecLauncher.current() == s.run && !G7ExecLauncher.current().finished());
+        int before = spawned;
+        G7ExecLauncher.Start again = G7ExecLauncher.startWith(spawner(new FakeProcess("", 0, false)), ROMS, true, lib, ext, priv, files5, G7ExecLauncher.APPROVAL_PHRASE, SHA);
+        check("a second start while one runs is refused, nothing spawned", !again.started && spawned == before);
+        check("lastRunNote says it is running", G7ExecLauncher.lastRunNote(files5).contains("실행 중"));
+        G7ExecLauncher.current().cancel();
+        for (int i = 0; i < 100 && !G7ExecLauncher.current().finished(); i++) Thread.sleep(20);
+        check("cancel through current() ends it", live.destroyed && G7ExecLauncher.current().finished() && G7ExecLauncher.lastRunNote(files5).contains("끝났"));
+        // a log with g7-start and no g7-exit (the app process was killed) is reported as interrupted
+        File files6 = Files.createTempDirectory("files6").toFile();
+        touch(files6, G7ExecLauncher.LOG_PREFIX + "0000000000001" + G7ExecLauncher.LOG_SUFFIX, "g7-start: 1\nsome output\n".getBytes());
+        Field cur = G7ExecLauncher.class.getDeclaredField("CURRENT"); cur.setAccessible(true); cur.set(null, null);
+        check("a log without g7-exit does not claim an outcome: says it cannot be confirmed and to re-inspect the pair", G7ExecLauncher.lastRunNote(files6).contains("확인할 수 없") && G7ExecLauncher.lastRunNote(files6).contains("다시 검사") && !G7ExecLauncher.lastRunNote(files6).contains("끊겼"));
 
         // a spawner failure leaves no run
         s = G7ExecLauncher.startWith(c -> { throw new IOException("boom 0x" + hex); }, ROMS, true, lib, ext, priv, Files.createTempDirectory("files3").toFile(), G7ExecLauncher.APPROVAL_PHRASE, SHA);

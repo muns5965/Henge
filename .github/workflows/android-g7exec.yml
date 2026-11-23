@@ -78,6 +78,8 @@ jobs:
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a temporary key (it cannot install over the general app)."
           fi
+      - name: Version code (shared rule, tools/ci-version-code.sh)
+        run: echo "HENGE_VERSION_CODE=$(tools/ci-version-code.sh)" >> "$GITHUB_ENV"
       - name: Build the G7 execution APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -89,6 +91,12 @@ jobs:
           ls -l android/app/build/outputs/apk/g7exec/
           READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh exec android/app/build/outputs/apk/g7exec/app-g7exec.apk
           echo "- G7 execution APK: built, launcher switch OFF (cannot start the runner), not run" >> "$GITHUB_STEP_SUMMARY"
+      - name: "Show package, versionCode and signing certificate (compare with the general APK: same package, same certificate and a higher versionCode install over it)"
+        run: |
+          APK=android/app/build/outputs/apk/g7exec/app-g7exec.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | grep -E "^package:" | cut -c1-160
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -z "${KEYSTORE_FILE:-}" ]; then echo "::warning::signed with a temporary key: this APK will NOT install over the general app"; fi
       - uses: actions/upload-artifact@v4
         with:
           name: henge-g7-exec-apk

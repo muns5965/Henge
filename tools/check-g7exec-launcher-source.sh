@@ -24,9 +24,13 @@ grep -q 'mask(' "$L" || bad "output must pass through mask()"
 x=$(grep -nE '"--(installer|seed|aux-offset|min|force|skip|allow)' "$L"); [ -z "$x" ] || { bad "an option the runner must not get:"; echo "$x"; }
 # nothing here deletes, moves or resets an install file
 x=$(grep -nE '\.delete\(|renameTo|Files\.(delete|move)|RandomAccessFile\(.*"rw"|hv_install_disk' "$L" "$A"); [ -z "$x" ] || { bad "a delete/move/rewrite path:"; echo "$x"; }
-# writes: only the run log (one FileOutputStream, append) and the work directory
-[ "$(grep -c 'new FileOutputStream' "$L")" = 1 ] || bad "exactly one FileOutputStream (the run log)"
-grep -q 'new FileOutputStream(log, true)' "$L" || bad "the run log must be opened for append"
+# writes: only a NEW run log per run (CREATE_NEW: never appended to, never overwritten) and the work directory
+[ "$(grep -c 'Files.newOutputStream' "$L")" = 1 ] || bad "exactly one output stream (the run log)"
+grep -q 'Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW' "$L" || bad "the run log must be opened with CREATE_NEW"
+x=$(grep -nE 'FileOutputStream|FileWriter|StandardOpenOption.(APPEND|TRUNCATE_EXISTING)' "$L"); [ -z "$x" ] || { bad "a way to append to or overwrite a file:"; echo "$x"; }
+# the run state is process-wide (not in the Activity)
+grep -q 'static volatile Run CURRENT' "$L" || bad "the run state must be process-wide (CURRENT)"
+x=$(grep -nE 'G7ExecLauncher\.Run [a-z]+;|private .*Run run' "$A"); [ -z "$x" ] || { bad "the activity keeps run state in a field:"; echo "$x"; }
 x=$(grep -nE 'FileOutputStream|FileWriter|Files\.write|createNewFile|openFileOutput' "$A"); [ -z "$x" ] || { bad "the activity writes files:"; echo "$x"; }
 # the activity: no intent input, no logging, starts only through the launcher
 x=$(grep -nE 'getIntent|getExtras|getStringExtra|Log\.[a-z]\(' "$A" "$L"); [ -z "$x" ] || { bad "intent input or logging:"; echo "$x"; }

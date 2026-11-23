@@ -218,6 +218,8 @@ jobs:
             echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a temporary key (uninstall needed before each update)."
           fi
 
+      - name: Version code (shared rule, tools/ci-version-code.sh)
+        run: echo "HENGE_VERSION_CODE=$(tools/ci-version-code.sh)" >> "$GITHUB_ENV"
       - name: Build the debug APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}

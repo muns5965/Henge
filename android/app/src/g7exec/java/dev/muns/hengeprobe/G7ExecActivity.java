@@ -21,7 +21,7 @@ public class G7ExecActivity extends Activity {
     private TextView status, log;
     private EditText sha, phrase;
     private Button start, cancel, refresh;
-    private volatile G7ExecLauncher.Run run;
+    // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
     protected void onCreate(Bundle b) {
@@ -50,13 +50,17 @@ public class G7ExecActivity extends Activity {
         log.setTypeface(android.graphics.Typeface.MONOSPACE);
         log.setText(G7ExecLauncher.readLogTail(getFilesDir(), 6000));
         root.addView(log);
+        String note = G7ExecLauncher.lastRunNote(getFilesDir());
+        if (!note.isEmpty()) status.setText(status.getText() + "\n\n" + note);
+        G7ExecLauncher.Run live = G7ExecLauncher.current();
+        if (live != null && !live.finished()) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
         start.setOnClickListener(v -> {
             G7ExecLauncher.Start s = G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), phrase.getText().toString(), sha.getText().toString().trim());
             status.setText(s.message);
-            if (s.started) { run = s.run; start.setEnabled(false); cancel.setEnabled(true); poll(); }
+            if (s.started) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
         });
-        cancel.setOnClickListener(v -> { G7ExecLauncher.Run r = run; if (r != null) { r.cancel(); status.setText("취소를 요청했습니다(복원을 멈추고 쌍은 in_progress로 보존)."); } });
-        refresh.setOnClickListener(v -> log.setText(run != null ? run.tail() : G7ExecLauncher.readLogTail(getFilesDir(), 6000)));
+        cancel.setOnClickListener(v -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); if (r != null) { r.cancel(); status.setText("취소를 요청했습니다(복원을 멈추고 쌍은 in_progress로 보존)."); } });
+        refresh.setOnClickListener(v -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); log.setText(r != null ? r.tail() : G7ExecLauncher.readLogTail(getFilesDir(), 6000)); });
         ScrollView sv = new ScrollView(this);
         sv.addView(root);
         setContentView(sv);
@@ -64,7 +68,7 @@ public class G7ExecActivity extends Activity {
 
     private void poll() {
         log.postDelayed(() -> {
-            G7ExecLauncher.Run r = run;
+            G7ExecLauncher.Run r = G7ExecLauncher.current();
             if (r == null) return;
             log.setText(r.tail());
             if (r.finished()) { status.setText(G7ExecLauncher.meaning(r.exitCode())); cancel.setEnabled(false); } else poll();

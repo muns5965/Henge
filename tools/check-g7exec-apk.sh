@@ -11,7 +11,7 @@ echo "$L" | grep -q "AndroidManifest.xml" || { echo "FAIL not an APK: $APK"; exi
 has_lib=$(echo "$L" | grep -c "lib/arm64-v8a/libg7runner.so")
 D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
 unzip -q -o "$APK" 'classes*.dex' -d "$D" 2>/dev/null
-has_cls=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7ExecLauncher\|G7ExecActivity\|G7LogProvider")
+has_cls=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7ExecLauncher\|G7ExecActivity\|G7LogProvider\|G7Isolation")
 k_off=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7-BUILD-KIND:EXEC-OFF"); k_on=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7-BUILD-KIND:START-ON")
 case $M in
   general)

@@ -80,7 +80,10 @@ public final class G7ExecLauncher {
         s.append("IPSW: ").append(ip ? "있음, 크기 일치(SHA-256은 실행기가 시작 전에 확인)" : "없거나 크기가 다름").append('\n'); ok &= ip;
         File disk = new File(privVmDir, "macos_disk.img"), aux = new File(privVmDir, "macos_aux.img"), st = new File(privVmDir, "g7_state.txt");
         boolean clean = !disk.exists() && !aux.exists() && !st.exists();
-        s.append("설치 파일: ").append(clean ? "없음(새로 만들 수 있음)" : "이미 있음 — 시작할 수 없습니다(자동 재개·덮어쓰기 없음)").append('\n'); ok &= clean;
+        boolean pend = G7Isolation.pending(privVmDir);
+        s.append("설치 파일: ").append(clean ? "없음(새로 만들 수 있음)" : "이미 있음 — 시작할 수 없습니다(자동 재개·덮어쓰기 없음). 보관하려면 '기존 설치 쌍 격리'를 쓰세요").append('\n'); ok &= clean;
+        if (pend) s.append("격리: 끝나지 않았습니다 — 복구(마저 옮기기)가 필요합니다. 그 전에는 시작할 수 없습니다\n");
+        ok &= !pend;
         s.append("시작 스위치: ").append(START_ENABLED ? "켜짐(시험 빌드: 동의 상자를 체크하면 실제로 시작합니다)" : "꺼짐(이 빌드는 시작할 수 없습니다)");
         return new Preflight(ok, s.toString());
     }
@@ -97,7 +100,10 @@ public final class G7ExecLauncher {
      *  run ends with it (it is a child of the app); the log then has "g7-start" and no "g7-exit". */
     private static volatile Run CURRENT;
     public static Run current() { return CURRENT; }
-    private static final Object START_LOCK = new Object();
+    static final Object START_LOCK = new Object();
+
+    /** True while a run of this app process is going (what start() refuses on and G7Isolation checks). */
+    static boolean hasLiveRun() { Run c = CURRENT; return c != null && !c.finished(); }
 
     /** A running (or finished) process of the execution build. */
     public static final class Run {
@@ -293,18 +299,27 @@ public final class G7ExecLauncher {
      *  (so no other field, now or later, can leak). "" when no vm dir is given. */
     static String pairState(File privVmDir) {
         if (privVmDir == null) return "";
+        String iso = (G7Isolation.pending(privVmDir) ? "\n격리: 끝나지 않음(복구 필요)" : "") + (G7Isolation.archiveCount(privVmDir) > 0 ? "\n보관 폴더: " + G7Isolation.archiveCount(privVmDir) + "개" : "");
         File st = new File(privVmDir, "g7_state.txt");
-        if (!st.isFile()) return "\n설치 쌍: 상태 파일(g7_state.txt) 없음";
+        if (!st.isFile()) return "\n설치 쌍: 상태 파일(g7_state.txt) 없음" + iso;
         String first = readTail(st, 200).split("\n", 2)[0].trim();
         String v = first.startsWith("state=") ? first.substring(6) : "";
-        return "\n설치 쌍: " + (v.equals("in_progress") || v.equals("done") ? v : "상태 확인 불가");
+        return "\n설치 쌍: " + (v.equals("in_progress") || v.equals("done") ? v : "상태 확인 불가") + iso;
     }
 
     /** Looks (read only) for a process of this app's own user whose program is the runner. Three answers, never an "it has ended" claim: found (pid), not found (not proof that it ended), or cannot tell
      *  (the process list is not readable, or this app's own process is not in it, so the list is not trustworthy). Never signals, never touches a file. */
     public static String runnerCheck(File procRoot, int selfPid, File ownerRef) {
+        int[] pid = new int[1];
+        int st = runnerStatus(procRoot, selfPid, ownerRef, pid);
+        if (st < 0) return procRoot == null || procRoot.listFiles() == null ? "실행기 프로세스: 확인 불가(/proc을 읽을 수 없음)" : "실행기 프로세스: 확인 불가(조회가 제한되어 결과를 믿을 수 없음)";
+        return st == 1 ? "실행기 프로세스: 발견(pid " + pid[0] + ")" : "실행기 프로세스: 미발견(종료의 증명은 아님)";
+    }
+
+    /** 1 = a runner process was found (pid in out[0]), 0 = the list is trustworthy and has none, -1 = cannot tell. */
+    static int runnerStatus(File procRoot, int selfPid, File ownerRef, int[] out) {
         File[] dirs = procRoot == null ? null : procRoot.listFiles();
-        if (dirs == null) return "실행기 프로세스: 확인 불가(/proc을 읽을 수 없음)";
+        if (dirs == null) return -1;
         String owner = ownerOf(ownerRef);
         boolean sawSelf = false;
         int found = -1;
@@ -317,9 +332,12 @@ public final class G7ExecLauncher {
             boolean match = programEndsWithRunner(new File(d, "cmdline")) || exeEndsWithRunner(new File(d, "exe"));
             if (match && owner != null && owner.equals(ownerOf(d))) found = pid;
         }
-        if (!sawSelf || owner == null) return "실행기 프로세스: 확인 불가(조회가 제한되어 결과를 믿을 수 없음)";
-        return found >= 0 ? "실행기 프로세스: 발견(pid " + found + ")" : "실행기 프로세스: 미발견(종료의 증명은 아님)";
+        if (!sawSelf || owner == null) return -1;
+        if (found >= 0) { if (out != null) out[0] = found; return 1; }
+        return 0;
     }
+
+    public static int runnerStatus(int selfPid, File filesDir) { return runnerStatus(new File("/proc"), selfPid, filesDir, null); }
 
     public static String runnerCheck(int selfPid, File filesDir) { return runnerCheck(new File("/proc"), selfPid, filesDir); }
 

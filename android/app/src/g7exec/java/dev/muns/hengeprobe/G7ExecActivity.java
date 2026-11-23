@@ -24,8 +24,8 @@ import java.io.File;
  */
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
-    private CheckBox consent;
-    private Button start, cancel, refresh, share, copy;
+    private CheckBox consent, isoConsent;
+    private Button start, cancel, refresh, share, copy, isolate;
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
@@ -59,6 +59,19 @@ public class G7ExecActivity extends Activity {
         consent.setOnCheckedChangeListener((v, on) -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); start.setEnabled(on && (r == null || r.finished())); });
         cancel = new Button(this); cancel.setText("취소"); cancel.setEnabled(false); root.addView(cancel);
         refresh = new Button(this); refresh.setText("로그 새로고침"); root.addView(refresh);
+        isoConsent = new CheckBox(this);
+        isoConsent.setText("기존 설치 쌍(디스크·AUX·상태 파일)을 archives 폴더로 옮기는 데 동의합니다. 이름만 바꾸며 삭제·덮어쓰기·복사는 하지 않습니다.");
+        isoConsent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        root.addView(isoConsent);
+        isolate = new Button(this); isolate.setText("기존 설치 쌍 격리 / 끝나지 않은 격리 복구"); isolate.setEnabled(false); root.addView(isolate);
+        isoConsent.setOnCheckedChangeListener((v, on) -> isolate.setEnabled(on));
+        isolate.setOnClickListener(v -> {
+            int st = G7ExecLauncher.runnerStatus(android.os.Process.myPid(), getFilesDir());
+            G7Isolation.Result r = G7Isolation.pending(priv) ? G7Isolation.recover(priv, st) : G7Isolation.isolate(priv, st);
+            status.setText(r.message + "\n\n" + G7ExecLauncher.preflight(nativeDir, ext, priv).text);
+            isoConsent.setChecked(false);   // every isolation needs a fresh consent
+            showSummary();
+        });
         share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
         copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
         log = new TextView(this);

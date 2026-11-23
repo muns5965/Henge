@@ -57,6 +57,12 @@ x=$(grep -nE 'exported="true"' $X/AndroidManifest.xml | grep -v 'G7ExecActivity'
 grep -q 'G7ExecLauncher.logFile(' "$P" || bad "the provider must go through logFile() (plain run-log names only)"
 x=$(grep -nE 'MODE_(WRITE|READ_WRITE|APPEND|TRUNCATE|CREATE)|FileOutputStream|\.delete\(|renameTo' "$P"); [ -z "$x" ] || { bad "the provider can write or remove:"; echo "$x"; }
 grep -q 'MODE_READ_ONLY' "$P" || bad "the provider must open files read-only"
+# the isolation class: rename only (one atomic move, never replacing), no delete/copy/write of any file content
+I=$XJ/G7Isolation.java
+x=$(grep -nE '\.delete\(|renameTo|Files\.delete|REPLACE_EXISTING|Files\.copy|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$I"); [ -z "$x" ] || { bad "the isolation class deletes, replaces, copies or rewrites:"; echo "$x"; }
+[ "$(grep -c 'Files\.move(' "$I")" = 1 ] || bad "the isolation class has exactly one Files.move"
+grep -q 'ATOMIC_MOVE' "$I" || bad "the isolation move must be ATOMIC_MOVE"
+grep -q 'START_LOCK' "$I" || bad "the isolation must hold the start lock"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

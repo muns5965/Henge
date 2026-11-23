@@ -2,7 +2,7 @@
 
 **Nothing here starts automatically.** The start switch comes from the build type (`BuildConfig.G7_START_ENABLED`): `false` in `g7exec` (the APK CI publishes on every push: it cannot start the runner), `true` only in `g7start`.
 `g7start` has the same files, package and signing key; CI builds and checks it on every run (the dex carries the marker `G7-BUILD-KIND:START-ON`, `g7exec` carries `G7-BUILD-KIND:EXEC-OFF`, the general APK neither), but publishes it only from a MANUAL run of the workflow
-"Android G7 execution APK" with `publish_start=true` (artifact `henge-g7-start-apk`). That run is an explicit approval step. Even the switch-ON APK starts nothing by itself: it needs the typed approval phrase and the IPSW SHA-256, the preflight must pass,
+"Android G7 execution APK" with `publish_start=true` (artifact `henge-g7-start-apk`). That run is an explicit approval step. Even the switch-ON APK starts nothing by itself: it needs the consent box checked (nothing is typed), the preflight must pass, the IPSW SHA-256 is the built-in reference for macOS 15.6.1 (24G90),
 and the runner re-hashes the IPSW before it creates anything (a mismatch prints the expected and the calculated digest and refuses: no disk, no AUX, no Apple request).
 
 ## Delivery (separate from the general APK)
@@ -15,11 +15,10 @@ and the runner re-hashes the IPSW before it creates anything (a mismatch prints 
 ## What the screen does without approval
 - Preflight reads files only: binary present, ROM genuine, ECID readable (never shown), IPSW present with the right size, no install files yet. It never runs the binary.
 
-## Approval boundary (all four, in order)
+## Approval boundary (all three, in order)
 1. A reviewed change that turns `START_ENABLED` on (its own commit, its own build, its own approval). Until then every start is refused before anything is touched.
-2. The exact approval phrase typed on the screen.
-3. The IPSW SHA-256 typed on the screen, from a source you checked yourself (the runner hashes the IPSW against it before the restore; a mismatch stops it).
-4. Preflight is clean: if any install file exists (disk, AUX, state), start is refused: no automatic resume, no overwrite. A failed run is kept as it is; a new try needs a new pair
+2. The consent box on the screen, checked by the person (it lists what will happen: install disk and AUX, writes to storage, Apple requests). Nothing is typed. The IPSW SHA-256 is the built-in reference; the runner hashes the file and refuses on a mismatch.
+3. Preflight is clean: if any install file exists (disk, AUX, state), start is refused: no automatic resume, no overwrite. A failed run is kept as it is; a new try needs a new pair
    (quarantine by rename, a separate step).
 What a start does: creates the 128 GiB sparse disk and the AUX, runs the machine with writable storage, and contacts gs.apple.com (the three approved TSS hosts) for the restore.
 

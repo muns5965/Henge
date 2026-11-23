@@ -43,6 +43,11 @@ x=$(grep -nE 'FileOutputStream|FileWriter|Files\.write|createNewFile|openFileOut
 # the activity: no intent input, no logging, starts only through the launcher
 x=$(grep -nE 'getIntent|getExtras|getStringExtra|Log\.[a-z]\(' "$A" "$L"); [ -z "$x" ] || { bad "intent input or logging:"; echo "$x"; }
 grep -q 'G7ExecLauncher.start(' "$A" || bad "the activity must start only through G7ExecLauncher.start"
+# nothing is typed: no input field in the activity; the consent is a checked box passed as a boolean; the IPSW SHA-256 is the one built-in reference (64 lower-case hex digits), never an input
+x=$(grep -nE 'EditText|getText\(\)\.toString|APPROVAL_PHRASE|approvalText' "$A" "$L"); [ -z "$x" ] || { bad "a typed input or the old approval phrase is still there:"; echo "$x"; }
+grep -qE 'static final String IPSW_SHA256 = "[0-9a-f]{64}";' "$L" || bad "IPSW_SHA256 must be one built-in 64 lower-case hex literal"
+grep -q 'G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), consent.isChecked())' "$A" || bad "the activity must pass the checkbox state to start()"
+grep -q 'CheckBox' "$A" || bad "the activity needs the consent check box"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

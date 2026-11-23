@@ -5,7 +5,7 @@ import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.EditText;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -14,12 +14,12 @@ import java.io.File;
 
 /**
  * [G7-EXEC] Only in the g7exec build (never in the general APK). Shows what is there (files only: the binary is NOT executed to find out), and starts the G7 execution build
- * only through G7ExecLauncher, which refuses while the build's start switch is off (g7exec) and otherwise needs the exact approval phrase and the IPSW SHA-256 typed here.
+ * only through G7ExecLauncher, which refuses while the build's start switch is off (g7exec) and otherwise needs the person's consent (a checked box; nothing is typed) and the built-in IPSW SHA-256, which the runner verifies against the stored file.
  * No Intent extras are read. The ECID is never shown.
  */
 public class G7ExecActivity extends Activity {
     private TextView status, log;
-    private EditText sha, phrase;
+    private CheckBox consent;
     private Button start, cancel, refresh;
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
@@ -40,9 +40,13 @@ public class G7ExecActivity extends Activity {
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         status.setText(G7ExecLauncher.preflight(nativeDir, ext, priv).text);
         root.addView(status);
-        sha = new EditText(this); sha.setHint("IPSW SHA-256 (64자리, 직접 확인한 값)"); sha.setSingleLine(true); root.addView(sha);
-        phrase = new EditText(this); phrase.setHint("승인 문구: " + G7ExecLauncher.APPROVAL_PHRASE); phrase.setSingleLine(true); root.addView(phrase);
-        start = new Button(this); start.setText("시작"); root.addView(start);
+        add(root, "IPSW: macOS 15.6.1 (24G90)\nSHA-256 무결성 검사: 자동. 시작할 때 앱이 파일의 SHA-256을 계산해 내장 참조값과 비교하고, 다르면 아무것도 만들지 않고 차단합니다(계산값과 참조값을 화면에 표시).", 13);
+        consent = new CheckBox(this);
+        consent.setText("설치 디스크·AUX 생성, 저장소 쓰기, Apple 서버 요청을 포함하는 실제 복원 실행에 동의합니다.");
+        consent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        root.addView(consent);
+        start = new Button(this); start.setText("시작"); start.setEnabled(false); root.addView(start);
+        consent.setOnCheckedChangeListener((v, on) -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); start.setEnabled(on && (r == null || r.finished())); });
         cancel = new Button(this); cancel.setText("취소"); cancel.setEnabled(false); root.addView(cancel);
         refresh = new Button(this); refresh.setText("로그 새로고침"); root.addView(refresh);
         log = new TextView(this);
@@ -55,8 +59,9 @@ public class G7ExecActivity extends Activity {
         G7ExecLauncher.Run live = G7ExecLauncher.current();
         if (live != null && !live.finished()) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
         start.setOnClickListener(v -> {
-            G7ExecLauncher.Start s = G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), phrase.getText().toString(), sha.getText().toString().trim());
+            G7ExecLauncher.Start s = G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), consent.isChecked());
             status.setText(s.message);
+            consent.setChecked(false);   // every start needs a fresh consent
             if (s.started) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
         });
         cancel.setOnClickListener(v -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); if (r != null) { r.cancel(); status.setText("취소를 요청했습니다(복원을 멈추고 쌍은 in_progress로 보존)."); } });

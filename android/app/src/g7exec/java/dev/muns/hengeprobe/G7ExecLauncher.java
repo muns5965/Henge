@@ -19,9 +19,10 @@ import java.util.concurrent.TimeUnit;
  *
  * What starting it does, if it is ever enabled: creates the 128 GiB sparse install disk and the AUX in the app's private vm directory, starts the machine with WRITABLE storage,
  * and runs the restore against Apple's signing servers (gs.apple.com ...). That is why:
- *   - START_ENABLED is a literal false in the committed code. Turning it on is its own approved change; until then every start() is refused before anything is touched,
+ *   - START_ENABLED comes from the build type (false in g7exec, true only in g7start); while it is false every start() is refused before anything is touched,
  *   - preflight() only looks at files (it never starts the binary, never creates anything),
- *   - even with the switch on, start() needs the exact approval phrase and the IPSW's SHA-256 typed by the person (the runner re-hashes the IPSW against it),
+ *   - even with the switch on, start() needs the person's consent (a checked box next to the list of what will happen); nothing is typed. The IPSW SHA-256 is the built-in reference IPSW_SHA256: the runner re-hashes
+ *     the file and refuses to create anything on a mismatch,
  *   - the ECID is NOT passed on the command line: the runner reads it from vm_ecid.txt itself,
  *   - cancel() asks the runner to stop (SIGTERM -> the adapter cancels the restore); after CANCEL_GRACE_SECONDS the process is killed. An unfinished pair stays in_progress either way.
  * Nothing here deletes, moves or resets an install file. No Android classes: tests/java/G7ExecLauncherTest.java runs on a plain JVM.
@@ -34,7 +35,9 @@ public final class G7ExecLauncher {
     static final String BUILD_KIND = BuildConfig.G7_BUILD_KIND;
 
     static final String LIB_NAME = "libg7runner.so";
-    static final String APPROVAL_PHRASE = "G7 복원 시작을 승인합니다";
+    /** The reference SHA-256 of UniversalMac_15.6.1_24G90_Restore.ipsw (macOS 15.6.1, 24G90). Taken from public firmware listings (ipsw.me, getIPSW, ipswdl agree), not from Apple. It is never trusted blindly:
+     *  the runner hashes the stored file itself and refuses on a mismatch, printing both values. */
+    static final String IPSW_SHA256 = "3d87686b691ac765eb6a6b3082b2334e2af9710096a00432dd519af89ff2ea78";
     static final String IPSW_NAME = "UniversalMac_15.6.1_24G90_Restore.ipsw";
     static final long IPSW_BYTES = 16_814_137_790L;
     static final int CANCEL_GRACE_SECONDS = 90;   /* the runner's own grace is 60 s */
@@ -161,14 +164,14 @@ public final class G7ExecLauncher {
     }
 
     /** The one public way to start. The switch is the committed constant. */
-    public static Start start(File nativeLibDir, File extVmDir, File privVmDir, File filesDir, String approvalText, String ipswSha256) {
-        return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED, nativeLibDir, extVmDir, privVmDir, filesDir, approvalText, ipswSha256);
+    public static Start start(File nativeLibDir, File extVmDir, File privVmDir, File filesDir, boolean consent) {
+        return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED, nativeLibDir, extVmDir, privVmDir, filesDir, consent, IPSW_SHA256);
     }
 
-    static Start startWith(Spawner spawner, RomFinder roms, boolean enabled, File nativeLibDir, File extVmDir, File privVmDir, File filesDir, String approvalText, String ipswSha256) {
+    static Start startWith(Spawner spawner, RomFinder roms, boolean enabled, File nativeLibDir, File extVmDir, File privVmDir, File filesDir, boolean consent, String ipswSha256) {
         if (!enabled) return new Start(false, "시작할 수 없습니다: 이 빌드의 시작 스위치가 꺼져 있습니다. 아무것도 만들거나 실행하지 않았습니다.", null);
         if (!isPackaged(nativeLibDir)) return new Start(false, "실행 파일(" + LIB_NAME + ")이 없어 시작하지 않았습니다.", null);
-        if (!APPROVAL_PHRASE.equals(approvalText)) return new Start(false, "승인 문구가 일치하지 않아 시작하지 않았습니다.", null);
+        if (!consent) return new Start(false, "동의가 체크되지 않아 시작하지 않았습니다.", null);
         if (!isSha256Hex(ipswSha256 == null ? null : ipswSha256.toLowerCase())) return new Start(false, "IPSW SHA-256(64자리 16진수)이 올바르지 않아 시작하지 않았습니다.", null);
         Preflight pf = preflightWith(roms, nativeLibDir, extVmDir, privVmDir);
         if (!pf.ready) return new Start(false, "사전 확인이 통과하지 않아 시작하지 않았습니다.\n" + pf.text, null);

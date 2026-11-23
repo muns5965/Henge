@@ -102,7 +102,7 @@ public class G7ExecActivity extends Activity {
         }, 2000);
     }
 
-    private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir())); }
+    private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm"))); }
 
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
     private void shareLog() {

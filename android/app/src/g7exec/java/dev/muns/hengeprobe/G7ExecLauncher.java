@@ -287,13 +287,25 @@ public final class G7ExecLauncher {
     }
 
     /** For the top of the screen: what the newest log (or the live run) says, in a few lines. Reads only; never claims more than the log shows. */
-    public static String summary(File filesDir) {
+    public static String summary(File filesDir) { return summary(filesDir, null); }
+
+    /** The install pair's own state file (g7_state.txt in the vm dir), read only: "" when there is no vm dir given. */
+    static String pairState(File privVmDir) {
+        if (privVmDir == null) return "";
+        File st = new File(privVmDir, "g7_state.txt");
+        if (!st.isFile()) return "\n설치 쌍: 상태 파일(g7_state.txt) 없음";
+        String t = readTail(st, 200).trim();
+        return "\n설치 쌍: g7_state.txt = " + (t.isEmpty() ? "(비어 있음)" : t.replace('\n', ' '));
+    }
+
+    public static String summary(File filesDir, File privVmDir) {
+        String ps = pairState(privVmDir);
         Run r = CURRENT;
         File f = newestLog(filesDir);
         StringBuilder s = new StringBuilder();
         if (r != null && !r.finished()) s.append("상태: 실행 중").append(r.cancelAsked ? " (취소 요청됨 — 아직 끝나지 않음)" : "");
         else if (r != null) s.append("상태: 종료 — ").append(meaning(r.exitCode()));
-        else if (f == null) return "상태: 실행 기록 없음";
+        else if (f == null) return "상태: 실행 기록 없음" + ps;
         else {
             String t = readTail(f, 400000);
             if (t.contains("g7-exit:")) s.append("상태: 종료됨(이전 실행) — 종료 줄은 로그에 있음");
@@ -305,10 +317,12 @@ public final class G7ExecLauncher {
             int i = t.lastIndexOf("g7-result:");
             if (i >= 0) { int e = t.indexOf('\n', i); s.append("\n").append(t, i, e < 0 ? t.length() : e); }
             else s.append("\ng7-result: 로그에 아직 없음");
+            int g = t.lastIndexOf("G7RUN RESULT:");
+            if (g >= 0) { int e = t.indexOf('\n', g); s.append("\n").append(t, g, e < 0 ? t.length() : e); }
             int x = t.lastIndexOf("g7-exit:");
             if (x >= 0) { int e = t.indexOf('\n', x); s.append("\n").append(t, x, e < 0 ? t.length() : e); }
         }
-        return s.toString();
+        return s.append(ps).toString();
     }
 
     /** The newest run log (by name), or null. */

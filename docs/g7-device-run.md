@@ -37,7 +37,7 @@ What a start does: creates the 128 GiB sparse disk and the AUX, runs the machine
 
 이전 실행이 `in_progress`로 남으면 새 복원은 시작되지 않는다. 쌍을 지우지 않고 보관 폴더로 옮겨 재시험을 준비한다.
 
-- 대상: `macos_disk.img`, `macos_aux.img`, `g7_state.txt` 세 파일. `vm/archives/g7-archive-NNN/`으로 같은 파일시스템 안에서 이름만 바꾼다(복사·삭제·덮어쓰기 없음). 이미 있는 이름은 건너뛰고 다음 번호를 쓴다.
+- 대상: `macos_disk.img`, `macos_aux.img`, `g7_state.txt`, `macos_aux.initial` 중 있는 파일 전부(하나라도 링크·폴더이면 거부). `vm/archives/g7-archive-NNN/`으로 같은 파일시스템 안에서 이름만 바꾼다(복사·삭제·덮어쓰기 없음). 이미 있는 이름은 건너뛰고 다음 번호를 쓴다.
 - 조건: 스위치 ON 빌드, 이 앱의 실행 중인 복원 없음, 실행기 프로세스 상태가 "미발견"(발견 또는 확인 불가이면 거부). 시작 잠금을 잡고 수행한다.
 - 시작 전 `archives/isolating.txt` 저널을 만든다. 하나라도 실패하면 거꾸로 되돌리고(`ROLLED_BACK.txt`), 되돌리기도 실패하거나 앱이 중간에 종료되면 저널이 남아 "격리: 끝나지 않음"으로 표시되고 복원 시작이 막힌다. 같은 버튼으로 복구(이어서 옮김)한다.
 - 화면: 격리 동의 체크 후 버튼. 동의는 한 번 쓰면 해제된다. 완료 전에는 다음 복원이 허용되지 않는다.

@@ -60,7 +60,7 @@ public class G7ExecActivity extends Activity {
         cancel = new Button(this); cancel.setText("취소"); cancel.setEnabled(false); root.addView(cancel);
         refresh = new Button(this); refresh.setText("로그 새로고침"); root.addView(refresh);
         isoConsent = new CheckBox(this);
-        isoConsent.setText("기존 설치 쌍(디스크·AUX·상태 파일)을 archives 폴더로 옮기는 데 동의합니다. 이름만 바꾸며 삭제·덮어쓰기·복사는 하지 않습니다.");
+        isoConsent.setText("기존 설치 쌍(디스크·AUX·AUX 원본 복사·상태 파일)을 archives 폴더로 옮기는 데 동의합니다. 이름만 바꾸며 삭제·덮어쓰기·복사는 하지 않습니다.");
         isoConsent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         root.addView(isoConsent);
         isolate = new Button(this); isolate.setText("기존 설치 쌍 격리 / 끝나지 않은 격리 복구"); isolate.setEnabled(false); root.addView(isolate);

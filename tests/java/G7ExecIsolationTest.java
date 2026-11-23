@@ -19,6 +19,7 @@ public class G7ExecIsolationTest {
         Files.write(new File(d, "macos_disk.img").toPath(), disk);
         Files.write(new File(d, "macos_aux.img").toPath(), aux);
         Files.write(new File(d, "g7_state.txt").toPath(), state.getBytes());
+        Files.write(new File(d, "macos_aux.initial").toPath(), new byte[] {5, 5, 5});
         Files.write(new File(d, "vm_ecid.txt").toPath(), "ecid=0x1\n".getBytes());
         Files.write(new File(d, "UniversalMac_15.6.1_24G90_Restore.ipsw").toPath(), new byte[] {9, 9});
         return d;
@@ -49,6 +50,7 @@ public class G7ExecIsolationTest {
                 Arrays.equals(Files.readAllBytes(new File(ar, "macos_disk.img").toPath()), disk) && Arrays.equals(Files.readAllBytes(new File(ar, "macos_aux.img").toPath()), aux)
                 && new String(Files.readAllBytes(new File(ar, "g7_state.txt").toPath())).startsWith("state=in_progress")
                 && !new File(vm, "macos_disk.img").exists() && !new File(vm, "macos_aux.img").exists() && !new File(vm, "g7_state.txt").exists());
+        check("macos_aux.initial is moved with the pair (4 files), nothing of the pair is left in vm/", new File(ar, "macos_aux.initial").length() == 3 && !new File(vm, "macos_aux.initial").exists() && r.message.contains("4개"));
         check("vm_ecid.txt and the IPSW are untouched", new File(vm, "vm_ecid.txt").isFile() && new File(vm, "UniversalMac_15.6.1_24G90_Restore.ipsw").length() == 2);
         check("the journal is gone from archives/ and kept in the archive as ISOLATION_DONE.txt; not pending", !G7Isolation.pending(vm) && new File(ar, "ISOLATION_DONE.txt").isFile() && !new File(vm, "archives/isolating.txt").exists());
         check("nothing was deleted or changed: every original file is found again with the same size and content",
@@ -68,7 +70,15 @@ public class G7ExecIsolationTest {
         check("runner process found: refused, nothing moved", !G7Isolation.isolateWith(OK, true, NOT_LIVE, v2, 1).ok && snapshot(v2).equals(s2));
         check("runner process status unknown: refused, nothing moved", !G7Isolation.isolateWith(OK, true, NOT_LIVE, v2, -1).ok && snapshot(v2).equals(s2));
         new File(v2, "macos_aux.img").delete();
-        check("a missing file: refused, nothing moved", !G7Isolation.isolateWith(OK, true, NOT_LIVE, v2, 0).ok && new File(v2, "macos_disk.img").isFile() && !new File(v2, "archives/g7-archive-001").exists());
+        r = G7Isolation.isolateWith(OK, true, NOT_LIVE, v2, 0);
+        check("a member that is missing is simply not moved; the others are (3 files)", r.ok && !new File(v2, "macos_disk.img").exists() && new File(v2, "archives/g7-archive-001/macos_disk.img").isFile() && !new File(v2, "archives/g7-archive-001/macos_aux.img").exists());
+        // the leftover case seen on the device: the state file, disk and AUX are already aside, only macos_aux.initial is still in vm/
+        File vL = vm(disk, aux, "state=in_progress\n");
+        for (String n : new String[] {"macos_disk.img", "macos_aux.img", "g7_state.txt"}) new File(vL, n).delete();
+        r = G7Isolation.isolateWith(OK, true, NOT_LIVE, vL, 0);
+        check("only macos_aux.initial left over: it is isolated (1 file)", r.ok && new File(vL, "archives/g7-archive-001/macos_aux.initial").length() == 3 && !new File(vL, "macos_aux.initial").exists());
+        File vE = Files.createTempDirectory("vme").toFile();
+        check("nothing of the pair exists: refused", !G7Isolation.isolateWith(OK, true, NOT_LIVE, vE, 0).ok && !new File(vE, "archives").exists());
         File v3 = vm(disk, aux, "state=in_progress\n");
         new File(v3, "macos_aux.img").delete(); Files.createSymbolicLink(new File(v3, "macos_aux.img").toPath(), new File(v3, "vm_ecid.txt").toPath());
         check("a symbolic link instead of a file: refused, nothing moved", !G7Isolation.isolateWith(OK, true, NOT_LIVE, v3, 0).ok && new File(v3, "macos_disk.img").isFile());

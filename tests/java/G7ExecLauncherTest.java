@@ -170,7 +170,31 @@ public class G7ExecLauncherTest {
         touch(pv, "g7_state.txt", "state=in_progress\necid_tag=eb5a591ec138b9b0\n".getBytes());
         touch(files7, G7ExecLauncher.LOG_PREFIX + "9999999999999" + G7ExecLauncher.LOG_SUFFIX, "g7-start: 1\nG7RUN RESULT: FAILED stage=4: why\ng7-result: outcome=FAILED\n".getBytes());
         String sp = G7ExecLauncher.summary(files7, pv);
-        check("summary shows the pair state and the G7RUN RESULT line (read only)", sp.contains("g7_state.txt = state=in_progress") && sp.contains("ecid_tag=(표시 안 함)") && !sp.contains("eb5a591ec138b9b0") && sp.contains("G7RUN RESULT: FAILED stage=4: why") && new String(Files.readAllBytes(new File(pv, "g7_state.txt").toPath())).equals("state=in_progress\necid_tag=eb5a591ec138b9b0\n"));
+        check("summary shows the pair state and the G7RUN RESULT line (read only)", sp.contains("설치 쌍: in_progress") && !sp.contains("ecid_tag") && !sp.contains("eb5a591ec138b9b0") && sp.contains("G7RUN RESULT: FAILED stage=4: why") && new String(Files.readAllBytes(new File(pv, "g7_state.txt").toPath())).equals("state=in_progress\necid_tag=eb5a591ec138b9b0\n"));
+        touch(pv, "g7_state.txt", "state=something_else\necid_tag=eb5a591ec138b9b0\n".getBytes());
+        check("an unknown state value is not shown (only 'cannot tell'), nothing else of the file either", G7ExecLauncher.summary(files7, pv).contains("설치 쌍: 상태 확인 불가") && !G7ExecLauncher.summary(files7, pv).contains("something_else") && !G7ExecLauncher.summary(files7, pv).contains("eb5a"));
+        touch(pv, "g7_state.txt", "garbage\n".getBytes());
+        check("a state file that does not start with state= is 'cannot tell'", G7ExecLauncher.summary(files7, pv).contains("설치 쌍: 상태 확인 불가"));
+        touch(pv, "g7_state.txt", "state=done\n".getBytes());
+        check("state=done is shown", G7ExecLauncher.summary(files7, pv).contains("설치 쌍: done"));
+        // the runner process check: found / not found / cannot tell (a fake /proc)
+        File proc = Files.createTempDirectory("proc").toFile();
+        new File(proc, "100").mkdir(); touch(new File(proc, "100"), "cmdline", "dev.muns.hengeprobe\0".getBytes());
+        File rp = new File(proc, "200"); rp.mkdir(); touch(rp, "cmdline", ("/data/app/x/lib/arm64/" + G7ExecLauncher.LIB_NAME + "\0--dir\0/x\0").getBytes());
+        new File(proc, "abc").mkdir(); touch(proc, "cpuinfo", new byte[] {1});
+        String found = G7ExecLauncher.runnerCheck(proc, 100, files7);
+        check("runner check: a process whose program is the runner is found (pid shown)", found.contains("발견(pid 200)"));
+        new File(rp, "cmdline").delete(); rp.delete();
+        File ep = new File(proc, "300"); ep.mkdir(); touch(ep, "cmdline", "x\0".getBytes());
+        Files.createSymbolicLink(new File(ep, "exe").toPath(), new File("/data/app/y/lib/" + G7ExecLauncher.LIB_NAME).toPath());
+        check("runner check: found through the exe link too", G7ExecLauncher.runnerCheck(proc, 100, files7).contains("발견(pid 300)"));
+        new File(ep, "exe").delete(); new File(ep, "cmdline").delete(); ep.delete();
+        File bp = new File(proc, "400"); bp.mkdir(); touch(bp, "cmdline", ("/x/" + G7ExecLauncher.LIB_NAME + ".bak\0").getBytes());
+        String nf = G7ExecLauncher.runnerCheck(proc, 100, files7);
+        check("runner check: a similar name is not the runner; 'not found' says it is no proof that it ended", nf.contains("미발견") && nf.contains("종료의 증명은 아님") && !nf.contains("발견(pid"));
+        check("runner check: if this app's own process is not in the list the list is not trusted", G7ExecLauncher.runnerCheck(proc, 999, files7).contains("확인 불가"));
+        check("runner check: an unreadable /proc is 'cannot tell'", G7ExecLauncher.runnerCheck(new File(proc, "nope"), 100, files7).contains("확인 불가") && G7ExecLauncher.runnerCheck(null, 100, files7).contains("확인 불가"));
+        check("runner check changed nothing in the fake /proc", new File(bp, "cmdline").isFile() && new File(proc, "100").isDirectory());
         cur.set(null, null);   // a screen opened again after the app process was recreated: no run of this process
         check("summary with no log at all says there is no record", G7ExecLauncher.summary(Files.createTempDirectory("empty").toFile()).contains("실행 기록 없음"));
         check("summary of an interrupted log (g7-start, no g7-exit) does not claim an outcome", G7ExecLauncher.summary(files6).contains("종료 기록(g7-exit)이 없음") && G7ExecLauncher.summary(files6).contains("확인되지 않음") && G7ExecLauncher.summary(files6).contains("로그에 아직 없음"));

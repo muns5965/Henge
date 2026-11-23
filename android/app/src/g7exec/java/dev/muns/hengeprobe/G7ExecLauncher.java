@@ -289,14 +289,58 @@ public final class G7ExecLauncher {
     /** For the top of the screen: what the newest log (or the live run) says, in a few lines. Reads only; never claims more than the log shows. */
     public static String summary(File filesDir) { return summary(filesDir, null); }
 
-    /** The install pair's own state file (g7_state.txt in the vm dir), read only: "" when there is no vm dir given. */
+    /** The install pair's own state file (g7_state.txt in the vm dir), read only. Only the value of "state=" is shown, and only when it is one the runner writes; nothing else of the file reaches the screen
+     *  (so no other field, now or later, can leak). "" when no vm dir is given. */
     static String pairState(File privVmDir) {
         if (privVmDir == null) return "";
         File st = new File(privVmDir, "g7_state.txt");
         if (!st.isFile()) return "\n설치 쌍: 상태 파일(g7_state.txt) 없음";
-        String t = readTail(st, 200).trim();
-        return "\n설치 쌍: g7_state.txt = " + (t.isEmpty() ? "(비어 있음)" : t.replaceAll("ecid_tag=[0-9a-fA-F]+", "ecid_tag=(표시 안 함)").replace('\n', ' '));
+        String first = readTail(st, 200).split("\n", 2)[0].trim();
+        String v = first.startsWith("state=") ? first.substring(6) : "";
+        return "\n설치 쌍: " + (v.equals("in_progress") || v.equals("done") ? v : "상태 확인 불가");
     }
+
+    /** Looks (read only) for a process of this app's own user whose program is the runner. Three answers, never an "it has ended" claim: found (pid), not found (not proof that it ended), or cannot tell
+     *  (the process list is not readable, or this app's own process is not in it, so the list is not trustworthy). Never signals, never touches a file. */
+    public static String runnerCheck(File procRoot, int selfPid, File ownerRef) {
+        File[] dirs = procRoot == null ? null : procRoot.listFiles();
+        if (dirs == null) return "실행기 프로세스: 확인 불가(/proc을 읽을 수 없음)";
+        String owner = ownerOf(ownerRef);
+        boolean sawSelf = false;
+        int found = -1;
+        for (File d : dirs) {
+            String n = d.getName();
+            if (!n.matches("[0-9]{1,9}") || !d.isDirectory()) continue;
+            int pid = Integer.parseInt(n);
+            if (pid == selfPid) sawSelf = true;
+            if (pid == selfPid || found >= 0) continue;
+            boolean match = programEndsWithRunner(new File(d, "cmdline")) || exeEndsWithRunner(new File(d, "exe"));
+            if (match && owner != null && owner.equals(ownerOf(d))) found = pid;
+        }
+        if (!sawSelf || owner == null) return "실행기 프로세스: 확인 불가(조회가 제한되어 결과를 믿을 수 없음)";
+        return found >= 0 ? "실행기 프로세스: 발견(pid " + found + ")" : "실행기 프로세스: 미발견(종료의 증명은 아님)";
+    }
+
+    public static String runnerCheck(int selfPid, File filesDir) { return runnerCheck(new File("/proc"), selfPid, filesDir); }
+
+    private static String ownerOf(File f) {
+        try { return Files.getOwner(f.toPath()).getName(); } catch (IOException | RuntimeException e) { return null; }
+    }
+
+    private static boolean programEndsWithRunner(File cmdline) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(cmdline)) {
+            byte[] b = new byte[4096]; int n = in.read(b);
+            if (n <= 0) return false;
+            int e = 0; while (e < n && b[e] != 0) e++;
+            return isRunnerPath(new String(b, 0, e, StandardCharsets.UTF_8));
+        } catch (IOException e) { return false; }
+    }
+
+    private static boolean exeEndsWithRunner(File exe) {
+        try { return isRunnerPath(Files.readSymbolicLink(exe.toPath()).toString()); } catch (IOException | RuntimeException e) { return false; }
+    }
+
+    static boolean isRunnerPath(String p) { return p.equals(LIB_NAME) || p.endsWith("/" + LIB_NAME); }
 
     public static String summary(File filesDir, File privVmDir) {
         String ps = pairState(privVmDir);

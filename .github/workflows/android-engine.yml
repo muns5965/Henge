@@ -71,6 +71,9 @@ on:
       - tools/fdr-session-test.sh
       - tools/disk-policy-test.sh
       - tools/g7-preflight-test.sh
+      - tools/g7-probe-test.sh
+      - tools/check-g7-probe-safe.sh
+      - host/g7_probe.c
       - host/g7_preflight.c
       - host/g7_preflight.h
       - host/runner_g7_core.c
@@ -357,6 +360,8 @@ jobs:
         run: tools/disk-policy-test.sh build-diskpolicy
       - name: "Test the G7 safety layer and runner skeleton (read-only preflight, writable-configuration contract, disk+AUX pair, mock writes with out-of-space / partial write / interruption / restart, recorder in place of the machine and the restore; plain and ASan+UBSan; temporary directories only, no Apple request)"
         run: tools/g7-preflight-test.sh build-g7
+      - name: "Test g7_probe, the G7 request as a program of its own on real files (valid request stops at the switch; refusals, bad arguments, static symbol check, strace: nothing written, no network; native arm64 on this runner; no machine, no restore, no Apple request)"
+        run: tools/g7-probe-test.sh build-g7probe
 
   android-ndk:
     runs-on: ubuntu-24.04

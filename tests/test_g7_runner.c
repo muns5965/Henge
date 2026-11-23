@@ -48,6 +48,12 @@ static int api_restore(void) { rec.restore++; rec.order_restore = ++rec.seq; ret
 static const HvG7Api API = {api_pair, api_vm, api_restore};
 
 static char T[200];
+static char G_ROM[260];
+static void make_rom(const char *path, int flip) {
+    FILE *f = fopen(path, "wb");
+    for (unsigned long i = 0; f && i < HV_G7_ROM_BYTES; i++) { unsigned char b = (unsigned char)(i * 31 + 7); if (flip && i == 1000) b ^= 1; fputc(b, f); }
+    if (f) fclose(f);
+}
 static int cnt;
 static char *mk(const char *tag) { static char d[64][260]; char *p = d[cnt++ % 64]; snprintf(p, 260, "%s/%s", T, tag); mkdir(p, 0700); chmod(p, 0700); return p; }
 static void put(const char *dir, const char *name, const char *s) { char p[400]; snprintf(p, sizeof p, "%s/%s", dir, name); int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0600); if (fd >= 0) { (void)!write(fd, s, strlen(s)); close(fd); } }
@@ -67,7 +73,7 @@ static Set good(const char *tag) {
     snprintf(t, sizeof t, "%s%d_e", tag, uniq); s.ecid = mk(t);
     sparse(s.ipsw, HV_G7_IPSW_NAME, HV_G7_IPSW_BYTES);
     put(s.ecid, HV_G7_ECID_FILE, "ecid=0x" ECID_HEX "\n");
-    s.r = (HvG7Request){.dir = s.dir, .ipsw_dir = s.ipsw, .ecid_dir = s.ecid, .rom = "/r/rom.bin", .ecid = ECID, .ram_mb = 2048, .ncpus = 2, .jit_mb = 64};
+    s.r = (HvG7Request){.dir = s.dir, .ipsw_dir = s.ipsw, .ecid_dir = s.ecid, .rom = G_ROM, .ecid = ECID, .ram_mb = 2048, .ncpus = 2, .jit_mb = 64};
     return s;
 }
 static int calls(void) { return rec.pair + rec.vm + rec.restore; }
@@ -76,6 +82,8 @@ int main(void) {
     snprintf(T, sizeof T, "/tmp/hvg7r-XXXXXX");
     if (!mkdtemp(T)) return 2;
     HvG7Result res; char before[8000], after[8000];
+    snprintf(G_ROM, sizeof G_ROM, "%s/rom.bin", T);
+    make_rom(G_ROM, 0);
 
     printf("--- config construction\n");
     {
@@ -100,6 +108,7 @@ int main(void) {
         REFUSE("no ROM path", r.rom = NULL, HV_G7_STAGE_CONFIG);
         REFUSE("no directory", r.dir = NULL, HV_G7_STAGE_CONFIG);
         REFUSE("ECID differs from vm_ecid.txt", r.ecid = ECID + 1, HV_G7_STAGE_PREFLIGHT);
+        REFUSE("a ROM that is not the expected one", { static char rp[300]; snprintf(rp, sizeof rp, "%s/other_rom.bin", T); make_rom(rp, 1); r.rom = rp; }, HV_G7_STAGE_PREFLIGHT);
         REFUSE("IPSW missing", { char p[400]; snprintf(p, sizeof p, "%s/%s", s.ipsw, HV_G7_IPSW_NAME); unlink(p); }, HV_G7_STAGE_PREFLIGHT);
         REFUSE("a disk already there", sparse(s.dir, HV_INSTALL_DISK_NAME, HV_INSTALL_DISK_BYTES), HV_G7_STAGE_PREFLIGHT);
         REFUSE("an AUX already there", sparse(s.dir, HV_G7_AUX_NAME, HV_G7_AUX_BYTES), HV_G7_STAGE_PREFLIGHT);

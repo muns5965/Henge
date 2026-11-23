@@ -24,6 +24,10 @@
 #define HV_G7_QUARANTINE_PREFIX "g7_quarantine_"
 #define HV_G7_AUX_BYTES 33570816ULL
 #define HV_G7_AUX_HEADER_BYTES 24u
+#define HV_G7_ROM_BYTES 214904ULL
+#ifndef HV_G7_ROM_SHA256_HEX   /* only the tests define it (their stand-in ROM), never the app */
+#define HV_G7_ROM_SHA256_HEX "fd4973e42e609751830df6f3dd2d2b2ad2309fe38f0ca0f5aba02dcbefe45f91"
+#endif
 #define HV_G7_IPSW_NAME "UniversalMac_15.6.1_24G90_Restore.ipsw"
 #define HV_G7_IPSW_BYTES 16814137790ULL
 /* ~15 GB are written by the restore into a sparse file, plus the AUX copy and the Mac's own scratch: refuse below 32 GiB free. A floor, not a guarantee. */
@@ -41,6 +45,7 @@ typedef struct {
     const char *dir;        /* the private directory that holds (or will hold) the pair */
     const char *ipsw_dir;   /* where HV_G7_IPSW_NAME lives */
     const char *ecid_dir;   /* where vm_ecid.txt lives (the Android app's per-VM file) */
+    const char *rom_path;   /* the AVPBooter ROM file: a plain file of exactly HV_G7_ROM_BYTES with the known SHA-256 */
     uint64_t ecid;          /* the value the G7 request will use; must equal the file's. 0 = missing */
     uint64_t extra_free_bytes; /* added to the floor (a caller can only ask for MORE free space, never less) */
 } HvG7Input;
@@ -48,6 +53,9 @@ typedef struct {
 /* Read-only. Returns 0 when nothing blocks, -1 otherwise. Needs a clean start: no disk, no AUX, no state file, no leftovers. */
 int hv_g7_preflight(const HvG7Input *in, HvG7Report *rep);
 void hv_g7_report_text(const HvG7Report *rep, char *out, size_t cap);
+
+/* 0: a regular file (no link followed), HV_G7_ROM_BYTES long, SHA-256 equal to HV_G7_ROM_SHA256_HEX. -1 otherwise, with the reason in note. Read-only. */
+int hv_g7_rom_check(const char *path, char *note, int cap);
 
 typedef enum { HV_G7_ECID_MATCH = 0, HV_G7_ECID_MISSING, HV_G7_ECID_CORRUPT, HV_G7_ECID_MISMATCH, HV_G7_ECID_ERROR } HvG7Ecid;
 HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected);

@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "crypto_portable.h"
 #include "disk_policy.h"
 
 /* See g7_preflight.h. Every file step is relative to one opened directory, symbolic links are never followed, nothing is ever deleted except what the SAME call
@@ -55,6 +56,34 @@ HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected) {
     if (errno || !end || *end || buf[7] == '-' || buf[7] == '+' || buf[7] == ' ') return HV_G7_ECID_CORRUPT;
     if (v < (1ULL << 40) || v >= (1ULL << 62)) return HV_G7_ECID_CORRUPT;
     return v == expected ? HV_G7_ECID_MATCH : HV_G7_ECID_MISMATCH;
+}
+
+/* ---------------------------------------------------------------- ROM */
+int hv_g7_rom_check(const char *path, char *note, int cap) {
+    if (!path || !*path) { NOTE("no ROM path"); return -1; }
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) { NOTE(errno == ELOOP ? "the ROM is a symbolic link; refused" : "the ROM cannot be opened: %s", strerror(errno)); return -1; }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); NOTE("the ROM is not a regular file"); return -1; }
+    if ((uint64_t)st.st_size != HV_G7_ROM_BYTES) { close(fd); NOTE("the ROM has %llu bytes, expected %llu", (unsigned long long)st.st_size, (unsigned long long)HV_G7_ROM_BYTES); return -1; }
+    uint8_t *buf = malloc(HV_G7_ROM_BYTES);
+    size_t got = 0;
+    while (buf && got < HV_G7_ROM_BYTES) {
+        ssize_t n = read(fd, buf + got, HV_G7_ROM_BYTES - got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    close(fd);
+    if (!buf || got != HV_G7_ROM_BYTES) { free(buf); NOTE("the ROM could not be read completely"); return -1; }
+    uint8_t d[32];
+    hv_sha256(buf, got, d);
+    free(buf);
+    char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+    if (strcmp(hex, HV_G7_ROM_SHA256_HEX)) { NOTE("the ROM's SHA-256 is not the expected one"); return -1; }
+    NOTE("the ROM has the expected size and SHA-256");
+    return 0;
 }
 
 /* ---------------------------------------------------------------- pair state */
@@ -156,6 +185,9 @@ int hv_g7_preflight(const HvG7Input *in, HvG7Report *rep) {
         else add(rep, "ecid", HV_G7_BLOCK, "%s cannot be read as a plain file", HV_G7_ECID_FILE);
     }
     close(dfd);
+
+    if (hv_g7_rom_check(in->rom_path, note, sizeof note) == 0) add(rep, "rom", HV_G7_PASS, "%s", note);
+    else add(rep, "rom", HV_G7_BLOCK, "%s", note);
 
     int ifd = open_dir(in->ipsw_dir);
     if (ifd < 0) add(rep, "ipsw", HV_G7_BLOCK, "cannot open the IPSW directory");

@@ -31,6 +31,13 @@ static int g_fail;
 #define ECID_OTHER_HEX "2468ace13579bd"
 
 static char T[200];
+static char G_ROM[260];
+/* the stand-in ROM: HV_G7_ROM_BYTES of a fixed pattern; tools/g7-preflight-test.sh builds the same bytes and passes their SHA-256 as HV_G7_ROM_SHA256_HEX */
+static void make_rom(const char *path, int flip) {
+    FILE *f = fopen(path, "wb");
+    for (unsigned long i = 0; f && i < HV_G7_ROM_BYTES; i++) { unsigned char b = (unsigned char)(i * 31 + 7); if (flip && i == 1000) b ^= 1; fputc(b, f); }
+    if (f) fclose(f);
+}
 static char *newdir(const char *tag) {
     static char d[64][240];
     static int k;
@@ -77,7 +84,7 @@ static int leaks_ecid(const HvG7Report *r) {
 }
 
 static HvG7Input input(const char *dir, const char *ipsw_dir, const char *ecid_dir) {
-    HvG7Input in = {.dir = dir, .ipsw_dir = ipsw_dir, .ecid_dir = ecid_dir, .ecid = ECID_REQ};
+    HvG7Input in = {.dir = dir, .ipsw_dir = ipsw_dir, .ecid_dir = ecid_dir, .rom_path = G_ROM, .ecid = ECID_REQ};
     return in;
 }
 /* a directory set where everything is as a first G7 run needs it */
@@ -117,6 +124,8 @@ int main(void) {
     snprintf(T, sizeof T, "/tmp/hvg7-XXXXXX");
     if (!mkdtemp(T)) return 2;
     signal(SIGXFSZ, SIG_IGN);
+    snprintf(G_ROM, sizeof G_ROM, "%s/rom.bin", T);
+    make_rom(G_ROM, 0);
     char note[400];
     HvG7Report rep;
 
@@ -239,6 +248,32 @@ int main(void) {
         snprintf(p, sizeof p, "%s/%s", ip, HV_G7_IPSW_NAME); unlink(p);
         sparse(d, "other.ipsw", HV_G7_IPSW_BYTES); char t[400]; snprintf(t, sizeof t, "%s/other.ipsw", d); symlink(t, p);
         CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "ipsw", HV_G7_BLOCK), "a symbolic link as the IPSW blocks");
+    }
+    {   /* ROM */
+        char *d = newdir("p_rom"), *ip = newdir("p_rom_ipsw"), *ec = newdir("p_rom_ecid"); good_inputs(d, ip, ec); in = input(d, ip, ec);
+        char note2[200];
+        CHECK(hv_g7_preflight(&in, &rep) == 0 && has(&rep, "rom", HV_G7_PASS), "the ROM with the expected size and SHA-256 passes");
+        CHECK(hv_g7_rom_check(G_ROM, note2, sizeof note2) == 0, "rom check: %s", note2);
+        make_rom(G_ROM, 1);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "one flipped byte: the SHA-256 differs, blocked");
+        truncate(G_ROM, HV_G7_ROM_BYTES - 1);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "one byte short: blocked");
+        truncate(G_ROM, HV_G7_ROM_BYTES + 1);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "one byte long: blocked");
+        unlink(G_ROM);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "missing: blocked");
+        char real[300]; snprintf(real, sizeof real, "%s/rom_real.bin", T); make_rom(real, 0); symlink(real, G_ROM);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "a symbolic link to a good ROM: refused");
+        unlink(G_ROM); mkdir(G_ROM, 0700);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "a directory: refused");
+        rmdir(G_ROM);
+        in.rom_path = NULL;
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "no ROM path: blocked");
+        make_rom(G_ROM, 0);
+        chmod(G_ROM, 0600);
+        CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "rom", HV_G7_BLOCK), "(control) still blocked while the input has no ROM path");
+        in.rom_path = G_ROM;
+        CHECK(hv_g7_preflight(&in, &rep) == 0, "restored: passes again");
     }
     {   /* directory + space */
         char *d = newdir("p_dir"), *ip = newdir("p_dir_ipsw"), *ec = newdir("p_dir_ecid"); good_inputs(d, ip, ec); in = input(d, ip, ec);

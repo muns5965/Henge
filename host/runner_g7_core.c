@@ -29,7 +29,7 @@ int hv_g7_run(const HvG7Request *r, const HvG7Api *api, HvG7Result *out) {
     if (hv_g7_make_config(&cfg, r, disk, sizeof disk, aux, sizeof aux) != 0) { SET(out, HV_G7_STAGE_CONFIG, HV_G7_REFUSED, "a path is too long"); return -1; }
     if (hv_g7_config_ok(&cfg, r->dir, r->ecid, why, sizeof why) != 0) { SET(out, HV_G7_STAGE_CONFIG, HV_G7_REFUSED, "configuration refused: %s", why); return -1; }
 
-    HvG7Input in = {.dir = r->dir, .ipsw_dir = r->ipsw_dir, .ecid_dir = r->ecid_dir, .ecid = r->ecid};
+    HvG7Input in = {.dir = r->dir, .ipsw_dir = r->ipsw_dir, .ecid_dir = r->ecid_dir, .rom_path = r->rom, .ecid = r->ecid};
     if (hv_g7_preflight(&in, &out->preflight) != 0) {
         const char *first = "see the report";
         for (int i = 0; i < out->preflight.n; i++) if (out->preflight.check[i].level == HV_G7_BLOCK) { first = out->preflight.check[i].item; break; }

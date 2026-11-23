@@ -24,8 +24,8 @@ android {
         applicationId 'dev.muns.hengeprobe'
         minSdk 30          // memfd_create is in bionic from API 30
         targetSdk 34
-        // CI passes HENGE_VERSION_CODE from tools/ci-version-code.sh (seconds since 2026-01-01 UTC), the SAME rule in the general APK and the G7 execution APK workflows, so a later build always has
-        // a higher code and an update over the installed app is accepted. (The run number is per workflow and cannot be compared across them.) A CI build without it fails instead of falling back.
+        // CI passes HENGE_VERSION_CODE from tools/ci-version-code.sh (commit time, seconds since 2026-01-01 UTC), the SAME rule in the general APK and the G7 execution APK workflows: the same commit gives the same code in both, a newer commit a higher one,
+        // so an update over the installed app is accepted whichever workflow finishes first. (The run number is per workflow and cannot be compared across them.) A CI build without it fails instead of falling back.
         // Local builds keep 1.
         versionCode hengeVersionCode()
         versionName '0.2+' + (System.getenv('GITHUB_SHA') ?: 'local').take(7)

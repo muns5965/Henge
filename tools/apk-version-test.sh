@@ -9,10 +9,13 @@ BASE=1767225600
 a=$(tools/ci-version-code.sh $((BASE+1000))); b=$(tools/ci-version-code.sh $((BASE+1001)))
 [ "$b" -gt "$a" ] && ok "later build is higher (second resolution)" || bad "monotonic"
 [ "$(tools/ci-version-code.sh $((BASE+60)))" = "$(tools/ci-version-code.sh $((BASE+60)))" ] && ok "same second -> equal (installable)" || bad "equal"
+# the default is the commit time: the same commit gives the same code at different wall-clock times (two workflows finishing 55 s apart)
+c1=$(tools/ci-version-code.sh); sleep 2; c2=$(tools/ci-version-code.sh)
+[ "$c1" = "$c2" ] && [ "$c1" = "$(( $(git log -1 --format=%ct) - BASE ))" ] && ok "default = commit time: same commit, same code, independent of build time" || bad "default is not the commit time ($c1 $c2)"
 tools/ci-version-code.sh "$BASE" >/dev/null 2>&1 && bad "zero accepted" || ok "zero refused"
 tools/ci-version-code.sh $((BASE+2147483648)) >/dev/null 2>&1 && bad "too large accepted" || ok "above int max refused"
 tools/ci-version-code.sh x >/dev/null 2>&1 && bad "non-number accepted" || ok "non-number refused"
-c=$(tools/ci-version-code.sh); [ "$c" -gt 20000000 ] && [ "$c" -lt 2147483647 ] && ok "now is a plausible code ($c)" || bad "now"
+c=$(tools/ci-version-code.sh); [ "$c" -gt 20000000 ] && [ "$c" -lt 2147483647 ] && ok "HEAD gives a plausible code ($c)" || bad "HEAD code"
 # workflows: both use the one script and gradle has no run-number fallback
 for w in android-apk android-g7exec; do grep -q "tools/ci-version-code.sh" .github/workflows/$w.yml && ok "$w uses the shared rule" || bad "$w does not use tools/ci-version-code.sh"; done
 grep -q "GITHUB_RUN_NUMBER" android/app/build.gradle && bad "gradle still uses the run number" || ok "gradle has no run-number code"

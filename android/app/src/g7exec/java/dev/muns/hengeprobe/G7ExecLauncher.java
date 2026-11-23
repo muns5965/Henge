@@ -41,9 +41,9 @@ public final class G7ExecLauncher {
     static final String IPSW_NAME = "UniversalMac_15.6.1_24G90_Restore.ipsw";
     static final long IPSW_BYTES = 16_814_137_790L;
     static final int CANCEL_GRACE_SECONDS = 90;   /* the runner's own grace is 60 s */
-    /** One log file PER RUN (never appended to, never overwritten: CREATE_NEW), at most MAX_LOG_BYTES of streamed output plus a closing block of a few KiB. Runs are only possible while no
+    /** One log file PER RUN (never appended to, never overwritten: CREATE_NEW), at most MAX_LOG_BYTES of (filtered, see DiagFilter) output plus a closing block of a few KiB. Runs are only possible while no
      *  install file exists, so the total stays small. When the limit is reached the streamed output stops, but the last g7-result line, the tail and the exit code are still written. */
-    static final int MAX_LOG_BYTES = 200 * 1024;
+    static final int MAX_LOG_BYTES = 4 * 1024 * 1024;
     static final int TAIL_BYTES = 6000;
     static final String LOG_PREFIX = "g7_run_";
     static final String LOG_SUFFIX = ".txt";
@@ -81,7 +81,7 @@ public final class G7ExecLauncher {
         File disk = new File(privVmDir, "macos_disk.img"), aux = new File(privVmDir, "macos_aux.img"), st = new File(privVmDir, "g7_state.txt");
         boolean clean = !disk.exists() && !aux.exists() && !st.exists();
         s.append("설치 파일: ").append(clean ? "없음(새로 만들 수 있음)" : "이미 있음 — 시작할 수 없습니다(자동 재개·덮어쓰기 없음)").append('\n'); ok &= clean;
-        s.append("시작 스위치: ").append(START_ENABLED ? "켜짐(시험 빌드: 승인 문구와 SHA-256을 입력하면 실제로 시작합니다)" : "꺼짐(이 빌드는 시작할 수 없습니다)");
+        s.append("시작 스위치: ").append(START_ENABLED ? "켜짐(시험 빌드: 동의 상자를 체크하면 실제로 시작합니다)" : "꺼짐(이 빌드는 시작할 수 없습니다)");
         return new Preflight(ok, s.toString());
     }
 
@@ -198,38 +198,59 @@ public final class G7ExecLauncher {
         }
     }
 
+    /** Keeps the log readable: the virtual USB device prints about a dozen "bdif usb diag:" lines per 2 KiB chunk, which would fill the log (and the 6 KB screen tail) within seconds. The first
+     *  KEEP_FIRST such lines are kept, later ones are counted and replaced by a short summary (with the last suppressed line) every SUMMARY_EVERY lines and once at the end. Every other line is kept. */
+    static final class DiagFilter {
+        static final String PREFIX = "bdif usb diag:";
+        static final int KEEP_FIRST = 300;
+        static final int SUMMARY_EVERY = 5000;
+        private int kept;
+        private long suppressed;
+        private String last = "";
+        private long summarised;
+        /** The text to keep for one complete line (without its line end); "" when the line is suppressed. */
+        String accept(String line) {
+            if (!line.startsWith(PREFIX)) return line + "\n";
+            if (kept < KEEP_FIRST) { kept++; return line + "\n"; }
+            suppressed++;
+            last = line.length() > 200 ? line.substring(0, 200) : line;
+            if (suppressed == 1 || suppressed % SUMMARY_EVERY == 0) { summarised = suppressed; return summary(); }
+            return "";
+        }
+        /** The closing summary (only when something was suppressed since the last one). */
+        String finish() { return suppressed > summarised ? summary() : ""; }
+        private String summary() { return "[usb diag: " + suppressed + " line(s) not kept; last: " + last + "]\n"; }
+    }
+
+    static final int MAX_LINE_BYTES = 8192;
+
     private static void streamToLog(final Run run, final Process p, final OutputStream lo, final long ecid) {
         final InputStream in = p.getInputStream();
         Thread t = new Thread(() -> {
-            long written = 0; boolean truncated = false;
-            StringBuilder line = new StringBuilder();
-            String lastResult = "";
+            final DiagFilter filter = new DiagFilter();
+            final long[] written = {0};
+            final boolean[] truncated = {false};
+            final String[] lastResult = {""};
+            final ByteArrayOutputStream lb = new ByteArrayOutputStream();
             try {
                 lo.write(("g7-start: " + System.currentTimeMillis() + "\n").getBytes(StandardCharsets.UTF_8));
-                byte[] b = new byte[2048]; int n;
+                byte[] b = new byte[4096]; int n;
                 while ((n = in.read(b)) > 0) {
-                    String s = mask(new String(b, 0, n, StandardCharsets.UTF_8), ecid);
-                    run.append(s);
-                    for (int i = 0; i < s.length(); i++) {   // remember the last g7-result line even when the log is full
-                        char c = s.charAt(i);
-                        if (c == '\n') { if (line.indexOf("g7-result:") == 0) lastResult = line.toString(); line.setLength(0); }
-                        else if (line.length() < 1024) line.append(c);
-                    }
-                    if (!truncated) {
-                        byte[] o = s.getBytes(StandardCharsets.UTF_8);
-                        int k = (int) Math.min(o.length, MAX_LOG_BYTES - written);
-                        lo.write(o, 0, k); written += k;
-                        if (k < o.length) truncated = true;
+                    for (int i = 0; i < n; i++) {
+                        byte c = b[i];
+                        if (c != '\n') lb.write(c);
+                        if (c == '\n' || lb.size() >= MAX_LINE_BYTES) { keep(run, lo, filter, lb, ecid, written, truncated, lastResult); lb.reset(); }
                     }
                 }
+                if (lb.size() > 0) keep(run, lo, filter, lb, ecid, written, truncated, lastResult);
+                put(run, lo, filter.finish(), written, truncated);
             } catch (IOException ignored) { }
-            if (line.indexOf("g7-result:") == 0) lastResult = line.toString();
             int code;
             try { code = p.waitFor(); } catch (InterruptedException e) { code = -1; Thread.currentThread().interrupt(); }
             try {
-                if (truncated) {
+                if (truncated[0]) {
                     lo.write(("\n--- log limit reached: the output after this point is not kept here; the last result line and the tail follow ---\n"
-                            + (lastResult.isEmpty() ? "" : lastResult + "\n") + "--- tail ---\n" + run.tail()).getBytes(StandardCharsets.UTF_8));
+                            + (lastResult[0].isEmpty() ? "" : lastResult[0] + "\n") + "--- tail ---\n" + run.tail()).getBytes(StandardCharsets.UTF_8));
                 }
                 String end = "\ng7-exit: " + code + "\n";
                 lo.write(end.getBytes(StandardCharsets.UTF_8)); lo.flush(); lo.close();
@@ -241,6 +262,55 @@ public final class G7ExecLauncher {
         t.start();
     }
 
+    /** One complete line: masked, filtered, shown in the tail and (until the limit) written to the log. */
+    private static void keep(Run run, OutputStream lo, DiagFilter filter, ByteArrayOutputStream lb, long ecid, long[] written, boolean[] truncated, String[] lastResult) throws IOException {
+        String line = mask(new String(lb.toByteArray(), StandardCharsets.UTF_8), ecid);
+        if (line.startsWith("g7-result:")) lastResult[0] = line.length() > 1024 ? line.substring(0, 1024) : line;   // remembered even when the log is full
+        put(run, lo, filter.accept(line), written, truncated);
+    }
+
+    private static void put(Run run, OutputStream lo, String text, long[] written, boolean[] truncated) throws IOException {
+        if (text.isEmpty()) return;
+        run.append(text);
+        if (truncated[0]) return;
+        byte[] o = text.getBytes(StandardCharsets.UTF_8);
+        int k = (int) Math.min(o.length, MAX_LOG_BYTES - written[0]);
+        lo.write(o, 0, k); written[0] += k;
+        if (k < o.length) truncated[0] = true;
+    }
+
+    /** The only files the log provider may hand out: run logs of this app, by plain name. Returns null for anything else. */
+    static File logFile(File filesDir, String name) {
+        if (name == null || !name.matches("g7_run_[0-9]{13}\\.txt")) return null;
+        File f = new File(filesDir, name);
+        return f.isFile() ? f : null;
+    }
+
+    /** For the top of the screen: what the newest log (or the live run) says, in a few lines. Reads only; never claims more than the log shows. */
+    public static String summary(File filesDir) {
+        Run r = CURRENT;
+        File f = newestLog(filesDir);
+        StringBuilder s = new StringBuilder();
+        if (r != null && !r.finished()) s.append("상태: 실행 중").append(r.cancelAsked ? " (취소 요청됨 — 아직 끝나지 않음)" : "");
+        else if (r != null) s.append("상태: 종료 — ").append(meaning(r.exitCode()));
+        else if (f == null) return "상태: 실행 기록 없음";
+        else {
+            String t = readTail(f, 400000);
+            if (t.contains("g7-exit:")) s.append("상태: 종료됨(이전 실행) — 종료 줄은 로그에 있음");
+            else s.append("상태: 이전 실행의 로그에 종료 기록(g7-exit)이 없음 — 앱이 끝났을 수 있으며 결과는 확인되지 않음");
+        }
+        if (f != null) {
+            s.append("\n로그: ").append(f.getName()).append(" (").append(f.length()).append(" 바이트)");
+            String t = readTail(f, 400000);
+            int i = t.lastIndexOf("g7-result:");
+            if (i >= 0) { int e = t.indexOf('\n', i); s.append("\n").append(t, i, e < 0 ? t.length() : e); }
+            else s.append("\ng7-result: 로그에 아직 없음");
+            int x = t.lastIndexOf("g7-exit:");
+            if (x >= 0) { int e = t.indexOf('\n', x); s.append("\n").append(t, x, e < 0 ? t.length() : e); }
+        }
+        return s.toString();
+    }
+
     /** The newest run log (by name), or null. */
     static File newestLog(File filesDir) {
         File[] l = filesDir.listFiles((d, n) -> n.startsWith(LOG_PREFIX) && n.endsWith(LOG_SUFFIX));
@@ -248,6 +318,8 @@ public final class G7ExecLauncher {
         java.util.Arrays.sort(l);
         return l[l.length - 1];
     }
+
+    public static File newestLogFile(File filesDir) { return newestLog(filesDir); }
 
     /** What the newest log says about the last run when no run of this process is known: "" (no log), running-or-interrupted (g7-start without g7-exit), or the exit line. Reads only. */
     public static String lastRunNote(File filesDir) {

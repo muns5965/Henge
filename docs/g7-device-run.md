@@ -24,7 +24,8 @@ What a start does: creates the 128 GiB sparse disk and the AUX, runs the machine
 
 ## Stop and result
 - 취소 (cancel): SIGTERM to the runner, which asks the restore to stop; after 90 s the process is killed. The pair stays `in_progress`.
-- The output is shown on the screen and appended to `files/g7_run_log.txt` (bounded, ECID masked). The last line of a run is `g7-result: outcome=… last_step=… pair=… refused_destinations=N`, then `g7-exit: <code>`.
+- The output is shown on the screen and written to one new file per run, `files/g7_run_<ms>.txt` (never appended to or overwritten; at most 4 MiB, ECID masked). The virtual USB device's `bdif usb diag:` lines (about a dozen per 2 KiB chunk) are thinned: the first 300 are kept, later ones are only counted in `[usb diag: N line(s) not kept; last: …]` summary lines. Every other line is kept. The last line of a run is `g7-result: outcome=… last_step=… pair=… refused_destinations=N`, then `g7-exit: <code>`.
+- The top of the screen shows the state (running / finished with the meaning of the exit code / no `g7-exit` in the log = the app was ended and the outcome is unconfirmed), the log name and size, and the last `g7-result:` and `g7-exit:` lines. `로그 파일 공유(전체)` sends the whole newest log file through the share sheet (read-only, through a non-exported provider that only serves `g7_run_<13 digits>.txt`); `로그 끝부분 복사` copies the last 100 KB to the clipboard. The log text on screen is selectable.
 - Exit codes: 0 pair finished (evidence only) / 2 refused or failed / 5 the restore did not end (process ended) / 64 bad arguments / 137, 143 ended by a signal.
 
 ## Not covered

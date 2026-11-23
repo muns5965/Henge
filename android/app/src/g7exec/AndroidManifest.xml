@@ -12,5 +12,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- read-only access to the run logs for the share sheet; not exported (only the grant of the share intent opens it) -->
+        <provider
+            android:name=".G7LogProvider"
+            android:authorities="dev.muns.hengeprobe.g7logs"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

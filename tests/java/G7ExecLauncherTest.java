@@ -107,7 +107,7 @@ public class G7ExecLauncherTest {
         check("after the stop the run ends with the signal exit and the pair text says in_progress", s.run.finished() && s.run.exitCode() == 143 && G7ExecLauncher.meaning(s.run.exitCode()).contains("in_progress"));
 
         // output bound
-        StringBuilder big = new StringBuilder(); for (int i = 0; i < 40000; i++) big.append("0123456789abcdef");
+        StringBuilder big = new StringBuilder(); for (int i = 0; i < 280000; i++) big.append("0123456789abcdef");   // > MAX_LOG_BYTES (4 MiB), one long line: cut into lines of at most MAX_LINE_BYTES
         File files2 = Files.createTempDirectory("files2").toFile();
         s = G7ExecLauncher.startWith(spawner(new FakeProcess(big.toString(), 2, false)), ROMS, true, lib, ext, priv, files2, true, SHA);
         for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
@@ -145,6 +145,34 @@ public class G7ExecLauncherTest {
         touch(files6, G7ExecLauncher.LOG_PREFIX + "0000000000001" + G7ExecLauncher.LOG_SUFFIX, "g7-start: 1\nsome output\n".getBytes());
         Field cur = G7ExecLauncher.class.getDeclaredField("CURRENT"); cur.setAccessible(true); cur.set(null, null);
         check("a log without g7-exit does not claim an outcome: says it cannot be confirmed and to re-inspect the pair", G7ExecLauncher.lastRunNote(files6).contains("확인할 수 없") && G7ExecLauncher.lastRunNote(files6).contains("다시 검사") && !G7ExecLauncher.lastRunNote(files6).contains("끊겼"));
+
+        // the USB diagnostic flood is thinned (first lines kept, the rest counted); every other line and the result stay
+        G7ExecLauncher.DiagFilter df = new G7ExecLauncher.DiagFilter();
+        int outLines = 0, summaries = 0, keptDiag = 0;
+        for (int i = 0; i < 12000; i++) { String o = df.accept("bdif usb diag: REG_BUSY read " + i); if (!o.isEmpty()) { outLines++; if (o.startsWith("[usb diag:")) summaries++; else keptDiag++; } }
+        String fin = df.finish(); if (!fin.isEmpty()) summaries++;
+        check("DiagFilter keeps the first " + G7ExecLauncher.DiagFilter.KEEP_FIRST + " diag lines and summarises the rest (first, every 5000th, and the end)", keptDiag == G7ExecLauncher.DiagFilter.KEEP_FIRST && summaries == 4 && fin.contains("11700 line(s) not kept") && fin.contains("REG_BUSY read 11999"));
+        check("DiagFilter never drops a non-diag line", new G7ExecLauncher.DiagFilter().accept("Uploading:  47.2%").equals("Uploading:  47.2%\n") && df.accept("g7-result: outcome=X").equals("g7-result: outcome=X\n"));
+        StringBuilder flood = new StringBuilder("g7: start\n");
+        for (int i = 0; i < 2000; i++) flood.append("bdif usb diag: REG_QSEL write -> ").append(i % 2).append('\n');
+        flood.append("Uploading:  47.2%\nleak ").append(hex).append("\ng7-result: outcome=FAILED last_step=7\n");
+        File files7 = Files.createTempDirectory("files7").toFile();
+        s = G7ExecLauncher.startWith(spawner(new FakeProcess(flood.toString(), 2, false)), ROMS, true, lib, ext, priv, files7, true, SHA);
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        String fl = new String(Files.readAllBytes(G7ExecLauncher.newestLog(files7).toPath()), StandardCharsets.UTF_8);
+        int diagInFile = 0; for (String ln : fl.split("\n")) if (ln.startsWith("bdif usb diag:")) diagInFile++;
+        check("flood: only " + G7ExecLauncher.DiagFilter.KEEP_FIRST + " diag lines in the file, a summary with the count, the other lines and the result kept", diagInFile == 300 && fl.contains("[usb diag: 1700 line(s) not kept") && fl.contains("Uploading:  47.2%") && fl.contains("g7-result: outcome=FAILED last_step=7") && fl.contains("g7-exit: 2") && !fl.toLowerCase().contains(hex));
+        check("flood: the screen tail keeps the useful lines (not only diag lines)", s.run.tail().contains("Uploading:  47.2%") && s.run.tail().contains("g7-result:"));
+        String sm = G7ExecLauncher.summary(files7);
+        check("summary of a finished run: state with the meaning of the exit code, log name, the g7-result line and the g7-exit line", sm.contains("상태: 종료") && sm.contains(s.run.logName()) && sm.contains("g7-result: outcome=FAILED last_step=7") && sm.contains("g7-exit: 2"));
+        cur.set(null, null);   // a screen opened again after the app process was recreated: no run of this process
+        check("summary with no log at all says there is no record", G7ExecLauncher.summary(Files.createTempDirectory("empty").toFile()).contains("실행 기록 없음"));
+        check("summary of an interrupted log (g7-start, no g7-exit) does not claim an outcome", G7ExecLauncher.summary(files6).contains("종료 기록(g7-exit)이 없음") && G7ExecLauncher.summary(files6).contains("확인되지 않음") && G7ExecLauncher.summary(files6).contains("로그에 아직 없음"));
+        // only run logs of the app can be handed out (by plain name)
+        File okLog = G7ExecLauncher.newestLog(files7);
+        check("logFile hands out a run log by its plain name", G7ExecLauncher.logFile(files7, okLog.getName()) != null);
+        for (String badName : new String[] {null, "", "../x", "g7_run_1.txt", okLog.getName() + "/../x", "g7_run_0000000000001.txt", "vm_ecid.txt", "g7_run_" + "0000000000001" + ".txt.bak"})
+            check("logFile refuses '" + badName + "'", G7ExecLauncher.logFile(files7, badName) == null);
 
         // a spawner failure leaves no run
         s = G7ExecLauncher.startWith(c -> { throw new IOException("boom 0x" + hex); }, ROMS, true, lib, ext, priv, Files.createTempDirectory("files3").toFile(), true, SHA);

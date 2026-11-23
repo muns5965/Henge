@@ -48,6 +48,15 @@ x=$(grep -nE 'EditText|getText\(\)\.toString|APPROVAL_PHRASE|approvalText' "$A" 
 grep -qE 'static final String IPSW_SHA256 = "[0-9a-f]{64}";' "$L" || bad "IPSW_SHA256 must be one built-in 64 lower-case hex literal"
 grep -q 'G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), consent.isChecked())' "$A" || bad "the activity must pass the checkbox state to start()"
 grep -q 'CheckBox' "$A" || bad "the activity needs the consent check box"
+# the log provider: read-only, not exported, only run logs by plain name
+P=$XJ/G7LogProvider.java
+[ -f "$P" ] || bad "the log provider is missing"
+grep -q 'android:exported="false"' $X/AndroidManifest.xml && grep -q 'G7LogProvider' $X/AndroidManifest.xml || bad "the log provider must be declared and not exported"
+[ "$(grep -c '<provider' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one provider"
+x=$(grep -nE 'exported="true"' $X/AndroidManifest.xml | grep -v 'G7ExecActivity'); [ "$(grep -c 'exported="true"' $X/AndroidManifest.xml)" = 1 ] || bad "only the activity may be exported"
+grep -q 'G7ExecLauncher.logFile(' "$P" || bad "the provider must go through logFile() (plain run-log names only)"
+x=$(grep -nE 'MODE_(WRITE|READ_WRITE|APPEND|TRUNCATE|CREATE)|FileOutputStream|\.delete\(|renameTo' "$P"); [ -z "$x" ] || { bad "the provider can write or remove:"; echo "$x"; }
+grep -q 'MODE_READ_ONLY' "$P" || bad "the provider must open files read-only"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

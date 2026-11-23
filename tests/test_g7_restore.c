@@ -98,6 +98,32 @@ int main(void) {
       CHECK(hv_g7_conclude(d, HV_G7R_SUCCESS_SIGNAL, note, sizeof note) == HV_G7_CONCLUDED_KEPT, "a pair that is already done is not finished again (%s)", note); }
     { char *d = mkd("noecid_in_note"); made_pair(d, 1, 1, 1); hv_g7_conclude(d, HV_G7R_SUCCESS_SIGNAL, note, sizeof note);
       CHECK(!strstr(note, "13579bdf"), "the note carries no ECID"); }
+    /* ---- limits: bounded settings, refused (not clamped) outside the bounds */
+    { HvG7RestoreLimits o = {7, 7, 7}, d = HV_G7R_DEFAULT_LIMITS;
+      CHECK(hv_g7_limits_make(HV_G7R_TIMEOUT_MIN_S - 1, 60, &o) == -1 && o.timeout_ms == 7, "a timeout below the lower bound is refused and *out is untouched");
+      CHECK(hv_g7_limits_make(HV_G7R_TIMEOUT_MAX_S + 1, 60, &o) == -1 && hv_g7_limits_make(3600, HV_G7R_GRACE_MIN_S - 1, &o) == -1 && hv_g7_limits_make(3600, HV_G7R_GRACE_MAX_S + 1, &o) == -1 && hv_g7_limits_make(3600, 60, NULL) == -1, "above the upper bound, grace out of bounds, no output: refused");
+      CHECK(hv_g7_limits_make(HV_G7R_TIMEOUT_MIN_S, HV_G7R_GRACE_MIN_S, &o) == 0 && o.timeout_ms == 600000 && o.grace_ms == 10000 && o.step_ms == d.step_ms, "lower bounds accepted, the step stays fixed");
+      CHECK(hv_g7_limits_make(HV_G7R_TIMEOUT_MAX_S, HV_G7R_GRACE_MAX_S, &o) == 0 && o.timeout_ms == 43200000, "upper bounds accepted"); }
+    /* ---- the summary line */
+    { char *d = mkd("sum"); made_pair(d, 1, 1, 1); HvG7RestoreLimits l = HV_G7R_DEFAULT_LIMITS; char line[600];
+      hv_g7_trace_reset(); hv_g7_trace_step(7, 0.5); hv_g7_trace_step(7, 0.75); hv_g7_trace_step(9, 0.0);
+      HvG7Trace tr; hv_g7_trace_get(&tr);
+      CHECK(tr.last_step == 9 && tr.last_percent == 0 && tr.steps_seen == 2, "trace: last step, percent, distinct steps seen");
+      hv_g7_trace_step(3, 5.0); hv_g7_trace_get(&tr); CHECK(tr.last_percent == 100, "percent is clamped to 0..100 (or -1 when unknown)");
+      int distinct = 0; char seen[8][24]; HvG7RestoreOutcome all[] = {HV_G7R_NOT_STARTED, HV_G7R_SUCCESS_SIGNAL, HV_G7R_FAILED, HV_G7R_CANCELLED, HV_G7R_TIMEOUT, HV_G7R_NO_SIGNAL};
+      for (int i = 0; i < 6; i++) {
+          hv_g7_summary(d, all[i], 0, &l, line, sizeof line);
+          char tok[24]; const char *p = strstr(line, "outcome="); snprintf(tok, sizeof tok, "%.*s", (int)strcspn(p, " "), p);
+          int dup = 0; for (int k = 0; k < distinct; k++) if (!strcmp(seen[k], tok)) dup = 1;
+          if (!dup) snprintf(seen[distinct++], sizeof seen[0], "%s", tok);
+          CHECK(strstr(line, hv_g7_restore_outcome_name(all[i])) != NULL, "summary names the outcome %s", hv_g7_restore_outcome_name(all[i])); }
+      CHECK(distinct == 6, "the six outcomes are told apart in the line");
+      hv_g7_summary(d, HV_G7R_FAILED, 3, &l, line, sizeof line);
+      CHECK(strstr(line, "last_step=3") && strstr(line, "pair=in_progress") && strstr(line, "disk:written,gpt,aux-ok") && strstr(line, "refused_destinations=3") && strstr(line, "(provisional)") && !strchr(line, '\n'), "one line: step, pair state, what the files show, refusals, limits marked provisional");
+      CHECK(!strstr(line, "13579bdf") && !strstr(line, d), "no ECID and no path in the line");
+      CHECK(hv_g7_summary(NULL, HV_G7R_FAILED, 0, &l, line, sizeof line) == 0 && hv_g7_summary(d, HV_G7R_FAILED, 0, NULL, line, sizeof line) == 0 && hv_g7_summary(d, HV_G7R_FAILED, 0, &l, NULL, 0) == 0, "bad arguments give nothing");
+      hv_g7_conclude(d, HV_G7R_SUCCESS_SIGNAL, NULL, 0); hv_g7_summary(d, HV_G7R_SUCCESS_SIGNAL, 0, &l, line, sizeof line);
+      CHECK(strstr(line, "pair=done") != NULL, "after a concluded pair the line says done"); }
     printf(g_fail ? "FAILED %d\n" : "ALL PASSED (0 failed)\n", g_fail);
     return g_fail != 0;
 }

@@ -17,5 +17,14 @@ for mode in plain asan; do
   "$OUT/g7r_$mode" > "$OUT/g7r_$mode.out" 2>&1 || rc=1
   grep -E "^FAIL|FAILED" "$OUT/g7r_$mode.out"
   tail -1 "$OUT/g7r_$mode.out"
+  # ended by a separate test process: SIGKILL, SIGTERM, timeout, no signal -> the pair stays in_progress, nothing changed
+  $CC -std=gnu11 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-result -Wno-format-truncation $F -DHV_G7_MIN_WRITTEN_BYTES='(2ULL<<20)' -DHV_G7_MIN_FREE_BYTES='(1ULL<<20)' $RD -Icore -Ihost -Idevices \
+    tests/test_g7_abort.c host/g7_restore.c host/g7_preflight.c host/disk_policy.c host/crypto_portable.c host/disk.c -o "$OUT/g7a_$mode" -lm -lpthread 2> "$OUT/g7a_$mode.build.log" \
+    || { echo "FAILED build abort test ($mode)"; head -30 "$OUT/g7a_$mode.build.log"; rc=1; continue; }
+  "$OUT/g7a_$mode" > "$OUT/g7a_$mode.out" 2>&1 || rc=1
+  grep -E "^FAIL|FAILED" "$OUT/g7a_$mode.out"
+  tail -1 "$OUT/g7a_$mode.out"
 done
+# the judgment has no setting: no option, environment variable or runtime switch of the runner can lower the file checks (only the TIME limits are settings)
+if grep -nE 'getenv|--min|--no-gpt|--skip|--force|--allow-small|WRITTEN' host/g7_runner.c host/g7_runner_real.c | grep -v '^.*://' | grep . ; then echo "FAIL a runtime switch near the judgment"; rc=1; else echo "PASS no runtime switch for the judgment in the runner"; fi
 exit $rc

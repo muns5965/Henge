@@ -2,6 +2,8 @@
 
 #include "net_guard.h"
 
+#include <stdio.h>
+
 static const HvG7NetHost k_hosts[] = {{"gs.apple.com", 443}, {"gs.apple.com.akadns.net", 443}, {"gs.apple.com.v.aaplimg.com", 443}};
 static int g_ok;
 
@@ -16,3 +18,9 @@ int hv_g7_extra_flags(void) {
 }
 
 int hv_g7_net_registered_ok(void) { return g_ok; }
+
+int hv_g7_net_gate(void) {
+    if (g_ok) return 0;
+    fprintf(stderr, "install: the network allow-list is incomplete (the list is full or a host was invalid); the restore is not started\n");
+    return -1;
+}

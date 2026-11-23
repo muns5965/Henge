@@ -136,6 +136,7 @@ static void *restore_thread(void *arg) {
         return NULL;
     }
     int flags = FLAG_ERASE;
+    int g7_blocked = 0;   /* G7 only: the network allow-list could not be fully registered, so the tool is not entered (the ordinary end below still runs) */
 #ifdef HV_INSTALL_G0
     flags |= hv_g0_extra_flags();   /* G0 test build: the tool's own stop before the root filesystem step (and the hook that reports it) */
 #endif
@@ -159,6 +160,7 @@ static void *restore_thread(void *arg) {
 #endif
 #ifdef HV_INSTALL_G7
     flags |= hv_g7_extra_flags();   /* G7 restore stack: the exact TSS hosts, registered AFTER the session began (it reset the lists) and before the tool is entered; adds no stop and no flag */
+    g7_blocked = hv_g7_net_gate() != 0;   /* a host that could not be registered: nothing is run (below), the normal close/finalize path then ends the session */
 #endif
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
@@ -178,12 +180,15 @@ static void *restore_thread(void *arg) {
     /* Android: the restore tool starts only through the session, which refuses to run unless the connection policy (host/net_guard.h) is in force. The allow
        list holds the private usbmuxd and NOTHING else, so a signing request or a URLAsset download is refused until its destination is approved and added
        (hv_net_guard_allow_host) -- that approval is a separate step. */
-    if (hv_restore_session_run_client(c, &r) != 0) {
+    if (g7_blocked) {
+        fprintf(stderr, "install: refused -- the network allow-list was not fully registered; nothing was run\n");
+        r = -1;
+    } else if (hv_restore_session_run_client(c, &r) != 0) {
         fprintf(stderr, "install: refused -- the connection policy is not in force\n");
         r = -1;
     }
 #else
-    r = idevicerestore_start(c);
+    r = g7_blocked ? -1 : idevicerestore_start(c);
 #endif
     fprintf(stderr, "install: restore finished: %d\n", r);
 #ifdef __ANDROID__

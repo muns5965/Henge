@@ -17,4 +17,7 @@ const HvG7NetHost *hv_g7_net_hosts(size_t *n);
 int hv_g7_extra_flags(void);
 /* 1 when every listed host was registered by the last hv_g7_extra_flags call. */
 int hv_g7_net_registered_ok(void);
+/* The gate install.c applies after hv_g7_extra_flags(): 0 = every listed host is registered, the tool may be entered; -1 = at least one is not, the tool must NOT be entered
+   (the reason goes to stderr: names and ports only). The session is then closed and finalized on the ordinary path, the same as when "the connection policy is not in force". */
+int hv_g7_net_gate(void);
 #endif

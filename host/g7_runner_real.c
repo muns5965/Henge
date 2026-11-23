@@ -6,8 +6,8 @@
      start_restore the IPSW identity is re-checked, then hv_g7_restore_run (the restore tool through hv_install_*) and, after the machine's disks are flushed and it is stopped,
                    hv_g7_conclude, the only caller of hv_g7_pair_finish. It returns 0 only for a finished pair; every other end keeps the pair in_progress, deleting and moving nothing.
    Open conditions, all NOT done: (1) the net allow-list (host/install_g7.c) holds only the three TSS hosts G2-G6 use, port 443; the URLAsset, image-key and FDR destinations are chosen by the
-   device and unknown, so they are refused and the refusals are printed below (host name and port, no URL) for a separately approved step to read; approving them is NOT done; (2) a launcher and its approval; (3) the judgment's file checks
-   (GPT header, allocated size, AUX header) have never been compared with a real restore; (4) timing: the default limits are guesses; (5) what a full restore does after the restore
+   device and unknown, so they are refused and the refusals are printed below (host name and port, no URL) for a separately approved step to read; approving them is NOT done; (2) a launcher and its approval (see docs/g7-new-destinations.md for how a new host is approved); (3) the judgment's file checks
+   (GPT header, allocated size, AUX header) have never been compared with a real restore; (4) timing: the default limits and their bounds (--timeout-min 10..720, --grace-s 10..600) are guesses; the end of every run prints one "g7-result:" line (outcome, last step, pair state, refusals; no ECID/URL/path); (5) what a full restore does after the restore
    options (restored_start_restore and later) has never run on this engine. */
 #define _GNU_SOURCE
 #include "g7_runner_real.h"
@@ -35,6 +35,7 @@ static struct {
     uint64_t ecid;
     struct stat ipsw_id;   /* the identity of the file that was hashed */
     int set;
+    HvG7RestoreLimits lim;
 } S;
 
 static int hex_eq(const unsigned char *d, const char *hex) {
@@ -83,12 +84,14 @@ static int real_create_vm(const HvVmConfig *cfg, char *err, size_t errlen) {
     return 0;
 }
 
+static void on_progress(int step, double p, void *u) { (void)u; hv_g7_trace_step(step, p); }
+
 static int op_start(const HvG7RestoreReq *q, void *ctx) {
     (void)ctx;
     HvVmapple *b = hv_vm_board();
     if (!b || !b->vusb) return -1;
     if (hv_usb_wait_online(b->vusb, 60000) < 0) return -1;   /* the guest did not appear on the USB bus: the restore is not started */
-    return hv_install_start(b->vusb, q->ipsw, q->workdir, q->ecid, NULL, NULL);
+    return hv_install_start(b->vusb, q->ipsw, q->workdir, q->ecid, on_progress, NULL);
 }
 static int op_poll(void *ctx) { (void)ctx; return hv_install_result(); }
 static void op_cancel(void *ctx) { (void)ctx; hv_install_cancel(); }
@@ -104,16 +107,21 @@ static int real_restore(void) {
     sigaction(SIGINT, &sa, NULL);
     HvG7RestoreReq req = {.ipsw = S.ipsw, .workdir = S.workdir, .ecid = S.ecid};
     HvG7RestoreOps ops = {op_start, op_poll, op_cancel, op_sleep, NULL};
-    HvG7RestoreLimits lim = HV_G7R_DEFAULT_LIMITS;
+    HvG7RestoreLimits lim = S.lim;
+    hv_g7_trace_reset();
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
     { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */
-    if (o == HV_G7R_NO_SIGNAL) { fflush(stdout); _exit(5); }   /* the restore did not end even after the cancel: nothing may be freed or closed, the process just ends */
+    HvNetStats ns; hv_net_guard_stats(&ns);
+    char line[512];
+    if (o == HV_G7R_NO_SIGNAL) { hv_g7_summary(S.dir, o, ns.denied, &lim, line, sizeof line); printf("%s\n", line); fflush(stdout); _exit(5); }   /* the restore did not end even after the cancel: nothing may be freed or closed, the process just ends */
     hv_vm_flush_disks();
     hv_vm_stop();
     char note[300];
     HvG7Conclusion c = hv_g7_conclude(S.dir, o, note, sizeof note);
     printf("g7: %s\n", note);
+    hv_g7_summary(S.dir, o, ns.denied, &lim, line, sizeof line);   /* after the conclusion, so pair= is the state the next run will find */
+    printf("%s\n", line);
     return c == HV_G7_CONCLUDED_DONE ? 0 : -1;
 }
 
@@ -125,10 +133,13 @@ int g7_real_setup(const HvG7Request *r, const char *workdir, const char *ipsw_sh
     S.ecid = r->ecid;
     if (!ipsw_hash_ok(S.ipsw, ipsw_sha256, &S.ipsw_id)) { printf("g7: the IPSW's SHA-256 is not the expected one (or it cannot be read)\n"); return -1; }
     S.set = 1;
+    S.lim = (HvG7RestoreLimits)HV_G7R_DEFAULT_LIMITS;
     api->pair_begin = real_pair;
     api->create_vm = real_create_vm;
     api->start_restore = real_restore;
     return 0;
 }
+
+void g7_real_set_limits(const HvG7RestoreLimits *lim) { if (lim && lim->timeout_ms > 0) S.lim = *lim; }
 
 void g7_real_end(void) { memset(&S, 0, sizeof S); }

@@ -54,4 +54,31 @@ typedef enum { HV_G7_CONCLUDED_DONE = 0, HV_G7_CONCLUDED_KEPT } HvG7Conclusion;
 /* Decides and, only for DONE, calls hv_g7_pair_finish(dir). `note` says why in words (no ECID). Never deletes, moves or resets anything. */
 HvG7Conclusion hv_g7_conclude(const char *dir, HvG7RestoreOutcome outcome, char *note, int cap);
 
+
+/* ---- limits. Bounded settings, NOT measured values: no real restore has been timed, so these bounds and the default are guesses; a value outside the bounds is refused (never
+   clamped). Only the TIME limits are settings. What counts as a finished restore (signal + disk floor + GPT + AUX) has no setting, option or environment variable on purpose: if it is
+   wrong for a real result, the code and its tests are changed after the evidence is looked at. */
+#define HV_G7R_TIMEOUT_MIN_S 600L      /* 10 min */
+#define HV_G7R_TIMEOUT_MAX_S 43200L    /* 12 h */
+#define HV_G7R_GRACE_MIN_S 10L
+#define HV_G7R_GRACE_MAX_S 600L
+/* Fills *out with timeout/grace (seconds) inside the bounds and the default step. 0, or -1 (out untouched) when a value is outside its bounds. */
+static inline int hv_g7_limits_make(long timeout_s, long grace_s, HvG7RestoreLimits *out) {   /* header-only: the default g7_runner build must not link the adapter */
+    if (!out || timeout_s < HV_G7R_TIMEOUT_MIN_S || timeout_s > HV_G7R_TIMEOUT_MAX_S || grace_s < HV_G7R_GRACE_MIN_S || grace_s > HV_G7R_GRACE_MAX_S) return -1;
+    HvG7RestoreLimits d = HV_G7R_DEFAULT_LIMITS;
+    d.timeout_ms = (int)(timeout_s * 1000L);
+    d.grace_ms = (int)(grace_s * 1000L);
+    *out = d;
+    return 0;
+}
+
+/* ---- where it stopped. The progress callback of the restore feeds the trace (async-signal-safe stores only); the summary is ONE line for a person or a log reader:
+   outcome, the last restore step number and percent, the state of the pair, what the files show, how many connections the policy refused. It never contains an ECID, a URL, a
+   request body or a path. */
+void hv_g7_trace_reset(void);
+void hv_g7_trace_step(int step, double progress);
+typedef struct { int last_step, last_percent, steps_seen; } HvG7Trace;
+void hv_g7_trace_get(HvG7Trace *t);
+int hv_g7_summary(const char *dir, HvG7RestoreOutcome outcome, int refused_destinations, const HvG7RestoreLimits *lim, char *out, int cap);   /* length written (0 on a bad argument) */
+
 #endif

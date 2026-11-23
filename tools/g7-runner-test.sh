@@ -66,9 +66,11 @@ refuse "an interrupted pair (state file)" "BLOCK state" "echo state=in_progress 
 refuse "a group/world-writable directory" "BLOCK directory" "chmod 777 data"
 
 echo "=== arguments"
-for t in "" "--bogus" "--dir" "--ecid 1" "--ecid 13579bdf024681 --dir a --ipsw-dir b --ecid-dir c --rom d" "--ram-mb 99999999 --dir a --ipsw-dir b --ecid-dir c --rom d"; do
+for t in "" "--bogus" "--dir" "--ecid 1" "--ecid 13579bdf024681 --dir a --ipsw-dir b --ecid-dir c --rom d" "--ram-mb 99999999 --dir a --ipsw-dir b --ecid-dir c --rom d" "--timeout-min 1 --dir a --ipsw-dir b --ecid-dir c --rom d" "--timeout-min 721 --dir a --ipsw-dir b --ecid-dir c --rom d" "--grace-s 9 --dir a --ipsw-dir b --ecid-dir c --rom d" "--grace-s 601 --dir a --ipsw-dir b --ecid-dir c --rom d" "--timeout-min -5 --dir a --ipsw-dir b --ecid-dir c --rom d"; do
   r=$(run test $t); [ "$r" = 64 ] && ok "bad arguments '$t' -> 64" || no "bad arguments '$t' -> $r"
 done
+mkset a3; r=$(run test $(args a3) --timeout-min 10 --grace-s 10); [ "$r" = 3 ] && ok "the lowest allowed time limits are accepted (stops at the switch)" || no "time limits at the lower bounds -> $r"
+mkset a4; r=$(run test $(args a4) --timeout-min 720 --grace-s 600); [ "$r" = 3 ] && ok "the highest allowed time limits are accepted" || no "time limits at the upper bounds -> $r"
 mkset a2; r=$(run test $(args a2) --ram-mb 100); [ "$r" = 2 ] && grep -q "configuration refused" "$OUT/last.out" && ok "RAM out of range is refused at the configuration stage" || no "ram-mb 100 -> $r"
 
 echo "=== strace on the valid run (real engine not involved: this program links none)"

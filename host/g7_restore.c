@@ -79,3 +79,28 @@ HvG7Conclusion hv_g7_conclude(const char *dir, HvG7RestoreOutcome outcome, char 
     return HV_G7_CONCLUDED_DONE;
 #undef NOTE
 }
+
+/* ---------------------------------------------------------------- limits, trace, summary */
+static atomic_int g_tr_step, g_tr_pct, g_tr_seen;
+void hv_g7_trace_reset(void) { atomic_store(&g_tr_step, -1); atomic_store(&g_tr_pct, -1); atomic_store(&g_tr_seen, 0); }
+void hv_g7_trace_step(int step, double progress) {
+    int pct = progress < 0 ? -1 : progress > 1 ? 100 : (int)(progress * 100.0 + 0.5);
+    if (atomic_exchange(&g_tr_step, step) != step) atomic_fetch_add(&g_tr_seen, 1);
+    atomic_store(&g_tr_pct, pct);
+}
+void hv_g7_trace_get(HvG7Trace *t) { t->last_step = atomic_load(&g_tr_step); t->last_percent = atomic_load(&g_tr_pct); t->steps_seen = atomic_load(&g_tr_seen); }
+
+int hv_g7_summary(const char *dir, HvG7RestoreOutcome outcome, int refused, const HvG7RestoreLimits *lim, char *out, int cap) {
+    if (!out || cap < 1) return 0;
+    out[0] = 0;
+    if (!dir || !lim) return 0;
+    HvG7Trace t; hv_g7_trace_get(&t);
+    HvG7PairState ps = hv_g7_pair_state(dir, NULL, 0);
+    const char *pn = ps == HV_G7_PAIR_DONE ? "done" : ps == HV_G7_PAIR_IN_PROGRESS ? "in_progress" : ps == HV_G7_PAIR_NONE ? "none" : ps == HV_G7_PAIR_INCONSISTENT ? "inconsistent" : "error";
+    HvG7Evidence ev; int have = hv_g7_collect_evidence(dir, &ev) == 0;
+    int n = snprintf(out, (size_t)cap, "g7-result: outcome=%s last_step=%d last_progress=%d%% steps_seen=%d pair=%s files=%s%s%s%s refused_destinations=%d limits=timeout_s:%d,grace_s:%d(provisional)",
+                     hv_g7_restore_outcome_name(outcome), t.last_step, t.last_percent, t.steps_seen, pn,
+                     have ? "disk:" : "unreadable", have ? (ev.disk_written ? "written" : "small") : "", have ? (ev.gpt_header ? ",gpt" : ",no-gpt") : "", have ? (ev.aux_header && ev.aux_size_ok ? ",aux-ok" : ",aux-bad") : "",
+                     refused, lim->timeout_ms / 1000, lim->grace_ms / 1000);
+    return n < 0 ? 0 : n >= cap ? cap - 1 : n;
+}

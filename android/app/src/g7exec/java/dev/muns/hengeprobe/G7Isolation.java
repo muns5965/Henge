@@ -11,6 +11,9 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.function.IntSupplier;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 
 /**
  * [G7-EXEC] Only in the g7exec source set. Puts an existing install pair (macos_disk.img, macos_aux.img, g7_state.txt) aside so that a NEW run can be started, WITHOUT deleting, overwriting, copying or
@@ -19,6 +22,15 @@ import java.util.function.BooleanSupplier;
  * A rename of three files is not one atomic step, so the work is journalled: vm/archives/isolating.txt is created (CREATE_NEW) before the first rename and moved into the archive when everything is checked.
  * While that journal exists the pair is "isolation unfinished": G7ExecLauncher.preflight refuses to start a run (an unfinished isolation is never taken for a clean state). A failed rename is rolled back; if the
  * rollback fails or the app is ended in the middle, the journal stays and recover() finishes the move (only files that are still in vm/ and not yet in the archive are moved; any doubt stops it).
+ *
+ * Guarantee scope (stated honestly):
+ *  - No overwrite: Java cannot ask rename(2) to refuse an existing target (ATOMIC_MOVE replaces silently on Linux), and a hard link + unlink would be a delete. So safeMove checks first, then renames. The check is
+ *    race-free against this app because every start and every isolation runs under START_LOCK, the archive folder is created exclusively (mkdir fails if it exists) a moment before, and the only other writer, the
+ *    runner process, must be "not found". It is NOT a guarantee against an unrelated process of the same user writing into the app's private folder at that very moment.
+ *  - Durability: the journal is forced to storage (FileChannel.force) before the first move and the directories are fsynced (best effort) after each rename. An app kill / crash is covered by the tests (the file
+ *    system keeps completed renames). A power loss or a file-system error is NOT proven: the journal may then be missing or older than the moves; recovery stops on any doubt (a file in both places or neither,
+ *    wrong size) and a missing journal after an interrupted move shows as a missing pair, never as a clean state that would start a run on its own.
+ *  - The runner check is made inside START_LOCK, after the live-run check. It is a read-only /proc look at this user's processes, a helper, not a proof that nothing has the files open.
  *
  * Preconditions of every action: the build's start switch is on (the OFF build changes nothing), no run of this app process is live, the read-only runner check found no runner process (status 0; a found or
  * unknown status stops), and the whole action runs under G7ExecLauncher's START_LOCK so that no start can happen at the same time. No Android classes: tests/java/G7ExecIsolationTest.java runs on a plain JVM.
@@ -53,18 +65,22 @@ public final class G7Isolation {
         return l == null ? 0 : l.length;
     }
 
-    /** runnerStatus: G7ExecLauncher.runnerStatus (1 found, 0 not found, -1 cannot tell). */
-    public static Result isolate(File privVmDir, int runnerStatus) {
+    /** runnerStatus: G7ExecLauncher.runnerStatus (1 found, 0 not found, -1 cannot tell). It is called INSIDE the start lock, after the live-run check, so no start of this app can come between the check and the moves. */
+    public static Result isolate(File privVmDir, IntSupplier runnerStatus) {
         return isolateWith(REAL, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, privVmDir, runnerStatus);
     }
 
-    public static Result recover(File privVmDir, int runnerStatus) {
+    public static Result recover(File privVmDir, IntSupplier runnerStatus) {
         return recoverWith(REAL, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, privVmDir, runnerStatus);
     }
 
-    private static String gate(boolean enabled, BooleanSupplier live, int runnerStatus) {
+    static Result isolateWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) { return isolateWith(mv, enabled, live, priv, (IntSupplier) () -> runnerStatus); }
+    static Result recoverWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) { return recoverWith(mv, enabled, live, priv, (IntSupplier) () -> runnerStatus); }
+
+    private static String gate(boolean enabled, BooleanSupplier live, IntSupplier status) {
         if (!enabled) return "이 빌드의 시작 스위치가 꺼져 있어 격리하지 않았습니다. 아무것도 옮기지 않았습니다.";
         if (live.getAsBoolean()) return "이 앱에서 실행 중인 G7 프로세스가 있어 격리하지 않았습니다.";
+        int runnerStatus = status.getAsInt();
         if (runnerStatus == 1) return "실행기 프로세스가 발견되어 격리하지 않았습니다. 아무것도 옮기지 않았습니다.";
         if (runnerStatus != 0) return "실행기 프로세스를 확인할 수 없어 격리하지 않았습니다. 아무것도 옮기지 않았습니다.";
         return null;
@@ -73,13 +89,28 @@ public final class G7Isolation {
     private static boolean regular(Path p) { return Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS); }
     private static boolean exists(Path p) { return Files.exists(p, LinkOption.NOFOLLOW_LINKS); }
 
-    /** Never replaces: a target that exists stops the move (a rename would silently replace it). */
+    /** Best effort: ask the file system to write a directory's entries (renames, new names) to storage. Failure is ignored (some systems cannot open a directory); it adds durability, never correctness. */
+    private static void syncDir(File dir) {
+        try (FileChannel c = FileChannel.open(dir.toPath(), StandardOpenOption.READ)) { c.force(true); } catch (IOException | RuntimeException e) { /* best effort */ }
+    }
+
+    /** Creates the journal (CREATE_NEW) and forces its content to storage before returning. */
+    private static void writeJournal(Path journal, byte[] data) throws IOException {
+        try (FileChannel c = FileChannel.open(journal, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            ByteBuffer b = ByteBuffer.wrap(data);
+            while (b.hasRemaining()) c.write(b);
+            c.force(true);
+        }
+    }
+
+    /** Never replaces by itself: a target that exists stops the move (a rename would silently replace it). */
     private static void safeMove(Mover mv, Path from, Path to) throws IOException {
         if (exists(to)) throw new IOException("target exists");
         mv.move(from, to);
+        syncDir(from.getParent().toFile()); syncDir(to.getParent().toFile());
     }
 
-    static Result isolateWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) {
+    static Result isolateWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, IntSupplier runnerStatus) {
         synchronized (G7ExecLauncher.START_LOCK) {
             String g = gate(enabled, live, runnerStatus);
             if (g != null) return new Result(false, g);
@@ -105,7 +136,8 @@ public final class G7Isolation {
             StringBuilder j = new StringBuilder("archive=").append(dest.getName()).append('\n');
             for (int i = 0; i < NAMES.length; i++) j.append("file=").append(NAMES[i]).append(' ').append(size[i]).append('\n');
             Path journal = new File(arch, JOURNAL).toPath();
-            try { Files.write(journal, j.toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE); }
+            syncDir(arch);   // the new archive folder's name
+            try { writeJournal(journal, j.toString().getBytes(StandardCharsets.UTF_8)); syncDir(arch); }
             catch (IOException e) { return new Result(false, "격리 기록을 만들지 못해 중단했습니다. 아무것도 옮기지 않았습니다."); }
             int moved = 0;
             try {
@@ -137,7 +169,7 @@ public final class G7Isolation {
         return new Result(true, okMessage);
     }
 
-    static Result recoverWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) {
+    static Result recoverWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, IntSupplier runnerStatus) {
         synchronized (G7ExecLauncher.START_LOCK) {
             String g = gate(enabled, live, runnerStatus);
             if (g != null) return new Result(false, g);

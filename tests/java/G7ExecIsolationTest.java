@@ -82,6 +82,14 @@ public class G7ExecIsolationTest {
         G7Isolation.isolateWith((x, y) -> { held[0] &= Thread.holdsLock(G7ExecLauncher.START_LOCK); OK.move(x, y); }, true, NOT_LIVE, v5, 0);
         check("the moves run under the start lock", held[0]);
 
+        // the runner check runs inside the start lock and only after the live-run check
+        File vA = vm(disk, aux, "state=in_progress\n"); boolean[] inLock = {false}; int[] calls = {0};
+        G7Isolation.isolateWith(OK, true, NOT_LIVE, vA, (java.util.function.IntSupplier) () -> { calls[0]++; inLock[0] = Thread.holdsLock(G7ExecLauncher.START_LOCK); return 0; });
+        check("the runner check is made once, inside the start lock", calls[0] == 1 && inLock[0]);
+        File vB = vm(disk, aux, "state=in_progress\n"); int[] cb = {0};
+        G7Isolation.isolateWith(OK, true, () -> true, vB, (java.util.function.IntSupplier) () -> { cb[0]++; return 0; });
+        check("a live run stops before the runner is even looked at", cb[0] == 0);
+
         // a failed move: rolled back, nothing lost, not pending
         File v6 = vm(disk, aux, "state=in_progress\n"); String s6 = snapshot(v6);
         int[] n6 = {0};

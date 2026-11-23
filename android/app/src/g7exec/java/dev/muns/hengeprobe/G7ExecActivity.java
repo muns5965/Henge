@@ -66,7 +66,7 @@ public class G7ExecActivity extends Activity {
         isolate = new Button(this); isolate.setText("기존 설치 쌍 격리 / 끝나지 않은 격리 복구"); isolate.setEnabled(false); root.addView(isolate);
         isoConsent.setOnCheckedChangeListener((v, on) -> isolate.setEnabled(on));
         isolate.setOnClickListener(v -> {
-            int st = G7ExecLauncher.runnerStatus(android.os.Process.myPid(), getFilesDir());
+            final java.util.function.IntSupplier st = () -> G7ExecLauncher.runnerStatus(android.os.Process.myPid(), getFilesDir());   // evaluated inside the start lock
             G7Isolation.Result r = G7Isolation.pending(priv) ? G7Isolation.recover(priv, st) : G7Isolation.isolate(priv, st);
             status.setText(r.message + "\n\n" + G7ExecLauncher.preflight(nativeDir, ext, priv).text);
             isoConsent.setChecked(false);   // every isolation needs a fresh consent

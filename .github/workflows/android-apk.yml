@@ -24,6 +24,7 @@ on:
       - tools/devices-build.sh
       - tools/g7-probe-build.sh
       - tools/check-g7-probe-safe.sh
+      - tools/check-g7exec-apk.sh
       - tools/curltool-build.sh
       - tools/bmprobe-build.sh
       - tools/ipswdl-build.sh
@@ -228,6 +229,9 @@ jobs:
         run: |
           bash -n tools/check-c13-source.sh
           READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-c13-source.sh android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: The general APK has NO G7 execution build (no libg7runner.so, no G7Exec launcher or activity)
+        run: READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh general android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Show the APK, its native library and signing certificate
         run: |

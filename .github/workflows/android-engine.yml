@@ -20,6 +20,11 @@ on:
       - host/**
       - tests/**
       - tests/test_engine_smoke.c
+      - android/app/src/g7exec/**
+      - tools/check-g7exec-launcher-source.sh
+      - tools/g7-exec-launcher-test.sh
+      - tools/g7exec-apk-check-test.sh
+      - tools/check-g7exec-apk.sh
       - tools/engine-build.sh
       - tools/devices-build.sh
       - tools/restore-android-check.sh
@@ -195,6 +200,9 @@ jobs:
           J=android/app/src/main/java/dev/muns/hengeprobe
           javac -encoding UTF-8 -d build-java-g7 $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7ProbeLauncherTest.java
           java -cp build-java-g7 dev.muns.hengeprobe.G7ProbeLauncherTest
+          tools/check-g7exec-launcher-source.sh
+          tools/g7-exec-launcher-test.sh build-java-g7exec
+          tools/g7exec-apk-check-test.sh build-g7exec-apkcheck
 
       - name: "Test the G4 UI launcher (plain java: every call, even a fully valid one, is refused with REFUSAL and reaches the spawner zero times while START_ENABLED=false; buildCommand's exact option list; RUN_SECONDS >= 460) and its source rules"
         run: |

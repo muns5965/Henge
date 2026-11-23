@@ -1,0 +1,95 @@
+# .github/workflows/android-g7exec.yml
+#
+# The G7 EXECUTION build as an APK of its own (assembleG7exec): same package and signing key as the general app, so it installs OVER it and keeps the app's private files
+# (ROM, ECID, IPSW). It adds libg7runner.so (host/g7_runner.c with -DHV_G7_REAL_EXECUTION: real disk creation, writable machine, the restore tool WITHOUT stop switches) and the
+# only launcher of it (android/app/src/g7exec). The launcher's START_ENABLED is committed OFF: this APK cannot start the runner until a separately approved change turns it on.
+# The general APK workflow (android-apk.yml) never includes any of this and checks that it does not. See docs/g7-device-run.md.
+name: Android G7 execution APK
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - android/app/src/g7exec/**
+      - android/app/build.gradle
+      - host/g7_*.c
+      - host/g7_*.h
+      - host/runner_g7_core.*
+      - host/install.c
+      - host/install_g7.*
+      - host/net_guard.*
+      - tools/g7-runner-build.sh
+      - tools/restore-g7-build.sh
+      - tools/check-g7exec-*.sh
+      - .github/workflows/android-g7exec.yml
+
+env:
+  NDK_VERSION: r27c
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install the Android NDK
+        run: |
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
+        run: |
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh
+          tools/check-g7exec-launcher-source.sh
+          tools/g7-exec-launcher-test.sh build-g7exec-java
+      - name: Build the engine objects, the restore stack WITHOUT stop switches, and the G7 execution runner (link; NOT run)
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-engine
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-engine
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-g7-build.sh build-rs-g7
+          tools/check-restore-g7-build.sh build-rs-g7
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/g7-runner-build.sh real build-g7exec build-engine build-rs-g7
+          "$T/llvm-readelf" -h build-g7exec/g7_runner_real | grep -E "Class|Machine|Type"
+          mkdir -p android/app/src/g7exec/jniLibs/arm64-v8a
+          cp build-g7exec/g7_runner_real android/app/src/g7exec/jniLibs/arm64-v8a/libg7runner.so
+      - name: Install SDK platform, build tools and CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/probe.keystore"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/probe.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a temporary key (it cannot install over the general app)."
+          fi
+      - name: Build the G7 execution APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle -p android assembleG7exec --no-daemon --stacktrace
+      - name: Check the APK (runner present as AArch64, launcher present)
+        run: |
+          ls -l android/app/build/outputs/apk/g7exec/
+          READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh exec android/app/build/outputs/apk/g7exec/app-g7exec.apk
+          echo "- G7 execution APK: built, launcher switch OFF (cannot start the runner), not run" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-g7-exec-apk
+          path: android/app/build/outputs/apk/g7exec/app-g7exec.apk

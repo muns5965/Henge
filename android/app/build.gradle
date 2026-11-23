@@ -54,5 +54,11 @@ android {
                 signingConfig signingConfigs.probe
             }
         }
+        // The G7 EXECUTION build (assembleG7exec): same package and key as the general app, so it installs over it and keeps its private files (ROM, ECID, IPSW). Its own
+        // source set src/g7exec holds the only launcher of the execution binary and the binary itself; assembleDebug never includes it (tools/check-g7exec-apk.sh checks both APKs).
+        g7exec {
+            initWith debug
+            matchingFallbacks = ['debug']
+        }
     }
 }

@@ -1,0 +1,31 @@
+# G7 on the phone: how the execution build is delivered, started, stopped and read back
+
+**Nothing here starts automatically, and nothing in this change can start the runner**: `G7ExecLauncher.START_ENABLED` is committed `false`.
+
+## Delivery (separate from the general APK)
+- `assembleDebug` (workflow android-apk.yml) is the app everyone installs. It has no `libg7runner.so`, no `G7ExecLauncher`, no `G7ExecActivity` (`tools/check-g7exec-apk.sh general`).
+- `assembleG7exec` (workflow android-g7exec.yml, artifact `henge-g7-exec-apk`) is the same package and key, so it installs OVER the general app and keeps its private files
+  (ROM, ECID, IPSW, an existing pair). It adds `libg7runner.so` (the execution build of host/g7_runner.c) and one extra launcher icon, "Henge G7 실행".
+  To go back, install the next general APK over it (its version number is newer).
+- The binary can only be started from the APK's native library directory (Android does not run files from app storage), which is why it travels in an APK.
+
+## What the screen does without approval
+- Preflight reads files only: binary present, ROM genuine, ECID readable (never shown), IPSW present with the right size, no install files yet. It never runs the binary.
+
+## Approval boundary (all four, in order)
+1. A reviewed change that turns `START_ENABLED` on (its own commit, its own build, its own approval). Until then every start is refused before anything is touched.
+2. The exact approval phrase typed on the screen.
+3. The IPSW SHA-256 typed on the screen, from a source you checked yourself (the runner hashes the IPSW against it before the restore; a mismatch stops it).
+4. Preflight is clean: if any install file exists (disk, AUX, state), start is refused: no automatic resume, no overwrite. A failed run is kept as it is; a new try needs a new pair
+   (quarantine by rename, a separate step).
+What a start does: creates the 128 GiB sparse disk and the AUX, runs the machine with writable storage, and contacts gs.apple.com (the three approved TSS hosts) for the restore.
+
+## Stop and result
+- 취소 (cancel): SIGTERM to the runner, which asks the restore to stop; after 90 s the process is killed. The pair stays `in_progress`.
+- The output is shown on the screen and appended to `files/g7_run_log.txt` (bounded, ECID masked). The last line of a run is `g7-result: outcome=… last_step=… pair=… refused_destinations=N`, then `g7-exit: <code>`.
+- Exit codes: 0 pair finished (evidence only) / 2 refused or failed / 5 the restore did not end (process ended) / 64 bad arguments / 137, 143 ended by a signal.
+
+## Not covered
+- Android may end the app (low memory, user swipe). The runner then dies with it; the pair stays `in_progress`, but the machine's last writes are whatever the disk had: an unfinished pair is never reused.
+  There is no foreground service yet: keep the screen on and the app in front.
+- A new destination the restore asks for is refused and printed; adding it is a separate approval (docs/g7-new-destinations.md).

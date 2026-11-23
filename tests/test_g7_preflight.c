@@ -293,8 +293,8 @@ int main(void) {
     {
         char *d = newdir("pair"), *ip = newdir("pair_ipsw"), *ec = newdir("pair_ecid"); good_inputs(d, ip, ec); in = input(d, ip, ec);
         CHECK(hv_g7_pair_state(d, note, sizeof note) == HV_G7_PAIR_NONE, "a new directory has no pair");
-        CHECK(hv_g7_pair_begin(d, NULL, note, sizeof note) == -1 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_NONE, "begin without a disk creator is refused and leaves nothing");
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "begin: %s", note);
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, NULL, note, sizeof note) == -1 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_NONE, "begin without a disk creator is refused and leaves nothing");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "begin: %s", note);
         CHECK(hv_g7_pair_state(d, note, sizeof note) == HV_G7_PAIR_IN_PROGRESS, "state is in_progress");
         struct stat sd, sa, si; char p[400];
         snprintf(p, sizeof p, "%s/%s", d, HV_INSTALL_DISK_NAME); stat(p, &sd);
@@ -305,10 +305,10 @@ int main(void) {
         CHECK(same_file(d, HV_G7_AUX_NAME, HV_G7_AUX_INITIAL_NAME), "the AUX copy is byte-identical to the AUX");
         CHECK((sa.st_mode & 077) == 0 && (si.st_mode & 077) == 0 && (sd.st_mode & 077) == 0, "all three files are 0600");
         CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "state", HV_G7_BLOCK), "a second preflight now blocks (a pair exists)");
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == -1, "a second begin is refused: %s", note);
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == -1, "a second begin is refused: %s", note);
         CHECK(hv_g7_pair_finish(d, note, sizeof note) == 0 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_DONE, "finish: in_progress -> done");
         CHECK(hv_g7_pair_finish(d, note, sizeof note) == -1, "finish again is refused (%s)", note);
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == -1, "begin on a done pair is refused");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == -1, "begin on a done pair is refused");
         CHECK(!exists(d, HV_G7_STATE_NAME ".new"), "no temporary state file is left");
         CHECK(hv_g7_pair_quarantine(d, "../x", note, sizeof note) == -1 && hv_g7_pair_quarantine(d, "", note, sizeof note) == -1 && hv_g7_pair_quarantine(d, "UP", note, sizeof note) == -1, "bad quarantine tags are refused");
         CHECK(hv_g7_pair_quarantine(d, "t1", note, sizeof note) == 4, "quarantine moves 4 items: %s", note);
@@ -317,14 +317,36 @@ int main(void) {
         CHECK(exists(q, HV_INSTALL_DISK_NAME) && exists(q, HV_G7_AUX_NAME) && exists(q, HV_G7_AUX_INITIAL_NAME) && exists(q, HV_G7_STATE_NAME), "all four are in the quarantine directory, none deleted");
         CHECK(hv_g7_preflight(&in, &rep) == 0, "preflight passes again after the quarantine");
         CHECK(hv_g7_pair_quarantine(d, "t2", note, sizeof note) == -1, "quarantine with nothing to move: refused (%s)", note);
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "a new pair can begin");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "a new pair can begin");
         CHECK(hv_g7_pair_quarantine(d, "t1", note, sizeof note) == -1 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_IN_PROGRESS, "quarantine into an existing tag is refused and the new pair is untouched");
         CHECK(exists(q, HV_INSTALL_DISK_NAME), "the old quarantined pair is intact");
+    }
+    {   /* the ECID tag: the pair is tied to the ECID it was made for */
+        char *d = newdir("tag"); char tg[HV_G7_ECID_TAG_CHARS + 1], tg2[HV_G7_ECID_TAG_CHARS + 1];
+        hv_g7_ecid_tag(ECID_REQ, tg); hv_g7_ecid_tag(ECID_REQ + 1, tg2);
+        CHECK(strlen(tg) == HV_G7_ECID_TAG_CHARS && strcmp(tg, tg2) && !strstr(tg, "13579bdf") , "the tag has the fixed length, differs for another ECID and does not contain the value");
+        CHECK(hv_g7_pair_begin(d, 0, hv_install_disk_create, note, sizeof note) == -1 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_NONE, "begin without an ECID is refused and leaves nothing");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "begin with an ECID");
+        CHECK(hv_g7_pair_ecid_check(d, ECID_REQ, note, sizeof note) == 0, "the pair is for this ECID (%s)", note);
+        CHECK(hv_g7_pair_ecid_check(d, ECID_REQ + 1, note, sizeof note) == -1, "another ECID is refused (%s)", note);
+        CHECK(!strstr(note, "13579bdf") && !strstr(note, tg), "the note shows neither the ECID nor the tag");
+        CHECK(hv_g7_pair_finish(d, note, sizeof note) == 0 && hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_DONE && hv_g7_pair_ecid_check(d, ECID_REQ, note, sizeof note) == 0, "finish keeps the tag");
+        put(d, HV_G7_STATE_NAME, "state=done\n", 11);
+        CHECK(hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_DONE && hv_g7_pair_ecid_check(d, ECID_REQ, note, sizeof note) == -1, "a state file without a tag is still readable but is tied to no ECID (refused)");
+        put(d, HV_G7_STATE_NAME, "state=done\necid_tag=ZZZZ\n", 25);
+        CHECK(hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_INCONSISTENT, "a malformed tag line makes the pair inconsistent");
+        uint64_t v = 7;
+        char *ed = newdir("tagecid");
+        CHECK(hv_g7_ecid_read(ed, &v) == HV_G7_ECID_MISSING && v == 0 && !exists(ed, HV_G7_ECID_FILE), "ecid_read: missing file -> MISSING, value 0, nothing created");
+        put_ecid(ed, ECID_REQ_HEX);
+        CHECK(hv_g7_ecid_read(ed, &v) == HV_G7_ECID_MATCH && v == ECID_REQ, "ecid_read: the valid file is read");
+        put_ecid(ed, "1");
+        CHECK(hv_g7_ecid_read(ed, &v) == HV_G7_ECID_CORRUPT && v == 0, "ecid_read: out of range -> CORRUPT, value 0");
     }
     {   /* verify_initial: only for a pair that has just been made */
         char *d = newdir("verify"); char p[400];
         CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "verify on an empty directory: refused (%s)", note);
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "verify: pair made");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "verify: pair made");
         CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == 0, "a fresh pair is intact (%s)", note);
         snprintf(p, sizeof p, "%s/%s", d, HV_G7_AUX_NAME);
         int fd = open(p, O_WRONLY); (void)!pwrite(fd, "X", 1, 1u << 20); close(fd);
@@ -353,13 +375,13 @@ int main(void) {
     }
     {   /* a done pair is not "just made" */
         char *d = newdir("verify_done");
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0 && hv_g7_pair_finish(d, note, sizeof note) == 0, "verify_done: pair made and finished");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0 && hv_g7_pair_finish(d, note, sizeof note) == 0, "verify_done: pair made and finished");
         CHECK(hv_g7_pair_verify_initial(d, note, sizeof note) == -1, "verify refuses a pair that is not in_progress");
     }
     {   /* rollback: the disk step fails (file size limit), so the state file made first must go again */
         char *d = newdir("rollback");
         struct rlimit old, lim; getrlimit(RLIMIT_FSIZE, &old); lim = old; lim.rlim_cur = 1ULL << 30; setrlimit(RLIMIT_FSIZE, &lim);
-        int r = hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note);
+        int r = hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note);
         setrlimit(RLIMIT_FSIZE, &old);
         CHECK(r == -1, "begin fails when the disk cannot be sized (%s)", note);
         DIR *dd = opendir(d); int n = 0; struct dirent *e; while ((e = readdir(dd))) if (e->d_name[0] != '.') n++; closedir(dd);
@@ -370,7 +392,7 @@ int main(void) {
         char *d = newdir("incons");
         put(d, HV_G7_STATE_NAME, "state=in_progress\n", 18);
         CHECK(hv_g7_pair_state(d, NULL, 0) == HV_G7_PAIR_INCONSISTENT, "a state file without the pair is INCONSISTENT");
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == -1, "begin refuses it");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == -1, "begin refuses it");
         CHECK(hv_g7_pair_quarantine(d, "inc", note, sizeof note) == 1, "quarantine can still set it aside (%s)", note);
         char *d2 = newdir("incons2");
         sparse(d2, HV_G7_AUX_NAME, HV_G7_AUX_BYTES);
@@ -381,7 +403,7 @@ int main(void) {
     }
     {   /* mock restore */
         char *d = newdir("mock"); char dp[400], ap[400];
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "mock: pair made");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "mock: pair made");
         snprintf(dp, sizeof dp, "%s/%s", d, HV_INSTALL_DISK_NAME); snprintf(ap, sizeof ap, "%s/%s", d, HV_G7_AUX_NAME);
         HvDisk disk, aux; Tally td = {0}, ta = {0};
         CHECK(hv_disk_open(&disk, dp, 0, 0) == 0 && hv_disk_open(&aux, ap, 16384, 0) == 0, "both opened read-write (the mock stands in for the G7 runner)");
@@ -422,19 +444,19 @@ int main(void) {
     {   /* interruption and restart on a fresh directory, never finished */
         char *d = newdir("restart"), *ip = newdir("restart_ipsw"), *ec = newdir("restart_ecid"); good_inputs(d, ip, ec); in = input(d, ip, ec);
         char ap[400]; HvDisk aux; Tally ta = {0};
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "restart: pair made");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "restart: pair made");
         snprintf(ap, sizeof ap, "%s/%s", d, HV_G7_AUX_NAME);
         CHECK(hv_disk_open(&aux, ap, 16384, 0) == 0, "AUX opened read-write");
         mock_write(&aux, 4096, 4096, 0x42, &ta);
         hv_disk_close(&aux);                                             /* the process "dies" here */
         CHECK(hv_g7_preflight(&in, &rep) == -1 && has(&rep, "state", HV_G7_BLOCK), "restart: preflight blocks the half-written pair");
-        CHECK(hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == -1, "restart: begin refuses to reuse or overwrite it");
+        CHECK(hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == -1, "restart: begin refuses to reuse or overwrite it");
         CHECK(hv_g7_pair_quarantine(d, "run1", note, sizeof note) == 4, "restart: the pair is moved aside as a unit");
         char q[400]; snprintf(q, sizeof q, "%s/%srun1", d, HV_G7_QUARANTINE_PREFIX);
         char kp[400]; snprintf(kp, sizeof kp, "%s/%s", q, HV_G7_AUX_NAME);
         HvDisk k; CHECK(hv_disk_open(&k, kp, 16384, 1) == 0 && readback_ok(&k, 4096, 4096, 0x42) == 4096, "restart: the half-written AUX is kept with its data for inspection");
         CHECK(same_file(q, HV_G7_AUX_INITIAL_NAME, HV_G7_AUX_INITIAL_NAME) && !same_file(q, HV_G7_AUX_NAME, HV_G7_AUX_INITIAL_NAME), "restart: the initial copy still holds the pre-restore state");
-        CHECK(hv_g7_preflight(&in, &rep) == 0 && hv_g7_pair_begin(d, hv_install_disk_create, note, sizeof note) == 0, "restart: after the quarantine a new first run is possible (only by a new decision)");
+        CHECK(hv_g7_preflight(&in, &rep) == 0 && hv_g7_pair_begin(d, ECID_REQ, hv_install_disk_create, note, sizeof note) == 0, "restart: after the quarantine a new first run is possible (only by a new decision)");
     }
     {   /* the existing read-only contract is unchanged */
         char *d = newdir("ro"); char ap[400]; snprintf(ap, sizeof ap, "%s/f", d);

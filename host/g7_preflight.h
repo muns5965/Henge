@@ -59,6 +59,11 @@ int hv_g7_rom_check(const char *path, char *note, int cap);
 
 typedef enum { HV_G7_ECID_MATCH = 0, HV_G7_ECID_MISSING, HV_G7_ECID_CORRUPT, HV_G7_ECID_MISMATCH, HV_G7_ECID_ERROR } HvG7Ecid;
 HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected);
+/* Reads and validates vm_ecid.txt (40..62 bit, plain file, never created here). Returns MATCH meaning "read and valid" (the value is in *out), else MISSING/CORRUPT/ERROR with *out = 0. */
+HvG7Ecid hv_g7_ecid_read(const char *ecid_dir, uint64_t *out);
+#define HV_G7_ECID_TAG_CHARS 16
+/* The 16-hex-character tag the state file carries to tie the pair to its ECID. Not a protection of the value (an ECID has 40..62 bits); it only tells two ECIDs apart. */
+void hv_g7_ecid_tag(uint64_t ecid, char out[HV_G7_ECID_TAG_CHARS + 1]);
 
 /* The only validator that accepts readonly_storage=0. Requires: installer=1, writable storage, ecid == expected != 0, seed == 0 (what the iOS installer uses), the
    disk and the AUX are exactly dir/macos_disk.img and dir/macos_aux.img (no blank_*, no other path), no host-diagnostic extras. Returns 0 or -1 with a reason. */
@@ -69,9 +74,13 @@ HvG7PairState hv_g7_pair_state(const char *dir, char *note, int cap);
 /* Creates the install disk exactly like the creator of host/disk_policy.h. The module does NOT call that function itself: creating the install disk is a
    separately approved step (tools/check-no-test-flags.sh forbids any app source from calling it), so the caller hands it in. Only the tests do so for now. */
 typedef int (*HvG7DiskCreate)(const char *dir, char *note, int cap);
-/* From NONE only: writes the state file (in_progress), creates the disk (with create_disk), the AUX and its initial copy. If a step fails, what THIS call
+/* From NONE only: writes the state file (in_progress, with the ECID tag), creates the disk (with create_disk), the AUX and its initial copy. If a step fails, what THIS call
    created is removed again and the rest is untouched. Returns 0 or -1. */
-int hv_g7_pair_begin(const char *dir, HvG7DiskCreate create_disk, char *note, int cap);
+int hv_g7_pair_begin(const char *dir, uint64_t ecid, HvG7DiskCreate create_disk, char *note, int cap);
+/* 0 when the state file's ECID tag is the tag of `ecid`; -1 when it differs, is missing, or the file cannot be read. A pair is only ever used with the ECID it was made for. */
+/* 1 when h is the 24-byte header hv_g7_pair_begin writes into a new AUX. */
+int hv_g7_aux_header_ok(const unsigned char h[HV_G7_AUX_HEADER_BYTES]);
+int hv_g7_pair_ecid_check(const char *dir, uint64_t ecid, char *note, int cap);
 /* IN_PROGRESS -> DONE (atomic rename of a new state file). Only the caller that has CONFIRMED a complete restore may call it. */
 int hv_g7_pair_finish(const char *dir, char *note, int cap);
 /* The state right after hv_g7_pair_begin and BEFORE the machine is created: state is in_progress, the disk is the 128 GiB regular file, the AUX is a regular file of

@@ -7,10 +7,13 @@
      CONFIG     hv_g7_make_config builds the HvVmConfig; hv_g7_config_ok (host/g7_preflight.h) must accept it
      PREFLIGHT  hv_g7_preflight (read-only): disk, AUX, ECID, IPSW, space, a clean start
      SWITCH     HV_G7_EXECUTION_ENABLED: 0 in every shipped build, so the run ends here with verdict BLOCKED_BY_SWITCH and nothing in the directory has changed
-   ---- only when compiled with -DHV_G7_MOCK_EXECUTION (tools/g7-preflight-test.sh, with a recorder in place of the machine; no shipped build may define it) ----
+   ---- only when compiled with -DHV_G7_MOCK_EXECUTION (tools/g7-preflight-test.sh, with a recorder in place of the machine; no shipped build may define it)
+        or -DHV_G7_REAL_EXECUTION (the G7 runner's execution build, see below; not shipped either) ----
      PAIR       api->pair_begin (the caller hands in the disk creator; none is wired to any app)
      VM         config re-validated, then api->create_vm(cfg). The shipped runner has no such table: nothing here can reach hv_vm_create
-     RESTORE    api->start_restore
+     RESTORE    api->start_restore (returns 0 only when the restore ran AND hv_g7_conclude finished the pair; anything else is a failure and the pair is kept in_progress)
+   STATE OF THE G7 REAL BUILD (host/g7_runner.c, host/g7_runner_real.c, host/g7_restore.c, tools/g7-runner-build.sh): items 2-5 below now EXIST in source and are built (ARM64: by CI) in
+   a build that no APK step packages; items 1 and 6 and the net allow-list for the real restore are still open and each stays a separately approved step.
    WHAT HAS TO CHANGE TO MAKE G7 REAL (each is a separately approved step; until then every item below stays as it is):
      1. HV_G7_EXECUTION_ENABLED / HV_G7_MOCK_EXECUTION: the literal switch and the compiled-out stages in host/runner_g7_core.c, and the guard in tools/check-no-test-flags.sh
      2. a G7 runner program (like host/ui_runner_vm_g4.c, its own binary) whose api->create_vm calls hv_vm_create ONLY after hv_g7_config_ok accepted the very same structure
@@ -26,7 +29,12 @@
 #include "g7_preflight.h"
 #include "vm.h"
 
-#ifdef HV_G7_MOCK_EXECUTION
+/* HV_G7_REAL_EXECUTION: set ONLY by the G7 runner's own execution build (tools/g7-runner-build.sh real: host/g7_runner.c + host/g7_runner_real.c + the restore stack without stop switches).
+   It is built by that script and nothing else, never by an APK step; tools/check-no-test-flags.sh keeps the name out of every other file. Not defining it leaves the stages compiled out. */
+#if defined(HV_G7_MOCK_EXECUTION) && defined(HV_G7_REAL_EXECUTION)
+#error "HV_G7_MOCK_EXECUTION and HV_G7_REAL_EXECUTION are never combined"
+#endif
+#if defined(HV_G7_MOCK_EXECUTION) || defined(HV_G7_REAL_EXECUTION)
 #define HV_G7_EXECUTION_ENABLED 1
 #else
 #define HV_G7_EXECUTION_ENABLED 0
@@ -41,7 +49,7 @@ typedef struct {
 } HvG7Request;
 
 typedef struct {
-    int (*pair_begin)(const char *dir, char *note, int cap);
+    int (*pair_begin)(const char *dir, uint64_t ecid, char *note, int cap);
     int (*create_vm)(const HvVmConfig *cfg, char *err, size_t errlen);
     int (*start_restore)(void);
 } HvG7Api;

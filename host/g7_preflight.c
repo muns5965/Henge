@@ -34,7 +34,8 @@ static int present(int dfd, const char *name, struct stat *st) {
 }
 
 /* ---------------------------------------------------------------- ECID */
-HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected) {
+HvG7Ecid hv_g7_ecid_read(const char *ecid_dir, uint64_t *out) {
+    if (out) *out = 0;
     int dfd = open_dir(ecid_dir);
     if (dfd < 0) return HV_G7_ECID_ERROR;
     int fd = openat(dfd, HV_G7_ECID_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -55,7 +56,25 @@ HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected) {
     unsigned long long v = strtoull(buf + 7, &end, 16);
     if (errno || !end || *end || buf[7] == '-' || buf[7] == '+' || buf[7] == ' ') return HV_G7_ECID_CORRUPT;
     if (v < (1ULL << 40) || v >= (1ULL << 62)) return HV_G7_ECID_CORRUPT;
+    if (out) *out = v;
+    return HV_G7_ECID_MATCH;   /* here MATCH only means "read and valid" */
+}
+
+HvG7Ecid hv_g7_ecid_check(const char *ecid_dir, uint64_t expected) {
+    uint64_t v;
+    HvG7Ecid e = hv_g7_ecid_read(ecid_dir, &v);
+    if (e != HV_G7_ECID_MATCH) return e;
     return v == expected ? HV_G7_ECID_MATCH : HV_G7_ECID_MISMATCH;
+}
+
+/* a short, non-reversible-looking tag of the ECID that the state file carries (NOT a secret: an ECID is a 40..62 bit number, so this is only a way to tell two ECIDs apart
+   later, never a protection of the value) */
+void hv_g7_ecid_tag(uint64_t ecid, char out[HV_G7_ECID_TAG_CHARS + 1]) {
+    uint8_t in[14 + 8], d[32];
+    memcpy(in, "henge-g7-ecid\0", 14);
+    for (int i = 0; i < 8; i++) in[14 + i] = (uint8_t)(ecid >> (56 - 8 * i));
+    hv_sha256(in, sizeof in, d);
+    for (int i = 0; i < HV_G7_ECID_TAG_CHARS / 2; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
 /* ---------------------------------------------------------------- ROM */
@@ -92,11 +111,19 @@ static int read_state_word(int dfd, char *out, size_t cap) {
     if (fd < 0) return -1;
     struct stat st;
     ssize_t n = -1;
-    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size < 64) n = read(fd, out, cap - 1);
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size < 96) n = read(fd, out, cap - 1);
     close(fd);
     if (n <= 0) return -1;
     out[n] = 0;
     return 0;
+}
+
+/* what may follow the first state line: nothing, or exactly ecid_tag=<HV_G7_ECID_TAG_CHARS lower-case hex>\n */
+static int tag_line_ok(const char *t) {
+    if (!*t) return 1;
+    if (strncmp(t, "ecid_tag=", 9)) return 0;
+    for (int i = 0; i < HV_G7_ECID_TAG_CHARS; i++) if (!((t[9 + i] >= '0' && t[9 + i] <= '9') || (t[9 + i] >= 'a' && t[9 + i] <= 'f'))) return 0;
+    return t[9 + HV_G7_ECID_TAG_CHARS] == '\n' && !t[10 + HV_G7_ECID_TAG_CHARS];
 }
 
 static HvG7PairState state_at(int dfd, char *note, int cap) {
@@ -110,11 +137,11 @@ static HvG7PairState state_at(int dfd, char *note, int cap) {
     }
     if (!any) { NOTE("no pair, no state file: a clean start"); return HV_G7_PAIR_NONE; }
     if (!have[3]) { NOTE("files of a pair exist but there is no state file: the pair is not trustworthy"); return HV_G7_PAIR_INCONSISTENT; }
-    char w[64];
+    char w[96];
     if (read_state_word(dfd, w, sizeof w) != 0) { NOTE("the state file cannot be read as a plain small file"); return HV_G7_PAIR_INCONSISTENT; }
     if (!have[0] || !have[1] || !have[2]) { NOTE("the state file exists but a member of the pair is missing"); return HV_G7_PAIR_INCONSISTENT; }
-    if (!strcmp(w, "state=in_progress\n")) { NOTE("a restore may have been writing (state in_progress): an interrupted or failed pair; it is never reused automatically"); return HV_G7_PAIR_IN_PROGRESS; }
-    if (!strcmp(w, "state=done\n")) { NOTE("a pair marked done exists"); return HV_G7_PAIR_DONE; }
+    if (!strncmp(w, "state=in_progress\n", 18) && tag_line_ok(w + 18)) { NOTE("a restore may have been writing (state in_progress): an interrupted or failed pair; it is never reused automatically"); return HV_G7_PAIR_IN_PROGRESS; }
+    if (!strncmp(w, "state=done\n", 11) && tag_line_ok(w + 11)) { NOTE("a pair marked done exists"); return HV_G7_PAIR_DONE; }
     NOTE("the state file has an unknown content");
     return HV_G7_PAIR_INCONSISTENT;
 }
@@ -256,6 +283,8 @@ int hv_g7_config_ok(const HvVmConfig *c, const char *dir, uint64_t expected_ecid
 }
 
 /* ---------------------------------------------------------------- the pair */
+int hv_g7_aux_header_ok(const unsigned char h[HV_G7_AUX_HEADER_BYTES]) { return !memcmp(h, AUX_HEADER, sizeof AUX_HEADER); }
+
 static int write_all(int fd, const void *b, size_t n) {
     const unsigned char *p = b;
     while (n) {
@@ -296,7 +325,8 @@ static int copy_aux(int dfd, const char *from, const char *to) {
     return ok ? 0 : -1;
 }
 
-int hv_g7_pair_begin(const char *dir, HvG7DiskCreate create_disk, char *note, int cap) {
+int hv_g7_pair_begin(const char *dir, uint64_t ecid, HvG7DiskCreate create_disk, char *note, int cap) {
+    if (!ecid) { NOTE("not started: no ECID to tie the pair to"); return -1; }
     if (!create_disk) { NOTE("not started: no disk creator was given"); return -1; }
     int dfd = open_dir(dir);
     if (dfd < 0) { NOTE("cannot open the directory: %s", strerror(errno)); return -1; }
@@ -310,7 +340,10 @@ int hv_g7_pair_begin(const char *dir, HvG7DiskCreate create_disk, char *note, in
     if (sfd < 0) fail = "the state file";
     else {
         made_state = 1;
-        if (write_all(sfd, "state=in_progress\n", 18) != 0 || fsync(sfd) != 0) fail = "writing the state file";
+        char tag[HV_G7_ECID_TAG_CHARS + 1], line[64];
+        hv_g7_ecid_tag(ecid, tag);
+        int ln = snprintf(line, sizeof line, "state=in_progress\necid_tag=%s\n", tag);
+        if (write_all(sfd, line, (size_t)ln) != 0 || fsync(sfd) != 0) fail = "writing the state file";
         close(sfd);
     }
     if (!fail) {
@@ -362,6 +395,22 @@ int hv_g7_pair_verify_initial(const char *dir, char *note, int cap) {
     return 0;
 }
 
+int hv_g7_pair_ecid_check(const char *dir, uint64_t ecid, char *note, int cap) {
+    int dfd = open_dir(dir);
+    if (dfd < 0) { NOTE("cannot open the directory: %s", strerror(errno)); return -1; }
+    char w[96];
+    int r = read_state_word(dfd, w, sizeof w);
+    close(dfd);
+    if (r != 0) { NOTE("the state file cannot be read"); return -1; }
+    const char *nl = strchr(w, '\n');
+    if (!nl || !tag_line_ok(nl + 1) || !nl[1]) { NOTE("the state file carries no ECID tag: the pair is not tied to an ECID"); return -1; }
+    char tag[HV_G7_ECID_TAG_CHARS + 1];
+    hv_g7_ecid_tag(ecid, tag);
+    if (strncmp(nl + 1 + 9, tag, HV_G7_ECID_TAG_CHARS)) { NOTE("this ECID is not the one the pair was made for"); return -1; }
+    NOTE("the pair was made for this ECID (tag equal, value not shown)");
+    return 0;
+}
+
 int hv_g7_pair_finish(const char *dir, char *note, int cap) {
     int dfd = open_dir(dir);
     if (dfd < 0) { NOTE("cannot open the directory: %s", strerror(errno)); return -1; }
@@ -370,7 +419,11 @@ int hv_g7_pair_finish(const char *dir, char *note, int cap) {
     const char *tmp = HV_G7_STATE_NAME ".new";
     int fd = openat(dfd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) { close(dfd); NOTE("not finished: cannot make the new state file: %s", strerror(errno)); return -1; }
-    int ok = write_all(fd, "state=done\n", 11) == 0 && fsync(fd) == 0;
+    char old[96] = "", line[96];
+    int dn = 0;
+    if (read_state_word(dfd, old, sizeof old) == 0) { const char *nl = strchr(old, '\n'); if (nl && tag_line_ok(nl + 1)) dn = snprintf(line, sizeof line, "state=done\n%s", nl + 1); }
+    if (!dn) dn = snprintf(line, sizeof line, "state=done\n");
+    int ok = write_all(fd, line, (size_t)dn) == 0 && fsync(fd) == 0;
     close(fd);
     if (ok && renameat(dfd, tmp, dfd, HV_G7_STATE_NAME) != 0) ok = 0;
     if (!ok) unlinkat(dfd, tmp, 0);

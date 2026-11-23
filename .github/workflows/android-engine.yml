@@ -75,6 +75,17 @@ on:
       - tools/check-g7-probe-safe.sh
       - tools/check-g7-probe-launcher-source.sh
       - tools/g7-probe-build.sh
+      - tools/g7-restore-test.sh
+      - tools/g7-runner-test.sh
+      - tools/g7-runner-build.sh
+      - tools/restore-g7-build.sh
+      - tools/check-restore-g7-build.sh
+      - host/g7_runner.c
+      - host/g7_runner_real.c
+      - host/g7_runner_real.h
+      - host/g7_restore.c
+      - host/g7_restore.h
+      - tests/test_g7_restore.c
       - host/g7_probe.c
       - host/g7_preflight.c
       - host/g7_preflight.h
@@ -371,6 +382,14 @@ jobs:
         run: tools/disk-policy-test.sh build-diskpolicy
       - name: "Test the G7 safety layer and runner skeleton (read-only preflight, writable-configuration contract, disk+AUX pair, mock writes with out-of-space / partial write / interruption / restart, recorder in place of the machine and the restore; plain and ASan+UBSan; temporary directories only, no Apple request)"
         run: tools/g7-preflight-test.sh build-g7
+      - name: "Test the G7 restore adapter and the judgment of its result (fake operations table, no restore tool/machine/network; success only with signal + written disk + GPT + AUX header, everything else keeps the pair in_progress; plain and ASan+UBSan)"
+        run: tools/g7-restore-test.sh build-g7restore
+      - name: "Test g7_runner (default build: no execution stage; the ECID comes from vm_ecid.txt, not from an option; valid request stops at the switch, refusals, strace: nothing written, no network) and the G7 restore stack check (built WITHOUT any stop switch; no stop hook in the archive; not packaged)"
+        run: |
+          tools/g7-runner-test.sh build-g7runner
+          bash -n tools/check-restore-g7-build.sh tools/restore-g7-build.sh tools/g7-runner-build.sh
+          tools/restore-g7-build.sh build-rs-g7
+          tools/check-restore-g7-build.sh build-rs-g7
       - name: "Test g7_probe, the G7 request as a program of its own on real files (valid request stops at the switch; refusals, bad arguments, static symbol check, strace: nothing written, no network; native arm64 on this runner; no machine, no restore, no Apple request)"
         run: tools/g7-probe-test.sh build-g7probe
 
@@ -416,6 +435,16 @@ jobs:
           command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
           CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-selftest-build.sh build-android-rs
           file build-android-rs/restore_selftest
+      - name: "Build the G7 runner for Android: default build (no execution stage, static check) and the EXECUTION build, link only (restore stack WITHOUT stop switches; NOT run, NOT packed into the APK)"
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-g7-build.sh build-android-rs-g7
+          tools/check-restore-g7-build.sh build-android-rs-g7
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" tools/g7-runner-build.sh default build-android-g7runner
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/g7-runner-build.sh real build-android-g7runner build-android build-android-rs-g7
+          "$T/llvm-readelf" -h build-android-g7runner/g7_runner_real | grep -E "Class|Machine|Type"
+          echo "- g7_runner_real (G7 execution build): linked, not run, not packaged" >> "$GITHUB_STEP_SUMMARY"
       - name: Survey the macOS-restore libraries for Android (compile, then integrated link; informational)
         continue-on-error: true
         run: |

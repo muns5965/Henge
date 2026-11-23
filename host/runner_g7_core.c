@@ -42,14 +42,15 @@ int hv_g7_run(const HvG7Request *r, const HvG7Api *api, HvG7Result *out) {
 #else
     if (!api || !api->pair_begin || !api->create_vm || !api->start_restore) { SET(out, HV_G7_STAGE_SWITCH, HV_G7_REFUSED, "the execution table is incomplete"); return -1; }
     char note[200];
-    if (api->pair_begin(r->dir, note, sizeof note) != 0) { SET(out, HV_G7_STAGE_PAIR, HV_G7_FAILED, "the pair was not made: %s", note); return -1; }
+    if (api->pair_begin(r->dir, r->ecid, note, sizeof note) != 0) { SET(out, HV_G7_STAGE_PAIR, HV_G7_FAILED, "the pair was not made: %s", note); return -1; }
     /* the pair as it was made, checked once, before any machine exists (the AUX-equals-copy test is only true until a guest has run) */
     { char vn[200]; if (hv_g7_pair_verify_initial(r->dir, vn, sizeof vn) != 0) { SET(out, HV_G7_STAGE_PAIR, HV_G7_FAILED, "the new pair is not intact: %s", vn); return -1; } }
+    { char en[200]; if (hv_g7_pair_ecid_check(r->dir, r->ecid, en, sizeof en) != 0) { SET(out, HV_G7_STAGE_PAIR, HV_G7_FAILED, "the new pair is not tied to this ECID: %s", en); return -1; } }
     /* the structure is validated again right before it is handed on (the state of the directory has changed since the first check) */
     if (hv_g7_config_ok(&cfg, r->dir, r->ecid, why, sizeof why) != 0) { SET(out, HV_G7_STAGE_VM, HV_G7_REFUSED, "configuration refused before the machine: %s", why); return -1; }
     char err[200] = "";
     if (api->create_vm(&cfg, err, sizeof err) != 0) { SET(out, HV_G7_STAGE_VM, HV_G7_FAILED, "the machine was not created: %s", err); return -1; }
-    if (api->start_restore() != 0) { SET(out, HV_G7_STAGE_RESTORE, HV_G7_FAILED, "the restore did not start"); return -1; }
+    if (api->start_restore() != 0) { SET(out, HV_G7_STAGE_RESTORE, HV_G7_FAILED, "the restore did not finish"); return -1; }
     SET(out, HV_G7_STAGE_DONE, HV_G7_RAN, "run through the recorder");
     return 0;
 #endif

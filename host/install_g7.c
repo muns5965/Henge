@@ -1,0 +1,18 @@
+#include "install_g7.h"
+
+#include "net_guard.h"
+
+static const HvG7NetHost k_hosts[] = {{"gs.apple.com", 443}, {"gs.apple.com.akadns.net", 443}, {"gs.apple.com.v.aaplimg.com", 443}};
+static int g_ok;
+
+const HvG7NetHost *hv_g7_net_hosts(size_t *n) { if (n) *n = sizeof k_hosts / sizeof *k_hosts; return k_hosts; }
+
+int hv_g7_extra_flags(void) {
+    int ok = 1;
+    for (size_t i = 0; i < sizeof k_hosts / sizeof *k_hosts; i++)
+        if (hv_net_guard_allow_host(k_hosts[i].name, k_hosts[i].port) != 0) ok = 0;
+    g_ok = ok;
+    return 0;
+}
+
+int hv_g7_net_registered_ok(void) { return g_ok; }

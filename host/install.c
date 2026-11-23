@@ -39,6 +39,9 @@
 #ifdef HV_INSTALL_G6
 #include "install_g6.h"   /* the G6 diagnostic build only (tools/vmrun-install-g6-build.sh): see host/install_g6.h */
 #endif
+#ifdef HV_INSTALL_G7
+#include "install_g7.h"   /* the G7 restore stack only (tools/restore-g7-build.sh): the network allow-list, see host/install_g7.h */
+#endif
 #ifdef __ANDROID__
 #include <libtatsu/tss.h>
 #include "restore_session.h"
@@ -153,6 +156,9 @@ static void *restore_thread(void *arg) {
 #endif
 #ifdef HV_INSTALL_G6
     flags |= hv_g6_extra_flags();   /* G6 diagnostic build: the tool's own stop right after the Reverse Proxy attempt and the options-plist construction are resolved (vendored hv_stop_e_hook), against the real Apple TSS hosts; same net_guard allowance as G2/G3/G4/G5 */
+#endif
+#ifdef HV_INSTALL_G7
+    flags |= hv_g7_extra_flags();   /* G7 restore stack: the exact TSS hosts, registered AFTER the session began (it reset the lists) and before the tool is entered; adds no stop and no flag */
 #endif
     if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);

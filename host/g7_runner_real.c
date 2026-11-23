@@ -5,12 +5,13 @@
      create_vm     hv_vm_create with the configuration hv_g7_config_ok accepted (installer, writable storage, the ECID of the file), then hv_vm_start
      start_restore the IPSW identity is re-checked, then hv_g7_restore_run (the restore tool through hv_install_*) and, after the machine's disks are flushed and it is stopped,
                    hv_g7_conclude, the only caller of hv_g7_pair_finish. It returns 0 only for a finished pair; every other end keeps the pair in_progress, deleting and moving nothing.
-   Open conditions, all NOT done: (1) the net allow-list: no Apple host is approved here, so the restore's first signing request is refused by host/net_guard until a separately approved
-   step adds the hosts (the TSS hosts G2-G6 use, and whatever the URLAsset downloads of a full restore need: not examined); (2) a launcher and its approval; (3) the judgment's file checks
+   Open conditions, all NOT done: (1) the net allow-list (host/install_g7.c) holds only the three TSS hosts G2-G6 use, port 443; the URLAsset, image-key and FDR destinations are chosen by the
+   device and unknown, so they are refused and the refusals are printed below (host name and port, no URL) for a separately approved step to read; approving them is NOT done; (2) a launcher and its approval; (3) the judgment's file checks
    (GPT header, allocated size, AUX header) have never been compared with a real restore; (4) timing: the default limits are guesses; (5) what a full restore does after the restore
    options (restored_start_restore and later) has never run on this engine. */
 #define _GNU_SOURCE
 #include "g7_runner_real.h"
+#include "net_guard.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -106,6 +107,7 @@ static int real_restore(void) {
     HvG7RestoreLimits lim = HV_G7R_DEFAULT_LIMITS;
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
+    { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */
     if (o == HV_G7R_NO_SIGNAL) { fflush(stdout); _exit(5); }   /* the restore did not end even after the cancel: nothing may be freed or closed, the process just ends */
     hv_vm_flush_disks();
     hv_vm_stop();

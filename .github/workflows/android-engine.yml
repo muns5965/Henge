@@ -77,6 +77,7 @@ on:
       - tools/g7-probe-build.sh
       - tools/g7-restore-test.sh
       - tools/g7-runner-test.sh
+      - tools/g7-net-test.sh
       - tools/g7-runner-build.sh
       - tools/restore-g7-build.sh
       - tools/check-restore-g7-build.sh
@@ -384,6 +385,8 @@ jobs:
         run: tools/g7-preflight-test.sh build-g7
       - name: "Test the G7 restore adapter and the judgment of its result (fake operations table, no restore tool/machine/network; success only with signal + written disk + GPT + AUX header, everything else keeps the pair in_progress; plain and ASan+UBSan)"
         run: tools/g7-restore-test.sh build-g7restore
+      - name: "Test the G7 network allow-list (only the three TSS hosts at 443; wrong port, unregistered, look-alike, redirect hop denied; policy gone after reset until registered again; hook order in install.c; no connection is made)"
+        run: tools/g7-net-test.sh build-g7net
       - name: "Test g7_runner (default build: no execution stage; the ECID comes from vm_ecid.txt, not from an option; valid request stops at the switch, refusals, strace: nothing written, no network) and the G7 restore stack check (built WITHOUT any stop switch; no stop hook in the archive; not packaged)"
         run: |
           tools/g7-runner-test.sh build-g7runner

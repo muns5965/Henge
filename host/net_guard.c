@@ -29,7 +29,7 @@ static int g_nunix;
 static Host g_host[MAXL];
 static int g_nhost;
 static HvNetStats g_st;
-static char g_log[MAXL][96];
+static char g_log[MAXL][144];
 static int g_nlog;
 static int g_active;
 static int g_engine;   /* engine threads inside hv_net_guard_engine_enter/leave */
@@ -131,7 +131,19 @@ int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *na
         }
     }
     if (verdict == HV_NET_ALLOW) g_st.allowed++;
-    else { g_st.denied++; note_denied(ip, port, reason); }
+    else {
+        g_st.denied++;
+        /* a refused NAMED destination is recorded with its host name (letters, digits, '.', '-', '_' only, at most 48 characters; never a URL, a path or a query), so that a
+           destination nobody listed shows up in the log and can be judged; a bare address is recorded as before */
+        char who[128];
+        if (name && *name) {
+            char nm[49]; size_t k = 0;
+            for (; name[k] && k < 48; k++) { char c = name[k]; nm[k] = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') ? c : '?'; }
+            nm[k] = 0;
+            snprintf(who, sizeof who, "%s/%s", nm, ip);
+        } else snprintf(who, sizeof who, "%s", ip);
+        note_denied(who, port, reason);
+    }
     pthread_mutex_unlock(&g_mu);
     setwhy(why, cap, reason);
     return verdict;

@@ -117,6 +117,10 @@ if grep -rnE "hv_g7_run[[:space:]]*\\(" host devices core android/app/src --incl
 if grep -rn "HV_G7_REAL_EXECUTION" . 2>/dev/null | grep -v "^./\.git/" | grep -v -E "^./(host/(runner_g7_core\.[ch]|g7_runner\.c|g7_runner_real\.[ch])|tools/g7-runner-build\.sh|tools/check-no-test-flags\.sh|tools/check-g7-probe-safe\.sh):" | grep . > /dev/null; then bad "HV_G7_REAL_EXECUTION is used outside the G7 execution build"; fi
 if grep -rnE "g7_runner_real|restore-g7-build|g7-runner-build\.sh[[:space:]]+real|HV_G7_RESTORE" android .github/workflows/android-apk.yml ios Makefile CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "an APK/app/iOS build step names the G7 execution build"; fi
 if grep -rnE "restore-g7-build|restore_g7" tools/*.sh .github 2>/dev/null | grep -v -E "^(tools/(restore-g7-build|g7-runner-build|check-restore-g7-build|check-no-test-flags)\.sh|\.github/workflows/android-engine\.yml):" | grep . > /dev/null; then bad "the G7 restore stack is named outside its own scripts and the engine CI"; fi
+# G7 network allow-list (host/install_g7.c, -DHV_INSTALL_G7): compiled only by the G7 restore stack script; its entry point is called only from host/install.c under the macro; never in an APK/app build
+if grep -rn "HV_INSTALL_G7" . 2>/dev/null | grep -v "^./\.git/" | grep -v -E "^./(host/(install\.c|install_g7\.[ch])|tools/(restore-g7-build|check-no-test-flags|g7-net-test)\.sh|tests/test_g7_net\.c):" | grep . > /dev/null; then bad "HV_INSTALL_G7 is used outside the G7 restore stack"; fi
+if grep -rn "hv_g7_extra_flags" . 2>/dev/null | grep -v "^./\.git/" | grep -v -E "^./(host/(install\.c|install_g7\.[ch])|tests/test_g7_net\.c|tools/(g7-net-test|check-no-test-flags)\.sh):" | grep . > /dev/null; then bad "hv_g7_extra_flags is called outside host/install.c"; fi
+if grep -rnE "install_g7|HV_INSTALL_G7" android .github/workflows/android-apk.yml ios Makefile CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "an APK/app/iOS build names the G7 network allow-list"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do
   grep -q "HV_TSS_HTTPS_ONLY" "$f" || bad "$f builds libtatsu without HV_TSS_HTTPS_ONLY"
 done

@@ -105,6 +105,10 @@ grep -q "hv_g6_extra_flags" host/install.c && ! grep -q "FLAG_STOP_AFTER_RESTORE
 if grep -rn "install_g6" android/CMakeLists.txt CMakeLists.txt 2>/dev/null | grep . > /dev/null; then bad "the main engine/app CMake build mentions host/install_g6"; fi
 # the install disk is created or reset only by an explicit, separately approved step: no source of the app calls those functions yet (tests excluded)
 if grep -rn "hv_install_disk_create\|hv_install_disk_reset" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v "^host/disk_policy\.[ch]:" > /dev/null; then bad "something calls hv_install_disk_create / hv_install_disk_reset"; fi
+# G7 skeleton (host/g7_preflight.*, host/runner_g7_core.*): not part of any shipped build, its execution stages are compiled only by the test script, and nothing but tests calls them
+if grep -rn "HV_G7_MOCK_EXECUTION" . --include=* 2>/dev/null | grep -v "^./\.git/" | grep -v -E "^./(host/runner_g7_core\.[ch]|tests/test_g7_runner\.c|tools/g7-preflight-test\.sh|tools/check-no-test-flags\.sh):" | grep . > /dev/null; then bad "HV_G7_MOCK_EXECUTION is used outside the G7 test build"; fi
+if grep -rnE "g7_preflight|runner_g7_core|g7-preflight" android/CMakeLists.txt CMakeLists.txt android/app/src android/app/build.gradle* tools/*build*.sh 2>/dev/null | grep . > /dev/null; then bad "the G7 skeleton is mentioned by a shipped build or app source"; fi
+if grep -rnE "hv_g7_(run|pair_begin|pair_finish|pair_quarantine|make_config)[[:space:]]*\(" host devices core android/app/src --include=*.c --include=*.h --include=*.m --include=*.java --include=*.cpp 2>/dev/null | grep -v -E "^host/(g7_preflight|runner_g7_core)\.[ch]:" | grep . > /dev/null; then bad "something outside the G7 skeleton calls the G7 pair/run functions"; fi
 for f in tools/restore-selftest-build.sh tools/restore-android-check.sh; do
   grep -q "HV_TSS_HTTPS_ONLY" "$f" || bad "$f builds libtatsu without HV_TSS_HTTPS_ONLY"
 done

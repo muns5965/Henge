@@ -70,6 +70,13 @@ on:
       - tools/netguard-test.sh
       - tools/fdr-session-test.sh
       - tools/disk-policy-test.sh
+      - tools/g7-preflight-test.sh
+      - host/g7_preflight.c
+      - host/g7_preflight.h
+      - host/runner_g7_core.c
+      - host/runner_g7_core.h
+      - tests/test_g7_preflight.c
+      - tests/test_g7_runner.c
       - tools/vmrun-preflight-build.sh
       - tools/vmrun-irecv-build.sh
       - tools/vmrun-tss-build.sh
@@ -348,6 +355,8 @@ jobs:
         run: tools/tss-stage-test.sh build-tssstage
       - name: "Test the install-disk policy (128 GiB sparse macos_disk.img, kept, never resized, reset only on the exact text, temporary directory)"
         run: tools/disk-policy-test.sh build-diskpolicy
+      - name: "Test the G7 safety layer and runner skeleton (read-only preflight, writable-configuration contract, disk+AUX pair, mock writes with out-of-space / partial write / interruption / restart, recorder in place of the machine and the restore; plain and ASan+UBSan; temporary directories only, no Apple request)"
+        run: tools/g7-preflight-test.sh build-g7
 
   android-ndk:
     runs-on: ubuntu-24.04

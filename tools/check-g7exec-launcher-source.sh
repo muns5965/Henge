@@ -6,10 +6,18 @@ X=android/app/src/g7exec; XJ=$X/java/dev/muns/hengeprobe; MAIN=android/app/src/m
 L=$XJ/G7ExecLauncher.java; A=$XJ/G7ExecActivity.java
 fail=0; bad() { echo "FAIL $*"; fail=1; }
 [ -f "$L" ] && [ -f "$A" ] && [ -f "$X/AndroidManifest.xml" ] || { echo "FAIL missing launcher, activity or manifest"; exit 1; }
-# the committed switch is OFF, and the only public start passes exactly that constant
-grep -qE '^\s*static final boolean START_ENABLED = false;' "$L" || bad "START_ENABLED must be the literal false"
-[ "$(grep -c 'START_ENABLED' "$L" | tr -d ' ')" -le 6 ] || bad "START_ENABLED is used in too many places"
-grep -q 'return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED,' "$L" || bad "start() must pass the committed START_ENABLED"
+# the start switch comes only from the build type (BuildConfig): OFF in g7exec, ON only in g7start; the only public start passes exactly that constant
+G=android/app/build.gradle
+grep -qE '^\s*static final boolean START_ENABLED = BuildConfig\.G7_START_ENABLED;' "$L" || bad "START_ENABLED must be BuildConfig.G7_START_ENABLED (no literal true, no other source)"
+[ "$(grep -c 'START_ENABLED' "$L" | tr -d ' ')" -le 7 ] || bad "START_ENABLED is used in too many places"
+grep -q 'return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED,' "$L" || bad "start() must pass the START_ENABLED constant"
+[ "$(grep -c "G7_START_ENABLED" $G)" = 2 ] || bad "build.gradle must set G7_START_ENABLED exactly twice (g7exec false, g7start true)"
+awk '/^        g7exec \{/{k="exec"} /^        g7start \{/{k="start"} /G7_START_ENABLED/{print k, $0}' $G > /tmp/g7sw.$$
+grep -q "^exec .*'G7_START_ENABLED', 'false'" /tmp/g7sw.$$ || bad "the g7exec build type must set G7_START_ENABLED to false"
+grep -q "^start .*'G7_START_ENABLED', 'true'" /tmp/g7sw.$$ || bad "the g7start build type must set G7_START_ENABLED to true"
+rm -f /tmp/g7sw.$$
+x=$(grep -rln "G7_START_ENABLED\|BuildConfig.G7_" android/app/src --include=*.java --include=*.xml | grep -v "^$XJ/G7Exec"); [ -z "$x" ] || { bad "the start switch is read outside the G7 execution classes:"; echo "$x"; }
+x=$(grep -rn "G7_START_ENABLED" android/app/src/main 2>/dev/null); [ -z "$x" ] || { bad "the general source set names the start switch"; echo "$x"; }
 [ "$(grep -c 'startWith(REAL' "$L")" = 1 ] || bad "REAL spawner is used in more than one place"
 # one process creation, only here
 n=$(grep -c 'new ProcessBuilder' "$L"); [ "$n" = 1 ] || bad "exactly one ProcessBuilder in the launcher (found $n)"

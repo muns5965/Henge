@@ -29,8 +29,9 @@ import java.util.concurrent.TimeUnit;
 public final class G7ExecLauncher {
     private G7ExecLauncher() {}
 
-    /** Committed OFF. The change that turns it on is a separate approval (see docs/g7-device-run.md). */
-    static final boolean START_ENABLED = false;
+    /** From the build type: false in g7exec (this APK cannot start the runner), true only in g7start (android/app/build.gradle). Turning on a published build is a separate approval (docs/g7-device-run.md). */
+    static final boolean START_ENABLED = BuildConfig.G7_START_ENABLED;
+    static final String BUILD_KIND = BuildConfig.G7_BUILD_KIND;
 
     static final String LIB_NAME = "libg7runner.so";
     static final String APPROVAL_PHRASE = "G7 복원 시작을 승인합니다";
@@ -77,7 +78,7 @@ public final class G7ExecLauncher {
         File disk = new File(privVmDir, "macos_disk.img"), aux = new File(privVmDir, "macos_aux.img"), st = new File(privVmDir, "g7_state.txt");
         boolean clean = !disk.exists() && !aux.exists() && !st.exists();
         s.append("설치 파일: ").append(clean ? "없음(새로 만들 수 있음)" : "이미 있음 — 시작할 수 없습니다(자동 재개·덮어쓰기 없음)").append('\n'); ok &= clean;
-        s.append("시작 스위치: ").append(START_ENABLED ? "켜짐" : "꺼짐(이 빌드는 시작할 수 없습니다)");
+        s.append("시작 스위치: ").append(START_ENABLED ? "켜짐(시험 빌드: 승인 문구와 SHA-256을 입력하면 실제로 시작합니다)" : "꺼짐(이 빌드는 시작할 수 없습니다)");
         return new Preflight(ok, s.toString());
     }
 

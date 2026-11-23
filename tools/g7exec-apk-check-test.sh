@@ -18,17 +18,34 @@ good = elf(183, b"G7RUN RESULT g7-result: ")
 apk("general", {"classes.dex": b"dex\nMainActivity G7ProbeLauncher", "lib/arm64-v8a/libg7probe.so": elf(183)})
 apk("general_lib", {"classes.dex": b"dex", "lib/arm64-v8a/libg7runner.so": good})
 apk("general_cls", {"classes.dex": b"dex G7ExecLauncher"})
-apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good})
-apk("exec_nolib", {"classes.dex": b"dex G7ExecLauncher"})
-apk("exec_x86", {"classes.dex": b"dex G7ExecLauncher", "lib/arm64-v8a/libg7runner.so": elf(62, b"G7RUN RESULT g7-result: ")})
-apk("exec_notrunner", {"classes.dex": b"dex G7ExecLauncher", "lib/arm64-v8a/libg7runner.so": elf(183, b"hello")})
-apk("exec_nocls", {"lib/arm64-v8a/libg7runner.so": good, "classes.dex": b"dex"})
+OFF = b" G7-BUILD-KIND:EXEC-OFF"; ON = b" G7-BUILD-KIND:START-ON"
+apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
+apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good})
+apk("exec_with_on", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good})
+apk("exec_nomarker", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good})
+apk("start_with_off", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
+apk("start_both", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF + ON, "lib/arm64-v8a/libg7runner.so": good})
+apk("general_marker", {"classes.dex": b"dex" + ON})
+apk("start_nolib", {"classes.dex": b"dex G7ExecLauncher" + ON})
+apk("exec_nolib", {"classes.dex": b"dex G7ExecLauncher" + OFF})
+apk("exec_x86", {"classes.dex": b"dex G7ExecLauncher" + OFF, "lib/arm64-v8a/libg7runner.so": elf(62, b"G7RUN RESULT g7-result: ")})
+apk("exec_notrunner", {"classes.dex": b"dex G7ExecLauncher" + OFF, "lib/arm64-v8a/libg7runner.so": elf(183, b"hello")})
+apk("exec_nocls", {"lib/arm64-v8a/libg7runner.so": good, "classes.dex": b"dex" + OFF})
 P
 t() { local want=$1 mode=$2 f=$3; bash tools/check-g7exec-apk.sh "$mode" "$OUT/$f.apk" > "$OUT/$f.out" 2>&1; local rc=$?; if { [ "$want" = ok ] && [ $rc = 0 ]; } || { [ "$want" = bad ] && [ $rc != 0 ]; }; then echo "PASS $mode $f -> $want"; else echo "FAIL $mode $f expected $want, rc=$rc"; cat "$OUT/$f.out"; fail=1; fi; }
 t ok general general
 t bad general general_lib
 t bad general general_cls
 t ok exec exec
+t ok start start
+t bad exec exec_with_on
+t bad exec exec_nomarker
+t bad exec start
+t bad start exec
+t bad start start_with_off
+t bad start start_both
+t bad start start_nolib
+t bad general general_marker
 t bad exec exec_nolib
 t bad exec exec_x86
 t bad exec exec_notrunner

@@ -26,6 +26,7 @@
 #include "g7_restore.h"
 #include "install.h"
 #include "mbedtls/sha256.h"
+#include "g7_ipsw_check.h"
 #include "usb_host.h"
 #include "vm.h"
 #include "../devices/vmapple.h"
@@ -38,22 +39,11 @@ static struct {
     HvG7RestoreLimits lim;
 } S;
 
-static int hex_eq(const unsigned char *d, const char *hex) {
-    static const char H[] = "0123456789abcdef";
-    if (strlen(hex) != 64) return 0;
-    for (int i = 0; i < 32; i++) {
-        char a = H[d[i] >> 4], b = H[d[i] & 15], x = hex[2 * i], y = hex[2 * i + 1];
-        if (x >= 'A' && x <= 'F') x = (char)(x - 'A' + 'a');
-        if (y >= 'A' && y <= 'F') y = (char)(y - 'A' + 'a');
-        if (a != x || b != y) return 0;
-    }
-    return 1;
-}
-
+/* 1 = hash equals `hex`, 0 = it does not, -1 = the file cannot be read. The report (MATCH, or MISMATCH with the expected and the calculated digest) is printed here, from the digest that is computed ONCE. */
 static int ipsw_hash_ok(const char *path, const char *hex, struct stat *id) {
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return 0;
-    if (fstat(fd, id) != 0 || !S_ISREG(id->st_mode)) { close(fd); return 0; }
+    if (fd < 0) return -1;
+    if (fstat(fd, id) != 0 || !S_ISREG(id->st_mode)) { close(fd); return -1; }
     mbedtls_sha256_context c;
     mbedtls_sha256_init(&c);
     mbedtls_sha256_starts(&c, 0);
@@ -64,7 +54,11 @@ static int ipsw_hash_ok(const char *path, const char *hex, struct stat *id) {
     mbedtls_sha256_finish(&c, d);
     mbedtls_sha256_free(&c);
     close(fd);
-    return n == 0 && hex_eq(d, hex);
+    if (n != 0) return -1;
+    char rep[256];
+    int ok = hv_g7_ipsw_compare(d, hex, rep, sizeof rep);
+    fputs(rep, stdout);
+    return ok;
 }
 
 static int ipsw_same_file(void) {
@@ -131,7 +125,9 @@ int g7_real_setup(const HvG7Request *r, const char *workdir, const char *ipsw_sh
     if (snprintf(S.dir, sizeof S.dir, "%s", r->dir) >= (int)sizeof S.dir || snprintf(S.workdir, sizeof S.workdir, "%s", workdir) >= (int)sizeof S.workdir
         || snprintf(S.ipsw, sizeof S.ipsw, "%s/%s", r->ipsw_dir, HV_G7_IPSW_NAME) >= (int)sizeof S.ipsw) return -1;
     S.ecid = r->ecid;
-    if (!ipsw_hash_ok(S.ipsw, ipsw_sha256, &S.ipsw_id)) { printf("g7: the IPSW's SHA-256 is not the expected one (or it cannot be read)\n"); return -1; }
+    { int h = ipsw_hash_ok(S.ipsw, ipsw_sha256, &S.ipsw_id);
+      if (h < 0) { printf("g7: the IPSW cannot be read (not hashed)\n"); return -1; }
+      if (h == 0) { printf("g7: the IPSW's SHA-256 is not the expected one: REFUSED, nothing was created\n"); return -1; } }
     S.set = 1;
     S.lim = (HvG7RestoreLimits)HV_G7R_DEFAULT_LIMITS;
     api->pair_begin = real_pair;

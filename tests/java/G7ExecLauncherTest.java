@@ -45,7 +45,7 @@ public class G7ExecLauncherTest {
         rom = touch(priv, "AVPBooter.vmapple2.bin", new byte[] {1, 2, 3});
         long ecid = 0x0013579bdf024681L; String hex = Long.toHexString(ecid);
 
-        check("the committed switch is OFF", !G7ExecLauncher.START_ENABLED);
+        check("the g7exec build (stand-in BuildConfig) has the switch OFF and says so", !G7ExecLauncher.START_ENABLED && "G7-BUILD-KIND:EXEC-OFF".equals(G7ExecLauncher.BUILD_KIND));
         G7ExecLauncher.Start s = G7ExecLauncher.start(lib, ext, priv, files, G7ExecLauncher.APPROVAL_PHRASE, SHA);
         check("the real entry point refuses while the switch is off (nothing created)", !s.started && s.message.contains("꺼져") && new File(files, G7ExecLauncher.WORK_NAME).list() == null && G7ExecLauncher.newestLog(files) == null);
 

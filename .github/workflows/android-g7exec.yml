@@ -2,12 +2,18 @@
 #
 # The G7 EXECUTION build as an APK of its own (assembleG7exec): same package and signing key as the general app, so it installs OVER it and keeps the app's private files
 # (ROM, ECID, IPSW). It adds libg7runner.so (host/g7_runner.c with -DHV_G7_REAL_EXECUTION: real disk creation, writable machine, the restore tool WITHOUT stop switches) and the
-# only launcher of it (android/app/src/g7exec). The launcher's START_ENABLED is committed OFF: this APK cannot start the runner until a separately approved change turns it on.
+# only launcher of it (android/app/src/g7exec). The g7exec build type has the start switch OFF: this APK cannot start the runner. The g7start build type (same files, switch ON) is built and checked on every
+# run, but PUBLISHED only by a manual run with publish_start=true (an explicitly approved run); a push never produces an installable switch-ON APK.
 # The general APK workflow (android-apk.yml) never includes any of this and checks that it does not. See docs/g7-device-run.md.
 name: Android G7 execution APK
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish_start:
+        description: "Publish the switch-ON G7 start APK (explicit approval only)"
+        type: boolean
+        default: false
   push:
     branches:
       - research/android-port
@@ -86,11 +92,19 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle -p android assembleG7exec --no-daemon --stacktrace
+      - name: Build the G7 start APK (switch ON; built and checked every run, published only on request)
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle -p android assembleG7start --no-daemon --stacktrace
       - name: Check the APK (runner present as AArch64, launcher present)
         run: |
           ls -l android/app/build/outputs/apk/g7exec/
           READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh exec android/app/build/outputs/apk/g7exec/app-g7exec.apk
+          READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh start android/app/build/outputs/apk/g7start/app-g7start.apk
           echo "- G7 execution APK: built, launcher switch OFF (cannot start the runner), not run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- G7 start APK: built and checked (switch ON marker, runner as AArch64); published: ${{ inputs.publish_start == true }}" >> "$GITHUB_STEP_SUMMARY"
       - name: "Show package, versionCode and signing certificate (compare with the general APK: same package, same certificate and a higher versionCode install over it)"
         run: |
           APK=android/app/build/outputs/apk/g7exec/app-g7exec.apk
@@ -101,3 +115,14 @@ jobs:
         with:
           name: henge-g7-exec-apk
           path: android/app/build/outputs/apk/g7exec/app-g7exec.apk
+      - name: Show the start APK's package, versionCode and certificate (only when it is published)
+        if: ${{ inputs.publish_start == true }}
+        run: |
+          APK=android/app/build/outputs/apk/g7start/app-g7start.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | grep -E "^package:" | cut -c1-160
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish_start == true }}
+        with:
+          name: henge-g7-start-apk
+          path: android/app/build/outputs/apk/g7start/app-g7start.apk

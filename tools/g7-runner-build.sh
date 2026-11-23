@@ -26,7 +26,7 @@ real)
   for o in $eobjs $vobjs; do [ -f "$o" ] || { echo "FAILED  missing $o (run the engine and devices builds first)"; exit 1; }; done
   FL="-std=gnu11 -D_GNU_SOURCE -O2 -g -w -DHAVE_CONFIG_H -DHV_G7_REAL_EXECUTION -Icore -Ihost -Idevices -I$TP/restore_config -I$TP -I$TP/mbedtls/include -I$TP/libtatsu/include -I$TP/libusb-1.0 -I$TP/curl_include -I$TP/libplist/include -I$TP/libimobiledevice-glue/include -I$TP/libirecovery/include -I$TP/idevicerestore/src"
   R="$OUT/g7real"; mkdir -p "$R"; objs=""
-  for f in g7_runner g7_runner_real runner_g7_core g7_preflight g7_restore; do   # install.c and disk_policy.c come from the restore stack archive (built with no G switch); hv_sha256 and hv_aes_crypt from the device objects
+  for f in g7_runner g7_runner_real g7_ipsw_check runner_g7_core g7_preflight g7_restore; do   # install.c and disk_policy.c come from the restore stack archive (built with no G switch); hv_sha256 and hv_aes_crypt from the device objects
     $CC $FL -c host/$f.c -o "$R/$f.o" 2> "$R/$f.log" || { echo "FAILED  host/$f.c"; head -20 "$R/$f.log"; exit 1; }
     objs="$objs $R/$f.o"
   done

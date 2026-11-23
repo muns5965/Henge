@@ -1,6 +1,9 @@
 # G7 on the phone: how the execution build is delivered, started, stopped and read back
 
-**Nothing here starts automatically, and nothing in this change can start the runner**: `G7ExecLauncher.START_ENABLED` is committed `false`.
+**Nothing here starts automatically.** The start switch comes from the build type (`BuildConfig.G7_START_ENABLED`): `false` in `g7exec` (the APK CI publishes on every push: it cannot start the runner), `true` only in `g7start`.
+`g7start` has the same files, package and signing key; CI builds and checks it on every run (the dex carries the marker `G7-BUILD-KIND:START-ON`, `g7exec` carries `G7-BUILD-KIND:EXEC-OFF`, the general APK neither), but publishes it only from a MANUAL run of the workflow
+"Android G7 execution APK" with `publish_start=true` (artifact `henge-g7-start-apk`). That run is an explicit approval step. Even the switch-ON APK starts nothing by itself: it needs the typed approval phrase and the IPSW SHA-256, the preflight must pass,
+and the runner re-hashes the IPSW before it creates anything (a mismatch prints the expected and the calculated digest and refuses: no disk, no AUX, no Apple request).
 
 ## Delivery (separate from the general APK)
 - `assembleDebug` (workflow android-apk.yml) is the app everyone installs. It has no `libg7runner.so`, no `G7ExecLauncher`, no `G7ExecActivity` (`tools/check-g7exec-apk.sh general`).

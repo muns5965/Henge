@@ -14,7 +14,7 @@ import java.io.File;
 
 /**
  * [G7-EXEC] Only in the g7exec build (never in the general APK). Shows what is there (files only: the binary is NOT executed to find out), and starts the G7 execution build
- * only through G7ExecLauncher, which refuses while START_ENABLED is false (committed) and otherwise needs the exact approval phrase and the IPSW SHA-256 typed here.
+ * only through G7ExecLauncher, which refuses while the build's start switch is off (g7exec) and otherwise needs the exact approval phrase and the IPSW SHA-256 typed here.
  * No Intent extras are read. The ECID is never shown.
  */
 public class G7ExecActivity extends Activity {

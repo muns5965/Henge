@@ -56,6 +56,19 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig true
+    }
+
+    // g7start shares every file of the g7exec source set (java, manifest overlay, jniLibs); only the BuildConfig fields differ.
+    sourceSets {
+        g7start {
+            java.srcDirs = ['src/g7exec/java']
+            manifest.srcFile 'src/g7exec/AndroidManifest.xml'
+            jniLibs.srcDirs = ['src/g7exec/jniLibs']
+        }
+    }
+
     buildTypes {
         debug {
             if (System.getenv('KEYSTORE_FILE')) {
@@ -67,6 +80,17 @@ android {
         g7exec {
             initWith debug
             matchingFallbacks = ['debug']
+            // the start switch is OFF here: this APK cannot start the runner. The kind marker is a string in the APK that tools/check-g7exec-apk.sh reads.
+            buildConfigField 'boolean', 'G7_START_ENABLED', 'false'
+            buildConfigField 'String', 'G7_BUILD_KIND', '"G7-BUILD-KIND:EXEC-OFF"'
+        }
+        // The G7 START build (assembleG7start): the same app and sources as g7exec, but the launcher may start the runner (still only with the typed approval phrase and the IPSW SHA-256).
+        // The ONLY place where the switch is true. CI builds it on every push to check it, and publishes it only from a manual run of android-g7exec.yml with publish_start (explicit approval).
+        g7start {
+            initWith debug
+            matchingFallbacks = ['debug']
+            buildConfigField 'boolean', 'G7_START_ENABLED', 'true'
+            buildConfigField 'String', 'G7_BUILD_KIND', '"G7-BUILD-KIND:START-ON"'
         }
     }
 }

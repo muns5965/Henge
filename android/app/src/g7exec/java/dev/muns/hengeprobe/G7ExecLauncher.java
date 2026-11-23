@@ -295,7 +295,7 @@ public final class G7ExecLauncher {
         File st = new File(privVmDir, "g7_state.txt");
         if (!st.isFile()) return "\n설치 쌍: 상태 파일(g7_state.txt) 없음";
         String t = readTail(st, 200).trim();
-        return "\n설치 쌍: g7_state.txt = " + (t.isEmpty() ? "(비어 있음)" : t.replace('\n', ' '));
+        return "\n설치 쌍: g7_state.txt = " + (t.isEmpty() ? "(비어 있음)" : t.replaceAll("ecid_tag=[0-9a-fA-F]+", "ecid_tag=(표시 안 함)").replace('\n', ' '));
     }
 
     public static String summary(File filesDir, File privVmDir) {

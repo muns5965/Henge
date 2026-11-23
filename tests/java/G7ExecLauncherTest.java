@@ -167,10 +167,10 @@ public class G7ExecLauncherTest {
         check("summary of a finished run: state with the meaning of the exit code, log name, the g7-result line and the g7-exit line", sm.contains("상태: 종료") && sm.contains(s.run.logName()) && sm.contains("g7-result: outcome=FAILED last_step=7") && sm.contains("g7-exit: 2"));
         File pv = Files.createTempDirectory("pv").toFile();
         check("summary shows no pair state file", G7ExecLauncher.summary(files7, pv).contains("상태 파일(g7_state.txt) 없음"));
-        touch(pv, "g7_state.txt", "state=in_progress\n".getBytes());
+        touch(pv, "g7_state.txt", "state=in_progress\necid_tag=eb5a591ec138b9b0\n".getBytes());
         touch(files7, G7ExecLauncher.LOG_PREFIX + "9999999999999" + G7ExecLauncher.LOG_SUFFIX, "g7-start: 1\nG7RUN RESULT: FAILED stage=4: why\ng7-result: outcome=FAILED\n".getBytes());
         String sp = G7ExecLauncher.summary(files7, pv);
-        check("summary shows the pair state and the G7RUN RESULT line (read only)", sp.contains("g7_state.txt = state=in_progress") && sp.contains("G7RUN RESULT: FAILED stage=4: why") && new String(Files.readAllBytes(new File(pv, "g7_state.txt").toPath())).equals("state=in_progress\n"));
+        check("summary shows the pair state and the G7RUN RESULT line (read only)", sp.contains("g7_state.txt = state=in_progress") && sp.contains("ecid_tag=(표시 안 함)") && !sp.contains("eb5a591ec138b9b0") && sp.contains("G7RUN RESULT: FAILED stage=4: why") && new String(Files.readAllBytes(new File(pv, "g7_state.txt").toPath())).equals("state=in_progress\necid_tag=eb5a591ec138b9b0\n"));
         cur.set(null, null);   // a screen opened again after the app process was recreated: no run of this process
         check("summary with no log at all says there is no record", G7ExecLauncher.summary(Files.createTempDirectory("empty").toFile()).contains("실행 기록 없음"));
         check("summary of an interrupted log (g7-start, no g7-exit) does not claim an outcome", G7ExecLauncher.summary(files6).contains("종료 기록(g7-exit)이 없음") && G7ExecLauncher.summary(files6).contains("확인되지 않음") && G7ExecLauncher.summary(files6).contains("로그에 아직 없음"));

@@ -20,6 +20,9 @@ typedef struct {
     int sock_errno;         /* errno of the first socket() that failed (EMFILE, ENOMEM, ...) */
     int conn_errno;         /* errno / SO_ERROR of the last connect() that failed (-1 = it timed out or was stopped) */
     int tls_rc;             /* mbedtls return code (negative) of a failed handshake */
+    int dns_ms, tcp_ms, tls_ms;   /* milliseconds spent in name lookup, TCP connect (all addresses tried) and the TLS handshake of the LAST connection attempt (0 = step not reached) */
+    int addrs_v4, addrs_v6;       /* addresses the lookup returned, by family */
+    unsigned verify_flags;  /* mbedtls certificate verify flags of a failed handshake (0x8 = issuer not trusted, 0x4 = name mismatch, 0x1 = expired; 0xFFFFFFFF = not checked) */
 } HvCurlLast;
 
 void hv_curl_last(HvCurlLast *out);
@@ -27,5 +30,10 @@ void hv_curl_last(HvCurlLast *out);
    bytes have their own fixed cap. An over-long body ends the request with CURLE_FILESIZE_EXCEEDED before the bytes reach the write callback. */
 /* Returns the cap that was set before (0 = none), so a caller can put it back. */
 long long hv_curl_set_body_cap(long long bytes);
+
+/* Opens ONE connection exactly as a transfer would (name lookup, TCP, and for https the TLS handshake with the same trust anchors and the certificate and name checks)
+   and closes it again: no request is written, nothing is read. Returns the CURLcode that curl_easy_perform would have given for the connection step. `last` gets the record
+   of that attempt. At most `limit_ms` milliseconds (0 = 15000). Same thread: the record is thread-local. Used by the network probe (host/net_probe.c). */
+int hv_curl_probe(const char *host, const char *port, int https, long limit_ms, HvCurlLast *last);
 
 #endif

@@ -24,8 +24,8 @@ import java.io.File;
  */
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
-    private CheckBox consent, isoConsent;
-    private Button start, cancel, refresh, share, copy, isolate;
+    private CheckBox consent, isoConsent, netConsent;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare;
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
@@ -74,6 +74,23 @@ public class G7ExecActivity extends Activity {
         });
         share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
         copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
+        add(root, "[네트워크 시험] Apple 서명 서버 주소 3개에 이름 조회·TCP 연결·TLS 핸드셰이크만 시험합니다(요청 본문 전송 없음, 최대 약 5분, 복원 없음). 복원이 실행 중일 때도 시작할 수 있어 비교에 쓸 수 있습니다.", 13);
+        netConsent = new CheckBox(this);
+        netConsent.setText("Apple 서버 3개 주소에 이름 조회·연결·TLS 핸드셰이크만 하는 네트워크 시험에 동의합니다(요청 본문 전송 없음).");
+        netConsent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        root.addView(netConsent);
+        netStart = new Button(this); netStart.setText("네트워크 시험 시작"); netStart.setEnabled(false); root.addView(netStart);
+        netStop = new Button(this); netStop.setText("네트워크 시험 중지"); netStop.setEnabled(false); root.addView(netStop);
+        netShare = new Button(this); netShare.setText("네트워크 시험 로그 공유"); root.addView(netShare);
+        netConsent.setOnCheckedChangeListener((v, on) -> { G7NetProbe.Run r = G7NetProbe.current(); netStart.setEnabled(on && (r == null || r.finished())); });
+        netStart.setOnClickListener(v -> {
+            G7NetProbe.Start ns = G7NetProbe.start(nativeDir, getFilesDir(), new G7NetState(this), netConsent.isChecked());
+            status.setText(ns.message);
+            netConsent.setChecked(false);   // every probe needs a fresh consent
+            if (ns.started) { netStart.setEnabled(false); netStop.setEnabled(true); netPoll(); }
+        });
+        netStop.setOnClickListener(v -> { G7NetProbe.Run r = G7NetProbe.current(); if (r != null) { r.cancel(); status.setText("네트워크 시험 중지를 요청했습니다."); } });
+        netShare.setOnClickListener(v -> shareFile(G7NetProbe.newestLog(getFilesDir()), "네트워크 시험 로그 공유"));
         log = new TextView(this);
         log.setTextIsSelectable(true);
         log.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
@@ -85,6 +102,8 @@ public class G7ExecActivity extends Activity {
         if (!note.isEmpty()) status.setText(status.getText() + "\n\n" + note);
         G7ExecLauncher.Run live = G7ExecLauncher.current();
         if (live != null && !live.finished()) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
+        G7NetProbe.Run netLive = G7NetProbe.current();
+        if (netLive != null && !netLive.finished()) { netStop.setEnabled(true); netPoll(); }
         start.setOnClickListener(v -> {
             G7ExecLauncher.Start s = G7ExecLauncher.start(nativeDir, ext, priv, getFilesDir(), consent.isChecked());
             status.setText(s.message);
@@ -115,11 +134,21 @@ public class G7ExecActivity extends Activity {
         }, 2000);
     }
 
+    private void netPoll() {
+        log.postDelayed(() -> {
+            G7NetProbe.Run r = G7NetProbe.current();
+            if (r == null) return;
+            log.setText(r.tail());
+            if (r.finished()) { status.setText("네트워크 시험이 끝났습니다(종료 코드 " + r.exitCode() + (r.cancelled() ? ", 중지됨" : "") + "). '네트워크 시험 로그 공유'로 보내세요."); netStop.setEnabled(false); } else netPoll();
+        }, 2000);
+    }
+
     private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm")) + "\n" + G7ExecLauncher.runnerCheck(android.os.Process.myPid(), getFilesDir())); }
 
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
-    private void shareLog() {
-        File f = G7ExecLauncher.newestLogFile(getFilesDir());
+    private void shareLog() { shareFile(G7ExecLauncher.newestLogFile(getFilesDir()), "G7 로그 공유"); }
+
+    private void shareFile(File f, String title) {
         if (f == null) { status.setText("공유할 로그가 없습니다."); return; }
         Uri u = Uri.parse("content://" + G7LogProvider.AUTHORITY + "/" + f.getName());
         Intent i = new Intent(Intent.ACTION_SEND);
@@ -127,7 +156,7 @@ public class G7ExecActivity extends Activity {
         i.putExtra(Intent.EXTRA_STREAM, u);
         i.setClipData(ClipData.newRawUri("g7 log", u));
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(Intent.createChooser(i, "G7 로그 공유"));
+        startActivity(Intent.createChooser(i, title));
     }
 
     private void add(LinearLayout root, String s, int sp) {

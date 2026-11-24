@@ -16,9 +16,10 @@ int main(void) {
     CHECK(strstr(l, "gai=0 sockerr=0 connerr=111 tlsrc=0") != NULL, "lookup, socket, connect and TLS codes come as numbers");
     CHECK(strstr(l, "diag=TSS_ATTEMPTS: 3 / TRANSPORT: curl 7 COULDNT_CONNECT / MESSAGE_RAW: suppressed\n") != NULL, "libtatsu's fixed-vocabulary diagnosis is appended last");
     { int nl = 0; for (const char *q = l; *q; q++) if (*q == '\n') nl++; CHECK(nl == 1, "exactly one newline"); }
-    memset(&t, 0, sizeof t); t.attempt = 1; t.deny = 1; t.policy_denied = 1; t.addrs_denied = 2; t.gai_rc = -2; t.sock_errno = 24; t.tls_rc = -0x2700; t.fds_open = -1; t.fds_limit = -1;
+    memset(&t, 0, sizeof t); t.attempt = 1; t.deny = 1; t.policy_denied = 1; t.addrs_denied = 2; t.gai_rc = -2; t.sock_errno = 24; t.tls_rc = -0x2700; t.verify_flags = 0x8; t.url_index = 3; t.fds_open = -1; t.fds_limit = -1;
     hv_g7t_line(l, sizeof l, &t, NULL);
     CHECK(strstr(l, "deny=1 den=2 tried=0") && strstr(l, "gai=-2 sockerr=24") && strstr(l, "tlsrc=-9984") && strstr(l, "policy=1") && strstr(l, "fds=-1/-1"), "deny mode, policy refusals, EMFILE (24) and negative codes are printed as numbers");
+    CHECK(strstr(l, "tlsrc=-9984 vflags=0x8 url=3 fds=-1/-1") != NULL, "certificate verify flags (hex) and the built-in address number come right after the TLS code");
     CHECK(l[strlen(l) - 1] == '\n' && strstr(l, " diag=\n") != NULL, "a missing diagnosis gives an empty field, still one line");
     hv_g7t_line(l, sizeof l, &t, "A\nB\x01\xff https://x");
     CHECK(strstr(l, "diag=A?B??") != NULL && !strchr(strchr(l, '\n') + 1, '\n'), "control and non-ASCII characters in the diagnosis become '?', so it cannot add lines");

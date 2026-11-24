@@ -337,7 +337,7 @@ public final class G7ExecLauncher {
 
     /** The only files the log provider may hand out: run logs of this app, by plain name. Returns null for anything else. */
     static File logFile(File filesDir, String name) {
-        if (name == null || !name.matches("g7_run_[0-9]{13}\\.txt")) return null;
+        if (name == null || !(name.matches("g7_run_[0-9]{13}\\.txt") || name.matches("g7_net_[0-9]{13}\\.txt"))) return null;   // run logs and network-probe logs
         File f = new File(filesDir, name);
         return f.isFile() ? f : null;
     }

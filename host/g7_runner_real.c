@@ -134,16 +134,17 @@ static void *watch_main(void *arg) {
 
 /* Per-attempt TSS line (host/g7_tssdiag.h). libtatsu calls this on the thread that ran the transfer, right after each attempt, so the thread-local record of the curl stand-in
    (hv_curl_last) is the one for that attempt. It only writes one line to stderr; it decides nothing and keeps nothing. */
-void tss_set_attempt_hook(void (*hook)(int, int, long, long long));
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int));
 const char *tss_last_diag(void);
 int hv_curl_deny_active(void);
-static void tss_attempt_line(int attempt, int curl_rc, long http_code, long long ms) {
+static void tss_attempt_line(int attempt, int curl_rc, long http_code, long long ms, int url_index) {
     HvCurlLast l; hv_curl_last(&l);
     HvG7TssTry t; memset(&t, 0, sizeof t);
     t.attempt = attempt; t.curl_rc = curl_rc; t.http_code = http_code; t.ms = ms;
     t.deny = hv_curl_deny_active();
     t.policy_denied = l.policy_denied; t.addrs_denied = l.addrs_denied; t.addrs_tried = l.addrs_tried; t.connected = l.connected; t.tls_done = l.tls_done;
     t.request_sent = l.request_sent; t.http_status = l.http_status; t.too_large = l.too_large; t.body_to_cb = l.body_to_cb;
+    t.verify_flags = l.verify_flags; t.url_index = url_index;
     t.gai_rc = l.gai_rc; t.sock_errno = l.sock_errno; t.conn_errno = l.conn_errno; t.tls_rc = l.tls_rc;
     t.fds_open = -1; t.fds_limit = -1;
     { DIR *d = opendir("/proc/self/fd"); if (d) { int n = 0; while (readdir(d)) n++; closedir(d); t.fds_open = n - 3; } }   /* minus ".", ".." and the directory's own descriptor */

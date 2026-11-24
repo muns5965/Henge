@@ -7,7 +7,7 @@
 #include "../host/curl_last.h"
 
 void tss_set_max_attempts(int n);
-void tss_set_attempt_hook(void (*hook)(int, int, long, long long));
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int));
 const char *tss_last_diag(void);
 
 static int g_fail;
@@ -15,7 +15,9 @@ static int g_fail;
 
 static int g_calls, g_first_attempt, g_last_attempt, g_rc, g_conn_errno, g_tried, g_connected, g_diag_has_attempt;
 static long long g_ms;
-static void hook(int attempt, int rc, long http, long long ms) {
+static int g_url_idx = -1;
+static void hook(int attempt, int rc, long http, long long ms, int url_index) {
+    g_url_idx = url_index;
     HvCurlLast l; hv_curl_last(&l);   /* same thread, right after the transfer */
     if (!g_calls) g_first_attempt = attempt;
     g_calls++; g_last_attempt = attempt; g_rc = rc; g_ms = ms; (void)http;
@@ -37,6 +39,7 @@ int main(void) {
     CHECK(g_conn_errno == ECONNREFUSED, "connect errno is recorded (ECONNREFUSED)");
     CHECK(g_ms >= 0 && g_ms < 5000, "transfer time is a small number of milliseconds (%lld)", g_ms);
     CHECK(g_diag_has_attempt, "tss_last_diag() already describes the attempt when the hook runs");
+    CHECK(g_url_idx == 0, "an address named by the caller is reported as url=0");
     tss_set_attempt_hook(NULL);
     g_calls = 0;
     r = tss_request_send(req, "https://127.0.0.1:1/TSS/controller?action=2");

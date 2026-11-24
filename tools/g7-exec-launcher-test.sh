@@ -16,4 +16,8 @@ java -cp "$O2" dev.muns.hengeprobe.G7ExecStartOnTest; R2=$?
 O3="$OUT-isolation"; rm -rf "$O3"; mkdir -p "$O3"
 javac -encoding UTF-8 -d "$O3" $X/G7ExecLauncher.java $X/G7Isolation.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7ExecIsolationTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O3/javac.log" || { echo "FAILED javac (isolation)"; head -30 "$O3/javac.log"; exit 1; }
 java -cp "$O3" dev.muns.hengeprobe.G7ExecIsolationTest; R3=$?
-[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ]
+# the network probe's app side (G7NetProbe: one program, no arguments, own log, cancel), with fake processes; G7NetState (Android classes) is compiled by the APK build only
+O4="$OUT-netprobe"; rm -rf "$O4"; mkdir -p "$O4"
+javac -encoding UTF-8 -d "$O4" $X/G7NetProbe.java $X/G7ExecLauncher.java $X/G7Isolation.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7NetProbeTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O4/javac.log" || { echo "FAILED javac (netprobe)"; head -30 "$O4/javac.log"; exit 1; }
+java -cp "$O4" dev.muns.hengeprobe.G7NetProbeTest; R4=$?
+[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ]

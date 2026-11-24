@@ -34,6 +34,11 @@ on:
       - tools/g7-tssdiag-test.sh
       - tests/test_g7_tssdiag.c
       - host/curl_last.h
+      - host/curl_mbedtls.c
+      - host/net_probe.c
+      - tools/net-probe-test.sh
+      - tests/test_net_probe.*
+      - tests/java/G7NetProbeTest.java
       - .github/workflows/android-g7exec.yml
 
 env:
@@ -56,11 +61,12 @@ jobs:
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
-          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-tssdiag-test.sh
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
           tools/g7-watch-test.sh
           tools/g7-tssdiag-test.sh
+          tools/net-probe-test.sh build-netprobe-host
           tools/g7-exec-launcher-test.sh build-g7exec-java
       - name: Build the engine objects, the restore stack WITHOUT stop switches, and the G7 execution runner (link; NOT run)
         run: |
@@ -74,6 +80,16 @@ jobs:
           "$T/llvm-readelf" -h build-g7exec/g7_runner_real | grep -E "Class|Machine|Type"
           mkdir -p android/app/src/g7exec/jniLibs/arm64-v8a
           cp build-g7exec/g7_runner_real android/app/src/g7exec/jniLibs/arm64-v8a/libg7runner.so
+      - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
+        run: |
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/curltool-build.sh build-netprobe-arm
+          TP=third_party
+          "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -D_GNU_SOURCE -Ihost -c host/net_probe.c -o build-netprobe-arm/net_probe.o
+          "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -w -D_GNU_SOURCE -Ihost -I$TP/curl_include -I$TP/mbedtls/include -c host/curl_mbedtls.c -o build-netprobe-arm/curl_ship.o
+          "$T/aarch64-linux-android30-clang" -o build-netprobe-arm/net_probe build-netprobe-arm/net_probe.o build-netprobe-arm/curl_ship.o build-netprobe-arm/obj/*.o -lm
+          "$T/llvm-readelf" -h build-netprobe-arm/net_probe | grep -E "Class|Machine|Type"
+          cp build-netprobe-arm/net_probe android/app/src/g7exec/jniLibs/arm64-v8a/libnetprobe.so
       - name: Install SDK platform, build tools and CMake
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"

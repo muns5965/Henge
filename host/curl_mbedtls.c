@@ -367,7 +367,9 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     struct addrinfo hints = {.ai_socktype = SOCK_STREAM}, *res = NULL;
     if (stop_check(e)) return CURLE_ABORTED_BY_CALLBACK; /* the caller turns e->stop into the right code */
     /* getaddrinfo cannot be interrupted: a deadline or cancel that arrives during name resolution takes effect when it returns */
+    long long t_dns = now_ns();
     int gai = getaddrinfo(host, port, &hints, &res);
+    g_last.dns_ms = (int)((now_ns() - t_dns) / 1000000LL);
     if (gai != 0 || !res) {
         g_last.gai_rc = gai ? gai : -1;
         snprintf(c->err, sizeof c->err, "could not resolve host %s", host);
@@ -375,6 +377,8 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     }
     if (stop_check(e)) { freeaddrinfo(res); return CURLE_ABORTED_BY_CALLBACK; }
     int fd = -1, naddr = 0, ndenied = 0;
+    for (struct addrinfo *a = res; a; a = a->ai_next) { if (a->ai_family == AF_INET) g_last.addrs_v4++; else if (a->ai_family == AF_INET6) g_last.addrs_v6++; }
+    long long t_tcp = now_ns();
     for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
         naddr++;
         int s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
@@ -402,6 +406,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         if (r == 0) fd = s; else close(s);
     }
     freeaddrinfo(res);
+    g_last.tcp_ms = (int)((now_ns() - t_tcp) / 1000000LL);
     if (fd < 0 && !stop_check(e) && ndenied > 0 && ndenied == naddr) {
         /* every address was refused by the policy: nothing was connected. CURLE_UNSUPPORTED_PROTOCOL is the one code libtatsu does not retry; g_last.policy_denied
            (cleared again by curl_easy_perform unless this is the final result) is what says it was the policy and not a real unsupported protocol. */
@@ -437,6 +442,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     mbedtls_ssl_config_init(&c->conf);
     mbedtls_ctr_drbg_init(&c->drbg);
     mbedtls_entropy_init(&c->ent);
+    long long t_tls = now_ns();
     int ret = mbedtls_ctr_drbg_seed(&c->drbg, mbedtls_entropy_func, &c->ent, (const unsigned char *)"henge-curl", 10);
     if (ret == 0) ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (ret == 0) {
@@ -451,12 +457,14 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
         while ((ret = mbedtls_ssl_handshake(&c->ssl)) == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {}
     }
+    g_last.tls_ms = (int)((now_ns() - t_tls) / 1000000LL);
     if (ret != 0 && stop_check(e)) { conn_close(c); return CURLE_ABORTED_BY_CALLBACK; }
     if (ret != 0) {
         g_last.tls_rc = ret;
         char m[160];
         mbedtls_strerror(ret, m, sizeof m);
         uint32_t flags = mbedtls_ssl_get_verify_result(&c->ssl);
+        g_last.verify_flags = flags;
         if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED || (flags && flags != 0xFFFFFFFF)) {
             char v[512] = "";
             mbedtls_x509_crt_verify_info(v, sizeof v, "", flags); /* one line per flag, each ending in a newline */
@@ -1003,6 +1011,26 @@ static CURLcode perform_hops(Easy *e) {
 
 /* One transfer: the deadline starts here and covers every redirect hop; a deadline, hv_curl_cancel() or a progress callback ends it with the code
    libcurl would give (28 timed out, 42 aborted) whatever the half-finished read or TLS step reported. */
+int hv_curl_probe(const char *host, const char *port, int https, long limit_ms, HvCurlLast *last) {
+    CURL *h = curl_easy_init();
+    Easy *e = (Easy *)h;
+    if (!e) return CURLE_OUT_OF_MEMORY;
+    memset(&g_last, 0, sizeof g_last);
+    if (limit_ms <= 0) limit_ms = 15000;
+    e->connect_timeout_ms = limit_ms;
+    e->timeout_ms = limit_ms;
+    e->last_tick_ns = now_ns();
+    e->deadline_ns = e->last_tick_ns + limit_ms * 1000000LL;
+    if (__atomic_load_n(&g_deny, __ATOMIC_SEQ_CST)) { if (last) *last = g_last; curl_easy_cleanup(h); return CURLE_COULDNT_CONNECT; }
+    Conn c;
+    CURLcode rc = conn_open(&c, e, https, host, port);
+    if (rc == CURLE_OK) conn_close(&c);
+    else if (e->stop == 1) rc = CURLE_OPERATION_TIMEDOUT;
+    if (last) *last = g_last;
+    curl_easy_cleanup(h);
+    return (int)rc;
+}
+
 CURLcode curl_easy_perform(CURL *c) {
     Easy *e = (Easy *)c;
     __atomic_add_fetch(&g_attempts, 1, __ATOMIC_SEQ_CST);

@@ -2,97 +2,61 @@
   <img src="docs/icon.png" width="120" height="120" alt="Henge">
 </p>
 
-<h1 align="center">Henge</h1>
+# Henge — Android port (experimental)
 
-<p align="center">macOS on your iPhone and iPad.</p>
+An independent Android/ARM64 port of [Leviidev/Henge](https://github.com/Leviidev/Henge), originally developed for iPhone and iPad. This fork adapts Henge's own ARM64 emulation engine to Android; it is not a QEMU-based rewrite.
 
-<p align="center">
-  <a href="#install">Install</a>
-  ·
-  <a href="docs/architecture.md">How it works</a>
-  ·
-  <a href="https://itslevii.dev">Website</a>
-  ·
-  <a href="https://github.com/Leviidev/Henge/releases">Releases</a>
-</p>
+**Work in progress — currently being tested on a Samsung Galaxy S26 Ultra (Android 17). macOS desktop boot on Android has not yet been verified.**
 
-<p align="center">
-  <a href="https://github.com/Leviidev/Henge/releases"><img src="https://img.shields.io/github/downloads/Leviidev/Henge/total?style=flat-square&color=2E6BFF&labelColor=111111" alt="Downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Leviidev/Henge?style=flat-square&color=2E6BFF&labelColor=111111" alt="GPL-2.0-or-later"></a>
-</p>
+[Original Henge README (archived)](docs/upstream/README.md) · [Upstream project](https://github.com/Leviidev/Henge) · [Android development branch](https://github.com/muns5965/Henge/tree/research/android-port) · [Builds / GitHub Actions](https://github.com/muns5965/Henge/actions)
 
-Download macOS, install it on the device, and use it.
+## Changes from upstream
 
-- **Own emulator** — iOS gives apps no hypervisor, so Henge runs the Mac's arm64 code through its own JIT, with its own MMU and devices. It doesn't use QEMU or Virtualization.framework.
-- **Installs on the device** — Henge downloads Apple's restore image and restores it the way a Mac does. No Mac needed, and nothing is decrypted or patched.
-- **Graphics** — macOS draws through a virtual GPU, and Henge replays its commands with Metal. Safari and Electron apps like Discord draw on it.
-- **Touch** — The screen is a trackpad: hold to drag, two fingers to scroll. Esc, Tab, Control, Option and Command sit above the keyboard.
-- **Keyboard and mouse** — On iPad, a Magic Keyboard or a Bluetooth keyboard and mouse drive the Mac directly.
-- **External display** — During a Mac session, connect a display with a video-capable USB-C cable or a USB-C/HDMI dock. The mode activates automatically: the monitor shows the Mac, while the iPhone or iPad keeps its trackpad and keyboard controls. Disconnect to return the image to the device. The existing guest resolution is preserved. On iOS 17–26 the same happens through an older iOS route, not yet tried on hardware; outside a Mac session the display mirrors the device. USB-C video is user-confirmed on an iPhone 17 Pro running iOS 27 (development build 0.1/2).
-- **Sharing** — Copy and paste between macOS and the device, and a shared folder that shows up in Files and on the Mac.
-- **Fits the screen** — On iPad, a new Mac gets a screen the shape of the iPad's, so there are no black bars.
+| Area | Android port |
+| --- | --- |
+| Build and runtime | Android NDK ARM64 builds, APK packaging, native runner processes and Android-specific platform integration |
+| CPU and JIT | Adaptation of the existing ARM64 JIT/MMU engine to Android, including memfd-backed executable mappings |
+| Restore | On-device G7 restore runner, IPSW SHA-256 verification, Android TLS transport and Apple signing-server retry diagnostics |
+| Virtual devices | USB transfer error handling, queue/backpressure and cancellation improvements, reduced repetitive BDIF diagnostics |
+| Storage | Sparse installation disk, AUX storage, incomplete-install preservation, storage management and verified sparse clones |
+| Boot testing | Separate writable clone-only normal-boot runner, machine identity checks and selectable virtual USB diagnostic modes |
+| Display | Shared-memory frame transport and a diagnostic frame preview; full Android desktop integration is not yet verified |
+| Diagnostics | Runtime logs, memory sampling (RSS/PSS), process exit history, AUX comparison and iBoot environment-variable queries |
 
-On an iPhone 17 Pro, macOS reaches the lock screen in about 15 seconds. Discord installs, opens in about 15 seconds, logs in and sends messages.
+These are development changes, not a claim of feature parity with the original iOS app.
 
-## Install
+## Current device testing
 
-Sideload `Henge.ipa` from [Releases](https://github.com/Leviidev/Henge/releases) with SideStore or AltStore, or install `Henge.tipa` with TrollStore or TrollStore Lite. iOS or iPadOS 17 or later, on an A14 or M1 chip or newer. So far it's tested only on an iPhone 17 Pro: iPad support is new and hasn't run on a real iPad yet.
+Status as of 2026-11-25 (developer-reported device tests).
 
-- **JIT** is required: StikDebug, TrollStore (which stops at iOS 17.0), TrollStore Lite (which needs a jailbreak), a jailbreak on its own, or the StikJIT helper built into Henge (iOS 26 or later).
-- **Storage:** about 43 GB free for macOS Sequoia. That's 17 GB for the download, which you can delete afterwards, and 26 GB for the Mac.
-- **Memory:** a Mac gets 4, 6 or 8 GB. Sign Henge with the increased memory limit entitlement if your certificate has it.
+- Device: Samsung Galaxy S26 Ultra, Android 17.
+- Guest: macOS Sequoia 15.6.1 (24G90), VirtualMac2,1.
+- Experimental VM configuration: 2 GiB guest RAM, two vCPUs, 64 MiB JIT region, 128 GiB logical sparse disk.
+- The restore reached ASR system image transfer and verification, Cryptex installation, RecoveryOS installation, boot policy generation and bootable-volume setup.
+- The last observed restore stopped during `seal_system_volume`, before confirmed completion. The installation pair remains `in_progress`.
+- Clone-based normal boot reached iBootStage1 recovery mode. USB port/enumeration variations did not resolve it.
+- AUX inspection and live iBoot queries confirmed `auto-boot=false` and `boot-command=fsboot`. A clone-only auto-boot correction is being tested; persistence and subsequent normal boot are not yet confirmed.
+- No successful Android macOS desktop session has been demonstrated.
 
-Then open the Install tab, pick macOS Sequoia 15.6.1, and keep Henge open with the device plugged in. Tahoe 26.6.2 and macOS 27.2 are offered too, but they aren't tested yet.
+## Experimental APKs
 
-## Sharing with the Mac
+See [GitHub Actions](https://github.com/muns5965/Henge/actions) for Android probe and G7 execution builds on `research/android-port`. Build artifacts may require GitHub sign-in and may expire. The start-enabled G7 APK is an explicitly published test build, not a stable release.
 
-Do this once for each Mac: open Terminal on the Mac, then in Henge open Details and tap **Type the Set Up Command**. Press Return on the Mac, and choose Allow when macOS asks about `henge-agent` and local networks. It needs the Mac's keyboard layout to be U.S.
+Keep the original installation disk and AUX together. Do not delete app data or overwrite an incomplete installation while diagnosing it. Clone boot tests can write to the selected clone; they are not read-only tests of the original disk.
 
-Then a Henge folder in the Mac's home folder is the same folder as Files › Henge › Shared. What you copy on the Mac is copied on the device too, and the paste button pastes from the device into the Mac.
+## Development
 
-## Known limits
+The Android port is developed on `research/android-port`. See the [Android G7 workflow](.github/workflows/android-g7exec.yml) for the runner and APK build steps, and [G7 analysis notes](docs/g7-analysis-notes.md) for diagnostic context. The original iOS build instructions and feature descriptions are preserved in the [archived README](docs/upstream/README.md).
 
-- Signing in to an Apple Account inside macOS fails with a verification error.
-- Graphics are tested on macOS's own apps, Chrome, Firefox, VS Code and Discord. Other apps may draw wrongly.
-- For the first few minutes after you log in, macOS is busy starting up in the background, so apps open more slowly.
-- Only one Mac can start per launch. Quit Henge and open it again to start another, and to start one again after restarting or shutting down macOS.
-- iPadOS keeps some keyboard shortcuts for itself, such as Command-Tab.
-- It's emulation, so it runs slower than a real Mac.
+## Known limitations
 
-## Screenshots
+- Restore completion and normal macOS boot on Android remain unverified.
+- Long-running restore stability and process termination causes are still under investigation.
+- Full desktop display, input, networking, audio and upstream iOS feature parity are not established on Android.
+- Current APKs are intended for development and testing, not daily use.
 
-<table>
-  <tr>
-    <td align="center" colspan="3"><img src="Screenshots/ipad.jpg" alt="Discord on an iPad"><br><sub>iPad</sub></td>
-  </tr>
-  <tr>
-    <td align="center" width="33%"><img src="Screenshots/macs.png" alt="Macs"><br><sub>Macs</sub></td>
-    <td align="center" width="33%"><img src="Screenshots/trackpad.png" alt="Trackpad"><br><sub>Trackpad</sub></td>
-    <td align="center" width="33%"><img src="Screenshots/install.png" alt="Install macOS"><br><sub>Install macOS</sub></td>
-  </tr>
-</table>
+## Credits and licence
 
-<sub>Captured on a Mac: the app's own screens with sample data, at iPad and iPhone sizes, showing a frame from Henge's renderer.</sub>
+Original Henge by [Leviidev](https://github.com/Leviidev). This is an independent fork; upstream iOS results should not be interpreted as Android results.
 
-## Building
-
-To use Henge, install the [latest release](https://github.com/Leviidev/Henge/releases). Every change lands on `main` as it's made, so `main` can be unfinished between releases.
-
-On a Mac with Xcode 27 or later and `xcodegen`. Henge takes StikJIT, on-device pairing, libslirp and glib from a built [Husk](https://github.com/Leviidev/Husk) checkout at `~/Documents/Coding/Husk` (set `HUSK` to use another path):
-
-```bash
-ios/scripts/fetch_deps.sh
-tools/build_ios_restore.sh
-make ios-lib
-ios/scripts/package_ipa.sh
-```
-
-That produces `~/Desktop/Henge.ipa`, and `package_ipa.sh --trollstore` writes `Henge.tipa`.
-
-`make` builds the engine for the Mac, `build/hengevm`, and `make test` runs its tests.
-
-## Licence
-
-GPL-2.0-or-later. Henge compiles in usbmuxd (GPLv2 or GPLv3) and code from Husk (GPL-2.0-or-later), so the shipped binary is a combined GPL work. It cannot go on the App Store. See [docs/licensing.md](docs/licensing.md).
-
-macOS and the Mac's boot ROM are Apple's and aren't part of Henge. Henge downloads both from Apple when you install.
+GPL-2.0-or-later. See [LICENSE](LICENSE) and [licensing notes](docs/licensing.md). macOS and the Mac boot ROM belong to Apple and are not distributed as part of Henge.

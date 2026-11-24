@@ -34,7 +34,7 @@ public final class G7Clone {
 
     /** Space that must stay free after the copy, besides the copy itself. */
     public static final long RESERVE_BYTES = 8L << 30;
-    static final String[] MEMBERS = {"macos_disk.img", "macos_aux.img", "macos_aux.initial"};   // the last one is optional
+    static final String[] MEMBERS = {"macos_disk.img", "macos_aux.img", "macos_aux.initial"};   // the last one is optional; g7_state.txt (state word and the ECID TAG, not the ECID) is copied byte for byte as well
     static final int CHUNK = 1 << 20;
     static final String MARKER = "clone_state.txt";
 
@@ -64,6 +64,7 @@ public final class G7Clone {
             String state = G7Storage.stateOf(new File(priv, "g7_state.txt"));
             if (!state.equals("in_progress") && !state.equals("done")) return new Result(false, "설치 쌍의 상태를 읽을 수 없어 복제하지 않았습니다.", null);
 
+            String tag = tagOf(new File(priv, "g7_state.txt"));
             List<File> src = new ArrayList<>();
             src.add(disk); src.add(aux); if (exists(init.toPath())) src.add(init);
             long need = 0; long[] size = new long[src.size()], mtime = new long[src.size()];
@@ -91,11 +92,12 @@ public final class G7Clone {
             for (int n = 1; n < 1000 && dir == null; n++) { File c = new File(clones, String.format("clone-%03d", n)); if (c.mkdir()) dir = c; }
             if (dir == null) return new Result(false, "복제 폴더 이름을 정할 수 없습니다(clone-001..999가 이미 있음).", null);
             List<File> partials = new ArrayList<>();
+            List<File> created = new ArrayList<>();   // files of THIS call that already have their final names (removed again if the call fails)
             try {
                 for (int i = 0; i < src.size(); i++) {
                     File part = new File(dir, src.get(i).getName() + ".partial");
                     partials.add(part);
-                    copyOne(src.get(i), part, size[i], ext.get(i), cancel);
+                    copyOne(src.get(i), part, size[i], ext.get(i), cancel, freeBytes);
                 }
                 for (int i = 0; i < src.size(); i++) {
                     List<long[]> got = ex.data(partials.get(i), size[i]);
@@ -104,30 +106,96 @@ public final class G7Clone {
                 }
                 for (int i = 0; i < src.size(); i++)
                     if (src.get(i).length() != size[i] || src.get(i).lastModified() != mtime[i]) throw new IOException("복제 중 원본이 바뀌었습니다(" + src.get(i).getName() + ")");
-                long alloc = 0;
+                long srcAlloc = 0, alloc = 0;
+                for (File f : src) srcAlloc += sizer.allocated(f);
+                for (int i = 0; i < src.size(); i++) alloc += sizer.allocated(partials.get(i));
+                if (alloc > srcAlloc + srcAlloc / 10 + (64L << 20)) throw new IOException("복제본의 실제 사용량(" + G7Storage.fmt(alloc) + ")이 원본(" + G7Storage.fmt(srcAlloc) + ")보다 허용 범위 이상으로 큽니다");
+                // the state file (state word and ECID TAG; the ECID itself is not in it) is copied byte for byte; it is what ties the copy to the ECID of the restore
+                Path stateCopy = new File(dir, "g7_state.txt").toPath();
+                try (FileChannel c = FileChannel.open(stateCopy, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                    ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(new File(priv, "g7_state.txt").toPath()));
+                    while (b.hasRemaining()) c.write(b);
+                    c.force(true);
+                }
+                created.add(stateCopy.toFile());
                 for (int i = 0; i < src.size(); i++) {
                     File fin = new File(dir, src.get(i).getName());
                     if (exists(fin.toPath())) throw new IOException("대상 이름이 이미 있습니다");
                     Files.move(partials.get(i).toPath(), fin.toPath());
-                    alloc += sizer.allocated(fin);
+                    created.add(fin);
                 }
-                String mk = "state=clone_complete\nsource_state=" + state + "\nlogical_disk_bytes=" + size[0] + "\nallocated_bytes=" + alloc + "\nmembers=" + src.size() + "\n";
-                try (FileChannel c = FileChannel.open(new File(dir, MARKER).toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                String mk = "state=clone_complete\nsource_state=" + state + "\nlogical_disk_bytes=" + size[0] + "\nallocated_bytes=" + alloc + "\nmembers=" + src.size() + "\necid_tag=" + tag + "\n";
+                // the marker is written under a temporary name, forced to storage and renamed last: a marker that exists is a complete one
+                File tmp = new File(dir, MARKER + ".tmp"); created.add(tmp);
+                try (FileChannel c = FileChannel.open(tmp.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                     ByteBuffer b = ByteBuffer.wrap(mk.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     while (b.hasRemaining()) c.write(b);
                     c.force(true);
                 }
+                created.remove(tmp);
+                Files.move(tmp.toPath(), new File(dir, MARKER).toPath());
+                created.add(new File(dir, MARKER));
                 return new Result(true, "복제본을 만들고 검증했습니다: " + dir.getName() + "(실제 " + G7Storage.fmt(alloc) + "). 원본은 읽기만 했습니다.", dir);
             } catch (IOException | RuntimeException e) {
-                String cleaned = cleanup(dir, partials);
+                List<File> all = new ArrayList<>(partials); all.addAll(created); File tmpm = new File(dir, MARKER + ".tmp"); all.add(tmpm);
+                String cleaned = cleanup(dir, all);
                 return new Result(false, (e instanceof Cancelled ? "취소했습니다" : "복제하지 못했습니다: " + e.getMessage()) + ". " + cleaned + " 원본은 바뀌지 않았습니다.", null);
             }
         }
     }
 
+    /** The ECID TAG a state file carries ("ecid_tag=<16 hex>" on its second line), or "none". */
+    static String tagOf(File stateFile) {
+        try {
+            String[] l = new String(Files.readAllBytes(stateFile.toPath()), java.nio.charset.StandardCharsets.UTF_8).split("\n");
+            if (l.length >= 2 && l[1].matches("ecid_tag=[0-9a-f]{16}")) return l[1].substring(9);
+        } catch (IOException | RuntimeException e) { /* none */ }
+        return "none";
+    }
+
+    /** The tag the restore wrote for this ECID: the first 8 bytes of SHA-256("henge-g7-ecid" NUL, ECID as 8 big-endian bytes), in hex (the same value the restore preflight computes as hv_g7_ecid_tag). */
+    static String ecidTag(long ecid) {
+        try {
+            byte[] in = new byte[22]; byte[] pre = "henge-g7-ecid".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            System.arraycopy(pre, 0, in, 0, pre.length);   // in[13] stays 0
+            for (int i = 0; i < 8; i++) in[14 + i] = (byte) (ecid >>> (56 - 8 * i));
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(in);
+            StringBuilder sb = new StringBuilder(); for (int i = 0; i < 8; i++) sb.append(String.format("%02x", d[i] & 0xff));
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    /** Null when `dir` is a finished clone of THIS app that belongs to `ecid`: exactly priv/clones/clone-NNN (no link anywhere, no path tricks), the marker complete and consistent, only the known files, sizes matching, and the ECID tag of the copy (marker and state file) equal to the one for `ecid`. Reads only. */
+    public static String validate(File dir, File priv, long ecid) {
+        try {
+            if (dir == null || !dir.getName().matches("clone-[0-9]{3}")) return "복제 폴더 이름이 아닙니다";
+            File want = new File(new File(priv.getCanonicalFile(), "clones"), dir.getName());
+            if (!dir.getCanonicalFile().equals(want) || !dir.getAbsoluteFile().equals(dir.getCanonicalFile())) return "복제 폴더 경로가 이 앱의 clones 폴더가 아닙니다(링크나 상대 경로 포함)";
+            if (Files.isSymbolicLink(dir.toPath()) || !Files.isDirectory(dir.toPath(), LinkOption.NOFOLLOW_LINKS)) return "복제 폴더가 일반 폴더가 아닙니다";
+            File[] have = dir.listFiles(); if (have == null) return "복제 폴더를 읽을 수 없습니다";
+            java.util.Set<String> known = new java.util.HashSet<>(java.util.Arrays.asList("macos_disk.img", "macos_aux.img", "macos_aux.initial", "g7_state.txt", MARKER));
+            int members = 0;
+            for (File f : have) {
+                if (!known.contains(f.getName())) return "알 수 없는 파일이 있습니다: " + f.getName();
+                if (!regular(f.toPath())) return f.getName() + "가 일반 파일이 아닙니다(링크 등)";
+                if (f.getName().startsWith("macos_")) members++;
+            }
+            File mf = new File(dir, MARKER); if (!regular(mf.toPath())) return "완료 표식이 없습니다(끝나지 않은 복제본)";
+            String[] l = new String(Files.readAllBytes(mf.toPath()), java.nio.charset.StandardCharsets.UTF_8).split("\n", -1);
+            if (l.length != 7 || !l[6].isEmpty() || !l[0].equals("state=clone_complete") || !l[1].matches("source_state=(in_progress|done)")
+                    || !l[2].matches("logical_disk_bytes=[0-9]{1,15}") || !l[3].matches("allocated_bytes=[0-9]{1,15}") || !l[4].matches("members=[23]") || !l[5].matches("ecid_tag=([0-9a-f]{16}|none)")) return "완료 표식의 내용이 올바르지 않습니다";
+            if (Integer.parseInt(l[4].substring(8)) != members) return "표식의 구성 파일 수가 실제와 다릅니다";
+            if (new File(dir, "macos_disk.img").length() != Long.parseLong(l[2].substring(19))) return "디스크 크기가 표식과 다릅니다";
+            String markTag = l[5].substring(9), fileTag = tagOf(new File(dir, "g7_state.txt"));
+            if (markTag.equals("none") || !markTag.equals(fileTag)) return "복제본이 ECID에 묶여 있지 않습니다(태그 없음 또는 표식과 불일치)";
+            if (ecid <= 0 || !markTag.equals(ecidTag(ecid))) return "현재 ECID가 이 복제본을 만든 복원의 ECID와 다릅니다";
+            return null;
+        } catch (IOException | RuntimeException e) { return "복제본을 검증하지 못했습니다: " + e.getMessage(); }
+    }
+
     static final class Cancelled extends IOException { Cancelled() { super("cancelled"); } }
 
-    /** Removes only the .partial files of this call and the folder when it is then empty. */
+    /** Removes only the files of this call (the .partial files and any already renamed or written) and the folder when it is then empty. */
     private static String cleanup(File dir, List<File> partials) {
         for (File p : partials) { try { Files.deleteIfExists(p.toPath()); } catch (IOException ignored) { } }
         File[] left = dir.listFiles();
@@ -135,13 +203,16 @@ public final class G7Clone {
         return "정리하지 못한 파일이 있을 수 있습니다(" + dir.getName() + "에 marker가 없으면 복제본이 아닙니다).";
     }
 
-    private static void copyOne(File src, File dst, long size, List<long[]> extents, BooleanSupplier cancel) throws IOException {
+    private static void copyOne(File src, File dst, long size, List<long[]> extents, BooleanSupplier cancel, LongSupplier freeBytes) throws IOException {
         try (RandomAccessFile len = new RandomAccessFile(dst, "rw")) { if (len.length() != 0) throw new IOException("target not empty"); len.setLength(size); }
         try (FileChannel in = FileChannel.open(src.toPath(), StandardOpenOption.READ); FileChannel out = FileChannel.open(dst.toPath(), StandardOpenOption.WRITE)) {
             ByteBuffer buf = ByteBuffer.allocate(CHUNK);
+            int chunks = 0;
             for (long[] e : extents) {
                 for (long pos = e[0]; pos < e[1]; ) {
                     if (cancel.getAsBoolean()) throw new Cancelled();
+                    // the 8 GiB reserve is checked again while copying (every 64 MiB written), not only before: other files may grow meanwhile
+                    if ((++chunks & 63) == 0 && freeBytes.getAsLong() < RESERVE_BYTES) throw new IOException("여유 공간이 기준(" + G7Storage.fmt(RESERVE_BYTES) + ") 아래로 내려갔습니다");
                     int want = (int) Math.min(CHUNK, e[1] - pos);
                     buf.clear(); buf.limit(want);
                     int n = in.read(buf, pos);

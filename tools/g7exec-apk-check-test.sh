@@ -15,16 +15,22 @@ def apk(name, files):
         z.writestr("AndroidManifest.xml", "x")
         for k, v in files.items(): z.writestr(k, v)
 good = elf(183, b"G7RUN RESULT g7-result: ")
+cb = elf(183, b"ui_runner_vm_clone")
+CB = "lib/arm64-v8a/libg7cloneboot.so"
 apk("general", {"classes.dex": b"dex\nMainActivity G7ProbeLauncher", "lib/arm64-v8a/libg7probe.so": elf(183)})
 apk("general_lib", {"classes.dex": b"dex", "lib/arm64-v8a/libg7runner.so": good})
 apk("general_cls", {"classes.dex": b"dex G7ExecLauncher"})
 OFF = b" G7-BUILD-KIND:EXEC-OFF"; ON = b" G7-BUILD-KIND:START-ON"
-apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
-apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good})
-apk("exec_with_on", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good})
-apk("exec_nomarker", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good})
-apk("start_with_off", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
-apk("start_both", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF + ON, "lib/arm64-v8a/libg7runner.so": good})
+apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("exec_with_on", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("exec_nomarker", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("start_with_off", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("start_both", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("general_cb", {"classes.dex": b"dex", CB: cb})
+apk("exec_nocb", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
+apk("exec_cb_x86", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: elf(62, b"ui_runner_vm_clone")})
+apk("exec_cb_wrong", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: elf(183, b"hello")})
 apk("general_marker", {"classes.dex": b"dex" + ON})
 apk("start_nolib", {"classes.dex": b"dex G7ExecLauncher" + ON})
 apk("exec_nolib", {"classes.dex": b"dex G7ExecLauncher" + OFF})
@@ -46,6 +52,10 @@ t bad start start_with_off
 t bad start start_both
 t bad start start_nolib
 t bad general general_marker
+t bad general general_cb
+t bad exec exec_nocb
+t bad exec exec_cb_x86
+t bad exec exec_cb_wrong
 t bad exec exec_nolib
 t bad exec exec_x86
 t bad exec exec_notrunner

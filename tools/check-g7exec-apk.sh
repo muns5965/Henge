@@ -9,6 +9,7 @@ fail=0; bad() { echo "FAIL $*"; fail=1; }
 L=$(unzip -l "$APK" 2>/dev/null)
 echo "$L" | grep -q "AndroidManifest.xml" || { echo "FAIL not an APK: $APK"; exit 1; }
 has_lib=$(echo "$L" | grep -c "lib/arm64-v8a/libg7runner.so")
+has_cb=$(echo "$L" | grep -c "lib/arm64-v8a/libg7cloneboot.so")
 D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
 unzip -q -o "$APK" 'classes*.dex' -d "$D" 2>/dev/null
 has_cls=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7ExecLauncher\|G7ExecActivity\|G7LogProvider\|G7Isolation")
@@ -16,6 +17,7 @@ k_off=$(cat "$D"/classes*.dex 2>/dev/null | grep -a -c "G7-BUILD-KIND:EXEC-OFF")
 case $M in
   general)
     [ "$has_lib" = 0 ] || bad "the general APK contains libg7runner.so"
+    [ "$has_cb" = 0 ] || bad "the general APK contains libg7cloneboot.so"
     [ "$has_cls" = 0 ] || bad "the general APK contains the G7 execution launcher or activity"
     [ "$k_off" = 0 ] && [ "$k_on" = 0 ] || bad "the general APK carries a G7 build-kind marker"
     ;;
@@ -24,6 +26,12 @@ case $M in
     else [ "$k_on" != 0 ] && [ "$k_off" = 0 ] || bad "the start APK must carry the START-ON marker and not the EXEC-OFF one (off=$k_off on=$k_on)"; fi
     [ "$has_lib" = 1 ] || bad "the execution APK does not contain libg7runner.so"
     [ "$has_cls" != 0 ] || bad "the execution APK does not contain the launcher/activity"
+    [ "$has_cb" = 1 ] || bad "the execution APK does not contain libg7cloneboot.so"
+    if [ "$has_cb" = 1 ]; then
+      unzip -q -o "$APK" lib/arm64-v8a/libg7cloneboot.so -d "$D"
+      "$READELF" -h "$D/lib/arm64-v8a/libg7cloneboot.so" 2>/dev/null | grep -q "AArch64" || bad "libg7cloneboot.so is not AArch64"
+      grep -a -q "ui_runner_vm_clone" "$D/lib/arm64-v8a/libg7cloneboot.so" || bad "libg7cloneboot.so is not the clone-boot runner"
+    fi
     if [ "$has_lib" = 1 ]; then
       unzip -q -o "$APK" lib/arm64-v8a/libg7runner.so -d "$D"
       "$READELF" -h "$D/lib/arm64-v8a/libg7runner.so" 2>/dev/null | grep -q "AArch64" || bad "libg7runner.so is not AArch64"

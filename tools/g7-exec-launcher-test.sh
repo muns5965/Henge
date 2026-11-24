@@ -34,4 +34,9 @@ java -cp "$O6" dev.muns.hengeprobe.G7ExitTraceTest; R7=$?
 O8="$OUT-clone"; rm -rf "$O8"; mkdir -p "$O8"
 javac -encoding UTF-8 -d "$O8" $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7CloneTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O8/javac.log" || { echo "FAILED javac (clone)"; head -30 "$O8/javac.log"; exit 1; }
 java -cp "$O8" dev.muns.hengeprobe.G7CloneTest; R8=$?
-[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ]
+# the clone-boot launcher (fake process) and the boot-stage estimate
+O9="$OUT-cboot"; rm -rf "$O9"; mkdir -p "$O9"
+javac -encoding UTF-8 -d "$O9" $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $X/G7CloneBoot.java $X/G7BootStage.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7CloneTest.java tests/java/G7CloneBootTest.java tests/java/G7BootStageTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O9/javac.log" || { echo "FAILED javac (cloneboot)"; head -30 "$O9/javac.log"; exit 1; }
+java -cp "$O9" dev.muns.hengeprobe.G7CloneBootTest; R9=$?
+java -cp "$O9" dev.muns.hengeprobe.G7BootStageTest; R10=$?
+[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ] && [ $R9 = 0 ] && [ $R10 = 0 ]

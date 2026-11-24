@@ -36,6 +36,12 @@ on:
       - tools/check-g7exec-*.sh
       - tools/g7-watch-test.sh
       - tools/g7-mem-test.sh
+      - tools/ui-runner-vm-clone-build.sh
+      - tools/check-runner-vm-clone-safe.sh
+      - tools/clone-dir-test.sh
+      - tests/test_clone_dir.c
+      - host/clone_dir.h
+      - host/ui_runner_vm_clone.c
       - tests/test_g7_mem.c
       - host/g7_mem.h
       - tests/test_g7_watch.c
@@ -69,13 +75,14 @@ jobs:
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
-          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
           tools/g7-watch-test.sh
           tools/g7-mem-test.sh
           tools/g7-tssdiag-test.sh
           tools/net-probe-test.sh build-netprobe-host
+          tools/clone-dir-test.sh
           tools/g7-exec-launcher-test.sh build-g7exec-java
       - name: Build the engine objects, the restore stack WITHOUT stop switches, and the G7 execution runner (link; NOT run)
         run: |
@@ -89,6 +96,9 @@ jobs:
           "$T/llvm-readelf" -h build-g7exec/g7_runner_real | grep -E "Class|Machine|Type"
           mkdir -p android/app/src/g7exec/jniLibs/arm64-v8a
           cp build-g7exec/g7_runner_real android/app/src/g7exec/jniLibs/arm64-v8a/libg7runner.so
+          # the clone-boot runner (host/ui_runner_vm_clone.c): a normal boot of a verified CLONE, storage writable only there; a separate binary so the installed runner stays read-only. Link + static check, NOT run.
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-clone-build.sh build-engine
+          cp build-engine/ui_runner_vm_clone android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so
       - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"

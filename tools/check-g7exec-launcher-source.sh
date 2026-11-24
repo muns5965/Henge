@@ -40,6 +40,19 @@ x=$(grep -nE 'FileOutputStream|FileWriter|StandardOpenOption.(APPEND|TRUNCATE_EX
 grep -q 'static volatile Run CURRENT' "$L" || bad "the run state must be process-wide (CURRENT)"
 x=$(grep -nE 'G7ExecLauncher\.Run [a-z]+;|private .*Run run' "$A"); [ -z "$x" ] || { bad "the activity keeps run state in a field:"; echo "$x"; }
 x=$(grep -nE 'FileOutputStream|FileWriter|Files\.write|createNewFile|openFileOutput' "$A"); [ -z "$x" ] || { bad "the activity writes files:"; echo "$x"; }
+# the clone-boot launcher (G7CloneBoot): its own single process creation, the same start switch, no ECID on a command line, never names the original pair's files, writes only its own new log
+CB=$XJ/G7CloneBoot.java
+[ -f "$CB" ] || bad "G7CloneBoot.java is missing"
+[ "$(grep -c 'new ProcessBuilder' "$CB")" = 1 ] || bad "exactly one ProcessBuilder in G7CloneBoot"
+grep -q 'return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun,' "$CB" || bad "G7CloneBoot.start() must pass the START_ENABLED constant and the live-run check"
+[ "$(grep -c 'startWith(REAL' "$CB")" = 1 ] || bad "G7CloneBoot: REAL spawner is used in more than one place"
+grep -q 'LIB_NAME = "libg7cloneboot.so"' "$CB" || bad "G7CloneBoot LIB_NAME must be libg7cloneboot.so"
+grep -q 'G7Clone.validate(' "$CB" || bad "G7CloneBoot must validate the clone before it starts"
+grep -q 'G7Isolation.gate(' "$CB" || bad "G7CloneBoot must pass the isolation gate"
+grep -q 'synchronized (G7ExecLauncher.START_LOCK)' "$CB" || bad "G7CloneBoot must hold the start lock"
+x=$(grep -nE '"--ecid"|--ecid |"--installer|"--seed|macos_disk|macos_aux|"--readonly|\.delete\(|renameTo|Files\.(delete|move|copy)|FileOutputStream|FileWriter|RandomAccessFile' "$CB"); [ -z "$x" ] || { bad "G7CloneBoot: a forbidden option or file operation:"; echo "$x"; }
+grep -q 'mask(' "$CB" || bad "G7CloneBoot output must pass through mask()"
+[ "$(grep -c 'Files.newOutputStream' "$CB")" = 1 ] && grep -q 'Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW' "$CB" || bad "G7CloneBoot: exactly one output stream, the run log, CREATE_NEW"
 # the activity: no intent input, no logging, starts only through the launcher
 x=$(grep -nE 'getIntent|getExtras|getStringExtra|Log\.[a-z]\(' "$A" "$L"); [ -z "$x" ] || { bad "intent input or logging:"; echo "$x"; }
 grep -q 'G7ExecLauncher.start(' "$A" || bad "the activity must start only through G7ExecLauncher.start"

@@ -105,7 +105,9 @@ public final class G7ExecLauncher {
     static final Object START_LOCK = new Object();
 
     /** True while a run of this app process is going (what start() refuses on and G7Isolation checks). */
-    static boolean hasLiveRun() { Run c = CURRENT; return c != null && !c.finished(); }
+    /** A second kind of live process (the clone-boot runner, G7CloneBoot) reports itself here, so every gate that asks "is anything of ours live" sees both. */
+    static volatile java.util.function.BooleanSupplier OTHER_LIVE = () -> false;
+    static boolean hasLiveRun() { Run c = CURRENT; return (c != null && !c.finished()) || OTHER_LIVE.getAsBoolean(); }
 
     /** After the runner has ended, how long the output pipe may stay open before the log is closed as incomplete (a child that kept the pipe must not keep the screen on "running"). */
     static volatile long drainMillis = 3000;
@@ -230,8 +232,7 @@ public final class G7ExecLauncher {
         File work = new File(filesDir, WORK_NAME);
         if (!work.isDirectory() && !work.mkdirs()) return new Start(false, "작업 디렉터리를 만들지 못해 시작하지 않았습니다.", null);
         synchronized (START_LOCK) {
-            Run cur = CURRENT;
-            if (cur != null && !cur.finished()) return new Start(false, "이미 실행 중인 G7 프로세스가 있어 시작하지 않았습니다.", null);
+            if (hasLiveRun()) return new Start(false, "이미 실행 중인 G7 프로세스가 있어 시작하지 않았습니다.", null);
             File log = new File(filesDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + LOG_SUFFIX);
             OutputStream logOut;
             try { logOut = Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE); }   // never overwrites an earlier log
@@ -356,7 +357,7 @@ public final class G7ExecLauncher {
 
     /** The only files the log provider may hand out: run logs of this app, by plain name. Returns null for anything else. */
     static File logFile(File filesDir, String name) {
-        if (name == null || !(name.matches("g7_run_[0-9]{13}\\.txt") || name.matches("g7_net_[0-9]{13}\\.txt"))) return null;   // run logs and network-probe logs
+        if (name == null || !(name.matches("g7_run_[0-9]{13}\\.txt") || name.matches("g7_net_[0-9]{13}\\.txt") || name.matches("g7_cboot_[0-9]{13}\\.txt"))) return null;   // run logs and network-probe logs
         File f = new File(filesDir, name);
         return f.isFile() ? f : null;
     }

@@ -29,7 +29,7 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
     private LinearLayout archiveBox;
@@ -110,6 +110,13 @@ public class G7ExecActivity extends Activity {
         delCur.setOnClickListener(v -> confirmDeleteCurrent());
         cloneBtn = new Button(this); cloneBtn.setText("설치 쌍 희소 복제본 만들기(원본은 읽기만)"); root.addView(cloneBtn);
         cloneBtn.setOnClickListener(v -> confirmClone());
+        add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).");
+        cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
+        cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
+        cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유"); root.addView(cbShare);
+        cbtn.setOnClickListener(v -> confirmCloneBoot());
+        cbStop.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
+        cbShare.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); shareFile(r == null ? null : G7ExecLauncher.logFile(getFilesDir(), r.logName()), "복제본 부팅 로그 공유"); });
         share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
         copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
         add(root, "[네트워크 시험] Apple 서명 서버 주소 3개에 이름 조회·TCP 연결·TLS 핸드셰이크만 시험합니다(요청 본문 전송 없음, 최대 약 5분, 복원 없음). 복원이 실행 중일 때도 시작할 수 있어 비교에 쓸 수 있습니다.", 13);
@@ -226,6 +233,31 @@ public class G7ExecActivity extends Activity {
                 .setMessage("지금 vm/의 설치 쌍(디스크·AUX)을 vm/clones/clone-NNN/ 로 복제합니다. 원본은 읽기만 하고 바꾸지 않으며 상태(in_progress)도 그대로입니다. 디스크의 구멍은 그대로 두고 실제 데이터만 복사하고(구멍 정보가 없는 파일시스템이면 복사하지 않습니다), 끝나면 데이터를 다시 읽어 검증합니다. 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다. 취소 버튼으로 중단할 수 있습니다. 복제본으로 부팅하는 기능은 아직 켜지 않았습니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
+    }
+
+    private void confirmCloneBoot() {
+        final List<File> clones = G7CloneBoot.listValid(privDir);
+        if (clones.isEmpty()) { status.setText("부팅할 수 있는 검증된 복제본이 없습니다(복제본을 먼저 만드세요)."); return; }
+        final String[] names = new String[clones.size()];
+        for (int i = 0; i < names.length; i++) names[i] = clones.get(i).getName();
+        final int[] pick = {0};
+        final CheckBox ok = new CheckBox(this); ok.setText("선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의합니다(원본은 쓰지 않음).");
+        ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(ok)
+                .setNegativeButton("취소", null)
+                .setPositiveButton("부팅", (d, w) -> {
+                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt());
+                    status.setText(st.message);
+                    if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
+                }).show();
+    }
+
+    private void cbootPoll() {
+        final G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r == null) return;
+        log.setText(r.stageSummary() + "\n\n" + r.tail());
+        if (r.finished()) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.stageSummary()); return; }
+        log.postDelayed(this::cbootPoll, 2000);
     }
 
     private void runClone() {

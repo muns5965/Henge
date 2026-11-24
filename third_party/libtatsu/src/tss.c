@@ -1760,9 +1760,23 @@ const char* tss_last_diag(void) { return tss_diag; }
 /* Per-attempt observer for the host. Called on the thread that ran curl_easy_perform, right after that attempt's diagnosis was built (so tss_last_diag()
    describes it) and before the retry decision, with the attempt number, curl's return code, the HTTP code (0 = none) the milliseconds the transfer took and which of the built-in addresses it used (1..3 in the order of the list below; 0 = the caller named the address).
    It gets numbers only: no URL, no request or reply text. NULL = none (the default). */
-static void (*tss_attempt_hook)(int attempt, int curl_rc, long http_code, long long elapsed_ms, int url_index) = NULL;
-void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int)) { tss_attempt_hook = hook; }
+static void (*tss_attempt_hook)(int attempt, int curl_rc, long http_code, long long elapsed_ms, int url_index, long long since_start_ms) = NULL;
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int, long long)) { tss_attempt_hook = hook; }
 static long long tss_now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
+
+/* Retry timing of this flavour. A failed host name lookup (curl 6) is usually the phone's resolver being briefly unavailable, so the waits between such attempts
+   grow: 2, 4, 8, 16, 30 "seconds" (60 in all over six attempts). Every other retryable failure keeps the old 2 s. No wait follows the last attempt.
+   The whole request (attempts and waits) is bounded by tss_max_seconds on the monotonic clock; each transfer's own limits are cut to what is left.
+   tss_wait_abort (set by the host) is asked every 100 ms while waiting, so a user's cancel is not held back by a long wait.
+   tss_unit_ms is one "second" of the waits: 1000 in the app, shortened by the local tests only.
+   Known limit: the host-name lookup inside a transfer (getaddrinfo) cannot be interrupted, so a lookup that hangs can carry a request past tss_max_seconds;
+   the limit is checked when the lookup returns and before each further attempt. */
+static long long tss_unit_ms = 1000;
+static int tss_max_seconds = TSS_HTTPS_MAX_SECONDS;
+static int (*tss_wait_abort)(void) = NULL;
+void tss_set_backoff_unit_ms(long ms) { if (ms >= 1 && ms <= 1000) tss_unit_ms = ms; }
+void tss_set_max_seconds(int s) { if (s >= 1 && s <= TSS_HTTPS_MAX_SECONDS) tss_max_seconds = s; }
+void tss_set_wait_abort(int (*fn)(void)) { tss_wait_abort = fn; }
 
 /* Case-insensitive search of needle inside s[0..n) without copying s. */
 static int tss_span_has(const char* s, size_t n, const char* needle)
@@ -1815,6 +1829,34 @@ static void tss_diag_set(const char* fmt, ...)
 	/* the arguments are numbers and fixed words; make sure of printable ASCII anyway */
 	for (char* c = tss_diag; *c; c++) if ((unsigned char)*c < 32 || (unsigned char)*c > 126) *c = '?';
 }
+/* How long to wait after a failed attempt (ms). *dns_fails counts failed lookups in a row; any other failure resets it. */
+static long long tss_retry_wait_ms(CURLcode rc, int* dns_fails)
+{
+	static const int dns_s[5] = { 2, 4, 8, 16, 30 };
+	if (rc != CURLE_COULDNT_RESOLVE_HOST) {
+		*dns_fails = 0;
+		return 2 * tss_unit_ms;
+	}
+	int i = (*dns_fails)++;
+	return (long long)dns_s[i < 5 ? i : 4] * tss_unit_ms;
+}
+/* Waits ms in slices of at most 100 ms. Returns 0 when the host asked to stop (the request ends), else 1. The overall limit is not enforced here:
+   the wait just ends when the limit is reached and the loop's own check gives up. */
+static int tss_wait(long long ms, long long started_ms, int attempt)
+{
+	long long end = tss_now_ms() + ms;
+	for (;;) {
+		if (tss_wait_abort && tss_wait_abort()) {
+			error("ERROR: tss_send_request: stopped while waiting to retry\n");
+			tss_diag_set("TSS_ATTEMPTS: %d / STOPPED_WHILE_WAITING / MESSAGE_RAW: suppressed", attempt);
+			return 0;
+		}
+		long long now = tss_now_ms();
+		if (now >= end || now - started_ms >= (long long)tss_max_seconds * 1000) return 1;
+		long long left = end - now;
+		usleep((useconds_t)((left < 100 ? left : 100) * 1000));
+	}
+}
 #endif
 
 plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
@@ -1830,8 +1872,9 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 #ifdef HV_TSS_HTTPS_ONLY
 	max_retries = tss_max_attempts;
 	tss_diag[0] = 0;
-	url_count = 3; /* the https entries only */
-	time_t started = time(NULL);
+	url_count = 1; /* gs.apple.com only: it is the one built-in address that has a trust anchor and passed the TLS check in every test; the other two never produced a usable connection  */
+	long long started_ms = tss_now_ms();
+	int dns_fails = 0;
 	if (server_url_string && !tss_url_allowed(server_url_string)) {
 		error("ERROR: tss_send_request: refusing a TSS URL that is not https\n");
 		return NULL;
@@ -1855,8 +1898,8 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 
 	while (retry++ < max_retries) {
 #ifdef HV_TSS_HTTPS_ONLY
-		if (retry > 1 && time(NULL) - started >= TSS_HTTPS_MAX_SECONDS) {
-			error("ERROR: tss_send_request: giving up after %d seconds\n", TSS_HTTPS_MAX_SECONDS);
+		if (retry > 1 && tss_now_ms() - started_ms >= (long long)tss_max_seconds * 1000) {
+			error("ERROR: tss_send_request: giving up after %d seconds\n", tss_max_seconds);
 			break;
 		}
 #endif
@@ -1899,8 +1942,15 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 			debug("Request URL set to %s\n", urls[url_index]);
 		}
 #ifdef HV_TSS_HTTPS_ONLY
-		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, tss_connect_s);
-		curl_easy_setopt(handle, CURLOPT_TIMEOUT, tss_total_s);
+		{
+			long long left_ms = (long long)tss_max_seconds * 1000 - (tss_now_ms() - started_ms);
+			long left_s = (long)((left_ms + 999) / 1000);
+			if (left_s < 1) left_s = 1;
+			long tt = tss_total_s < left_s ? tss_total_s : left_s;
+			long ct = tss_connect_s < tt ? tss_connect_s : tt;
+			curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, ct);
+			curl_easy_setopt(handle, CURLOPT_TIMEOUT, tt);
+		}
 #endif
 #ifndef HV_TSS_HTTPS_ONLY
 		if (debug_level >= 2) {
@@ -1943,7 +1993,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 				tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / NOT_A_TSS_REPLY / MESSAGE_RAW: suppressed", retry, http_code);
 			}
 		}
-		if (tss_attempt_hook) tss_attempt_hook(retry, (int)curl_rc, http_code, perform_ms, server_url_string ? 0 : ((retry - 1) % url_count) + 1);
+		if (tss_attempt_hook) tss_attempt_hook(retry, (int)curl_rc, http_code, perform_ms, server_url_string ? 0 : ((retry - 1) % url_count) + 1, tss_now_ms() - started_ms);
 		if (!tss_curl_error_retryable(curl_rc)) {
 			error("ERROR: tss_send_request: not retrying (curl %d)\n", (int)curl_rc);
 			status_code = -1;
@@ -1976,7 +2026,12 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 			free(response->content);
 			free(response);
 			response = NULL;
+#ifdef HV_TSS_HTTPS_ONLY
+			if (retry >= max_retries) break; /* the last attempt: nothing left to wait for */
+			if (!tss_wait(tss_retry_wait_ms(curl_rc, &dns_fails), started_ms, retry)) break;
+#else
 			sleep(2);
+#endif
 			continue;
 		} else if (status_code == 8) {
 			// server error (invalid bb request?)

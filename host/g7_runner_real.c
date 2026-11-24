@@ -134,13 +134,16 @@ static void *watch_main(void *arg) {
 
 /* Per-attempt TSS line (host/g7_tssdiag.h). libtatsu calls this on the thread that ran the transfer, right after each attempt, so the thread-local record of the curl stand-in
    (hv_curl_last) is the one for that attempt. It only writes one line to stderr; it decides nothing and keeps nothing. */
-void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int));
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int, long long));
+void tss_set_wait_abort(int (*fn)(void));
+extern int global_quit_flag;   /* set by hv_install_cancel(), the same flag the curl stand-in watches */
+static int tss_wait_abort_cb(void) { return __atomic_load_n(&global_quit_flag, __ATOMIC_SEQ_CST); }
 const char *tss_last_diag(void);
 int hv_curl_deny_active(void);
-static void tss_attempt_line(int attempt, int curl_rc, long http_code, long long ms, int url_index) {
+static void tss_attempt_line(int attempt, int curl_rc, long http_code, long long ms, int url_index, long long since_start_ms) {
     HvCurlLast l; hv_curl_last(&l);
     HvG7TssTry t; memset(&t, 0, sizeof t);
-    t.attempt = attempt; t.curl_rc = curl_rc; t.http_code = http_code; t.ms = ms;
+    t.attempt = attempt; t.curl_rc = curl_rc; t.http_code = http_code; t.ms = ms; t.elapsed_ms = since_start_ms;
     t.deny = hv_curl_deny_active();
     t.policy_denied = l.policy_denied; t.addrs_denied = l.addrs_denied; t.addrs_tried = l.addrs_tried; t.connected = l.connected; t.tls_done = l.tls_done;
     t.request_sent = l.request_sent; t.http_status = l.http_status; t.too_large = l.too_large; t.body_to_cb = l.body_to_cb;
@@ -167,6 +170,7 @@ static int real_restore(void) {
     hv_g7_trace_reset();
     hv_net_guard_observe_request(1);   /* TEMPORARY (user-approved 2026-11-24): Apple sub-hosts on 443 are let through and reported as g7-net-observe lines; remove once the exact list is known */
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
+    tss_set_wait_abort(tss_wait_abort_cb);   /* a cancel is noticed while TSS waits to retry */
     tss_set_attempt_hook(tss_attempt_line);   /* one g7-tss-try line per TSS attempt: numbers only (host/g7_tssdiag.h) */
     pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, S.dir) == 0;   /* failure only means no watchdog lines */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);

@@ -9,9 +9,9 @@ static int g_fail;
 int main(void) {
     char l[700];
     HvG7TssTry t; memset(&t, 0, sizeof t);
-    t.attempt = 3; t.curl_rc = 7; t.ms = 2; t.addrs_tried = 1; t.conn_errno = 111; t.fds_open = 41; t.fds_limit = 1024;
+    t.attempt = 3; t.elapsed_ms = 4421; t.curl_rc = 7; t.ms = 2; t.addrs_tried = 1; t.conn_errno = 111; t.fds_open = 41; t.fds_limit = 1024;
     hv_g7t_line(l, sizeof l, &t, "TSS_ATTEMPTS: 3 / TRANSPORT: curl 7 COULDNT_CONNECT / MESSAGE_RAW: suppressed");
-    CHECK(!strncmp(l, "g7-tss-try: n=3 curl=7 http=0 ms=2 ", 35) && l[strlen(l) - 1] == '\n', "one line, starts with the attempt, curl code, http code and transfer time");
+    CHECK(!strncmp(l, "g7-tss-try: n=3 elapsed_ms=4421 curl=7 http=0 ms=2 ", 51) && l[strlen(l) - 1] == '\n', "one line, starts with the attempt, the time since the request began, curl code, http code and transfer time");
     CHECK(strstr(l, "tried=1 conn=0 tls=0 sent=0 st=0 ") && strstr(l, "connerr=111") && strstr(l, "fds=41/1024"), "connect stage numbers and open descriptors are in the line");
     CHECK(strstr(l, "gai=0 sockerr=0 connerr=111 tlsrc=0") != NULL, "lookup, socket, connect and TLS codes come as numbers");
     CHECK(strstr(l, "diag=TSS_ATTEMPTS: 3 / TRANSPORT: curl 7 COULDNT_CONNECT / MESSAGE_RAW: suppressed\n") != NULL, "libtatsu's fixed-vocabulary diagnosis is appended last");

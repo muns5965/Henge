@@ -30,4 +30,9 @@ $CC $FLAGS -Ihost -c tests/test_tss_hook.c -o "$O/test_tss_hook.o"
 $CC -o "$O/test_tss_hook" "$O/test_tss_hook.o" $(ls $O/tatsu_plist/*.o | grep -v test_tatsu.o) "$O/tatsu_ship"/*.o "$O/curl_mbedtls.o" $O/obj/*.o -lpthread -lm
 "$O/test_tss_hook" | grep -E "PASS|FAIL|TSSHOOK"
 "$O/test_tss_hook" | grep -q "^TSSHOOK OK"
+# the retry timing (tests/test_tss_retry.c): the one built-in address, growing waits after a failed lookup, the overall limit, cancel while waiting
+$CC $FLAGS -Ihost -c tests/test_tss_retry.c -o "$O/test_tss_retry.o"
+$CC -o "$O/test_tss_retry" "$O/test_tss_retry.o" $(ls $O/tatsu_plist/*.o | grep -v test_tatsu.o) "$O/tatsu_ship"/*.o "$O/curl_mbedtls.o" $O/obj/*.o -lpthread -lm
+"$O/test_tss_retry" | grep -E "PASS|FAIL|TSSRETRY"
+"$O/test_tss_retry" | grep -q "^TSSRETRY OK"
 python3 tests/test_tatsu.py "$O/test_tatsu_test" "$O/work" "$O/test_tatsu_ship"

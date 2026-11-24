@@ -7,7 +7,7 @@
 #include "../host/curl_last.h"
 
 void tss_set_max_attempts(int n);
-void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int));
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long, int, long long));
 const char *tss_last_diag(void);
 
 static int g_fail;
@@ -16,7 +16,8 @@ static int g_fail;
 static int g_calls, g_first_attempt, g_last_attempt, g_rc, g_conn_errno, g_tried, g_connected, g_diag_has_attempt;
 static long long g_ms;
 static int g_url_idx = -1;
-static void hook(int attempt, int rc, long http, long long ms, int url_index) {
+static void hook(int attempt, int rc, long http, long long ms, int url_index, long long since_start) {
+    (void)since_start;
     g_url_idx = url_index;
     HvCurlLast l; hv_curl_last(&l);   /* same thread, right after the transfer */
     if (!g_calls) g_first_attempt = attempt;

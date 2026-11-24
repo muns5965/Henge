@@ -17,3 +17,15 @@
 - Differing files: core 10, devices 23, host 22; only in upstream: host/dt_fixup.{c,h}, host/snapshot.{c,h}; only in the port: 92 host files and 1 devices file (restore stack, G7 runner, Android runner, shared-memory frame path).
 - Largest line differences (changed lines, both sides): devices/pvg_metal.m 596, pvg_lite.c 590, metallib.c 565, host/vm.c 547, devices/xhci.c 536, host/libusb_shim.c 316, host/install.c 262, host/usb_host.c 185, host/main.c 171, core/machine.c 171, host/vm.h 146, devices/bdif.c 135, host/jit_region.c 133, devices/virtio_usb.c 128, core/exception.c 110.
 - Memory-relevant for the Android runs: host/vm.c (RAM and JIT allocation, HV_STAGE hooks), core/machine.c, host/jit_region.c (memfd JIT), host/disk.c (no F_NOCACHE on Android). Reading each of these file by file against upstream is NOT done; this is the list to read first.
+
+## 2026-11-25 — why iBootStage1 stops in recovery mode (reviewer 6; source reading only, nothing on the device changed)
+
+Restore-end handling (third_party/idevicerestore, libirecovery, host):
+- dfu.c sends `setenv auto-boot false` + `saveenv` to iBootStage1 after the stage-1 components, then `setenvnp boot-args rd=md0 nand-enable-reformat=1 -progress ...`.
+- recovery.c `recovery_set_autoboot` is called with 0 in `recovery_enter_restore`. idevicerestore.c sets auto-boot true + reset only for the old AppleTV path.
+- No host code in this repo restores `auto-boot=true` / `boot-command` for a vmapple restore. That normalisation is expected from the restored ramdisk steps (set_one_time_boot_command, set_nvram_variables, persistent_boot_args, generate_boot_policies, bless_system_volume, set_boot_command, set_bootable all succeeded in the log) — whether they persisted into macos_aux.img is UNVERIFIED.
+- The install pair was left `in_progress` with seal_system_volume not confirmed, so a skipped final switch to normal boot is possible but UNVERIFIED.
+
+Read-only tools added for the next phone run (APK, mode D / AUX button):
+- "AUX 비교 실행": macos_aux.initial vs macos_aux.img (size, hash, changed ranges, header, NVRAM-like regions, string hits flagged as a string search only), and each clone vs the original image.
+- `--usb-mode 3` (D): mode C plus `getenv` of auto-boot, boot-command, boot-args, bootdelay, build-version using the same wire requests as irecv_getenv (vendor OUT 0x40/req 0 "getenv X", IN 0xC0/req 0). Only when the PID is 0x1280-0x1283; no setenv/saveenv/reboot/DFU/bulk. An empty reply means "unset or no answer" (not distinguishable); a failed transfer is logged as QUERY FAILED.

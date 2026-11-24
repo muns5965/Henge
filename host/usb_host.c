@@ -227,6 +227,45 @@ static void print_string(HvVirtioUsb *d, uint8_t idx) {
     fprintf(stderr, "usb probe: string %u = \"%s\"\n", idx, s);
 }
 
+/* [2026-11-25, explicitly approved] read-only recovery-environment query. It repeats exactly what libirecovery's irecv_getenv() puts on the wire (third_party/libirecovery:
+   a vendor control OUT, bRequest 0, "getenv <name>" plus its NUL; then a vendor control IN, bRequest 0, 255 bytes) but through hv_usb_control directly, so no libirecovery or
+   libusb object is linked into the clone runner. Only these five names are asked, only when the device reports a recovery-mode PID (0x1280-0x1283), and nothing here sends
+   setenv/saveenv/reboot/DFU/bulk. The answer cannot separate "unset" from "no answer" on the wire (an empty reply is both), so those are reported as one case; a failed transfer is
+   reported as a failure. */
+static int g_getenv_enabled;
+void hv_usb_probe_enable_getenv(int on) { g_getenv_enabled = on; }
+
+static void getenv_query(HvVirtioUsb *d, uint16_t pid) {
+    if (pid < 0x1280 || pid > 0x1283) {
+        fprintf(stderr, "usb getenv: skipped: PID 0x%04x is not a recovery-mode PID\n", pid);
+        return;
+    }
+    static const char *const names[] = {"auto-boot", "boot-command", "boot-args", "bootdelay", "build-version"};
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+        char cmd[64];
+        int cl = snprintf(cmd, sizeof cmd, "getenv %s", names[i]);
+        int sr = hv_usb_control(d, 0x40, 0, 0, 0, cmd, (uint16_t)(cl + 1), 2000);
+        if (sr < 0) {
+            fprintf(stderr, "usb getenv: %s: QUERY FAILED (send -> %d)\n", names[i], sr);
+            continue;
+        }
+        char resp[256];
+        memset(resp, 0, sizeof resp);
+        int rr = hv_usb_control(d, 0xC0, 0, 0, 0, resp, 255, 2000);
+        if (rr < 0) {
+            fprintf(stderr, "usb getenv: %s: QUERY FAILED (send %d, read -> %d)\n", names[i], sr, rr);
+            continue;
+        }
+        resp[255] = 0;
+        char out[256];
+        int k = 0;
+        for (int j = 0; j < rr && j < 255 && resp[j] && k < 250; j++) out[k++] = (resp[j] >= 32 && resp[j] < 127) ? resp[j] : '?';
+        out[k] = 0;
+        if (k == 0) fprintf(stderr, "usb getenv: %s: EMPTY (unset, or no answer; cannot be told apart) (send %d, read %d)\n", names[i], sr, rr);
+        else fprintf(stderr, "usb getenv: %s = \"%s\" (send %d, read %d)\n", names[i], out, sr, rr);
+    }
+}
+
 static void *probe(void *arg) {
     HvVirtioUsb *d = arg;
     int64_t s = hv_usb_wait_online(d, 120000);
@@ -245,6 +284,13 @@ static void *probe(void *arg) {
         print_string(d, dd[16]);
     }
     if (n != 18) return NULL;
+    if (g_getenv_enabled) {
+        /* Tried a few times: the guest may still be on its way into the recovery prompt when the bus first comes up. */
+        for (int t = 0; t < 3; t++) {
+            getenv_query(d, (uint16_t)(dd[10] | (dd[11] << 8)));
+            if (t < 2) usleep(1000000);
+        }
+    }
     /* The rest asks questions: configuration descriptor, standard status, DFU GET_STATE and, only from dfuIDLE, DFU GET_STATUS (which can advance some other
        DFU states, so it is not a harmless read in general). Nothing here sends SET_CONFIGURATION, DNLOAD, ABORT or CLRSTATUS. */
     uint8_t cfg[512] = {0};

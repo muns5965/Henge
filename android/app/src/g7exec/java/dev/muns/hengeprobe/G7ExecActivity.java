@@ -30,7 +30,8 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame, auxBtn;
+    private TextView auxOut;
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
@@ -120,6 +121,19 @@ public class G7ExecActivity extends Activity {
         cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 러너 응답이 아래(이미지 자리)에 표시됩니다. 화면이 아직 없으면 그 이유가 나옵니다."); } });
         cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
         cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(cbImageNote);
+        add(root, "[AUX 비교] 복원 전(macos_aux.initial)과 복원 후(macos_aux.img)의 AUX를 읽기 전용으로 비교하고, 복제본들의 AUX가 원본과 같은지도 봅니다. 아무것도 쓰거나 바꾸지 않습니다.", 13);
+        auxBtn = new Button(this); auxBtn.setText("AUX 비교 실행(읽기 전용)"); root.addView(auxBtn);
+        auxOut = new TextView(this); auxOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); auxOut.setTextIsSelectable(true); root.addView(auxOut);
+        auxBtn.setOnClickListener(v -> {
+            auxBtn.setEnabled(false); auxOut.setText("비교하는 중…");
+            new Thread(() -> {
+                StringBuilder o = new StringBuilder(G7AuxCompare.compareInitialToImage(privDir));
+                o.append("\n[복제본 AUX ↔ 원본 복원 후 AUX]\n");
+                for (File c : G7CloneBoot.listValid(privDir)) o.append(G7AuxCompare.compareCloneToOriginal(privDir, c)).append('\n');
+                final String text = o.toString();
+                runOnUiThread(() -> { auxOut.setText(text); auxBtn.setEnabled(true); });
+            }, "g7-aux-compare").start();
+        });
         cbtn.setOnClickListener(v -> confirmCloneBoot());
         cbStop.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
         cbShare.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); shareFile(r == null ? null : G7ExecLauncher.logFile(getFilesDir(), r.logName()), "복제본 부팅 로그 공유"); });
@@ -254,14 +268,14 @@ public class G7ExecActivity extends Activity {
         final CheckBox ok = new CheckBox(this); ok.setText("선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의합니다(원본은 쓰지 않음).");
         ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         final android.widget.RadioGroup usb = new android.widget.RadioGroup(this);
-        String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)"};
+        String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)", "D. C + 복구 환경변수 5개 읽기 전용 조회(getenv)"};
         for (int i = 0; i < um.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(um[i]); rb.setId(1000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); usb.addView(rb); }
         usb.check(1000);
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(ok);
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(box)
                 .setNegativeButton("취소", null)
                 .setPositiveButton("부팅", (d, w) -> {
-                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), Math.max(0, Math.min(2, usb.getCheckedRadioButtonId() - 1000)));
+                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), Math.max(0, Math.min(3, usb.getCheckedRadioButtonId() - 1000)));
                     status.setText(st.message);
                     if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
                 }).show();

@@ -86,6 +86,7 @@ l4=$(grep -n 'hv_runner_scrub_env(' $R | head -1 | cut -d: -f1); { [ -n "$l4" ] 
 grep -q 'bd->vusb' $R || bad "$R: the check that the machine has no USB device port is missing"
 grep -q 'usb_present != cfg.usb_on_normal_boot' $R || bad "$R: must refuse to run if the usb device port presence differs from the requested usb mode"
 grep -q 'cfg.usb_probe_on_normal_boot = usb_mode >= 2' $R && grep -q 'cfg.usb_on_normal_boot = usb_mode >= 1' $R || bad "$R: the usb mode must map to exactly the two host-only usb flags"
+grep -q 'hv_usb_probe_enable_getenv(usb_mode >= 3)' $R || bad "$R: getenv must be enabled only by usb mode 3"
 grep -q 'c->installer) BAD' $R || bad "$R: installer must stay refused in every usb mode"
 grep -q 'hv_runner_make_config(&cfg, rom, cl.disk, cl.aux,' $R || bad "$R: the machine must be given the descriptor paths of the files that were checked (cl.disk, cl.aux)"
 grep -q 'flock(c->dirfd, LOCK_EX | LOCK_NB)' $H || bad "$H: the clone folder must be locked"

@@ -91,5 +91,7 @@ unsigned hv_libusb_data_bad_hist(int status);        /* never evicted: a count b
 
 /* Debugging (HV_VUSB_PROBE=1): a thread that reads the device's descriptors. */
 void hv_usb_probe_start(HvVirtioUsb *d);
+/* Before hv_usb_probe_start: also ask five recovery environment variables (read-only; see host/usb_host.c). */
+void hv_usb_probe_enable_getenv(int on);
 
 #endif

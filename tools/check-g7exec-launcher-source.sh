@@ -52,7 +52,7 @@ grep -q 'G7Isolation.gate(' "$CB" || bad "G7CloneBoot must pass the isolation ga
 grep -q 'synchronized (G7ExecLauncher.START_LOCK)' "$CB" || bad "G7CloneBoot must hold the start lock"
 x=$(grep -nE '"--ecid"|--ecid |"--installer|"--seed|macos_disk|macos_aux|"--readonly|\.delete\(|renameTo|Files\.(delete|move|copy)|FileOutputStream|FileWriter|RandomAccessFile' "$CB"); [ -z "$x" ] || { bad "G7CloneBoot: a forbidden option or file operation:"; echo "$x"; }
 grep -q 'cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode))' "$CB" || bad "G7CloneBoot must pass the validated usb mode to the runner"
-grep -q 'usbMode < USB_NONE || usbMode > USB_PORT_PROBE' "$CB" || bad "G7CloneBoot must reject an unknown usb mode before anything starts"
+grep -q 'usbMode < USB_NONE || usbMode > USB_PORT_GETENV' "$CB" || bad "G7CloneBoot must reject an unknown usb mode before anything starts"
 grep -q 'getCanonicalFile()' "$CB" || bad "G7CloneBoot must pass canonical paths to the runner"
 grep -q 'mask(' "$CB" || bad "G7CloneBoot output must pass through mask()"
 [ "$(grep -c 'Files.newOutputStream' "$CB")" = 1 ] && grep -q 'Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW' "$CB" || bad "G7CloneBoot: exactly one output stream, the run log, CREATE_NEW"

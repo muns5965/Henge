@@ -20,6 +20,11 @@ public class G7ExitInfoTest {
         check("current pid and the child-process caveat", s.contains("현재 앱 PID 4321") && s.contains("자식 프로세스"));
         check("max limits the lines", G7ExitInfo.format(rs, 1, 1).split("\n").length == G7ExitInfo.format(rs, 1, 2).split("\n").length - 1);
         check("empty and null lists", G7ExitInfo.format(null, 1, 5).contains("기록 없음") && G7ExitInfo.format(new ArrayList<>(), 1, 5).contains("기록 없음"));
+        check("0 PSS/RSS is shown as unknown, not 0MiB", G7ExitInfo.mib(0).equals("?") && G7ExitInfo.mib(-1).equals("?") && G7ExitInfo.mib(2048).equals("2MiB"));
+        List<G7ExitInfo.Record> r2 = new ArrayList<>();
+        r2.add(new G7ExitInfo.Record(7, "p", 0L, 3, 0, "", 0, 0, "LOW_MEMORY(SDK)", "ANR 텍스트 120바이트"));
+        String s2 = G7ExitInfo.format(r2, 1, 5);
+        check("SDK reason name wins over the table, trace note on its own line", s2.contains("LOW_MEMORY(SDK)") && s2.contains("\n    trace: ANR 텍스트 120바이트\n") && s2.contains("PSS=? RSS=?"));
         check("time is Asia/Seoul", G7ExitInfo.time(0L).equals("01-01 09:00:00"));
         System.out.println(fails == 0 ? "G7EXITINFO OK" : "G7EXITINFO FAILED");
         System.exit(fails == 0 ? 0 : 1);

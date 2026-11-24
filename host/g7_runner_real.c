@@ -111,6 +111,7 @@ static void *watch_main(void *arg) {
     const char *dir_copy = (const char *)arg;   /* the directory that holds the install disk (the pair directory) */
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     HvG7WatchState st; memset(&st, 0, sizeof st);
+    { char pl[64]; snprintf(pl, sizeof pl, "g7-process: runner_pid=%ld\n", (long)getpid()); ssize_t rp = write(2, pl, strlen(pl)); (void)rp; }   /* the runner's own pid, to match against ApplicationExitInfo */
     struct timespec last = t0;   /* the last sample: the period is measured on CLOCK_MONOTONIC, not counted in sleeps (a sleep that comes back late must not stretch the period) */
     while (!__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED)) {
         usleep(1000 * 1000);

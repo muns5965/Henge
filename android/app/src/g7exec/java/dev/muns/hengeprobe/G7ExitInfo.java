@@ -19,9 +19,15 @@ public final class G7ExitInfo {
     public static final class Record {
         public final int pid; public final String process; public final long timestampMs; public final int reason;
         public final int status; public final String description; public final long pssKb; public final long rssKb;
+        /** The reason name taken from the SDK constants by the Android side (null: the fallback table below is used), and a one-line note on the trace (ANR text or tombstone file), or null. */
+        public final String reasonName; public final String traceNote;
         public Record(int pid, String process, long timestampMs, int reason, int status, String description, long pssKb, long rssKb) {
             this.pid = pid; this.process = process; this.timestampMs = timestampMs; this.reason = reason;
-            this.status = status; this.description = description; this.pssKb = pssKb; this.rssKb = rssKb;
+            this.status = status; this.description = description; this.pssKb = pssKb; this.rssKb = rssKb; this.reasonName = null; this.traceNote = null;
+        }
+        public Record(int pid, String process, long timestampMs, int reason, int status, String description, long pssKb, long rssKb, String reasonName, String traceNote) {
+            this.pid = pid; this.process = process; this.timestampMs = timestampMs; this.reason = reason;
+            this.status = status; this.description = description; this.pssKb = pssKb; this.rssKb = rssKb; this.reasonName = reasonName; this.traceNote = traceNote;
         }
     }
 
@@ -44,7 +50,8 @@ public final class G7ExitInfo {
         return "상태 " + status;
     }
 
-    static String mib(long kb) { return kb < 0 ? "?" : (kb / 1024) + "MiB"; }
+    /** 0 is what Android returns when PSS/RSS was not measured, so it is shown as unknown, never as 0 MiB. */
+    static String mib(long kb) { return kb <= 0 ? "?" : (kb / 1024) + "MiB"; }
 
     static String time(long ms) {
         SimpleDateFormat f = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US);
@@ -61,10 +68,11 @@ public final class G7ExitInfo {
             List<Record> shown = new ArrayList<>(records.subList(0, Math.min(max, records.size())));
             for (Record r : shown) {
                 sb.append("  ").append(time(r.timestampMs)).append(" pid=").append(r.pid).append(' ').append(r.process == null ? "?" : r.process)
-                  .append(" ").append(reasonName(r.reason)).append(" (").append(statusText(r.reason, r.status)).append(")")
+                  .append(" ").append(r.reasonName != null ? r.reasonName : reasonName(r.reason)).append(" (").append(statusText(r.reason, r.status)).append(")")
                   .append(" PSS=").append(mib(r.pssKb)).append(" RSS=").append(mib(r.rssKb));
                 if (r.description != null && !r.description.isEmpty()) sb.append(" — ").append(r.description);
                 sb.append('\n');
+                if (r.traceNote != null && !r.traceNote.isEmpty()) sb.append("    trace: ").append(r.traceNote).append('\n');
             }
         }
         sb.append("  주의: 이 기록은 앱 프로세스 기준입니다. 실행기(자식 프로세스)의 별도 기록이 없을 수 있으며, 있어도 앱의 사유를 실행기의 사유로 읽지 마세요.\n");

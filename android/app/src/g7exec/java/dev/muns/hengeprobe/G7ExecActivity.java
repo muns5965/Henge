@@ -238,18 +238,69 @@ public class G7ExecActivity extends Activity {
         }, 2000);
     }
 
-    private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm")) + "\n" + G7ExecLauncher.runnerCheck(android.os.Process.myPid(), getFilesDir()) + "\n" + exitInfoText()); }
-
-    /** Reads this package's historical process exit records (API 30+; reading only). Any failure becomes one line, never an exception. */
-    private String exitInfoText() {
-        try {
-            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
-            java.util.List<android.app.ApplicationExitInfo> in = am.getHistoricalProcessExitReasons(getPackageName(), 0, 10);
-            java.util.List<G7ExitInfo.Record> out = new java.util.ArrayList<>();
-            for (android.app.ApplicationExitInfo e : in) out.add(new G7ExitInfo.Record(e.getPid(), e.getProcessName(), e.getTimestamp(), e.getReason(), e.getStatus(), e.getDescription(), e.getPss(), e.getRss()));
-            return G7ExitInfo.format(out, android.os.Process.myPid(), 10);
-        } catch (Throwable t) { return "시스템 종료 기록을 읽지 못했습니다: " + t.getClass().getSimpleName(); }
+    private void showSummary() {
+        G7ExecLauncher.setAppInfo(android.os.Process.myPid(), System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime()));
+        final String base = G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm")) + "\n" + G7ExecLauncher.runnerCheck(android.os.Process.myPid(), getFilesDir());
+        summary.setText(base + "\n(시스템 종료 기록을 읽는 중…)");
+        showExitInfoAsync(base);
     }
+
+    /** The reason name from the SDK's own constants (the numbers are only a fallback inside G7ExitInfo). */
+    private static String sdkReasonName(int r) {
+        switch (r) {
+            case android.app.ApplicationExitInfo.REASON_UNKNOWN: return "UNKNOWN";
+            case android.app.ApplicationExitInfo.REASON_EXIT_SELF: return "EXIT_SELF";
+            case android.app.ApplicationExitInfo.REASON_SIGNALED: return "SIGNALED";
+            case android.app.ApplicationExitInfo.REASON_LOW_MEMORY: return "LOW_MEMORY";
+            case android.app.ApplicationExitInfo.REASON_CRASH: return "CRASH";
+            case android.app.ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH_NATIVE";
+            case android.app.ApplicationExitInfo.REASON_ANR: return "ANR";
+            case android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "INITIALIZATION_FAILURE";
+            case android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE: return "PERMISSION_CHANGE";
+            case android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "EXCESSIVE_RESOURCE_USAGE";
+            case android.app.ApplicationExitInfo.REASON_USER_REQUESTED: return "USER_REQUESTED";
+            case android.app.ApplicationExitInfo.REASON_USER_STOPPED: return "USER_STOPPED";
+            case android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED: return "DEPENDENCY_DIED";
+            case android.app.ApplicationExitInfo.REASON_OTHER: return "OTHER";
+            case android.app.ApplicationExitInfo.REASON_FREEZER: return "FREEZER";
+            case android.app.ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE: return "PACKAGE_STATE_CHANGE";
+            case android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "PACKAGE_UPDATED";
+            default: return null;
+        }
+    }
+
+    /** One line about the trace of a record: an ANR trace is text (at most 4 KiB counted, first line shown); a native crash trace is a protobuf tombstone, which is kept as a file (at most 1 MiB, once per record) and never shown as text. Runs off the UI thread. */
+    private String traceNote(android.app.ApplicationExitInfo e) {
+        try (java.io.InputStream in = e.getTraceInputStream()) {
+            if (in == null) return null;
+            if (e.getReason() == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                String name = "tombstone_" + e.getPid() + "_" + e.getTimestamp() + ".pb";
+                long kept = G7ExitTrace.keep(in, new File(getFilesDir(), "g7exitinfo"), name);
+                return "네이티브 충돌 tombstone(protobuf) " + (kept < 0 ? "이미 보존됨" : kept + "바이트 보존") + ": 앱 파일 g7exitinfo/" + name;
+            }
+            byte[] buf = new byte[4096]; int n = in.read(buf);
+            if (n <= 0) return null;
+            String first = new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8); int nl = first.indexOf('\n'); if (nl > 0) first = first.substring(0, nl);
+            return "ANR 텍스트 첫 줄: " + (first.length() > 120 ? first.substring(0, 120) : first);
+        } catch (Throwable t) { return "trace 읽기 실패: " + t.getClass().getSimpleName(); }
+    }
+
+    /** Reads this package's historical process exit records (API 30+; reading only) on a worker thread and appends them to the summary when ready. */
+    private void showExitInfoAsync(final String base) {
+        new Thread(() -> {
+            String text;
+            try {
+                android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+                java.util.List<android.app.ApplicationExitInfo> in = am.getHistoricalProcessExitReasons(getPackageName(), 0, 10);
+                java.util.List<G7ExitInfo.Record> out = new java.util.ArrayList<>();
+                for (android.app.ApplicationExitInfo e : in) out.add(new G7ExitInfo.Record(e.getPid(), e.getProcessName(), e.getTimestamp(), e.getReason(), e.getStatus(), e.getDescription(), e.getPss(), e.getRss(), sdkReasonName(e.getReason()), traceNote(e)));
+                text = G7ExitInfo.format(out, android.os.Process.myPid(), 10);
+            } catch (Throwable t) { text = "시스템 종료 기록을 읽지 못했습니다: " + t.getClass().getSimpleName() + "\n"; }
+            final String t2 = text;
+            runOnUiThread(() -> summary.setText(base + "\n" + t2));
+        }, "g7-exitinfo").start();
+    }
+
 
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
     private void shareLog() { shareFile(G7ExecLauncher.newestLogFile(getFilesDir()), "G7 로그 공유"); }

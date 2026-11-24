@@ -121,6 +121,7 @@ public class G7ExecLauncherTest {
         String full = new String(Files.readAllBytes(G7ExecLauncher.newestLog(files4).toPath()), StandardCharsets.UTF_8);
         check("log limit reached: the marker, the last g7-result line and the exit code are still in the file", full.contains("log limit reached") && full.contains("g7-result: outcome=FAILED last_step=7") && full.contains("g7-exit: 2"));
         check("the file starts with g7-start", full.startsWith("g7-start: "));
+        check("g7-process follows with app pid, runner pid, and both start times (-1 when unknown)", full.contains("g7-process: app_pid=") && full.contains(" runner_pid=") && full.contains(" app_start_ms=") && full.contains(" run_start_ms="));
         String first = s.run.logName();
         Thread.sleep(5);
         s = G7ExecLauncher.startWith(spawner(new FakeProcess("second\n", 2, false)), ROMS, true, lib, ext, priv, files4, true, SHA);

@@ -273,6 +273,16 @@ public final class G7ExecLauncher {
 
     static final int MAX_LINE_BYTES = 8192;
 
+    /** Set once by the activity (android.os.Process is not available on a plain JVM): this app process's pid and start time (epoch ms); -1 until then. */
+    static volatile int appPid = -1;
+    static volatile long appStartMs = -1;
+    static void setAppInfo(int pid, long startMs) { appPid = pid; appStartMs = startMs; }
+
+    /** The child's pid when the platform gives it (Process.pid() by reflection: API 33+ on Android, JDK 9+); -1 otherwise. */
+    static long pidOf(Process p) {
+        try { return ((Number) Process.class.getMethod("pid").invoke(p)).longValue(); } catch (Throwable t) { return -1; }
+    }
+
     private static void streamToLog(final Run run, final Process p, final OutputStream lo, final long ecid) {
         final InputStream in = p.getInputStream();
         synchronized (run.logLock) { run.logOut = lo; }
@@ -281,7 +291,10 @@ public final class G7ExecLauncher {
             final DiagFilter filter = new DiagFilter();
             final ByteArrayOutputStream lb = new ByteArrayOutputStream();
             try {
-                run.put("g7-start: " + System.currentTimeMillis() + "\n");
+                final long startMs = System.currentTimeMillis();
+                run.put("g7-start: " + startMs + "\n");
+                // for matching against ApplicationExitInfo (pid and time) after an app process that ended without a trace; unknown values are -1, never a guess
+                run.put("g7-process: app_pid=" + appPid + " runner_pid=" + pidOf(p) + " app_start_ms=" + appStartMs + " run_start_ms=" + startMs + "\n");
                 byte[] b = new byte[4096]; int n;
                 while ((n = in.read(b)) > 0) {
                     for (int i = 0; i < n; i++) {

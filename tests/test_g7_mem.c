@@ -9,15 +9,15 @@ static int g_fail;
 
 static const char STATUS[] =
     "Name:\thengevm\nUmask:\t0077\nState:\tS (sleeping)\nTgid:\t4242\nVmPeak:\t 9999999 kB\nVmSize:\t 9000000 kB\nVmHWM:\t 3145728 kB\nVmRSS:\t 2097152 kB\n"
-    "RssAnon:\t 1572864 kB\nRssFile:\t  524288 kB\nRssShmem:\t       0 kB\nVmSwap:\t  102400 kB\nThreads:\t 12\n";
-static const char MEMINFO[] = "MemTotal:       11800000 kB\nMemFree:          200000 kB\nMemAvailable:    1048576 kB\nBuffers:           10000 kB\n";
+    "RssAnon:\t 1572864 kB\nRssFile:\t  524288 kB\nRssShmem:\t   65536 kB\nVmSwap:\t  102400 kB\nThreads:\t 12\n";
+static const char MEMINFO[] = "MemTotal:       11800000 kB\nMemFree:          200000 kB\nMemAvailable:    1048576 kB\nBuffers:           10000 kB\nCached:          3145728 kB\nDirty:             20480 kB\nWriteback:          2048 kB\nSwapFree:         524288 kB\n";
 
 int main(void) {
     HvG7Mem m; char l[400];
     hv_g7m_parse(&m, STATUS, MEMINFO);
     CHECK(m.rss_kb == 2097152 && m.peak_kb == 3145728 && m.anon_kb == 1572864 && m.file_kb == 524288 && m.swap_kb == 102400 && m.avail_kb == 1048576, "all six values are read (kB)");
     hv_g7m_line(l, sizeof l, 943, &m);
-    CHECK(!strcmp(l, "g7-mem: t=943s rss=2048MiB peak=3072MiB anon=1536MiB file=512MiB swap=100MiB available=1024MiB\n"), "the line has the fixed shape, in MiB: %s", l);
+    CHECK(!strcmp(l, "g7-mem: t=943s rss=2048MiB peak=3072MiB anon=1536MiB file=512MiB shmem=64MiB swap=100MiB available=1024MiB cached=3072MiB dirty=20MiB writeback=2MiB swapfree=512MiB\n"), "the line has the fixed shape, in MiB: %s", l);
     CHECK(strlen(l) < 200 && l[strlen(l) - 1] == '\n' && strchr(l, '\n') == l + strlen(l) - 1, "one line that ends in a single newline, short enough for one write");
 
     /* a key only matches at the start of a line: VmRSS must not be found inside VmRSSX or in the middle of a line, "Rss" is not "RssAnon" */
@@ -27,12 +27,12 @@ int main(void) {
     /* a kernel without RssAnon/RssFile/VmSwap (old procfs): unknown values print as ?, never as 0 */
     HvG7Mem o; hv_g7m_parse(&o, "VmHWM:\t 2048 kB\nVmRSS:\t 1024 kB\n", MEMINFO);
     hv_g7m_line(l, sizeof l, 30, &o);
-    CHECK(strstr(l, "anon=? file=? swap=?") && strstr(l, "rss=1MiB peak=2MiB") && strstr(l, "available=1024MiB"), "missing fields are printed as ?: %s", l);
+    CHECK(strstr(l, "anon=? file=? shmem=? swap=?") && strstr(l, "rss=1MiB peak=2MiB") && strstr(l, "available=1024MiB"), "missing fields are printed as ?: %s", l);
 
     /* no text at all (a file that could not be read) */
     HvG7Mem z; hv_g7m_parse(&z, NULL, NULL);
     hv_g7m_line(l, sizeof l, 60, &z);
-    CHECK(!strcmp(l, "g7-mem: t=60s rss=? peak=? anon=? file=? swap=? available=?\n"), "unreadable files give all-unknown, not zeros: %s", l);
+    CHECK(!strcmp(l, "g7-mem: t=60s rss=? peak=? anon=? file=? shmem=? swap=? available=? cached=? dirty=? writeback=? swapfree=?\n"), "unreadable files give all-unknown, not zeros: %s", l);
 
     /* a value that is a real zero stays 0MiB; a value without a number is unknown; a number that does not fit is unknown */
     HvG7Mem q; hv_g7m_parse(&q, "VmSwap:\t 0 kB\nVmRSS:\t kB\nVmHWM:\t 99999999999999999999999 kB\n", "");

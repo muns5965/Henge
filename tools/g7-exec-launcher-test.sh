@@ -28,4 +28,6 @@ java -cp "$O5" dev.muns.hengeprobe.G7ExecStorageTest; R5=$?
 O6="$OUT-exitinfo"; rm -rf "$O6"; mkdir -p "$O6"
 javac -encoding UTF-8 -d "$O6" $X/G7ExitInfo.java tests/java/G7ExitInfoTest.java 2> "$O6/javac.log" || { echo "FAILED javac (exitinfo)"; head -30 "$O6/javac.log"; exit 1; }
 java -cp "$O6" dev.muns.hengeprobe.G7ExitInfoTest; R6=$?
-[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ]
+javac -encoding UTF-8 -d "$O6" $X/G7ExitTrace.java tests/java/G7ExitTraceTest.java 2>> "$O6/javac.log" || { echo "FAILED javac (exittrace)"; head -30 "$O6/javac.log"; exit 1; }
+java -cp "$O6" dev.muns.hengeprobe.G7ExitTraceTest; R7=$?
+[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ]

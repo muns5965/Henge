@@ -3,7 +3,7 @@
 /* The G7 runner's memory line (compiled into host/g7_runner_real.c only; header-only so that tests/test_g7_mem.c can include the same code).
    Right after each `g7-alive:` line the watchdog writes ONE more line, built from two read-only procfs files:
      g7-mem: t=<s>s rss=<n>MiB peak=<n>MiB anon=<n>MiB file=<n>MiB swap=<n>MiB available=<n>MiB
-   rss/peak/anon/file/swap come from /proc/self/status (VmRSS, VmHWM, RssAnon, RssFile, VmSwap: this process only) and available from /proc/meminfo (MemAvailable: the whole phone).
+   rss/peak/anon/file/swap come from /proc/self/status (VmRSS, VmHWM, RssAnon, RssFile, VmSwap: this process only) and available from /proc/meminfo (MemAvailable, Cached, Dirty, Writeback, SwapFree: the whole phone; Dirty and Writeback in MiB hide anything under 1 MiB).
    A value that the kernel does not give (or a file that cannot be read) is printed as "?", never as 0. Numbers and fixed words only: no path, no identifier. It reports; it changes nothing.
    It exists to tell, after a run that ended without a trace, whether the memory of the runner grew until the system ended it (peak and anon rising, available falling) or stayed flat. */
 #include <fcntl.h>
@@ -15,7 +15,7 @@
 
 #define HV_G7M_UNKNOWN UINT64_MAX
 
-typedef struct { uint64_t rss_kb, peak_kb, anon_kb, file_kb, swap_kb, avail_kb; } HvG7Mem;
+typedef struct { uint64_t rss_kb, peak_kb, anon_kb, file_kb, shmem_kb, swap_kb, avail_kb, cached_kb, dirty_kb, writeback_kb, swapfree_kb; } HvG7Mem;
 
 /* The value (in kB) of the line "<key>:   <digits> kB" in `text`; HV_G7M_UNKNOWN when there is no such line or it has no number. A key only matches at the start of a line. */
 static inline uint64_t hv_g7m_field(const char *text, const char *key) {
@@ -44,8 +44,13 @@ static inline void hv_g7m_parse(HvG7Mem *m, const char *status, const char *memi
     m->peak_kb = hv_g7m_field(status, "VmHWM");
     m->anon_kb = hv_g7m_field(status, "RssAnon");
     m->file_kb = hv_g7m_field(status, "RssFile");
+    m->shmem_kb = hv_g7m_field(status, "RssShmem");
     m->swap_kb = hv_g7m_field(status, "VmSwap");
     m->avail_kb = hv_g7m_field(meminfo, "MemAvailable");
+    m->cached_kb = hv_g7m_field(meminfo, "Cached");
+    m->dirty_kb = hv_g7m_field(meminfo, "Dirty");
+    m->writeback_kb = hv_g7m_field(meminfo, "Writeback");
+    m->swapfree_kb = hv_g7m_field(meminfo, "SwapFree");
 }
 
 /* Reads at most cap-1 bytes of a small procfs file into buf (always NUL-terminated); returns the byte count or -1. procfs files do not block on storage. */
@@ -79,9 +84,10 @@ static inline int hv_g7m_mib(char *out, size_t cap, uint64_t kb) {
 
 /* One line (ends in '\n'); written with one write() by the caller. */
 static inline void hv_g7m_line(char *line, size_t cap, uint64_t t_s, const HvG7Mem *m) {
-    char a[24], b[24], c[24], d[24], e[24], f[24];
+    char a[24], b[24], c[24], d[24], e[24], f[24], g[24], h[24], i[24], j[24], k[24];
     hv_g7m_mib(a, sizeof a, m->rss_kb); hv_g7m_mib(b, sizeof b, m->peak_kb); hv_g7m_mib(c, sizeof c, m->anon_kb);
     hv_g7m_mib(d, sizeof d, m->file_kb); hv_g7m_mib(e, sizeof e, m->swap_kb); hv_g7m_mib(f, sizeof f, m->avail_kb);
-    snprintf(line, cap, "g7-mem: t=%llus rss=%s peak=%s anon=%s file=%s swap=%s available=%s\n", (unsigned long long)t_s, a, b, c, d, e, f);
+    hv_g7m_mib(k, sizeof k, m->shmem_kb); hv_g7m_mib(g, sizeof g, m->cached_kb); hv_g7m_mib(h, sizeof h, m->dirty_kb); hv_g7m_mib(i, sizeof i, m->writeback_kb); hv_g7m_mib(j, sizeof j, m->swapfree_kb);
+    snprintf(line, cap, "g7-mem: t=%llus rss=%s peak=%s anon=%s file=%s shmem=%s swap=%s available=%s cached=%s dirty=%s writeback=%s swapfree=%s\n", (unsigned long long)t_s, a, b, c, d, k, e, f, g, h, i, j);
 }
 #endif

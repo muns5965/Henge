@@ -110,7 +110,7 @@ public class G7ExecActivity extends Activity {
         delCur.setOnClickListener(v -> confirmDeleteCurrent());
         cloneBtn = new Button(this); cloneBtn.setText("설치 쌍 희소 복제본 만들기(원본은 읽기만)"); root.addView(cloneBtn);
         cloneBtn.setOnClickListener(v -> confirmClone());
-        add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).");
+        add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).", 13);
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
         cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유"); root.addView(cbShare);

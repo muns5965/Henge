@@ -31,4 +31,6 @@ void hv_bdif_poll(HvBdif *b);
 
 HvBdif *hv_bdif_create(HvMachine *m, uint64_t pa, HvDisk *root, HvDisk *aux);
 
+uint64_t hv_bdif_usb_cmds(void);   /* USB queue commands the guest has written so far (read-only diagnostics) */
+
 #endif

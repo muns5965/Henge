@@ -107,6 +107,18 @@ static uint64_t now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
 }
 
+/* Disk-request counters for the G7 runner's watchdog (host/g7_watch.h), all virtio-blk devices together. A request that has started and not finished is "in flight"; the start time
+   and kind of the latest one say whether the host is stuck in storage (a flush that never returns) or the disk is simply idle. Read-only: they change nothing a request does. */
+static uint64_t g_vblk_done, g_vblk_inflight, g_vblk_last_start_us;
+static int g_vblk_last_type;
+void hv_vblk_diag(uint64_t *done, uint64_t *inflight, uint64_t *last_age_us, int *last_type) {
+    uint64_t st = __atomic_load_n(&g_vblk_last_start_us, __ATOMIC_RELAXED), n = now_us();
+    if (done) *done = __atomic_load_n(&g_vblk_done, __ATOMIC_RELAXED);
+    if (inflight) *inflight = __atomic_load_n(&g_vblk_inflight, __ATOMIC_RELAXED);
+    if (last_age_us) *last_age_us = st && n > st ? n - st : 0;
+    if (last_type) *last_type = __atomic_load_n(&g_vblk_last_type, __ATOMIC_RELAXED);
+}
+
 /* Workers take requests in order and run them in parallel; a flush or an
    Apple barrier first waits for every request before it to finish, and nothing
    after it starts until it is done, so their ordering meaning holds. */
@@ -132,7 +144,12 @@ static void *worker(void *opaque) {
         pthread_mutex_unlock(&b->mu);
 
         uint64_t t0 = stats ? now_us() : 0;
+        __atomic_store_n(&g_vblk_last_type, (int)type, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_vblk_last_start_us, now_us(), __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_vblk_inflight, 1, __ATOMIC_RELAXED);
         if (handle(b, &r->e, &r->written) != 0) r->written = 0;
+        __atomic_sub_fetch(&g_vblk_inflight, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_vblk_done, 1, __ATOMIC_RELAXED);
         if (stats) {
             uint64_t t1 = now_us();
             busy += t1 - t0, reqs++, bytes += r->written > 1 ? r->written : readable(&r->e);

@@ -50,4 +50,7 @@ void hv_virtio_blk_poll(HvVirtioBlk *b);
 /* Tests: wait for the worker to finish everything submitted, then publish it. */
 void hv_virtio_blk_drain(HvVirtioBlk *b);
 
+/* Disk-request counters, all devices together (read-only; for the G7 runner's watchdog): finished requests, requests in flight, age of the latest start (us, 0 if none), its virtio type (0 read, 1 write, 4 flush). */
+void hv_vblk_diag(uint64_t *done, uint64_t *inflight, uint64_t *last_age_us, int *last_type);
+
 #endif

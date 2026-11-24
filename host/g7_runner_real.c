@@ -12,12 +12,15 @@
 #define _GNU_SOURCE
 #include "g7_runner_real.h"
 #include "net_guard.h"
+#include "g7_watch.h"
 
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -29,6 +32,9 @@
 #include "g7_ipsw_check.h"
 #include "usb_host.h"
 #include "vm.h"
+#include "dispatch.h"
+#include "virtio_blk.h"
+#include "bdif.h"
 #include "../devices/vmapple.h"
 
 static struct {
@@ -92,6 +98,32 @@ static void op_cancel(void *ctx) { (void)ctx; hv_install_cancel(); }
 static void op_sleep(void *ctx, int ms) { (void)ctx; usleep((useconds_t)ms * 1000u); }
 static void on_term(int sig) { (void)sig; hv_g7_restore_request_stop(); }
 
+/* Watchdog (host/g7_watch.h): every HV_G7W_TICK_S seconds one `g7-alive:` line, or `g7-stall:` after two quiet samples, built from read-only counters. It reports only; it never
+   touches the restore, the VM or the disk. Started right before the restore runs, stopped and joined right after. */
+static volatile int g_watch_stop;
+static void *watch_main(void *arg) {
+    (void)arg;
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    HvG7WatchState st; memset(&st, 0, sizeof st);
+    for (unsigned waited = 0; !g_watch_stop;) {
+        usleep(1000 * 1000);
+        if (g_watch_stop) break;
+        if (++waited < HV_G7W_TICK_S) continue;
+        waited = 0;
+        struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+        HvG7WatchSample s; memset(&s, 0, sizeof s);
+        s.t_s = (uint64_t)(t1.tv_sec - t0.tv_sec);
+        s.blocks[0] = hv_diag_blocks(0); s.blocks[1] = hv_diag_blocks(1);
+        uint64_t age_us = 0; hv_vblk_diag(&s.disk_done, &s.disk_inflight, &age_us, &s.disk_last_type);
+        s.disk_last_age_s = age_us / 1000000u;
+        s.usb_cmds = hv_bdif_usb_cmds();
+        char line[400];
+        hv_g7w_step(&st, &s, line, sizeof line);
+        { ssize_t r = write(2, line, strlen(line)); (void)r; }   /* one write: no stdio lock */
+    }
+    return NULL;
+}
+
 static int real_restore(void) {
     if (!ipsw_same_file()) { printf("g7: the IPSW is not the file that was verified; the restore was not started\n"); return -1; }
     struct sigaction sa;
@@ -105,7 +137,9 @@ static int real_restore(void) {
     hv_g7_trace_reset();
     hv_net_guard_observe_request(1);   /* TEMPORARY (user-approved 2026-11-24): Apple sub-hosts on 443 are let through and reported as g7-net-observe lines; remove once the exact list is known */
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
+    pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, NULL) == 0;   /* failure only means no watchdog lines */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
+    if (wd_on) { g_watch_stop = 1; pthread_join(wd, NULL); }
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
     { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */
     HvNetStats ns; hv_net_guard_stats(&ns);

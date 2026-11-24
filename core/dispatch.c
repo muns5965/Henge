@@ -872,6 +872,10 @@ static void stop_the_world(HvCpu *cpu) {
     }
 }
 
+/* Blocks dispatched so far by one CPU (0 for an unknown index). Read-only diagnostics for the G7 runner's watchdog (host/g7_watch.h): it says whether the guest is executing at all. */
+static uint64_t g_pcdiag_count[HV_MAX_CPUS];
+uint64_t hv_diag_blocks(unsigned cpu) { return cpu < HV_MAX_CPUS ? __atomic_load_n(&g_pcdiag_count[cpu], __ATOMIC_RELAXED) : 0; }
+
 int hv_run(HvCpu *cpu) {
     hv_big_lock(cpu->m);
     hv_fp_enter(cpu);
@@ -980,10 +984,12 @@ static int run_loop(HvCpu *cpu, int one) {
            blocks will typically never cross a 200000-block boundary and print nothing, which is fine: this is a
            real-boot-only diagnostic aid, not something every synthetic test is expected to exercise. */
         if (cpu->index < HV_MAX_CPUS) {
-            static uint64_t g_pcdiag_count[HV_MAX_CPUS];
-            if ((g_pcdiag_count[cpu->index]++ % 200000) == 0)
+            /* only this CPU's thread writes its slot; hv_diag_blocks() reads it from another thread, hence the relaxed atomics (same count, same printing as before) */
+            uint64_t n = __atomic_load_n(&g_pcdiag_count[cpu->index], __ATOMIC_RELAXED);
+            __atomic_store_n(&g_pcdiag_count[cpu->index], n + 1, __ATOMIC_RELAXED);
+            if ((n % 200000) == 0)
                 fprintf(stderr, "hengevm: cpu %u pc sample #%llu pc=%#llx el=%u\n", cpu->index,
-                        (unsigned long long)g_pcdiag_count[cpu->index], (unsigned long long)cpu->pc, (unsigned)cpu->el);
+                        (unsigned long long)(n + 1), (unsigned long long)cpu->pc, (unsigned)cpu->el);
         }
 
         if ((m->log || m->gen_checks) && cpu->el && (cpu->sctlr_el1 & 1) && !((cpu->pc >> 55) & 1) && cpu->pc >= 0x100000000ull) { /* EL1 at a user address: how did we get here? */

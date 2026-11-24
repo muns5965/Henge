@@ -29,6 +29,8 @@ on:
       - tools/g7-runner-build.sh
       - tools/restore-g7-build.sh
       - tools/check-g7exec-*.sh
+      - tools/g7-watch-test.sh
+      - tests/test_g7_watch.c
       - .github/workflows/android-g7exec.yml
 
 env:
@@ -51,9 +53,10 @@ jobs:
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
-          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
+          tools/g7-watch-test.sh
           tools/g7-exec-launcher-test.sh build-g7exec-java
       - name: Build the engine objects, the restore stack WITHOUT stop switches, and the G7 execution runner (link; NOT run)
         run: |

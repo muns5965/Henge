@@ -18,6 +18,9 @@ void hv_enter(HvCpu *cpu, void *block);
 void hv_fp_enter(HvCpu *cpu);
 void hv_fp_leave(HvCpu *cpu);
 
+/* Blocks dispatched so far by CPU `cpu` (read-only; for the G7 runner's watchdog). */
+uint64_t hv_diag_blocks(unsigned cpu);
+
 void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what);
 
 #endif

@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* USB queue commands the guest has written (REG_CMD), for the G7 runner's watchdog (host/g7_watch.h). */
+static uint64_t g_bdif_usb_cmds;
+uint64_t hv_bdif_usb_cmds(void) { return __atomic_load_n(&g_bdif_usb_cmds, __ATOMIC_RELAXED); }
+
 #define DEVID_MASK 0xffff0000u
 #define DEVID_ROOT 0x00000000u
 #define DEVID_AUX 0x00010000u
@@ -226,6 +230,7 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
         break;
     case REG_CMD: {
         if (b->usb_qsel >= 2) break;
+        __atomic_add_fetch(&g_bdif_usb_cmds, 1, __ATOMIC_RELAXED);
         HvBdifUsbQ *q = &b->usb_q[b->usb_qsel];
         q->done = 0;
         if (b->usb_qsel == 0) {

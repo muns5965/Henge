@@ -13,6 +13,10 @@
 #include "g7_runner_real.h"
 #include "net_guard.h"
 #include "g7_watch.h"
+#include "g7_tssdiag.h"
+#include "curl_last.h"
+#include <dirent.h>
+#include <sys/resource.h>
 
 #include <fcntl.h>
 #include <signal.h>
@@ -128,6 +132,27 @@ static void *watch_main(void *arg) {
     return NULL;
 }
 
+/* Per-attempt TSS line (host/g7_tssdiag.h). libtatsu calls this on the thread that ran the transfer, right after each attempt, so the thread-local record of the curl stand-in
+   (hv_curl_last) is the one for that attempt. It only writes one line to stderr; it decides nothing and keeps nothing. */
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long));
+const char *tss_last_diag(void);
+int hv_curl_deny_active(void);
+static void tss_attempt_line(int attempt, int curl_rc, long http_code, long long ms) {
+    HvCurlLast l; hv_curl_last(&l);
+    HvG7TssTry t; memset(&t, 0, sizeof t);
+    t.attempt = attempt; t.curl_rc = curl_rc; t.http_code = http_code; t.ms = ms;
+    t.deny = hv_curl_deny_active();
+    t.policy_denied = l.policy_denied; t.addrs_denied = l.addrs_denied; t.addrs_tried = l.addrs_tried; t.connected = l.connected; t.tls_done = l.tls_done;
+    t.request_sent = l.request_sent; t.http_status = l.http_status; t.too_large = l.too_large; t.body_to_cb = l.body_to_cb;
+    t.gai_rc = l.gai_rc; t.sock_errno = l.sock_errno; t.conn_errno = l.conn_errno; t.tls_rc = l.tls_rc;
+    t.fds_open = -1; t.fds_limit = -1;
+    { DIR *d = opendir("/proc/self/fd"); if (d) { int n = 0; while (readdir(d)) n++; closedir(d); t.fds_open = n - 3; } }   /* minus ".", ".." and the directory's own descriptor */
+    { struct rlimit rl; if (getrlimit(RLIMIT_NOFILE, &rl) == 0) t.fds_limit = rl.rlim_cur == RLIM_INFINITY ? 0 : (int)rl.rlim_cur; }
+    char line[600];
+    hv_g7t_line(line, sizeof line, &t, tss_last_diag());
+    ssize_t r = write(2, line, strlen(line)); (void)r;   /* one write: no stdio lock */
+}
+
 static int real_restore(void) {
     if (!ipsw_same_file()) { printf("g7: the IPSW is not the file that was verified; the restore was not started\n"); return -1; }
     struct sigaction sa;
@@ -141,6 +166,7 @@ static int real_restore(void) {
     hv_g7_trace_reset();
     hv_net_guard_observe_request(1);   /* TEMPORARY (user-approved 2026-11-24): Apple sub-hosts on 443 are let through and reported as g7-net-observe lines; remove once the exact list is known */
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
+    tss_set_attempt_hook(tss_attempt_line);   /* one g7-tss-try line per TSS attempt: numbers only (host/g7_tssdiag.h) */
     pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, S.dir) == 0;   /* failure only means no watchdog lines */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     if (wd_on) { __atomic_store_n(&g_watch_stop, 1, __ATOMIC_RELAXED); pthread_join(wd, NULL); }

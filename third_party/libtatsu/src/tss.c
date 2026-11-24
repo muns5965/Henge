@@ -1757,6 +1757,12 @@ static char tss_diag[200];
 void tss_set_max_attempts(int n) { if (n >= 1 && n <= TSS_HTTPS_MAX_ATTEMPTS) tss_max_attempts = n; }
 void tss_set_timeouts(long connect_s, long total_s) { if (connect_s > 0) tss_connect_s = connect_s; if (total_s > 0) tss_total_s = total_s; }
 const char* tss_last_diag(void) { return tss_diag; }
+/* Per-attempt observer for the host. Called on the thread that ran curl_easy_perform, right after that attempt's diagnosis was built (so tss_last_diag()
+   describes it) and before the retry decision, with the attempt number, curl's return code, the HTTP code (0 = none) and the milliseconds the transfer took.
+   It gets numbers only: no URL, no request or reply text. NULL = none (the default). */
+static void (*tss_attempt_hook)(int attempt, int curl_rc, long http_code, long long elapsed_ms) = NULL;
+void tss_set_attempt_hook(void (*hook)(int, int, long, long long)) { tss_attempt_hook = hook; }
+static long long tss_now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
 
 /* Case-insensitive search of needle inside s[0..n) without copying s. */
 static int tss_span_has(const char* s, size_t n, const char* needle)
@@ -1904,8 +1910,12 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 
 		debug("Sending TSS request attempt %d... ", retry);
 
+#ifdef HV_TSS_HTTPS_ONLY
+		long long perform_t0 = tss_now_ms();
+#endif
 		CURLcode curl_rc = curl_easy_perform(handle);
 #ifdef HV_TSS_HTTPS_ONLY
+		long long perform_ms = tss_now_ms() - perform_t0;
 		long http_code = 0;
 		curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
 #endif
@@ -1933,6 +1943,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 				tss_diag_set("TSS_ATTEMPTS: %d / HTTP: %ld / NOT_A_TSS_REPLY / MESSAGE_RAW: suppressed", retry, http_code);
 			}
 		}
+		if (tss_attempt_hook) tss_attempt_hook(retry, (int)curl_rc, http_code, perform_ms);
 		if (!tss_curl_error_retryable(curl_rc)) {
 			error("ERROR: tss_send_request: not retrying (curl %d)\n", (int)curl_rc);
 			status_code = -1;

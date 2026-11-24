@@ -367,7 +367,9 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     struct addrinfo hints = {.ai_socktype = SOCK_STREAM}, *res = NULL;
     if (stop_check(e)) return CURLE_ABORTED_BY_CALLBACK; /* the caller turns e->stop into the right code */
     /* getaddrinfo cannot be interrupted: a deadline or cancel that arrives during name resolution takes effect when it returns */
-    if (getaddrinfo(host, port, &hints, &res) != 0 || !res) {
+    int gai = getaddrinfo(host, port, &hints, &res);
+    if (gai != 0 || !res) {
+        g_last.gai_rc = gai ? gai : -1;
         snprintf(c->err, sizeof c->err, "could not resolve host %s", host);
         return stop_check(e) ? CURLE_ABORTED_BY_CALLBACK : CURLE_COULDNT_RESOLVE_HOST;
     }
@@ -376,7 +378,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
         naddr++;
         int s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (s < 0) continue;
+        if (s < 0) { if (!g_last.sock_errno) g_last.sock_errno = errno ? errno : -1; continue; }
         struct timeval tv = {IO_TIMEOUT_S, 0};
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
@@ -385,14 +387,17 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
         if (hv_curl_connect_guard && hv_curl_connect_guard(host, a->ai_addr, a->ai_addrlen) != 0) { close(s); ndenied++; g_last.addrs_denied++; continue; }   /* host/net_guard.c */
         g_last.addrs_tried++;
         int r = connect(s, a->ai_addr, a->ai_addrlen);
+        int cerr = (r < 0 && errno != EINPROGRESS) ? errno : 0;
         if (r < 0 && errno == EINPROGRESS) {
             if (wait_fd(e, s, POLLOUT, e && e->connect_timeout_ms > 0 ? e->connect_timeout_ms : CONNECT_TIMEOUT_MS) == 1) {
                 int e = 0;
                 socklen_t l = sizeof e;
                 getsockopt(s, SOL_SOCKET, SO_ERROR, &e, &l);
                 r = e ? -1 : 0;
-            } else r = -1;
+                cerr = e;
+            } else { r = -1; cerr = -1; }
         }
+        if (r < 0) g_last.conn_errno = cerr ? cerr : -1;
         fcntl_nonblock(s, 0);
         if (r == 0) fd = s; else close(s);
     }
@@ -448,6 +453,7 @@ static CURLcode conn_open(Conn *c, Easy *e, int https, const char *host, const c
     }
     if (ret != 0 && stop_check(e)) { conn_close(c); return CURLE_ABORTED_BY_CALLBACK; }
     if (ret != 0) {
+        g_last.tls_rc = ret;
         char m[160];
         mbedtls_strerror(ret, m, sizeof m);
         uint32_t flags = mbedtls_ssl_get_verify_result(&c->ssl);

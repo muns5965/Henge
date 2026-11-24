@@ -15,6 +15,11 @@ typedef struct {
     int too_large;          /* stopped by the body or header size cap */
     long long body_to_cb;   /* body bytes handed to the write callback */
     size_t max_buf;         /* largest capacity any internal line/request buffer reached */
+    /* numbers only, for telling an instant local failure from a network one (all 0 = nothing went wrong at that step) */
+    int gai_rc;             /* getaddrinfo() return code of the last lookup that failed (EAI_*, or -1 for "no result") */
+    int sock_errno;         /* errno of the first socket() that failed (EMFILE, ENOMEM, ...) */
+    int conn_errno;         /* errno / SO_ERROR of the last connect() that failed (-1 = it timed out or was stopped) */
+    int tls_rc;             /* mbedtls return code (negative) of a failed handshake */
 } HvCurlLast;
 
 void hv_curl_last(HvCurlLast *out);

@@ -29,6 +29,9 @@ static int num(const char *s, unsigned long long *v, int base) {
 }
 
 int main(int argc, char **argv) {
+    /* stdout is a pipe to the app: without this it is block-buffered, so the last lines of a stalled run (and the log's end) never arrive. Line-buffered, set before the first output.
+       Only stdout: the libraries' own stderr lines (usb diag, usbmuxd) are unbuffered already. A line without a newline, or a library writing to fd 1 itself, is not covered. */
+    if (setvbuf(stdout, NULL, _IOLBF, 0) != 0) fprintf(stderr, "g7: stdout could not be made line-buffered; the log may lag behind the run\n");
     HvG7Request r = {.ram_mb = 2048, .ncpus = 2, .jit_mb = 64};
     const char *workdir = NULL, *ipsw_sha = NULL;
     long timeout_s = 2 * 3600, grace_s = 60;   /* the provisional defaults of HV_G7R_DEFAULT_LIMITS; only the time limits are settings (bounds in host/g7_restore.h) */

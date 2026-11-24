@@ -6,7 +6,9 @@
 
 static const HvG7NetHost k_hosts[] = {{"gs.apple.com", 443}, {"gs.apple.com.akadns.net", 443}, {"gs.apple.com.v.aaplimg.com", 443},
     /* URLAsset host the device asked for (run g7_run_1795484190481, purpose=URL, refused at mount_filesystem); approved by the user on 2026-11-24, port 443 only. See docs/g7-new-destinations.md. */
-    {"wkms-public.apple.com", 443}};
+    {"wkms-public.apple.com", 443},
+    /* The redirect target of that URLAsset request (run g7_run_1795490597501: `g7-net-deny: purpose=URL host=fcs-keys-pub-prod.cdn-apple.com port=443`, "redirect target refused by policy"); approved by the user on 2026-11-24, port 443 only. */
+    {"fcs-keys-pub-prod.cdn-apple.com", 443}};
 static int g_ok;
 
 const HvG7NetHost *hv_g7_net_hosts(size_t *n) { if (n) *n = sizeof k_hosts / sizeof *k_hosts; return k_hosts; }

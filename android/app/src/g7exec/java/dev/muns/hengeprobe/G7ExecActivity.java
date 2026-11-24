@@ -1,6 +1,7 @@
 package dev.muns.hengeprobe;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -16,6 +17,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * [G7-EXEC] Only in the g7exec build (never in the general APK). Shows what is there (files only: the binary is NOT executed to find out), and starts the G7 execution build
@@ -25,7 +29,13 @@ import java.io.File;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur;
+    private TextView storageInfo;
+    private LinearLayout archiveBox;
+    private final List<CheckBox> archiveBoxes = new ArrayList<>();
+    private File privDir, nativeDirRef, extDirRef;
+    /** The space a file really occupies (allocated blocks), not its 128 GiB logical size. */
+    private static final G7Storage.Sizer SIZER = f -> { try { return android.system.Os.stat(f.getPath()).st_blocks * 512L; } catch (android.system.ErrnoException e) { throw new IOException(e.getMessage()); } };
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
@@ -34,6 +44,7 @@ public class G7ExecActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final File ext = new File(getExternalFilesDir(null), "vm"), priv = new File(getFilesDir(), "vm");
         final File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
+        privDir = priv; nativeDirRef = nativeDir; extDirRef = ext;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int p = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16, getResources().getDisplayMetrics());
@@ -71,7 +82,31 @@ public class G7ExecActivity extends Activity {
             status.setText(r.message + "\n\n" + G7ExecLauncher.preflight(nativeDir, ext, priv).text);
             isoConsent.setChecked(false);   // every isolation needs a fresh consent
             showSummary();
+            refreshStorage();
         });
+        add(root, "[저장공간 관리] 격리된 설치 쌍과 지금 남아 있는 실패한 설치 쌍을 삭제해 공간을 확보합니다. 삭제는 되돌릴 수 없고, 확인 창에서 '삭제'를 눌러야만 실행됩니다(자동 삭제 없음). 지우는 것은 디스크·AUX·AUX 원본 복사·상태 파일·격리 메모뿐이며 ROM·IPSW·ECID·로그는 지우지 않습니다. 복원이 실행 중이면 삭제할 수 없고, 정상 설치가 끝난 디스크(state=done)는 지우지 않습니다.", 13);
+        storageInfo = new TextView(this);
+        storageInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        root.addView(storageInfo);
+        archiveBox = new LinearLayout(this);
+        archiveBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(archiveBox);
+        delSel = new Button(this); delSel.setText("선택 삭제"); root.addView(delSel);
+        delAll = new Button(this); delAll.setText("격리 파일 전체 삭제"); root.addView(delAll);
+        delCur = new Button(this); delCur.setText("현재 실패한 설치 쌍 바로 삭제(격리하지 않음)"); root.addView(delCur);
+        delSel.setOnClickListener(v -> {
+            List<String> names = new ArrayList<>();
+            for (CheckBox c : archiveBoxes) if (c.isChecked() && c.isEnabled()) names.add((String) c.getTag());
+            if (names.isEmpty()) { status.setText("삭제할 보관 폴더를 선택하세요."); return; }
+            confirmDeleteArchives(names);
+        });
+        delAll.setOnClickListener(v -> {
+            List<String> names = new ArrayList<>();
+            for (G7Storage.Item it : G7Storage.list(privDir, SIZER)) if (it.deletable) names.add(it.name);
+            if (names.isEmpty()) { status.setText("삭제할 수 있는 격리 폴더가 없습니다."); return; }
+            confirmDeleteArchives(names);
+        });
+        delCur.setOnClickListener(v -> confirmDeleteCurrent());
         share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
         copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
         add(root, "[네트워크 시험] Apple 서명 서버 주소 3개에 이름 조회·TCP 연결·TLS 핸드셰이크만 시험합니다(요청 본문 전송 없음, 최대 약 5분, 복원 없음). 복원이 실행 중일 때도 시작할 수 있어 비교에 쓸 수 있습니다.", 13);
@@ -98,6 +133,7 @@ public class G7ExecActivity extends Activity {
         log.setText(G7ExecLauncher.readLogTail(getFilesDir(), 6000));
         root.addView(log);
         showSummary();
+        refreshStorage();
         String note = G7ExecLauncher.lastRunNote(getFilesDir());
         if (!note.isEmpty()) status.setText(status.getText() + "\n\n" + note);
         G7ExecLauncher.Run live = G7ExecLauncher.current();
@@ -122,6 +158,65 @@ public class G7ExecActivity extends Activity {
         ScrollView sv = new ScrollView(this);
         sv.addView(root);
         setContentView(sv);
+    }
+
+
+    private java.util.function.IntSupplier runnerSt() { return () -> G7ExecLauncher.runnerStatus(android.os.Process.myPid(), getFilesDir()); }   // evaluated inside the start lock
+
+    private static String when(long ms) { return ms <= 0 ? "날짜 미상" : new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(ms)); }
+
+    /** Free space and the list of isolated pairs with the space they really occupy; read again after every deletion. */
+    private void refreshStorage() {
+        long free = privDir.getUsableSpace();
+        StringBuilder t = new StringBuilder("사용 가능한 저장공간: ").append(G7Storage.fmt(free)).append("  (새 복원 시작에 최소 ").append(G7Storage.fmt(G7Storage.MIN_FREE_BYTES)).append(" 필요, 추정값)");
+        long cur = 0; boolean have = false;
+        for (String n : G7Isolation.NAMES) { File f = new File(privDir, n); if (f.isFile()) { have = true; try { cur += SIZER.allocated(f); } catch (IOException e) { /* shown as less */ } } }
+        t.append("\n현재 설치 쌍(vm/): ").append(have ? "실제 " + G7Storage.fmt(cur) + " 사용, 상태 " + G7Storage.stateOf(new File(privDir, "g7_state.txt")) : "없음");
+        archiveBox.removeAllViews(); archiveBoxes.clear();
+        List<G7Storage.Item> items = G7Storage.list(privDir, SIZER);
+        t.append("\n격리된 설치 파일: ").append(items.isEmpty() ? "없음" : items.size() + "개");
+        storageInfo.setText(t);
+        for (G7Storage.Item it : items) {
+            CheckBox c = new CheckBox(this);
+            c.setText(it.name + "\n" + when(it.createdMs) + " · 실제 " + G7Storage.fmt(it.allocated) + " · " + it.state + (it.deletable ? "" : "\n(" + it.note + ")"));
+            c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            c.setTag(it.name); c.setEnabled(it.deletable);
+            archiveBox.addView(c); archiveBoxes.add(c);
+        }
+    }
+
+    private void setDeleteButtons(boolean on) { delSel.setEnabled(on); delAll.setEnabled(on); delCur.setEnabled(on); }
+
+    private void confirmDeleteArchives(final List<String> names) {
+        long total = 0;
+        for (G7Storage.Item it : G7Storage.list(privDir, SIZER)) if (names.contains(it.name)) total += it.allocated;
+        final long shown = total;
+        new AlertDialog.Builder(this).setTitle("영구 삭제 확인")
+                .setMessage(names.size() + "개 보관 폴더(" + String.join(", ", names) + ")의 디스크·AUX·상태 파일을 영구 삭제합니다. 약 " + G7Storage.fmt(shown) + "을 되찾습니다. 되돌릴 수 없습니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("삭제", (d, w) -> runDelete(() -> G7Storage.deleteArchives(privDir, names, runnerSt(), SIZER).message)).show();
+    }
+
+    private void confirmDeleteCurrent() {
+        new AlertDialog.Builder(this).setTitle("영구 삭제 확인")
+                .setMessage("지금 vm/에 있는 실패한 설치 쌍(디스크·AUX·AUX 원본 복사·상태 파일)을 격리 없이 바로 영구 삭제합니다. 상태가 in_progress인 쌍만 지우며, 정상 설치가 끝난(done) 쌍은 지우지 않습니다. 되돌릴 수 없습니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("삭제", (d, w) -> runDelete(() -> G7Storage.deleteCurrent(privDir, runnerSt()).message)).show();
+    }
+
+    /** Deleting a large file can take a moment: off the screen thread; the buttons stay off until it ends. */
+    private void runDelete(final java.util.function.Supplier<String> job) {
+        setDeleteButtons(false);
+        status.setText("삭제 중입니다…");
+        new Thread(() -> {
+            String m;
+            try { m = job.get(); } catch (RuntimeException e) { m = "삭제 중 예기치 못한 오류가 났습니다. 남은 파일은 그대로이며 다시 시도할 수 있습니다."; }
+            final String msg = m;
+            runOnUiThread(() -> {
+                refreshStorage(); showSummary(); setDeleteButtons(true);
+                status.setText(msg + "\n\n" + G7ExecLauncher.preflight(nativeDirRef, extDirRef, privDir).text);
+            });
+        }, "g7-delete").start();
     }
 
     private void poll() {

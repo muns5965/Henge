@@ -208,16 +208,22 @@ public final class G7ExecLauncher {
 
     /** The one public way to start. The switch is the committed constant. */
     public static Start start(File nativeLibDir, File extVmDir, File privVmDir, File filesDir, boolean consent) {
-        return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED, nativeLibDir, extVmDir, privVmDir, filesDir, consent, IPSW_SHA256);
+        return startWith(REAL, G7ProbeLauncher::usableRomFile, START_ENABLED, nativeLibDir, extVmDir, privVmDir, filesDir, consent, IPSW_SHA256, privVmDir::getUsableSpace);
     }
 
     static Start startWith(Spawner spawner, RomFinder roms, boolean enabled, File nativeLibDir, File extVmDir, File privVmDir, File filesDir, boolean consent, String ipswSha256) {
+        return startWith(spawner, roms, enabled, nativeLibDir, extVmDir, privVmDir, filesDir, consent, ipswSha256, () -> Long.MAX_VALUE);
+    }
+
+    static Start startWith(Spawner spawner, RomFinder roms, boolean enabled, File nativeLibDir, File extVmDir, File privVmDir, File filesDir, boolean consent, String ipswSha256, java.util.function.LongSupplier freeSpace) {
         if (!enabled) return new Start(false, "시작할 수 없습니다: 이 빌드의 시작 스위치가 꺼져 있습니다. 아무것도 만들거나 실행하지 않았습니다.", null);
         if (!isPackaged(nativeLibDir)) return new Start(false, "실행 파일(" + LIB_NAME + ")이 없어 시작하지 않았습니다.", null);
         if (!consent) return new Start(false, "동의가 체크되지 않아 시작하지 않았습니다.", null);
         if (!isSha256Hex(ipswSha256 == null ? null : ipswSha256.toLowerCase())) return new Start(false, "IPSW SHA-256(64자리 16진수)이 올바르지 않아 시작하지 않았습니다.", null);
         Preflight pf = preflightWith(roms, nativeLibDir, extVmDir, privVmDir);
         if (!pf.ready) return new Start(false, "사전 확인이 통과하지 않아 시작하지 않았습니다.\n" + pf.text, null);
+        String lowSpace = G7Storage.enoughFor(freeSpace.getAsLong());   // before anything is created: the disk and AUX are written into this storage
+        if (!lowSpace.isEmpty()) return new Start(false, lowSpace, null);
         File rom = roms.find(extVmDir, privVmDir);
         long ecid = G7ProbeLauncher.readEcid(privVmDir);
         if (rom == null || ecid <= 0) return new Start(false, "ROM 또는 ECID를 확인하지 못해 시작하지 않았습니다.", null);

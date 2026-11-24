@@ -78,7 +78,7 @@ public final class G7Isolation {
     static Result isolateWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) { return isolateWith(mv, enabled, live, priv, (IntSupplier) () -> runnerStatus); }
     static Result recoverWith(Mover mv, boolean enabled, BooleanSupplier live, File priv, int runnerStatus) { return recoverWith(mv, enabled, live, priv, (IntSupplier) () -> runnerStatus); }
 
-    private static String gate(boolean enabled, BooleanSupplier live, IntSupplier status) {
+    static String gate(boolean enabled, BooleanSupplier live, IntSupplier status) {
         if (!enabled) return "이 빌드의 시작 스위치가 꺼져 있어 격리하지 않았습니다. 아무것도 옮기지 않았습니다.";
         if (live.getAsBoolean()) return "이 앱에서 실행 중인 G7 프로세스가 있어 격리하지 않았습니다.";
         int runnerStatus = status.getAsInt();

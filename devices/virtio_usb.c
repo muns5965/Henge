@@ -18,15 +18,39 @@ static void msg_free(HvVusbMsg *m) {
 static void drop_all_locked(HvVirtioUsb *d) {
     while (d->out_head != d->out_tail) msg_free(&d->out[d->out_head++ % HV_VUSB_RING]);
     while (d->in_head != d->in_tail) msg_free(&d->in[d->in_head++ % HV_VUSB_RING]);
+    d->lost_eps = 0;   /* whatever was lost belonged to the connection that is now gone */
 }
+
+static uint32_t ep_bit(uint8_t ep) { return 1u << ((ep & 0x0f) | (ep & 0x80 ? 16 : 0)); }
 
 static void put_msg(HvVirtioUsb *d, HvVusbMsg *m) {
     if (d->log) fprintf(stderr, "virtio-usb: response type %u ep %#x len %u\n", m->type, m->ep, m->len);
     pthread_mutex_lock(&d->mu);
+    uint32_t lost_n = 0;
     if (d->in_tail - d->in_head < HV_VUSB_RING) d->in[d->in_tail++ % HV_VUSB_RING] = *m;
-    else msg_free(m);
+    else {   /* the host is not taking responses: this one cannot be kept. Record it, so the transfer waiting for it can end with an error instead of waiting for ever */
+        d->lost_eps |= ep_bit(m->ep);
+        lost_n = ++d->in_lost;
+        msg_free(m);
+    }
     pthread_cond_broadcast(&d->cv);
     pthread_mutex_unlock(&d->mu);
+    if (lost_n == 1 || lost_n % 1024 == 0) fprintf(stderr, "virtio-usb: response ring full, a response was dropped (%u so far)\n", lost_n);
+}
+
+int hv_vusb_take_lost(HvVirtioUsb *d, uint8_t ep) {
+    pthread_mutex_lock(&d->mu);
+    int r = (d->lost_eps & ep_bit(ep)) != 0;
+    d->lost_eps &= ~ep_bit(ep);
+    pthread_mutex_unlock(&d->mu);
+    return r;
+}
+
+uint32_t hv_vusb_lost_total(HvVirtioUsb *d) {
+    pthread_mutex_lock(&d->mu);
+    uint32_t n = d->in_lost;
+    pthread_mutex_unlock(&d->mu);
+    return n;
 }
 
 void hv_vusb_put_response(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uint32_t len) {
@@ -179,18 +203,18 @@ int hv_vusb_send_session(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *d
     HvVusbMsg m = {.type = type, .ep = ep, .len = len};
     if (len) {
         m.data = malloc(len);
-        if (!m.data) return -1;
+        if (!m.data) return HV_VUSB_E_NOMEM;
         if (data) memcpy(m.data, data, len);
         else memset(m.data, 0, len);
     }
     pthread_mutex_lock(&d->mu);
-    int ok = d->online && d->out_tail - d->out_head < HV_VUSB_RING;
-    if (ok) d->out[d->out_tail++ % HV_VUSB_RING] = m;
-    if (ok && session) *session = d->session;
+    int err = !d->online ? HV_VUSB_E_OFFLINE : d->out_tail - d->out_head >= HV_VUSB_RING ? HV_VUSB_E_FULL : 0;
+    if (!err) d->out[d->out_tail++ % HV_VUSB_RING] = m;
+    if (!err && session) *session = d->session;
     pthread_mutex_unlock(&d->mu);
-    if (!ok) {
+    if (err) {
         free(m.data);
-        return -1;
+        return err;
     }
     hv_machine_wake(d->vio.m);
     return 0;
@@ -199,11 +223,11 @@ int hv_vusb_send_session(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *d
 int hv_vusb_send_in(HvVirtioUsb *d, uint8_t ep, uint32_t len) {
     HvVusbMsg m = {.type = HV_VUSB_REQ_DATA, .ep = ep, .len = len};
     pthread_mutex_lock(&d->mu);
-    int ok = d->online && d->out_tail - d->out_head < HV_VUSB_RING;
-    if (ok) d->out[d->out_tail++ % HV_VUSB_RING] = m;
+    int err = !d->online ? HV_VUSB_E_OFFLINE : d->out_tail - d->out_head >= HV_VUSB_RING ? HV_VUSB_E_FULL : 0;
+    if (!err) d->out[d->out_tail++ % HV_VUSB_RING] = m;
     pthread_mutex_unlock(&d->mu);
-    if (ok) hv_machine_wake(d->vio.m);
-    return ok ? 0 : -1;
+    if (!err) hv_machine_wake(d->vio.m);
+    return err;
 }
 
 void hv_vusb_cv_init(HvVirtioUsb *d) {

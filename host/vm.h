@@ -93,6 +93,8 @@ void hv_vm_set_poll(void (*poll)(void));
    machine stops (powered off, a fatal error, or hv_vm_stop), after the disks
    are flushed; reason is an HV_EXIT_* value. */
 void hv_vm_start(int cpu0, void (*on_exit)(int reason));
+/* 1 if the last hv_vm_start could not start every thread it needs (the machine was stopped); 0 otherwise. */
+int hv_vm_start_failed(void);
 /* Call on a thread before it runs guest code (hv_vm_start's threads do): see vm.c. */
 void hv_vm_prepare_cpu_thread(void);
 /* That, and the scheduling class the guest's CPUs run at. */

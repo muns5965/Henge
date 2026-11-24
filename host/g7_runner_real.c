@@ -85,6 +85,7 @@ static void on_machine_exit(int reason) { (void)reason; }
 static int real_create_vm(const HvVmConfig *cfg, char *err, size_t errlen) {
     if (hv_vm_create(cfg, err, errlen) != 0) return -1;
     hv_vm_start(1, on_machine_exit);
+    if (hv_vm_start_failed()) { if (err && errlen) snprintf(err, errlen, "the machine could not start all its threads"); return -1; }
     return 0;
 }
 
@@ -109,12 +110,13 @@ static void *watch_main(void *arg) {
     const char *dir_copy = (const char *)arg;   /* the directory that holds the install disk (the pair directory) */
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     HvG7WatchState st; memset(&st, 0, sizeof st);
-    for (unsigned waited = 0; !__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED);) {
+    struct timespec last = t0;   /* the last sample: the period is measured on CLOCK_MONOTONIC, not counted in sleeps (a sleep that comes back late must not stretch the period) */
+    while (!__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED)) {
         usleep(1000 * 1000);
         if (__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED)) break;
-        if (++waited < HV_G7W_TICK_S) continue;
-        waited = 0;
         struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+        if ((uint64_t)(t1.tv_sec - last.tv_sec) < HV_G7W_TICK_S) continue;
+        last = t1;
         HvG7WatchSample s; memset(&s, 0, sizeof s);
         s.t_s = (uint64_t)(t1.tv_sec - t0.tv_sec);
         s.blocks[0] = hv_diag_blocks(0); s.blocks[1] = hv_diag_blocks(1);

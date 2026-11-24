@@ -24,6 +24,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "usb_host.h"
@@ -56,7 +57,18 @@ struct libusb_device_handle {
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct libusb_device *g_dev; /* the current connection's device, or NULL */
 static uint8_t g_next_address = 1;
+static int64_t shim_mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 static uint8_t g_outstanding[32];   /* IN requests the guest still holds, per endpoint index */
+static uint32_t g_epoch;            /* bumps whenever g_outstanding / g_left / g_ack_debt are reset (a connection ended); guarded by g_mu */
+/* OUT answers still to come, per endpoint index: pieces of an OUT transfer that ended early (timeout, cancel, a piece the full ring refused, a stall, a lost answer) were
+   queued, so the guest will answer them. The link has no transfer id, so those answers cannot be told from the next transfer's by looking at them: the next OUT transfer on the
+   endpoint first takes them (settle_debt) and only then sends its own data. If they do not come the endpoint stays unusable until the connection ends: the transfer fails with an
+   error -- fail-stop, never "completed" on a stranger's answer. Guarded by g_mu. */
+static uint32_t g_ack_debt[32];
 static uint8_t *g_left[32];         /* the unread rest of the last IN response, per endpoint index */
 static uint32_t g_left_off[32], g_left_len[32];
 
@@ -134,6 +146,8 @@ static void refresh(void) {
         old->gone = 1;
         g_dev = NULL;
         memset(g_outstanding, 0, sizeof g_outstanding);
+        memset(g_ack_debt, 0, sizeof g_ack_debt);
+        g_epoch++;
         for (int i = 0; i < 32; i++) free(g_left[i]), g_left[i] = NULL, g_left_len[i] = g_left_off[i] = 0;
     }
     int want = on && !g_dev;
@@ -171,6 +185,7 @@ typedef struct Xfer {
     int cancel;
     int inflight;                  /* one unfinished submission at most (atomic) */
     struct libusb_device *dev;     /* the reference this submission holds */
+    int64_t t_submit;              /* CLOCK_MONOTONIC ms at submit: the transfer's time limit counts from here, also while it waits behind another one on its endpoint */
     struct Xfer *next;
 } Xfer;
 static int g_xdev_acq, g_xdev_rel;   /* device references taken / given back by transfers (atomic), for the tests' balance check */
@@ -186,6 +201,7 @@ typedef struct Worker {
     pthread_cond_t cv;
     Xfer *head, *tail;
     int ep;
+    int started;                   /* the thread exists: written once in workers_init, before any submit can pass the pthread_once */
 } Worker;
 static Worker g_workers[32];
 static pthread_once_t g_workers_once = PTHREAD_ONCE_INIT;
@@ -271,11 +287,67 @@ static void complete(Xfer *x, enum libusb_transfer_status st, int actual) {
     (void)!write(g_pipe[1], &c, 1);
 }
 
+/* A transfer ends with an error, not an endless wait, when a request cannot be queued. HV_VUSB_E_FULL means the guest has not taken its buffers yet (the device is still
+   there): wait for room, in short steps, until the transfer's own deadline; a cancel ends the wait. Nothing is queued by a failed try, so trying again repeats no data. */
+/* The longest a request waits for room in the guest's request ring when the transfer has no time limit of its own (usbmuxd passes 0), and the longest a new OUT transfer waits for
+   the answers an earlier, ended one left behind. Before this, a full ring failed at once with NO_DEVICE. Test hook below. */
+static int g_queue_wait_ms = 60000;
+void hv_libusb_set_queue_wait_ms(int ms) { g_queue_wait_ms = ms > 0 ? ms : 60000; }
+#define SHIM_QUEUE_WAIT_MS g_queue_wait_ms
+static int send_when_room(Xfer *x, int64_t end, uint8_t type, uint8_t ep, const void *data, uint32_t len) {
+    for (;;) {
+        int r = type == HV_VUSB_REQ_DATA && !data ? hv_vusb_send_in(g_usb, ep, len) : hv_vusb_send(g_usb, type, ep, data, len);
+        if (r != HV_VUSB_E_FULL) return r;
+        if (__atomic_load_n(&x->cancel, __ATOMIC_ACQUIRE)) return -100;
+        if (shim_mono_ms() >= end) return HV_VUSB_E_FULL;
+        usleep(2000);
+    }
+}
+static enum libusb_transfer_status send_failure_status(int r) {
+    return r == -100 ? LIBUSB_TRANSFER_CANCELLED : r == HV_VUSB_E_OFFLINE ? LIBUSB_TRANSFER_NO_DEVICE : LIBUSB_TRANSFER_ERROR;
+}
+
+static uint32_t epoch_now(void) {
+    pthread_mutex_lock(&g_mu);
+    uint32_t e = g_epoch;
+    pthread_mutex_unlock(&g_mu);
+    return e;
+}
+/* `n` answers of an OUT transfer that is ending now are still to come (see g_ack_debt). Not if the connection ended meanwhile: the reset already forgot them. */
+static void debt_add(int ix, uint32_t epoch, int n) {
+    if (n <= 0) return;
+    pthread_mutex_lock(&g_mu);
+    if (epoch == g_epoch) g_ack_debt[ix] += (uint32_t)n;
+    pthread_mutex_unlock(&g_mu);
+}
+/* Before an OUT transfer sends anything: take the answers an earlier transfer left. 0: none left; else the status to end the transfer with. */
+static int settle_debt(Xfer *x, int ix, uint8_t ep, int64_t end, uint32_t epoch) {
+    for (;;) {
+        pthread_mutex_lock(&g_mu);
+        uint32_t left = epoch == g_epoch ? g_ack_debt[ix] : 0;
+        pthread_mutex_unlock(&g_mu);
+        if (!left) return 0;
+        HvVusbMsg m;
+        int r = hv_vusb_recv(g_usb, ep, &m, 100);
+        if (r < 0) return LIBUSB_TRANSFER_NO_DEVICE;
+        if (r > 0) {
+            free(m.data);
+            pthread_mutex_lock(&g_mu);
+            if (epoch == g_epoch && g_ack_debt[ix]) g_ack_debt[ix]--;
+            pthread_mutex_unlock(&g_mu);
+            continue;
+        }
+        if (__atomic_load_n(&x->cancel, __ATOMIC_ACQUIRE)) return LIBUSB_TRANSFER_CANCELLED;
+        if (shim_mono_ms() >= end || hv_vusb_take_lost(g_usb, ep)) return LIBUSB_TRANSFER_ERROR;   /* the endpoint stays unusable until the connection ends */
+    }
+}
+
 /* Run one transfer synchronously, in slices so a cancel is noticed. */
 static void run(Xfer *x) {
     struct libusb_transfer *t = x->t;
     struct libusb_device *d = x->dev;   /* the submission's own reference, not the handle */
-    int slice = 200, waited = 0, limit = t->timeout ? (int)t->timeout : 0;
+    int slice = 200, limit = t->timeout ? (int)t->timeout : 0;
+    int64_t end = x->t_submit + (limit ? limit : SHIM_QUEUE_WAIT_MS);   /* CLOCK_MONOTONIC: counting slices would under-count whenever the thread is late to wake */
     if (d->gone) {
         complete(x, LIBUSB_TRANSFER_NO_DEVICE, 0);
         return;
@@ -298,6 +370,7 @@ static void run(Xfer *x) {
     uint8_t ep = t->endpoint;
     int in = (ep & 0x80) != 0, ix = ep_index(ep);
     int acks = 1; /* responses that end this transfer */
+    uint32_t epoch = epoch_now();
     if (!in) {
         /* On a real bus the data goes in packets and fills the device's
            posted reads one after another; here each request is one read,
@@ -318,14 +391,18 @@ static void run(Xfer *x) {
             }
         }
         acks = 0;
+        int dr = settle_debt(x, ix, ep, end, epoch);
+        if (dr) { complete(x, (enum libusb_transfer_status)dr, 0); return; }
         if (t->length == 0) { /* a zero-length packet: this link delimits transfers itself */
             complete(x, LIBUSB_TRANSFER_COMPLETED, 0);
             return;
         }
         for (int off = 0; off < t->length || (off == 0 && t->length == 0); off += chunk) {
             int n = t->length - off < chunk ? t->length - off : chunk;
-            if (hv_vusb_send(g_usb, HV_VUSB_REQ_DATA, ep, t->buffer + off, (uint32_t)n) != 0) {
-                complete(x, LIBUSB_TRANSFER_NO_DEVICE, 0);
+            int sr = send_when_room(x, end, HV_VUSB_REQ_DATA, ep, t->buffer + off, (uint32_t)n);
+            if (sr != 0) {   /* a piece that was queued before stays queued: its answer is not taken back, and is owed to the endpoint */
+                debt_add(ix, epoch, acks);
+                complete(x, send_failure_status(sr), 0);
                 return;
             }
             acks++;
@@ -345,13 +422,22 @@ static void run(Xfer *x) {
             return;
         }
         int have = g_outstanding[ix] > 0;
+        uint32_t ep_epoch = g_epoch;
         if (!have) g_outstanding[ix]++;
         pthread_mutex_unlock(&g_mu);
         /* A request a cancelled transfer left with the guest is still good:
            its answer is the next data in the stream, so wait for that. */
-        if (!have && hv_vusb_send_in(g_usb, ep, (uint32_t)t->length) != 0) {
-            complete(x, LIBUSB_TRANSFER_NO_DEVICE, 0);
-            return;
+        if (!have) {
+            int sr = send_when_room(x, end, HV_VUSB_REQ_DATA, ep, NULL, (uint32_t)t->length);
+            if (sr != 0) {
+                /* Nothing reached the guest: the count taken above must not stay, or the next transfer would believe a request is out and wait for an answer that never comes.
+                   Not if the connection ended meanwhile (the reset already cleared it, and the count may now belong to the next connection). */
+                pthread_mutex_lock(&g_mu);
+                if (ep_epoch == g_epoch && g_outstanding[ix]) g_outstanding[ix]--;
+                pthread_mutex_unlock(&g_mu);
+                complete(x, send_failure_status(sr), 0);
+                return;
+            }
         }
     }
     for (;;) {
@@ -385,16 +471,32 @@ static void run(Xfer *x) {
                 st = LIBUSB_TRANSFER_ERROR;
             }
             free(m.data);
-            if (st == LIBUSB_TRANSFER_COMPLETED && --acks > 0) continue; /* more pieces to be taken */
+            if (st == LIBUSB_TRANSFER_COMPLETED && --acks > 0) {   /* more pieces to be taken: a cancel and the deadline are looked at between pieces too */
+                if (__atomic_load_n(&x->cancel, __ATOMIC_ACQUIRE)) { if (!in) debt_add(ix, epoch, acks); complete(x, LIBUSB_TRANSFER_CANCELLED, 0); return; }
+                if (limit && shim_mono_ms() >= end) { if (!in) debt_add(ix, epoch, acks); complete(x, LIBUSB_TRANSFER_TIMED_OUT, 0); return; }
+                continue;
+            }
+            if (!in && st != LIBUSB_TRANSFER_COMPLETED) debt_add(ix, epoch, acks - 1);   /* this answer ended the transfer; the pieces after it still answer later */
             complete(x, st, n);
             return;
         }
-        waited += slice;
+        if (hv_vusb_take_lost(g_usb, ep)) {   /* the answer this transfer waits for was dropped (response ring full): it will never come */
+            if (in) {
+                pthread_mutex_lock(&g_mu);
+                g_outstanding[ix] = 0;   /* the guest's request is spent: the next transfer asks again */
+                pthread_mutex_unlock(&g_mu);
+            }
+            if (!in) debt_add(ix, epoch, acks);
+            complete(x, LIBUSB_TRANSFER_ERROR, 0);
+            return;
+        }
         if (__atomic_load_n(&x->cancel, __ATOMIC_ACQUIRE)) {
+            if (!in) debt_add(ix, epoch, acks);
             complete(x, LIBUSB_TRANSFER_CANCELLED, 0);
             return;
         }
-        if (limit && waited >= limit) {
+        if (limit && shim_mono_ms() >= end) {
+            if (!in) debt_add(ix, epoch, acks);
             complete(x, LIBUSB_TRANSFER_TIMED_OUT, 0);
             return;
         }
@@ -421,16 +523,23 @@ static void *worker_main(void *arg) {
 }
 
 static void workers_init(void) {
-    if (pipe(g_pipe) == 0) {
+    int pipe_ok = pipe(g_pipe) == 0;
+    if (pipe_ok) {
         fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
         fcntl(g_pipe[1], F_SETFL, O_NONBLOCK);
+    } else {
+        g_pipe[0] = g_pipe[1] = -1;
+        fprintf(stderr, "libusb shim: pipe() failed (errno %d): no transfer can be reported, so none is accepted\n", errno);
     }
     for (int i = 0; i < 32; i++) {
         Worker *w = &g_workers[i];
         w->ep = i;
         pthread_mutex_init(&w->mu, NULL);
         pthread_cond_init(&w->cv, NULL);
-        pthread_create(&w->th, NULL, worker_main, w);
+        /* A worker that did not start must not be handed transfers: they would sit in its queue for ever. libusb_submit_transfer refuses them instead. */
+        int rc = pipe_ok ? pthread_create(&w->th, NULL, worker_main, w) : -1;
+        w->started = rc == 0;
+        if (rc > 0) fprintf(stderr, "libusb shim: worker thread %d did not start (error %d)\n", i, rc);
     }
 }
 
@@ -468,6 +577,7 @@ int libusb_submit_transfer(struct libusb_transfer *t) {
     if (t->type != LIBUSB_TRANSFER_TYPE_CONTROL) __atomic_add_fetch(&g_data_xfers, 1, __ATOMIC_ACQ_REL);
     pthread_once(&g_workers_once, workers_init);
     if (!t->dev_handle) return LIBUSB_ERROR_NO_DEVICE;
+    if (!g_workers[t->type == LIBUSB_TRANSFER_TYPE_CONTROL ? 0 : ep_index(t->endpoint)].started) return LIBUSB_ERROR_OTHER;   /* nothing would ever run it */
     Xfer *x = xfer_of(t);
     int zero = 0;
     if (!__atomic_compare_exchange_n(&x->inflight, &zero, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return LIBUSB_ERROR_BUSY;   /* the same transfer, still unfinished */
@@ -480,6 +590,7 @@ int libusb_submit_transfer(struct libusb_transfer *t) {
         return LIBUSB_ERROR_NO_DEVICE;
     }
     x->dev = dv;
+    x->t_submit = shim_mono_ms();
     x->cancel = 0;
     x->next = NULL;
     int ix = t->type == LIBUSB_TRANSFER_TYPE_CONTROL ? 0 : ep_index(t->endpoint);

@@ -436,15 +436,29 @@ static void *cpu0_thread(void *unused) {
     return NULL;
 }
 
+static int start_failed;
+int hv_vm_start_failed(void) { return __atomic_load_n(&start_failed, __ATOMIC_ACQUIRE); }
+
 void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
     exit_cb = on_exit;
+    __atomic_store_n(&start_failed, 0, __ATOMIC_RELEASE);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 8u << 20);
     pthread_t t;
-    if (cpu0) pthread_create(&t, &attr, cpu0_thread, NULL);
-    for (int i = 1; i < ncpus; i++) pthread_create(&t, &attr, secondary_thread, &cpus[i]);
-    pthread_create(&t, NULL, kicker_thread, NULL);
+    /* A thread that did not start is not silent, and is not made up for: a guest on fewer CPUs than it was told (or without the tick that drives its timers) does not run
+       as configured, so the machine is stopped instead of limping on. If CPU 0's own thread was the one that failed nobody else would report the end, so the exit callback is
+       called here (reason HV_EXIT_NONE: not a halt, not a fault); in the other cases CPU 0's thread, stopped by hv_vm_stop(), reports it as it always does. */
+    int rc, failed = 0, cpu0_failed = 0;
+    if (cpu0 && (rc = pthread_create(&t, &attr, cpu0_thread, NULL)) != 0) fprintf(stderr, "hengevm: CPU 0 thread did not start (error %d)\n", rc), failed = cpu0_failed = 1;
+    for (int i = 1; i < ncpus; i++)
+        if ((rc = pthread_create(&t, &attr, secondary_thread, &cpus[i])) != 0) fprintf(stderr, "hengevm: CPU %d thread did not start (error %d)\n", i, rc), failed = 1;
+    if ((rc = pthread_create(&t, NULL, kicker_thread, NULL)) != 0) fprintf(stderr, "hengevm: kicker thread did not start (error %d)\n", rc), failed = 1;
+    if (failed) {
+        __atomic_store_n(&start_failed, 1, __ATOMIC_RELEASE);   /* callers that can fail (the G7 runner) ask hv_vm_start_failed(); HV_EXIT_NONE alone is not an error code */
+        hv_vm_stop();
+        if (cpu0_failed && exit_cb) exit_cb(HV_EXIT_NONE);
+    }
 }
 
 void hv_vm_stop(void) {

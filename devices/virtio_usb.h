@@ -51,6 +51,8 @@ typedef struct HvVirtioUsb {
     HvVusbMsg in[HV_VUSB_RING];    /* responses waiting for the host */
     uint32_t in_head, in_tail;
     uint32_t session;              /* bumps on every connect and disconnect */
+    uint32_t lost_eps;             /* bit per endpoint index (see hv_vusb_take_lost): a response for it was dropped because the response ring was full */
+    uint32_t in_lost;              /* responses dropped for that reason, in total (never reset) */
     int online;                    /* a front-end is connected */
     int pci_on;                    /* the PCI front-end saw DRIVER_OK */
     int rom_on;                    /* the ROM's front-end (bdif) owns the port; off once the kernel's driver takes it */
@@ -71,12 +73,16 @@ void hv_virtio_usb_poll(HvVirtioUsb *d);
 
 /* Host side, any thread. */
 int hv_vusb_online(HvVirtioUsb *d, uint32_t *session);
-/* Queue a request; data may be NULL. Returns 0, or -1 if the ring is full. */
+/* Why a request was not queued (nothing was queued in any of these cases). Every caller that only tests for != 0 or < 0 keeps working. */
+#define HV_VUSB_E_OFFLINE (-1) /* no front-end is connected: the device is gone */
+#define HV_VUSB_E_FULL (-2)    /* the request ring is full: the guest has not taken its buffers yet; the device is still there and a later try can work */
+#define HV_VUSB_E_NOMEM (-3)   /* the copy of the data could not be allocated */
+/* Queue a request; data may be NULL. Returns 0, or one of HV_VUSB_E_*. */
 int hv_vusb_send(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uint32_t len);
 /* The same, and the session the request was queued in, read in the same locked step: a wait that is given this session ends with -1 if the connection changes at any
-   point after the request was queued (a session read before queueing could be a different one). Returns 0, or -1 (nothing was queued). */
+   point after the request was queued (a session read before queueing could be a different one). Returns 0, or one of HV_VUSB_E_* (nothing was queued). */
 int hv_vusb_send_session(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uint32_t len, uint32_t *session);
-/* An IN transfer request: header only, len = the most the host takes. */
+/* An IN transfer request: header only, len = the most the host takes. Returns 0, or one of HV_VUSB_E_*. */
 int hv_vusb_send_in(HvVirtioUsb *d, uint8_t ep, uint32_t len);
 /* Wait up to timeout_ms for the next response on `ep` (or any endpoint if
    ep == 0xff; reset responses always match). 1: got one (free m->data),
@@ -87,6 +93,10 @@ int hv_vusb_recv(HvVirtioUsb *d, uint8_t ep, HvVusbMsg *m, int timeout_ms);
    The wait is made of slices of at most 50 ms and its end is a CLOCK_MONOTONIC deadline: the cancel flag is looked at every slice, which is not a promise to return
    within 50 ms. 1: got one (free m->data); 0: timed out; -1: offline or the session is not `session`; -2: cancelled. */
 int hv_vusb_recv_ex(HvVirtioUsb *d, uint8_t ep, int reset_only, HvVusbMsg *m, int timeout_ms, uint32_t session, volatile int *cancel);
+/* A response the guest sent for `ep` was dropped because the response ring (HV_VUSB_RING) was full: the host will never see it, so a transfer that waits for it would wait
+   for ever. Returns 1 once per drop burst (and forgets it), else 0. `ep` is the endpoint address as in the message (bit 7 = IN). A reconnect forgets it too. */
+int hv_vusb_take_lost(HvVirtioUsb *d, uint8_t ep);
+uint32_t hv_vusb_lost_total(HvVirtioUsb *d);
 /* Drop queued requests and responses (after a reset or reconnect). */
 void hv_vusb_flush(HvVirtioUsb *d);
 

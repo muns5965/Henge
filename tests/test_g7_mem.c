@@ -54,6 +54,15 @@ int main(void) {
     CHECK(r.avail_kb != HV_G7M_UNKNOWN && r.avail_kb > 0, "MemAvailable is read from /proc/meminfo");
     char big[64]; CHECK(hv_g7m_read("/proc/this-file-does-not-exist", big, sizeof big) == -1 && big[0] == 0, "an unreadable file is reported and leaves an empty string");
 
+    /* the stage line and the PSS line */
+    HvG7Mem sm; hv_g7m_parse(&sm, STATUS, MEMINFO); char sl[200];
+    hv_g7m_stage_line(sl, sizeof sl, "cpu_tables", &sm);
+    CHECK(!strcmp(sl, "g7-mem-stage: cpu_tables rss=2048MiB anon=1536MiB shmem=64MiB available=1024MiB\n"), "the stage line has the fixed shape: %s", sl);
+    char longname[200]; memset(longname, 'a', sizeof longname - 1); longname[sizeof longname - 1] = 0; hv_g7m_stage_line(sl, sizeof sl, longname, &sm);
+    CHECK(strlen(sl) < 200 && sl[strlen(sl) - 1] == '\n', "a long stage name is cut, the line stays one line under 200 bytes");
+    char pl[100]; hv_g7m_pss_line(pl, sizeof pl, 300, 3 * 1024 * 1024ull); CHECK(!strcmp(pl, "g7-mem-pss: t=300s pss=3072MiB\n"), "pss line: %s", pl);
+    hv_g7m_pss_line(pl, sizeof pl, 300, HV_G7M_UNKNOWN); CHECK(!strcmp(pl, "g7-mem-pss: t=300s pss=?\n"), "an unreadable PSS is ?, not 0: %s", pl);
+    uint64_t live = hv_g7m_pss_kb(); CHECK(live == HV_G7M_UNKNOWN || live > 0, "the live PSS is unknown or positive, never a fake 0");
     printf(g_fail ? "G7MEM FAILED (%d)\n" : "G7MEM OK\n", g_fail);
     return g_fail != 0;
 }

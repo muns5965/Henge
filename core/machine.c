@@ -45,6 +45,8 @@ int hv_knob_set(HvMachine *m, const char *name, int value) {
     return 0;
 }
 
+void (*hv_stage_hook)(const char *name) = NULL;
+
 int hv_machine_init(HvMachine *m, size_t jit_bytes) {
     memset(m, 0, sizeof *m);
     if (hv_jit_region_open(&m->jit, jit_bytes) != 0) return -1;
@@ -59,6 +61,7 @@ int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
 }
 
 static int init_rest(HvMachine *m) {
+    HV_STAGE("jit_region");
     /* The TLB layout (cpu.h): HV_TLBT from the environment here too, so the Mac tool and the tests can pick it. */
     hv_knob[HV_K_TLBT] = getenv("HV_TLBT") ? atoi(getenv("HV_TLBT")) : 1; /* table-major unless asked: 9-20% faster in 5 of 6 paired rounds of the mix */
     hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
@@ -100,6 +103,7 @@ static int init_rest(HvMachine *m) {
     m->slot_xpa = calloc(m->max_slots, sizeof *m->slot_xpa);
     m->xchained = calloc(m->max_slots, sizeof *m->xchained);
     if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->xchained) return -1;
+    HV_STAGE("block_slot_tables");
     pthread_mutex_init(&m->big_mu, NULL);
     pthread_cond_init(&m->big_cv, NULL);
     pthread_mutexattr_t ra;
@@ -124,6 +128,7 @@ static int init_rest(HvMachine *m) {
         pthread_cond_init(&p->wake_cv, NULL);
         pthread_mutex_init(&p->req_mu, NULL);
     }
+    HV_STAGE("cpu_tables");
     return 0;
 }
 

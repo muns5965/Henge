@@ -351,6 +351,9 @@ static inline HvBlock *hv_block_find(HvMachine *m, uint32_t h, uint64_t va, uint
     return NULL;
 }
 
+/* Optional, set by a host program (the G7 runner) to be told when each big start-up allocation is done, so memory can be sampled between them. NULL = nothing happens. */
+extern void (*hv_stage_hook)(const char *name);
+#define HV_STAGE(n) do { if (hv_stage_hook) hv_stage_hook(n); } while (0)
 int hv_machine_init(HvMachine *m, size_t jit_bytes);
 /* The same with JIT memory the host provides (iOS: the region a debugger granted and its writable alias). */
 int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes);

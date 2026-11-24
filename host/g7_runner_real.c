@@ -107,11 +107,19 @@ static void on_term(int sig) { (void)sig; hv_g7_restore_request_stop(); }
 /* Watchdog (host/g7_watch.h): every HV_G7W_TICK_S seconds one `g7-alive:` line, or `g7-stall:` after two quiet samples, built from read-only counters. It reports only; it never
    touches the restore, the VM or the disk. Started right before the restore runs, stopped and joined right after. */
 static int g_watch_stop;   /* __atomic */
+/* start-up stages (HV_STAGE in core/machine.c and host/vm.c): one memory line per big allocation, so the cost of each shows as the difference between two lines */
+static void stage_cb(const char *name) {
+    HvG7Mem m; hv_g7m_sample(&m);
+    char l[200]; hv_g7m_stage_line(l, sizeof l, name, &m);
+    ssize_t r = write(2, l, strlen(l)); (void)r;
+}
+
 static void *watch_main(void *arg) {
     const char *dir_copy = (const char *)arg;   /* the directory that holds the install disk (the pair directory) */
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     HvG7WatchState st; memset(&st, 0, sizeof st);
     { char pl[64]; snprintf(pl, sizeof pl, "g7-process: runner_pid=%ld\n", (long)getpid()); ssize_t rp = write(2, pl, strlen(pl)); (void)rp; }   /* the runner's own pid, to match against ApplicationExitInfo */
+    unsigned nsample = 0;
     struct timespec last = t0;   /* the last sample: the period is measured on CLOCK_MONOTONIC, not counted in sleeps (a sleep that comes back late must not stretch the period) */
     while (!__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED)) {
         usleep(1000 * 1000);
@@ -131,7 +139,9 @@ static void *watch_main(void *arg) {
         /* the memory line (host/g7_mem.h): two procfs reads, which do not wait on storage, so it comes before the disk probe and is not lost behind it */
         { HvG7Mem mem; hv_g7m_sample(&mem); hv_g7m_line(line, sizeof line, s.t_s, &mem);
           ssize_t rm = write(2, line, strlen(line)); (void)rm; }
-        /* the disk probe comes AFTER the lines above: stat/statvfs may block on stuck storage, and then only this thread waits */
+        nsample++;
+    if (nsample == 1 || nsample % 10 == 0) { char pl[100]; hv_g7m_pss_line(pl, sizeof pl, s.t_s, hv_g7m_pss_kb()); ssize_t rp2 = write(2, pl, strlen(pl)); (void)rp2; }   /* the PSS file is slower to read: first sample and every ten minutes */
+    /* the disk probe comes AFTER the lines above: stat/statvfs may block on stuck storage, and then only this thread waits */
         { HvDiskInfo di; memset(&di, 0, sizeof di); char note[64]; int ok = hv_install_disk_check(dir_copy, &di, note, (int)sizeof note) == HV_DISK_OK;
           hv_g7w_disk_line(line, sizeof line, ok, di.size, di.allocated, di.dir_free);
           ssize_t r2 = write(2, line, strlen(line)); (void)r2; }
@@ -179,6 +189,7 @@ static int real_restore(void) {
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
     tss_set_wait_abort(tss_wait_abort_cb);   /* a cancel is noticed while TSS waits to retry */
     tss_set_attempt_hook(tss_attempt_line);   /* one g7-tss-try line per TSS attempt: numbers only (host/g7_tssdiag.h) */
+    hv_stage_hook = stage_cb;   /* from here the start-up stages report their memory */
     pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, S.dir) == 0;   /* failure only means no watchdog lines */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     if (wd_on) { __atomic_store_n(&g_watch_stop, 1, __ATOMIC_RELAXED); pthread_join(wd, NULL); }

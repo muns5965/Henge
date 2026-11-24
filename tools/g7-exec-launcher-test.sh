@@ -30,4 +30,8 @@ javac -encoding UTF-8 -d "$O6" $X/G7ExitInfo.java tests/java/G7ExitInfoTest.java
 java -cp "$O6" dev.muns.hengeprobe.G7ExitInfoTest; R6=$?
 javac -encoding UTF-8 -d "$O6" $X/G7ExitTrace.java tests/java/G7ExitTraceTest.java 2>> "$O6/javac.log" || { echo "FAILED javac (exittrace)"; head -30 "$O6/javac.log"; exit 1; }
 java -cp "$O6" dev.muns.hengeprobe.G7ExitTraceTest; R7=$?
-[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ]
+# the sparse clone of the install pair (mock files only)
+O8="$OUT-clone"; rm -rf "$O8"; mkdir -p "$O8"
+javac -encoding UTF-8 -d "$O8" $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7CloneTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O8/javac.log" || { echo "FAILED javac (clone)"; head -30 "$O8/javac.log"; exit 1; }
+java -cp "$O8" dev.muns.hengeprobe.G7CloneTest; R8=$?
+[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ]

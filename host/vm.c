@@ -336,8 +336,10 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         cfg.run_installer1 = a, cfg.run_installer2 = b2;
     }
     static const uint8_t mac[6] = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01};
+    HV_STAGE("machine_ready");
     if (hv_vmapple_create(&board, &m, cpus, (c->ram_mb ? c->ram_mb : 2048) << 20, &disk, &aux, &cfg, mac) != 0)
         return fail(err, errlen, "Cannot build the machine (not enough memory for the guest's RAM?).");
+    HV_STAGE("board_created");
     if (hv_vmapple_load_rom(&board, c->rom) != 0) return fail(err, errlen, "Cannot read the ROM (AVPBooter.vmapple2.bin).");
     hv_vmapple_reset_cpu(&board);
     if (board.net && !c->no_net) {
@@ -454,6 +456,7 @@ void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
     for (int i = 1; i < ncpus; i++)
         if ((rc = pthread_create(&t, &attr, secondary_thread, &cpus[i])) != 0) fprintf(stderr, "hengevm: CPU %d thread did not start (error %d)\n", i, rc), failed = 1;
     if ((rc = pthread_create(&t, NULL, kicker_thread, NULL)) != 0) fprintf(stderr, "hengevm: kicker thread did not start (error %d)\n", rc), failed = 1;
+    HV_STAGE("vcpus_started");
     if (failed) {
         __atomic_store_n(&start_failed, 1, __ATOMIC_RELEASE);   /* callers that can fail (the G7 runner) ask hv_vm_start_failed(); HV_EXIT_NONE alone is not an error code */
         hv_vm_stop();

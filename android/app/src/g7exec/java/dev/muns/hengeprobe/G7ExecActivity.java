@@ -29,7 +29,8 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn;
+    private volatile boolean cloneCancel;
     private TextView storageInfo;
     private LinearLayout archiveBox;
     private final List<CheckBox> archiveBoxes = new ArrayList<>();
@@ -107,6 +108,8 @@ public class G7ExecActivity extends Activity {
             confirmDeleteArchives(names);
         });
         delCur.setOnClickListener(v -> confirmDeleteCurrent());
+        cloneBtn = new Button(this); cloneBtn.setText("설치 쌍 희소 복제본 만들기(원본은 읽기만)"); root.addView(cloneBtn);
+        cloneBtn.setOnClickListener(v -> confirmClone());
         share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
         copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
         add(root, "[네트워크 시험] Apple 서명 서버 주소 3개에 이름 조회·TCP 연결·TLS 핸드셰이크만 시험합니다(요청 본문 전송 없음, 최대 약 5분, 복원 없음). 복원이 실행 중일 때도 시작할 수 있어 비교에 쓸 수 있습니다.", 13);
@@ -146,7 +149,7 @@ public class G7ExecActivity extends Activity {
             consent.setChecked(false);   // every start needs a fresh consent
             if (s.started) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
         });
-        cancel.setOnClickListener(v -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); if (r != null) { r.cancel(); status.setText("취소를 요청했습니다(복원을 멈추고 쌍은 in_progress로 보존)."); } });
+        cancel.setOnClickListener(v -> { cloneCancel = true; G7ExecLauncher.Run r = G7ExecLauncher.current(); if (r != null) { r.cancel(); status.setText("취소를 요청했습니다(복원을 멈추고 쌍은 in_progress로 보존)."); } });
         refresh.setOnClickListener(v -> { G7ExecLauncher.Run r = G7ExecLauncher.current(); log.setText(r != null ? r.tail() : G7ExecLauncher.readLogTail(getFilesDir(), 6000)); showSummary(); });
         share.setOnClickListener(v -> shareLog());
         copy.setOnClickListener(v -> {
@@ -195,6 +198,46 @@ public class G7ExecActivity extends Activity {
                 .setMessage(names.size() + "개 보관 폴더(" + String.join(", ", names) + ")의 디스크·AUX·상태 파일을 영구 삭제합니다. 약 " + G7Storage.fmt(shown) + "을 되찾습니다. 되돌릴 수 없습니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("삭제", (d, w) -> runDelete(() -> G7Storage.deleteArchives(privDir, names, runnerSt(), SIZER).message)).show();
+    }
+
+    /** The data extents of a file by lseek(SEEK_DATA = 3, SEEK_HOLE = 4). Anything unexpected is "sparse-unsupported": the clone then copies nothing. */
+    private static final G7Clone.Extents EXTENTS = (f, size) -> {
+        List<long[]> out = new ArrayList<>();
+        java.io.FileDescriptor fd = null;
+        try {
+            fd = android.system.Os.open(f.getPath(), android.system.OsConstants.O_RDONLY, 0);
+            long pos = 0;
+            while (pos < size) {
+                long ds;
+                try { ds = android.system.Os.lseek(fd, pos, 3); }
+                catch (android.system.ErrnoException e) { if (e.errno == android.system.OsConstants.ENXIO) break; throw new IOException("sparse-unsupported"); }
+                long he = android.system.Os.lseek(fd, ds, 4);
+                if (he > size) he = size;
+                if (ds < pos || he <= ds) throw new IOException("sparse-unsupported");
+                out.add(new long[]{ds, he}); pos = he;
+            }
+        } catch (android.system.ErrnoException e) { throw new IOException("sparse-unsupported");
+        } finally { if (fd != null) { try { android.system.Os.close(fd); } catch (android.system.ErrnoException ignored) { } } }
+        return out;
+    };
+
+    private void confirmClone() {
+        new AlertDialog.Builder(this).setTitle("희소 복제본 만들기")
+                .setMessage("지금 vm/의 설치 쌍(디스크·AUX)을 vm/clones/clone-NNN/ 로 복제합니다. 원본은 읽기만 하고 바꾸지 않으며 상태(in_progress)도 그대로입니다. 디스크의 구멍은 그대로 두고 실제 데이터만 복사하고(구멍 정보가 없는 파일시스템이면 복사하지 않습니다), 끝나면 데이터를 다시 읽어 검증합니다. 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다. 취소 버튼으로 중단할 수 있습니다. 복제본으로 부팅하는 기능은 아직 켜지 않았습니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
+    }
+
+    private void runClone() {
+        setDeleteButtons(false); cloneBtn.setEnabled(false); cancel.setEnabled(true);
+        status.setText("복제 중입니다… (원본은 읽기만 합니다)");
+        new Thread(() -> {
+            String m;
+            try { m = G7Clone.clone(privDir, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel).message; }
+            catch (RuntimeException e) { m = "복제 중 예기치 못한 오류가 났습니다. 원본은 바뀌지 않았습니다."; }
+            final String msg = m;
+            runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
+        }, "g7-clone").start();
     }
 
     private void confirmDeleteCurrent() {
@@ -275,8 +318,12 @@ public class G7ExecActivity extends Activity {
             if (in == null) return null;
             if (e.getReason() == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
                 String name = "tombstone_" + e.getPid() + "_" + e.getTimestamp() + ".pb";
-                long kept = G7ExitTrace.keep(in, new File(getFilesDir(), "g7exitinfo"), name);
-                return "네이티브 충돌 tombstone(protobuf) " + (kept < 0 ? "이미 보존됨" : kept + "바이트 보존") + ": 앱 파일 g7exitinfo/" + name;
+                G7ExitTrace.Result k = G7ExitTrace.keep(in, new File(getFilesDir(), "g7exitinfo"), name);
+                switch (k.status) {
+                    case ALREADY_THERE: return "네이티브 충돌 tombstone(protobuf)은 이미 보존됨: 앱 파일 g7exitinfo/" + name;
+                    case LIMIT_REACHED: return "네이티브 충돌 tombstone(protobuf): 보관 한도(" + G7ExitTrace.MAX_FILES + "개/" + (G7ExitTrace.MAX_TOTAL_BYTES >> 20) + "MiB)에 도달해 저장하지 않음";
+                    default: return "네이티브 충돌 tombstone(protobuf) " + k.bytes + "바이트 보존" + (k.status == G7ExitTrace.Status.KEPT_TRUNCATED ? " — 잘린 기록(원본이 더 큼)" : "") + ": 앱 파일 g7exitinfo/" + name;
+                }
             }
             byte[] buf = new byte[4096]; int n = in.read(buf);
             if (n <= 0) return null;

@@ -90,4 +90,21 @@ static inline void hv_g7m_line(char *line, size_t cap, uint64_t t_s, const HvG7M
     hv_g7m_mib(k, sizeof k, m->shmem_kb); hv_g7m_mib(g, sizeof g, m->cached_kb); hv_g7m_mib(h, sizeof h, m->dirty_kb); hv_g7m_mib(i, sizeof i, m->writeback_kb); hv_g7m_mib(j, sizeof j, m->swapfree_kb);
     snprintf(line, cap, "g7-mem: t=%llus rss=%s peak=%s anon=%s file=%s shmem=%s swap=%s available=%s cached=%s dirty=%s writeback=%s swapfree=%s\n", (unsigned long long)t_s, a, b, c, d, k, e, f, g, h, i, j);
 }
+/* The line for one start-up stage (host/vm.c and core/machine.c call HV_STAGE(name) after each big allocation): the same process numbers, so the difference between two stages is what that stage cost. */
+static inline void hv_g7m_stage_line(char *line, size_t cap, const char *name, const HvG7Mem *m) {
+    char a[24], c[24], k[24], f[24];
+    hv_g7m_mib(a, sizeof a, m->rss_kb); hv_g7m_mib(c, sizeof c, m->anon_kb); hv_g7m_mib(k, sizeof k, m->shmem_kb); hv_g7m_mib(f, sizeof f, m->avail_kb);
+    snprintf(line, cap, "g7-mem-stage: %.40s rss=%s anon=%s shmem=%s available=%s\n", name, a, c, k, f);
+}
+
+/* /proc/self/smaps_rollup: the Pss line (shared pages divided between their mappings, so the JIT's two views of one memfd are not counted twice). Read rarely (the file is slower than status); ? when not readable. */
+static inline uint64_t hv_g7m_pss_kb(void) {
+    char b[2048];
+    if (hv_g7m_read("/proc/self/smaps_rollup", b, sizeof b) < 0) return HV_G7M_UNKNOWN;
+    return hv_g7m_field(b, "Pss");
+}
+static inline void hv_g7m_pss_line(char *line, size_t cap, uint64_t t_s, uint64_t pss_kb) {
+    char a[24]; hv_g7m_mib(a, sizeof a, pss_kb);
+    snprintf(line, cap, "g7-mem-pss: t=%llus pss=%s\n", (unsigned long long)t_s, a);
+}
 #endif

@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.TypedValue;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -30,7 +31,8 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame, auxBtn;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame, auxBtn, cbCopy;
+    private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
@@ -116,7 +118,13 @@ public class G7ExecActivity extends Activity {
         add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).", 13);
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
-        cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유"); root.addView(cbShare);
+        cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유(전체 파일)"); root.addView(cbShare);
+        cbCopy = new Button(this); cbCopy.setText("복제본 부팅 로그 끝부분 복사"); root.addView(cbCopy);
+        add(root, "아래 상자는 '복제본 부팅'의 상태·로그입니다(복원 로그와 다름). 반복되는 USB 진단 줄은 화면에서만 묶어 보이며 로그 파일에는 모두 남습니다.", 12);
+        cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE); cbMon.setTextIsSelectable(true);
+        cbScroll = new ScrollView(this); cbScroll.addView(cbMon);
+        cbScroll.setOnTouchListener((v, e) -> { v.getParent().requestDisallowInterceptTouchEvent(true); return false; });
+        root.addView(cbScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 360)));
         cbFrame = new Button(this); cbFrame.setText("지금 화면 확인(러너에 요청)"); root.addView(cbFrame);
         cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 러너 응답이 아래(이미지 자리)에 표시됩니다. 화면이 아직 없으면 그 이유가 나옵니다."); } });
         cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
@@ -136,9 +144,22 @@ public class G7ExecActivity extends Activity {
         });
         cbtn.setOnClickListener(v -> confirmCloneBoot());
         cbStop.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
-        cbShare.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); shareFile(r == null ? null : G7ExecLauncher.logFile(getFilesDir(), r.logName()), "복제본 부팅 로그 공유"); });
-        share = new Button(this); share.setText("로그 파일 공유(전체)"); root.addView(share);
-        copy = new Button(this); copy.setText("로그 끝부분 복사"); root.addView(copy);
+        cbShare.setOnClickListener(v -> {   // the file on disk, not the Run object: still works after the app was restarted
+            G7CloneBoot.Run r = G7CloneBoot.current();
+            File f = r != null ? G7ExecLauncher.logFile(getFilesDir(), r.logName()) : null;
+            if (f == null) f = G7CloneBoot.newestCloneLog(getFilesDir());
+            if (f == null) { status.setText("공유할 복제본 부팅 로그 파일이 없습니다(g7_cboot_*.txt 없음)."); return; }
+            try { shareFile(f, "복제본 부팅 로그 공유"); } catch (RuntimeException e) { status.setText("복제본 로그 공유 실패: " + e.getClass().getSimpleName() + " " + e.getMessage()); }
+        });
+        cbCopy.setOnClickListener(v -> {
+            String t = G7CloneBoot.readSavedCloneLog(getFilesDir());
+            if (t.isEmpty()) { status.setText("복사할 복제본 부팅 로그가 없습니다(g7_cboot_*.txt 없음 또는 비어 있음)."); return; }
+            if (t.length() > 100000) t = t.substring(t.length() - 100000);
+            try { ((ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("g7 clone boot log", t)); status.setText("복제본 부팅 로그 끝부분 " + t.length() + "자를 복사했습니다(복원 로그 아님)."); }
+            catch (RuntimeException e) { status.setText("복사 실패: " + e.getClass().getSimpleName() + " " + e.getMessage() + " (공유 버튼으로 파일을 보내세요)"); }
+        });
+        share = new Button(this); share.setText("복원 로그 파일 공유(전체)"); root.addView(share);
+        copy = new Button(this); copy.setText("복원 로그 끝부분 복사"); root.addView(copy);
         add(root, "[네트워크 시험] Apple 서명 서버 주소 3개에 이름 조회·TCP 연결·TLS 핸드셰이크만 시험합니다(요청 본문 전송 없음, 최대 약 5분, 복원 없음). 복원이 실행 중일 때도 시작할 수 있어 비교에 쓸 수 있습니다.", 13);
         netConsent = new CheckBox(this);
         netConsent.setText("Apple 서버 3개 주소에 이름 조회·연결·TLS 핸드셰이크만 하는 네트워크 시험에 동의합니다(요청 본문 전송 없음).");
@@ -163,11 +184,14 @@ public class G7ExecActivity extends Activity {
         log.setText(G7ExecLauncher.readLogTail(getFilesDir(), 6000));
         root.addView(log);
         showSummary();
+        showCloneBox(G7CloneBoot.current());
         refreshStorage();
         String note = G7ExecLauncher.lastRunNote(getFilesDir());
         if (!note.isEmpty()) status.setText(status.getText() + "\n\n" + note);
         G7ExecLauncher.Run live = G7ExecLauncher.current();
         if (live != null && !live.finished()) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
+        G7CloneBoot.Run cLive = G7CloneBoot.current();
+        if (cLive != null && !cLive.finished()) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
         G7NetProbe.Run netLive = G7NetProbe.current();
         if (netLive != null && !netLive.finished()) { netStop.setEnabled(true); netPoll(); }
         start.setOnClickListener(v -> {
@@ -281,10 +305,21 @@ public class G7ExecActivity extends Activity {
                 }).show();
     }
 
+    /** The clone-boot status box: the live run's monitor, or (no run object, e.g. after a restart) the newest saved clone log. Keeps the scroll at the end when the reader was at the end. */
+    private void showCloneBox(G7CloneBoot.Run r) {
+        String text;
+        if (r != null) text = r.monitor().render(System.currentTimeMillis(), !r.finished(), r.finished() ? r.exitCode() : 0, r.stageSummary(), r.finished() ? r.verdict() : null, r.frameNote());
+        else { text = G7CloneBoot.describeSaved(getFilesDir()); if (text.isEmpty()) text = "복제본 부팅 로그가 아직 없습니다."; }
+        View c = cbScroll.getChildAt(0);
+        boolean atEnd = cbScroll.getScrollY() + cbScroll.getHeight() >= c.getHeight() - 40;
+        cbMon.setText(text);
+        if (atEnd) cbScroll.post(() -> cbScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
     private void cbootPoll() {
         final G7CloneBoot.Run r = G7CloneBoot.current();
         if (r == null) return;
-        log.setText(r.stageSummary() + "\n\n" + r.tail());
+        showCloneBox(r);
         G7CloneBoot.Frame f = r.frame();
         if (f != null && f != cbShownFrame) {   // a new picture: drawn from memory (never written), scaled up without smoothing so single pixels stay visible
             int[] px = new int[f.w * f.h];

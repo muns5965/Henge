@@ -67,6 +67,34 @@ public final class G7CloneBoot {
 
     public static Run current() { return CURRENT; }
 
+    /** The newest clone-boot log on disk (g7_cboot_*.txt), or null. Independent of any Run object, so it still works after the app was restarted. */
+    public static File newestCloneLog(File filesDir) {
+        File[] l = filesDir.listFiles((d, n) -> n.matches("g7_cboot_[0-9]{13}\\.txt"));
+        if (l == null || l.length == 0) return null;
+        Arrays.sort(l);
+        return l[l.length - 1];
+    }
+
+    /** The saved clone-boot log text (up to the log limit), "" if none. */
+    public static String readSavedCloneLog(File filesDir) {
+        File f = newestCloneLog(filesDir);
+        return f == null ? "" : G7ExecLauncher.readTail(f, MAX_LOG_BYTES + 8192);
+    }
+
+    /** Status text from the newest saved clone-boot log (no Run needed): ended with an exit line, or no exit record (process ended unseen). */
+    public static String describeSaved(File filesDir) {
+        File f = newestCloneLog(filesDir);
+        if (f == null) return "";
+        String t = readSavedCloneLog(filesDir);
+        int exit = Integer.MIN_VALUE;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?m)^g7-cboot-exit: (-?\\d+)").matcher(t);
+        if (m.find()) exit = Integer.parseInt(m.group(1));
+        String verdict = null;
+        m = java.util.regex.Pattern.compile("(?m)^g7-cboot-verdict: (.*)$").matcher(t);
+        if (m.find()) verdict = m.group(1);
+        return "[저장된 복제본 부팅 로그: " + f.getName() + "]\n" + G7CloneMonitor.replay(t).render(0, false, exit, "저장 로그의 g7-stage 줄 참고", verdict, "저장 로그에는 화면 이미지가 없습니다");
+    }
+
     public static boolean isPackaged(File nativeLibDir) { return nativeLibDir != null && new File(nativeLibDir, LIB_NAME).isFile(); }
 
     /** One picture the runner printed (a downsampled copy of what the machine shows, at most 96x64, RGB) and its pixel-statistics class. The class is an ESTIMATE, not a decision about what is on the screen. */
@@ -90,6 +118,8 @@ public final class G7CloneBoot {
 
     public static final class Run {
         volatile Frame frame; volatile String verdictLine, frameNote = "아직 러너에 화면을 요청하지 않았습니다."; volatile long frameAnsweredMs;
+        final G7CloneMonitor mon = new G7CloneMonitor();
+        public G7CloneMonitor monitor() { return mon; }
         final Process proc; final String logName; final G7BootStage.Tracker stages = new G7BootStage.Tracker();
         private final StringBuilder tail = new StringBuilder();
         private volatile boolean finished; private volatile int exitCode = Integer.MIN_VALUE; private volatile boolean cancelled;
@@ -208,6 +238,7 @@ public final class G7CloneBoot {
                         continue;
                     }
                     if (line.startsWith("ui_runner_vm_clone VERDICT:")) run.verdictLine = line;
+                    run.mon.feed(line, System.currentTimeMillis());
                     run.put(line + "\n", false);
                     if (s != null) run.put("g7-stage: " + s.name().toLowerCase() + " first seen at " + (System.currentTimeMillis() - run.t0) / 1000 + "s (estimate)\n", true);
                 }

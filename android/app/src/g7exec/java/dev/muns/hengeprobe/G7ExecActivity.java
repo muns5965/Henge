@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -29,7 +30,8 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame;
+    private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
     private LinearLayout archiveBox;
@@ -114,6 +116,10 @@ public class G7ExecActivity extends Activity {
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
         cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유"); root.addView(cbShare);
+        cbFrame = new Button(this); cbFrame.setText("지금 화면 확인(러너에 요청)"); root.addView(cbFrame);
+        cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 잠시 뒤 아래에 나타납니다(자동으로도 30초마다 갱신)."); } });
+        cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
+        cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(cbImageNote);
         cbtn.setOnClickListener(v -> confirmCloneBoot());
         cbStop.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
         cbShare.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); shareFile(r == null ? null : G7ExecLauncher.logFile(getFilesDir(), r.logName()), "복제본 부팅 로그 공유"); });
@@ -237,7 +243,11 @@ public class G7ExecActivity extends Activity {
 
     private void confirmCloneBoot() {
         final List<File> clones = G7CloneBoot.listValid(privDir);
-        if (clones.isEmpty()) { status.setText("부팅할 수 있는 검증된 복제본이 없습니다(복제본을 먼저 만드세요)."); return; }
+        if (clones.isEmpty()) {
+            List<String> all = G7CloneBoot.describeAll(privDir);
+            status.setText("부팅할 수 있는 검증된 복제본이 없습니다." + (all.isEmpty() ? "(복제본을 먼저 만드세요)" : "\n" + android.text.TextUtils.join("\n", all)));
+            return;
+        }
         final String[] names = new String[clones.size()];
         for (int i = 0; i < names.length; i++) names[i] = clones.get(i).getName();
         final int[] pick = {0};
@@ -256,7 +266,17 @@ public class G7ExecActivity extends Activity {
         final G7CloneBoot.Run r = G7CloneBoot.current();
         if (r == null) return;
         log.setText(r.stageSummary() + "\n\n" + r.tail());
-        if (r.finished()) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.stageSummary()); return; }
+        G7CloneBoot.Frame f = r.frame();
+        if (f != null && f != cbShownFrame) {   // a new picture: drawn from memory (never written), scaled up without smoothing so single pixels stay visible
+            int[] px = new int[f.w * f.h];
+            for (int i = 0; i < px.length; i++) px[i] = 0xff000000 | ((f.rgb[3 * i] & 0xff) << 16) | ((f.rgb[3 * i + 1] & 0xff) << 8) | (f.rgb[3 * i + 2] & 0xff);
+            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(px, f.w, f.h, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.drawable.BitmapDrawable bd = new android.graphics.drawable.BitmapDrawable(getResources(), bm); bd.setFilterBitmap(false);
+            cbImage.setImageDrawable(bd); cbImage.setMinimumHeight((int) (getResources().getDisplayMetrics().density * 200));
+            cbImageNote.setText("화면 사본 " + f.w + "x" + f.h + ", 통계 분류(추정): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요.");
+            cbShownFrame = f;
+        }
+        if (r.finished()) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict()); return; }
         log.postDelayed(this::cbootPoll, 2000);
     }
 

@@ -65,6 +65,7 @@ public final class G7Clone {
             if (!state.equals("in_progress") && !state.equals("done")) return new Result(false, "설치 쌍의 상태를 읽을 수 없어 복제하지 않았습니다.", null);
 
             String tag = tagOf(new File(priv, "g7_state.txt"));
+            if (tag.equals("none")) return new Result(false, "원본 상태 파일에 ECID 태그가 없어 부팅할 수 없는 복제본이 되므로 복제하지 않았습니다. 아무것도 만들지 않았습니다.", null);
             List<File> src = new ArrayList<>();
             src.add(disk); src.add(aux); if (exists(init.toPath())) src.add(init);
             long need = 0; long[] size = new long[src.size()], mtime = new long[src.size()];
@@ -175,6 +176,7 @@ public final class G7Clone {
             File[] have = dir.listFiles(); if (have == null) return "복제 폴더를 읽을 수 없습니다";
             java.util.Set<String> known = new java.util.HashSet<>(java.util.Arrays.asList("macos_disk.img", "macos_aux.img", "macos_aux.initial", "g7_state.txt", MARKER));
             int members = 0;
+            if (!regular(new File(dir, "macos_disk.img").toPath()) || !regular(new File(dir, "macos_aux.img").toPath())) return "디스크 또는 AUX가 없거나 일반 파일이 아닙니다";
             for (File f : have) {
                 if (!known.contains(f.getName())) return "알 수 없는 파일이 있습니다: " + f.getName();
                 if (!regular(f.toPath())) return f.getName() + "가 일반 파일이 아닙니다(링크 등)";

@@ -50,6 +50,12 @@ public class G7CloneBootTest {
         check("a runner process is present: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, () -> 1).started && spawned == 0);
         check("runner state unknown: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, () -> -1).started && spawned == 0);
         check("the ORIGINAL folder is refused (not a clone)", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, priv, true, none).started && spawned == 0);
+        File broken = G7CloneTest.pair("in_progress");
+        G7Clone.Result br = G7CloneTest.run(true, false, broken, 0, G7CloneTest.SCAN, 1L << 40, () -> false);
+        File bd = br.dir; File bdisk = new File(bd, "macos_disk.img"); byte[] keepDisk = Files.readAllBytes(bdisk.toPath()); Files.delete(bdisk.toPath());
+        Files.write(new File(broken, "vm_ecid.txt").toPath(), ("ecid=0x" + Long.toHexString(G7CloneTest.ECID) + "\n").getBytes());
+        Files.write(new File(broken, "AVPBooter.vmapple2.bin").toPath(), new byte[] {1});
+        check("a clone whose disk is missing is refused by validate (explicitly) and shown as not bootable", G7Clone.validate(bd, broken, G7CloneTest.ECID) != null && G7CloneBoot.describeAll(broken).toString().contains("부팅 불가"));
         File noLib = Files.createTempDirectory("nolib").toFile();
         check("binary not packaged: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, noLib, ext, priv, files, clone, true, none).started && spawned == 0);
         File mk = new File(clone, "clone_state.txt"); byte[] mkb = Files.readAllBytes(mk.toPath());
@@ -64,7 +70,9 @@ public class G7CloneBootTest {
         rom = new File(priv, "AVPBooter.vmapple2.bin");
 
         String hex = Long.toHexString(G7CloneTest.ECID);
-        Fake ok = new Fake("hengevm: cpu 0 pc sample #1 pc=0x100 el=3\nui_runner_vm_clone frames published 4\nleak " + hex + "\n", 0, false);
+        StringBuilder px = new StringBuilder(); for (int i = 0; i < 4 * 2; i++) px.append(i == 0 ? "ffffff" : "000000");
+        String frameLine = "ui_runner_vm_clone FRAME src=1920x1080 out=4x2 class=mostly-black-small-content nonblack_pct=12 colors=2 estimate=pixel-statistics-only data=" + px;
+        Fake ok = new Fake("hengevm: cpu 0 pc sample #1 pc=0x100 el=3\nui_runner_vm_clone frames published 4\nleak " + hex + "\n" + frameLine + "\nui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\nui_runner_vm_clone VERDICT: vm_stop_confirmed=1 stop_kind=time-limit macos_boot=not-determined (x)\n", 0, false);
         G7CloneBoot.Start s = G7CloneBoot.startWith(sp(ok), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none);
         check("a valid clone starts: " + s.message, s.started && spawned == 1 && s.run != null);
         String cmd = String.join(" ", lastCmd);
@@ -74,7 +82,16 @@ public class G7CloneBootTest {
         String lt = new String(Files.readAllBytes(log.toPath()), StandardCharsets.UTF_8);
         check("log exists with the g7_cboot_ name, has exit line and stage summary, ECID masked", s.run.logName().matches("g7_cboot_[0-9]{13}\\.txt") && lt.contains("g7-cboot-exit: 0") && !lt.contains(hex) && lt.contains("g7-stage:"));
         check("finished run frees the gate", s.run.finished() && !G7ExecLauncher.hasLiveRun());
+        G7CloneBoot.Frame fr = s.run.frame();
+        check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: 4x2 class=mostly-black-small-content"));
+        check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
+        check("malformed frame lines are refused", G7CloneBoot.parseFrame("ui_runner_vm_clone FRAME src=1x1 out=2x2 class=x nonblack_pct=1 colors=1 estimate=pixel-statistics-only data=ff") == null && G7CloneBoot.parseFrame("hello") == null && G7CloneBoot.parseFrame(frameLine.replace("out=4x2", "out=200x2")) == null);
+        check("describeAll lists the clone as bootable", G7CloneBoot.describeAll(priv).toString().contains("부팅 가능"));
 
+        Fake crash = new Fake("hengevm: cpu 0 pc sample #1 pc=0x100 el=3\n", 137, false);
+        G7CloneBoot.Start cs = G7CloneBoot.startWith(sp(crash), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none); waitDone(cs.run);
+        check("a runner that ends without a result line is reported as an abnormal end with unknown cause (not as success)", cs.started && cs.run.exitCode() == 137 && cs.run.verdict().contains("결과 줄을 남기지 않고") && cs.run.verdict().contains("원인 미확인") && !cs.run.verdict().contains("VM 종료 확인: 예"));
+        Thread.sleep(1100);
         Fake hang = new Fake("", 0, true);
         s = G7CloneBoot.startWith(sp(hang), ROMS, true, () -> G7ExecLauncher.hasLiveRun(), lib, ext, priv, files, clone, true, none);
         check("second start while running", s.started);

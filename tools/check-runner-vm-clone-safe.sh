@@ -75,7 +75,7 @@ grep -q 'hv_vm_create(&cfg, ' $R || bad "$R: hv_vm_create must be given &cfg"
 n=$(grep -cE '^[[:space:]]*HvVmConfig ' $R); [ "$n" = 1 ] || bad "$R: exactly one HvVmConfig variable expected (found $n)"
 grep -q 'clone_boot_config_ok(&cfg, ecid, 1, why, sizeof why)' $R || bad "$R: clone_boot_config_ok must be called with &cfg, ecid, 1, why, sizeof why"
 grep -q 'hv_runner_config_ok(&cfg' $R && bad "$R: must not call the shared hv_runner_config_ok (it hard-requires ecid=0/seed=0); use clone_boot_config_ok instead"
-l0=$(grep -n 'hv_clone_dir_ok(clone_dir' $R | head -1 | cut -d: -f1); l1=$(grep -n 'hv_runner_make_config(&cfg' $R | head -1 | cut -d: -f1); lr=$(grep -n 'cfg.readonly_storage = 0;' $R | head -1 | cut -d: -f1)
+l0=$(grep -n 'hv_clone_open(clone_dir' $R | head -1 | cut -d: -f1); l1=$(grep -n 'hv_runner_make_config(&cfg' $R | head -1 | cut -d: -f1); lr=$(grep -n 'cfg.readonly_storage = 0;' $R | head -1 | cut -d: -f1)
 l2=$(grep -n 'clone_boot_config_ok(&cfg' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_create(&cfg' $R | head -1 | cut -d: -f1)
 { [ -n "$l0" ] && [ -n "$l1" ] && [ -n "$lr" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l0" -lt "$l1" ] && [ "$l1" -lt "$lr" ] && [ "$lr" -lt "$l2" ] && [ "$l2" -lt "$l3" ]; } || bad "$R: clone check, make_config, writable, config check, hv_vm_create is the order required (lines '$l0' '$l1' '$lr' '$l2' '$l3')"
 grep -q 'hv_runner_scrub_env' $R || bad "$R: the HV_* scrub is missing"
@@ -85,6 +85,11 @@ l5=$(grep -n 'scrubbed < 0' $R | head -1 | cut -d: -f1); { [ -n "$l5" ] && [ "$l
 l4=$(grep -n 'hv_runner_scrub_env(' $R | head -1 | cut -d: -f1); { [ -n "$l4" ] && [ "$l4" -lt "$l3" ]; } || bad "$R: the scrub must come before hv_vm_create"
 grep -q 'bd->vusb' $R || bad "$R: the check that the machine has no USB device port is missing"
 grep -q 'usb_present)' $R || bad "$R: must refuse to run if the usb device port is unexpectedly present (installer stays 0 in this binary)"
+grep -q 'hv_runner_make_config(&cfg, rom, cl.disk, cl.aux,' $R || bad "$R: the machine must be given the descriptor paths of the files that were checked (cl.disk, cl.aux)"
+grep -q 'flock(c->dirfd, LOCK_EX | LOCK_NB)' $H || bad "$H: the clone folder must be locked"
+grep -q '/proc/self/fd/%d' $H || bad "$H: the checked files must be handed over as descriptor paths"
+grep -q 'hv_clone_ecid_tag(ecid, tag)' $H || bad "$H: the ECID tag must be computed here"
+[ "$(grep -c 'char reason_txt\[160\];' $R)" = 1 ] && [ "$(grep -n 'char reason_txt\[160\];' $R | cut -d: -f1)" -lt "$(grep -n 'for (;;) {' $R | tail -1 | cut -d: -f1)" ] || bad "$R: the stop-reason text must outlive the loop (declared before it)"
 # 7
 opts=$(grep -o '"--[a-z-]*"' $R | sort -u | tr -d '"' | tr '\n' ' ')
 [ "$opts" = "--clone-dir --cpus --ecid-dir --jit-mb --ram-mb --rom --seconds --shm --stop-wait-ms " ] || bad "$R: the accepted options are '$opts'"

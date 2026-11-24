@@ -1,14 +1,18 @@
 /* CLONE BOOT: a sibling of host/ui_runner_vm_installed.c (same frame publishing, same stdin words, same stop idea) for ONE case that binary refuses by design: a normal, non-installer
    boot of a VERIFIED CLONE of an install pair, with the clone's disk and AUX WRITABLE (macOS writes to its Data volume, Preboot and NVRAM even on a plain boot, so a read-only boot cannot
    tell "the installation is incomplete" from "the write was refused").
-   What keeps the original safe, all in this file and re-checked here (the Java launcher checks them too and is not trusted for it):
-     - the only paths this binary opens for writing are <clone-dir>/macos_disk.img and <clone-dir>/macos_aux.img, built here from --clone-dir; there is no --disk/--aux option
-     - --clone-dir must be an absolute path whose last two names are clones/clone-NNN; it is opened with O_NOFOLLOW, its members are checked with AT_SYMLINK_NOFOLLOW: regular files, one hard link,
-       no *.partial left, the marker clone_state.txt starts with state=clone_complete and its logical_disk_bytes equals the disk's size, g7_state.txt carries an ecid_tag line
+   What keeps the original safe, all in this file and re-checked here by host/clone_dir.h (the Java launcher checks them too and is not trusted for it):
+     - the only files this binary opens for writing are macos_disk.img and macos_aux.img of --clone-dir; there is no --disk/--aux option
+     - --clone-dir must be <ecid-dir>/clones/clone-NNN (plain absolute paths) of the SAME vm folder whose vm_ecid.txt is used; the folder is opened O_NOFOLLOW and locked (a second runner is refused); it holds
+       only the known files; the members are regular single-link files that are not the original pair's inodes; the marker has exactly the six lines the app writes (clone_complete, source state, disk size
+       equal to the file, allocated size, member count equal to the files, ecid_tag) and BOTH the marker and g7_state.txt carry the tag computed here from the ECID read from vm_ecid.txt
+     - the files that passed are KEPT OPEN and the machine is given /proc/self/fd/N paths of them: a file swapped for another after the check is not what is written
      - writable storage is set ONLY after those checks passed (clone_boot_config_ok refuses writable storage without them); everything else hv_runner_config_ok guarantees stays (no guest network, installer 0)
-     - the ECID is read from <ecid-dir>/vm_ecid.txt here and is never an option (it does not travel on a command line); the equality with the clone's ecid_tag is checked by the launcher
+     - the ECID is read from <ecid-dir>/vm_ecid.txt here and is never an option (it does not travel on a command line)
+   Output: the same status lines as the installed runner, plus g7-mem / g7-mem-stage / g7-mem-pss lines (read-only procfs), "FRAME" lines on the stdin word "frame" (a downsampled copy of what the machine shows
+   and a pixel-statistics class: an estimate), and a final VERDICT line that separates "the machine stopped (confirmed)" from "macOS booted" (never claimed here).
    host/ui_runner_vm_installed.c is unchanged: it still boots read-only.
-   Arguments: --shm PATH --rom F --clone-dir D --ecid-dir D  [--ram-mb N (2048) --cpus N (2) --jit-mb N (64) --seconds N --stop-wait-ms N]. Stdin: "quit" stops, "status" prints one status line.
+   Arguments: --shm PATH --rom F --clone-dir D --ecid-dir D  [--ram-mb N (2048) --cpus N (2) --jit-mb N (64) --seconds N --stop-wait-ms N]. Stdin: "quit" stops, "status" prints one status line, "frame" prints one FRAME line.
    Exit codes: 0 stopped and confirmed; 1 settings refused or machine not made; 2 bad arguments; 3 stop not confirmed. Output lines start with "ui_runner_vm_clone". */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -28,10 +32,17 @@
 
 #include "clone_dir.h"
 #include "frame_shm.h"
+#include "g7_mem.h"
 #include "runner_vm_core.h"
 #include "vm.h"
 
 extern uint64_t hv_net_tx_frames, hv_net_rx_frames;
+extern void (*hv_stage_hook)(const char *name);   /* core/machine.h: called after each big start-up allocation */
+static void stage_cb(const char *name) {
+    HvG7Mem m; hv_g7m_sample(&m);
+    char l[200]; hv_g7m_stage_line(l, sizeof l, name, &m);
+    fputs(l, stdout); fflush(stdout);
+}
 
 static const HvRunnerApi REAL_API = {
     .boot_display = hv_vm_boot_display,
@@ -91,8 +102,40 @@ static void status_line(const char *tag) {
     fflush(stdout);
 }
 
+/* One picture of what the machine shows now, read back from the shared file this process itself publishes to (read only: nothing is written anywhere). Downsampled to at most 96 columns and printed
+   as hex RGB on ONE line so the app can draw it; plus a coarse class. The class is an ESTIMATE from pixel statistics (black / small bright content / content): it cannot say whether content is the Apple logo,
+   a progress bar or a desktop; the picture itself is what to look at. */
+static void frame_line(void) {
+    size_t cap = HV_SHM_PIXEL_BYTES;
+    uint8_t *buf = malloc(cap);
+    if (!buf) { printf("ui_runner_vm_clone FRAME none (no memory for a copy)\n"); fflush(stdout); return; }
+    uint64_t seen = 0; uint32_t w = 0, h = 0;
+    int r = hv_shm_read_frame(g_shm, &seen, buf, cap, &w, &h);
+    if (r != 1 || w == 0 || h == 0 || (size_t)w * h * 4 > cap) { printf("ui_runner_vm_clone FRAME none class=no-frame (read=%d)\n", r); fflush(stdout); free(buf); return; }
+    uint32_t ow = w < 96 ? w : 96, oh = (uint32_t)((uint64_t)h * ow / w); if (oh < 1) oh = 1; if (oh > 64) oh = 64;
+    char *hex = malloc((size_t)ow * oh * 6 + 1);
+    if (!hex) { printf("ui_runner_vm_clone FRAME none (no memory for the line)\n"); fflush(stdout); free(buf); return; }
+    static uint8_t bins[4096]; memset(bins, 0, sizeof bins);
+    size_t k = 0; unsigned long nb = 0, total = (unsigned long)ow * oh;
+    for (uint32_t y = 0; y < oh; y++) for (uint32_t x = 0; x < ow; x++) {
+        uint64_t sx = (uint64_t)x * w / ow + w / (2 * ow), sy = (uint64_t)y * h / oh + h / (2 * oh);
+        if (sx >= w) sx = w - 1;
+        if (sy >= h) sy = h - 1;
+        const uint8_t *px = buf + (sy * w + sx) * 4;   /* BGRA */
+        uint8_t rr = px[2], gg = px[1], bb = px[0];
+        if (rr > 24 || gg > 24 || bb > 24) nb++;
+        bins[((rr >> 4) << 8) | ((gg >> 4) << 4) | (bb >> 4)] = 1;
+        k += (size_t)snprintf(hex + k, 7, "%02x%02x%02x", rr, gg, bb);
+    }
+    unsigned colors = 0; for (size_t i = 0; i < sizeof bins; i++) colors += bins[i];
+    unsigned long pct = total ? nb * 100 / total : 0;
+    const char *cls = nb == 0 ? "all-black" : pct < 5 ? "mostly-black-small-content" : colors < 12 ? "few-colors-content" : "many-colors-content";
+    printf("ui_runner_vm_clone FRAME src=%ux%u out=%ux%u class=%s nonblack_pct=%lu colors=%u estimate=pixel-statistics-only data=%s\n", w, h, ow, oh, cls, pct, colors, hex);
+    fflush(stdout); free(hex); free(buf);
+}
+
 int main(int argc, char **argv) {
-    const char *shm_path = NULL, *rom = NULL, *clone_dir = NULL, *ecid_dir = NULL; char disk[PATH_MAX], aux[PATH_MAX];
+    const char *shm_path = NULL, *rom = NULL, *clone_dir = NULL, *ecid_dir = NULL; HvClone cl;
     long ram_mb = 2048, cpus = 2, jit_mb = 64, seconds = 0, stop_wait_ms = 5000;
     
     for (int i = 1; i < argc; i++) {
@@ -126,14 +169,16 @@ int main(int argc, char **argv) {
     }
 
     char cwhy[200] = "";
-    if (hv_clone_dir_ok(clone_dir, disk, sizeof disk, aux, sizeof aux, cwhy, sizeof cwhy) != 0) {
+    uint64_t ecid = hv_clone_read_ecid(ecid_dir);
+    /* checked AND opened in one step: the machine below is given /proc/self/fd paths of the very files that passed, so a swap after this point changes nothing */
+    if (hv_clone_open(clone_dir, ecid_dir, ecid, &cl, cwhy, sizeof cwhy) != 0) {
         fprintf(stderr, "ui_runner_vm_clone: the clone was refused: %s\n", cwhy);
         printf("ui_runner_vm_clone RESULT: FAILED, the clone was refused (%s)\n", cwhy);
         return 1;
     }
-    uint64_t ecid = hv_clone_read_ecid(ecid_dir);
+    printf("ui_runner_vm_clone: clone folder %s verified (same vm folder, ECID tag equal, marker complete, files opened and locked)\n", cl.real);
     HvVmConfig cfg;
-    hv_runner_make_config(&cfg, rom, disk, aux, (uint64_t)(ram_mb < 0 ? 0 : ram_mb), (int)cpus, (size_t)(jit_mb < 0 ? 0 : jit_mb));
+    hv_runner_make_config(&cfg, rom, cl.disk, cl.aux, (uint64_t)(ram_mb < 0 ? 0 : ram_mb), (int)cpus, (size_t)(jit_mb < 0 ? 0 : jit_mb));
     /* [this binary's whole point, reviewed and explicitly approved] hv_runner_make_config leaves these at 0/0
        (host/runner_vm_core.c is unchanged); this binary alone sets them, after every other guarantee that
        function makes (readonly storage, no network, installer=0 -- all untouched above) is already built. */
@@ -164,6 +209,8 @@ int main(int argc, char **argv) {
     printf("ui_runner_vm_clone env: %d HV_* variable(s) removed%s%s\n", scrubbed, scrubbed ? ": " : "", scrubbed ? names : "");
     fflush(stdout);
 
+    printf("g7-process: runner_pid=%ld\n", (long)getpid());
+    hv_stage_hook = stage_cb;   /* from here the start-up stages report their memory */
     char err[256] = "";
     double t0 = now();
     if (hv_vm_create(&cfg, err, sizeof err) != 0) {
@@ -184,31 +231,32 @@ int main(int argc, char **argv) {
     hv_runner_set_ready(g_run, 1);
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
-    const char *why_stop = "quit";
-    double tstart = now(), next_frame = 0;
+    const char *why_stop = "quit", *stop_kind = "requested-quit";
+    char reason_txt[160];   /* outlives the loop: why_stop may point at it after the break */
+    double tstart = now(), next_frame = 0, next_mem = 0; unsigned nmem = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
-        if (atomic_load(&g_sig)) { why_stop = "signal"; break; }
-        if (hv_shm_app_closed(g_shm)) { why_stop = "app closed"; break; }
+        if (atomic_load(&g_sig)) { why_stop = "signal"; stop_kind = "signal"; break; }
+        if (hv_shm_app_closed(g_shm)) { why_stop = "app closed"; stop_kind = "app-closed"; break; }
         if (atomic_load(&g_exited)) {
             int er = atomic_load(&g_exit_reason);
-            char reason_txt[160];
             snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s)", er, hv_vm_reason_name(er));
-            why_stop = reason_txt; break;
+            why_stop = reason_txt; stop_kind = "guest-initiated"; break;
         }
-        if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; break; }
+        if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; stop_kind = "time-limit"; break; }
         struct pollfd p = {0, POLLIN, 0};
         int r = poll(&p, 1, 10);
-        if (r < 0 && errno != EINTR) { why_stop = "input error"; break; }
+        if (r < 0 && errno != EINTR) { why_stop = "input error"; stop_kind = "input-error"; break; }
         if (r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR))) {
             char c;
             ssize_t n = read(0, &c, 1);
-            if (n == 0) { why_stop = "input closed"; break; }
-            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; break; }
+            if (n == 0) { why_stop = "input closed"; stop_kind = "input-closed"; break; }
+            if (n < 0) { if (errno == EINTR || errno == EAGAIN) goto work; why_stop = "input error"; stop_kind = "input-error"; break; }
             if (c == '\n') {
                 inl[ll] = 0; ll = 0;
                 if (!strcmp(inl, "quit")) { why_stop = "quit"; break; }
                 else if (!strcmp(inl, "status")) status_line("status");
+                else if (!strcmp(inl, "frame")) frame_line();
                 else ignored++;
             } else if (ll + 1 < sizeof inl) inl[ll++] = c;
         }
@@ -218,6 +266,11 @@ int main(int argc, char **argv) {
         double t = now();
         if (t >= next_frame) { hv_runner_pump_frame(g_run); next_frame = t + 0.1; }
         hv_shm_heartbeat(g_shm);
+        if (t >= next_mem) {   /* one memory line every 10 s (read-only procfs), the slower PSS on the first and every 10th */
+            HvG7Mem m; hv_g7m_sample(&m); char ml[300]; hv_g7m_line(ml, sizeof ml, (uint64_t)(t - tstart), &m); fputs(ml, stdout);
+            if (nmem == 0 || nmem % 10 == 9) { char pl[100]; hv_g7m_pss_line(pl, sizeof pl, (uint64_t)(t - tstart), hv_g7m_pss_kb()); fputs(pl, stdout); }
+            fflush(stdout); nmem++; next_mem = t + 10.0;
+        }
     }
 
     hv_shm_set_state(g_shm, HV_SHM_STOPPING);
@@ -231,7 +284,8 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
+    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s macos_boot=not-determined (a confirmed stop says only that the machine ended; it does not say macOS booted)\n", confirmed ? 1 : 0, stop_kind);
     fflush(stdout);
-    if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
+    if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
     return confirmed ? 0 : 3;
 }

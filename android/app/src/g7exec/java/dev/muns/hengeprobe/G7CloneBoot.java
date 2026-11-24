@@ -52,11 +52,42 @@ public final class G7CloneBoot {
         return out;
     }
 
+    /** One line per folder under vm/clones/: usable, or why it cannot be booted (so a clone that cannot boot is shown as such, not hidden). */
+    public static List<String> describeAll(File priv) {
+        List<String> out = new ArrayList<>();
+        long ecid = G7ProbeLauncher.readEcid(priv);
+        File[] k = new File(priv, "clones").listFiles();
+        if (k == null) return out;
+        Arrays.sort(k);
+        for (File d : k) { String bad = G7Clone.validate(d, priv, ecid); out.add(d.getName() + ": " + (bad == null ? "부팅 가능(검증됨)" : "부팅 불가 - " + bad)); }
+        return out;
+    }
+
     public static Run current() { return CURRENT; }
 
     public static boolean isPackaged(File nativeLibDir) { return nativeLibDir != null && new File(nativeLibDir, LIB_NAME).isFile(); }
 
+    /** One picture the runner printed (a downsampled copy of what the machine shows, at most 96x64, RGB) and its pixel-statistics class. The class is an ESTIMATE, not a decision about what is on the screen. */
+    public static final class Frame {
+        public final int w, h; public final byte[] rgb; public final String cls; public final int nonblackPct, colors;
+        Frame(int w, int h, byte[] rgb, String cls, int pct, int colors) { this.w = w; this.h = h; this.rgb = rgb; this.cls = cls; this.nonblackPct = pct; this.colors = colors; }
+    }
+    private static final java.util.regex.Pattern FRAME = java.util.regex.Pattern.compile("^ui_runner_vm_clone FRAME src=\\d+x\\d+ out=(\\d{1,3})x(\\d{1,3}) class=([a-z-]{1,40}) nonblack_pct=(\\d{1,3}) colors=(\\d{1,5}) estimate=pixel-statistics-only data=([0-9a-f]+)$");
+    /** The frame in a runner output line, or null (not a frame line, or a malformed one). */
+    static Frame parseFrame(String line) {
+        java.util.regex.Matcher m = FRAME.matcher(line);
+        if (!m.matches()) return null;
+        int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
+        String hex = m.group(6);
+        if (w < 1 || w > 96 || h < 1 || h > 64 || hex.length() != w * h * 6) return null;
+        byte[] rgb = new byte[w * h * 3];
+        for (int i = 0; i < rgb.length; i++) rgb[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+        return new Frame(w, h, rgb, m.group(3), Integer.parseInt(m.group(4)), Integer.parseInt(m.group(5)));
+    }
+    private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) macos_boot=not-determined.*$");
+
     public static final class Run {
+        volatile Frame frame; volatile String verdictLine;
         final Process proc; final String logName; final G7BootStage.Tracker stages = new G7BootStage.Tracker();
         private final StringBuilder tail = new StringBuilder();
         private volatile boolean finished; private volatile int exitCode = Integer.MIN_VALUE; private volatile boolean cancelled;
@@ -68,6 +99,21 @@ public final class G7CloneBoot {
         public String logName() { return logName; }
         public synchronized String tail() { return tail.toString(); }
         public String stageSummary() { return stages.summary(); }
+        public Frame frame() { return frame; }
+        /** Asks the runner for a picture now (it answers with one FRAME line). */
+        public void requestFrame() {
+            if (finished) return;
+            try { OutputStream o = proc.getOutputStream(); o.write("frame\n".getBytes(StandardCharsets.US_ASCII)); o.flush(); } catch (IOException ignored) { }
+        }
+        /** What the end of the run says, with the two things kept apart: whether the machine's stop was confirmed (and who ended it), and macOS booting (never decided here). */
+        public String verdict() {
+            String v = verdictLine;
+            if (v == null) return "러너가 결과 줄을 남기지 않고 끝났습니다(종료 코드 " + exitCode + "). VM 종료 확인 없음, 원인 미확인(비정상 종료 가능). macOS 부팅 성공 여부는 판정하지 않았습니다.";
+            java.util.regex.Matcher m = VERDICT.matcher(v);
+            if (!m.matches()) return "러너의 결과 줄을 해석하지 못했습니다. macOS 부팅 성공 여부는 판정하지 않았습니다.";
+            String kind = m.group(2), who = kind.equals("guest-initiated") ? "게스트가 스스로 멈춤" : kind.equals("time-limit") ? "시험 시간 제한" : kind.equals("requested-quit") ? "사용자 취소/종료 요청" : kind.equals("signal") ? "신호로 종료" : kind.equals("app-closed") ? "앱이 닫음" : "입력 오류";
+            return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 종료 계기: " + who + ". macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
+        }
         synchronized void put(String text, boolean always) {
             tail.append(text); if (tail.length() > 6000) tail.replace(0, tail.length() - 6000, "");
             if (log == null) return;
@@ -99,7 +145,9 @@ public final class G7CloneBoot {
             File rom = roms.find(extVmDir, priv);
             long ecid = G7ProbeLauncher.readEcid(priv);
             if (rom == null || ecid <= 0) return new Start(false, "ROM 또는 ECID를 확인하지 못해 시작하지 않았습니다.", null);
-            String bad = G7Clone.validate(cloneDir, priv, ecid);
+            File cdir, pdir;
+            try { cdir = cloneDir.getCanonicalFile(); pdir = priv.getCanonicalFile(); } catch (IOException e) { return new Start(false, "경로를 확인하지 못해 시작하지 않았습니다.", null); }
+            String bad = G7Clone.validate(cdir, pdir, ecid);
             if (bad != null) return new Start(false, "이 복제본으로 부팅하지 않았습니다: " + bad, null);
             File log = new File(filesDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + LOG_SUFFIX);
             OutputStream logOut;
@@ -109,8 +157,8 @@ public final class G7CloneBoot {
             cmd.add(new File(nativeLibDir, LIB_NAME).getPath());
             cmd.add("--shm"); cmd.add(new File(filesDir, "g7_cloneboot.shm").getPath());
             cmd.add("--rom"); cmd.add(rom.getPath());
-            cmd.add("--clone-dir"); cmd.add(cloneDir.getAbsolutePath());
-            cmd.add("--ecid-dir"); cmd.add(priv.getPath());
+            cmd.add("--clone-dir"); cmd.add(cdir.getPath());
+            cmd.add("--ecid-dir"); cmd.add(pdir.getPath());   // plain canonical paths: the runner refuses anything else
             cmd.add("--seconds"); cmd.add(String.valueOf(RUN_SECONDS));
             cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add("64");
             Process p;
@@ -133,6 +181,13 @@ public final class G7CloneBoot {
                 while ((line = r.readLine()) != null) {
                     line = G7ExecLauncher.mask(line, ecid);
                     G7BootStage.Stage s = run.stages.feed(line, System.currentTimeMillis() - run.t0);
+                    if (line.startsWith("ui_runner_vm_clone FRAME ")) {   // the picture is kept in memory for the screen, never written; the log gets a short line without the pixels
+                        Frame f = parseFrame(line);
+                        if (f != null) { run.frame = f; run.put("g7-frame: " + f.w + "x" + f.h + " class=" + f.cls + " nonblack_pct=" + f.nonblackPct + " colors=" + f.colors + " (estimate from pixel statistics only)\n", false); }
+                        else run.put("g7-frame: none or malformed\n", false);
+                        continue;
+                    }
+                    if (line.startsWith("ui_runner_vm_clone VERDICT:")) run.verdictLine = line;
                     run.put(line + "\n", false);
                     if (s != null) run.put("g7-stage: " + s.name().toLowerCase() + " first seen at " + (System.currentTimeMillis() - run.t0) / 1000 + "s (estimate)\n", true);
                 }
@@ -144,7 +199,7 @@ public final class G7CloneBoot {
                 while (!run.finished) {
                     Thread.sleep(STATUS_EVERY_MS);
                     if (run.finished) break;
-                    try { OutputStream o = p.getOutputStream(); o.write("status\n".getBytes(StandardCharsets.US_ASCII)); o.flush(); } catch (IOException e) { break; }
+                    try { OutputStream o = p.getOutputStream(); o.write("status\nframe\n".getBytes(StandardCharsets.US_ASCII)); o.flush(); } catch (IOException e) { break; }
                 }
             } catch (InterruptedException ignored) { }
         }, "g7-cboot-status");
@@ -154,7 +209,7 @@ public final class G7CloneBoot {
             try { code = p.waitFor(); } catch (InterruptedException e) { code = -1; }
             try { reader.join(5000); } catch (InterruptedException ignored) { }
             run.exitCode = code;
-            run.put("g7-cboot-exit: " + code + (run.cancelled ? " (cancelled)" : "") + "\n" + run.stages.summary() + "\n", true);
+            run.put("g7-cboot-exit: " + code + (run.cancelled ? " (cancelled)" : "") + "\n" + run.stages.summary() + "\ng7-cboot-verdict: " + run.verdict() + "\n", true);
             synchronized (run) { try { if (run.log != null) run.log.close(); } catch (IOException ignored) { } run.log = null; }
             run.finished = true;
             poller.interrupt();

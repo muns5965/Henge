@@ -120,6 +120,9 @@ public class G7CloneTest {
         // a second clone gets the next number
         G7Clone.Result rr2 = run(true, false, p, 0, SCAN, ENOUGH, () -> false);
         check("a second clone is clone-002 and the first is untouched", rr2.ok && rr2.dir.getName().equals("clone-002") && new File(c, "clone_state.txt").isFile());
+        File untagged = pair("in_progress"); Files.write(new File(untagged, "g7_state.txt").toPath(), "state=in_progress\n".getBytes());
+        String sb = snapshot(untagged); G7Clone.Result ur = run(true, false, untagged, 0, SCAN, ENOUGH, () -> false);
+        check("a source without an ECID tag is refused at creation (it could never boot): " + ur.message, !ur.ok && ur.message.contains("ECID 태그") && clonesCount(untagged) == 0 && snapshot(untagged).equals(sb));
         System.out.println(fails == 0 ? "G7CLONE OK" : "G7CLONE FAILED");
         System.exit(fails == 0 ? 0 : 1);
     }

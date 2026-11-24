@@ -12,7 +12,7 @@ for mode in ${MODES:-plain asan}; do
   F="-O1"; [ $mode = tsan ] && F="-O1 -fsanitize=thread -fno-omit-frame-pointer"; [ $mode = asan ] && F="-O1 -fsanitize=address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
   $CC $W $F $HAS -Wl,--wrap=pthread_create "$SRC/devices/virtio_usb.c" "$SRC/host/usb_host.c" "$SRC/host/libusb_shim.c" tests/test_usb_faults.c -lpthread -o "$OUT/test_usb_faults_$mode" 2> "$OUT/uf_$mode.log" || { echo "FAILED build ($mode)"; head -30 "$OUT/uf_$mode.log"; rc=1; continue; }
   echo "=== usb faults ($mode)"
-  for sc in in_full out_room lost deadline late_ack out_partial cancel_next queue_wait0 session debt_lost workers; do
+  for sc in in_full out_room lost deadline late_ack out_partial cancel_next queue_wait0 session debt_lost no_spam loss_log workers; do
     ASAN_OPTIONS=detect_leaks=0 timeout 60 "$OUT/test_usb_faults_$mode" $sc > "$OUT/uf_${mode}_$sc.out" 2> "$OUT/uf_${mode}_$sc.err"; r=$?
     grep -E "^(FAIL|PASS|note)" "$OUT/uf_${mode}_$sc.out" | cut -c1-260
     if [ $r = 124 ]; then echo "HUNG scenario $sc ($mode)"; rc=1

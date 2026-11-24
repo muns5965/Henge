@@ -326,6 +326,35 @@ static void s_debt_lost(void) {
     teardown();
 }
 
+/* Nothing is dropped: nothing is logged about a full ring (a wrong condition once printed a line for EVERY response). */
+static void s_no_spam(void) {
+    char path[] = "/tmp/uf_stderr_XXXXXX"; int fd = mkstemp(path);
+    if (fd < 0) { printf("FAIL harness\n"); exit(2); }
+    fflush(stderr); int save = dup(2); dup2(fd, 2);
+    if (setup()) { dup2(save, 2); printf("FAIL harness\n"); exit(2); }
+    for (int i = 0; i < 20; i++) { Job *a = bulk(0x81, 64, 2000); libusb_submit_transfer(a->t); pump(a, 3000); Job *b = bulk(0x02, 16384, 2000); libusb_submit_transfer(b->t); pump(b, 3000); }
+    teardown();
+    fflush(stderr); dup2(save, 2); close(save);
+    char buf[65536]; lseek(fd, 0, SEEK_SET); ssize_t n = read(fd, buf, sizeof buf - 1); if (n < 0) n = 0; buf[n] = 0; close(fd); unlink(path);
+    EXPECT(strstr(buf, "response ring full") == NULL, "no_spam: 40 normal transfers log nothing about a full response ring (%zd bytes of stderr)", n);
+}
+
+/* Real losses are logged on the 1st and on every 1024th drop only (not on each one). */
+static void s_loss_log(void) {
+    char path[] = "/tmp/uf_lossl_XXXXXX"; int fd = mkstemp(path);
+    if (fd < 0) { printf("FAIL harness\n"); exit(2); }
+    fflush(stderr); int save = dup(2); dup2(fd, 2);
+    if (setup()) { dup2(save, 2); printf("FAIL harness\n"); exit(2); }
+    for (int i = 0; i < 256 + 1100; i++) hv_vusb_put_response(g_u, HV_VUSB_RSP_DATA, 0x81, NULL, 0);   // nobody takes them: 256 fit, 1100 are dropped
+    uint32_t total = hv_vusb_lost_total(g_u);
+    teardown();
+    fflush(stderr); dup2(save, 2); close(save);
+    char buf[65536]; lseek(fd, 0, SEEK_SET); ssize_t n = read(fd, buf, sizeof buf - 1); if (n < 0) n = 0; buf[n] = 0; close(fd); unlink(path);
+    int lines = 0; for (char *q = buf; (q = strstr(q, "response ring full")) != NULL; q++) lines++;
+    EXPECT(total == 1100, "loss_log: 1100 responses were dropped and counted (%u)", total);
+    EXPECT(lines == 2 && strstr(buf, "(1 so far)") && strstr(buf, "(1024 so far)"), "loss_log: only the 1st and the 1024th drop are logged (%d lines)", lines);
+}
+
 static void s_workers(void) {
     ST(g_fail_threads, 1);
     ST(g_stop, 0); ST(g_paused, 0);
@@ -364,6 +393,8 @@ int main(int argc, char **argv) {
     if (!strcmp(sc, "queue_wait0")) s_queue_wait0();
     if (!strcmp(sc, "session")) s_session();
     if (!strcmp(sc, "debt_lost")) s_debt_lost();
+    if (!strcmp(sc, "no_spam")) s_no_spam();
+    if (!strcmp(sc, "loss_log")) s_loss_log();
     if (!strcmp(sc, "workers")) s_workers();
     printf("%s: %d failure(s)\n", sc, bad);
     return bad ? 1 : 0;

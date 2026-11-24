@@ -35,7 +35,7 @@ static void put_msg(HvVirtioUsb *d, HvVusbMsg *m) {
     }
     pthread_cond_broadcast(&d->cv);
     pthread_mutex_unlock(&d->mu);
-    if (lost_n == 1 || lost_n % 1024 == 0) fprintf(stderr, "virtio-usb: response ring full, a response was dropped (%u so far)\n", lost_n);
+    if (lost_n != 0 && (lost_n == 1 || lost_n % 1024 == 0)) fprintf(stderr, "virtio-usb: response ring full, a response was dropped (%u so far)\n", lost_n);
 }
 
 int hv_vusb_take_lost(HvVirtioUsb *d, uint8_t ep) {

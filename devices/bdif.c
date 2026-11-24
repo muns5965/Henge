@@ -1,4 +1,5 @@
 #include "bdif.h"
+#include "usb_diag_gate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +59,7 @@ typedef struct {
 static int g_usbdiag_rom_on = -1;              /* -1: not yet observed */
 static uint32_t g_usbdiag_qsel = 0xffffffffu;
 static int g_usbdiag_busy_d0 = -1, g_usbdiag_busy_d1 = -1;
+static uint64_t g_usbdiag_events;              /* transactions seen by the diagnostics (usb_diag_gate.h) */
 static uint64_t g_usbdiag_busy_reads;          /* REG_BUSY reads since the last change (logged), for the summary */
 
 static uint64_t usb_read(HvBdif *b, uint64_t reg) {
@@ -70,7 +72,7 @@ static uint64_t usb_read(HvBdif *b, uint64_t reg) {
         int cpu_idx = hv_self ? (int)hv_self->index : -1;
         uint64_t lr = hv_self ? hv_self->x[30] : 0;
         if (d0 != g_usbdiag_busy_d0 || d1 != g_usbdiag_busy_d1) {
-            fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx lr=%#llx (changed, %llu reads since last change)\n",
+            if (hv_usb_diag_pass(&g_usbdiag_events)) fprintf(stderr, "bdif usb diag: REG_BUSY read, q0.done=%d q1.done=%d qsel=%u cpu=%d pc=%#llx lr=%#llx (changed, %llu reads since last change)\n",
                     d0, d1, b->usb_qsel, cpu_idx, (unsigned long long)hv_mmio_diag_pc, (unsigned long long)lr, (unsigned long long)g_usbdiag_busy_reads);
             g_usbdiag_busy_d0 = d0; g_usbdiag_busy_d1 = d1; g_usbdiag_busy_reads = 0;
         } else if ((g_usbdiag_busy_reads++ % 20000) == 0) {
@@ -125,7 +127,8 @@ static uint32_t usb_xfer(HvBdif *b, uint64_t chain, int write, uint8_t *buf, uin
    For queue 0 (the ROM's receive buffer, HvBdifUsbQ.pending's own comment in devices/bdif.h) this shows how much
    room and what shape of buffer the ROM is waiting to have filled -- not the ep/type of any host request, which
    only exists once hv_vusb_take_request() actually supplies one (not observed in this investigation so far). */
-static void usb_diag_log_chain(HvBdif *b, const char *why, uint64_t chain) {
+static void usb_diag_log_chain(HvBdif *b, const char *why, uint64_t chain, int print) {
+    if (!print) return;   /* the event's other lines were not printed either (usb_diag_gate.h) */
     UsbDesc dsc[5];
     uint32_t total = 0;
     int n = 0;
@@ -157,7 +160,7 @@ static void usb_deliver(HvBdif *b) {
                     (unsigned long long)q->pending, (unsigned long long)waits);
         return;
     }
-    fprintf(stderr, "bdif usb diag: usb_deliver: q0 pending=%#llx -> delivering a host request (ep=%#x type=%#x len=%u)\n",
+    if (hv_usb_diag_pass(&g_usbdiag_events)) fprintf(stderr, "bdif usb diag: usb_deliver: q0 pending=%#llx -> delivering a host request (ep=%#x type=%#x len=%u)\n",
             (unsigned long long)q->pending, m.ep, m.type, m.len);
     uint32_t room = 0;
     usb_xfer(b, q->pending, 1, NULL, 0, &room);
@@ -224,7 +227,7 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
     case REG_QSEL:
         b->usb_qsel = (uint32_t)v;
         if (g_usbdiag_qsel != b->usb_qsel) {
-            fprintf(stderr, "bdif usb diag: REG_QSEL write -> %u\n", b->usb_qsel);
+            if (hv_usb_diag_pass(&g_usbdiag_events)) fprintf(stderr, "bdif usb diag: REG_QSEL write -> %u\n", b->usb_qsel);
             g_usbdiag_qsel = b->usb_qsel;
         }
         break;
@@ -235,16 +238,18 @@ static void usb_write(HvBdif *b, uint64_t reg, uint64_t v) {
         q->done = 0;
         if (b->usb_qsel == 0) {
             q->pending = v;
-            fprintf(stderr, "bdif usb diag: REG_CMD write, q0 pending=%#llx done=0 (submitted)\n", (unsigned long long)v);
-            usb_diag_log_chain(b, "q0 submit", v);
+            int pr = hv_usb_diag_pass(&g_usbdiag_events);   /* one transaction: its three lines are all printed or none */
+            if (pr) fprintf(stderr, "bdif usb diag: REG_CMD write, q0 pending=%#llx done=0 (submitted)\n", (unsigned long long)v);
+            usb_diag_log_chain(b, "q0 submit", v, pr);
             usb_deliver(b);
-            fprintf(stderr, "bdif usb diag: REG_CMD write, q0 after usb_deliver(): done=%d\n", q->done);
+            if (pr) fprintf(stderr, "bdif usb diag: REG_CMD write, q0 after usb_deliver(): done=%d\n", q->done);
             break;
         }
         /* A response: take it now. */
         if (!b->usb->rom_on) break;
-        fprintf(stderr, "bdif usb diag: REG_CMD write, q1 (response) addr=%#llx\n", (unsigned long long)v);
-        usb_diag_log_chain(b, "q1 response", v);
+        int pr1 = hv_usb_diag_pass(&g_usbdiag_events);
+        if (pr1) fprintf(stderr, "bdif usb diag: REG_CMD write, q1 (response) addr=%#llx\n", (unsigned long long)v);
+        usb_diag_log_chain(b, "q1 response", v, pr1);
         uint32_t room = 0;
         usb_xfer(b, v, 0, NULL, 0, &room);
         uint8_t *tmp = room ? malloc(room) : NULL;

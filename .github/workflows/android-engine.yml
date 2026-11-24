@@ -56,6 +56,10 @@ on:
       - tools/install-plan-test.sh
       - tools/usb-ctrl-test.sh
       - tools/usb-faults-test.sh
+      - tools/usb-diag-gate-test.sh
+      - tests/test_usb_diag_gate.c
+      - devices/usb_diag_gate.h
+      - devices/bdif.c
       - tests/test_usb_ctrl.c
       - tests/test_shim_ctrl.c
       - tests/test_usb_faults.c
@@ -386,6 +390,11 @@ jobs:
         run: |
           bash -n tools/usb-faults-test.sh
           tools/usb-faults-test.sh build-usbfaults
+
+      - name: "Test the rate limit of the virtual USB device's diagnostic lines (devices/usb_diag_gate.h: first events in full, then every 2000th; plain and TSan; bdif.c compiles with it)"
+        run: |
+          bash -n tools/usb-diag-gate-test.sh
+          tools/usb-diag-gate-test.sh build-usbdiaggate
 
       - name: "Test G2-b: the mock install orchestrator (host/install_plan.c; fake device, fake clock; plain and ASan + UBSan) and its isolation check (no project include, no real names, referenced by nothing but its test). Not connected to any Apple request, device, disk or install path"
         run: |

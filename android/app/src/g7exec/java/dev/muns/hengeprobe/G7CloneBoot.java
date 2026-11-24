@@ -136,8 +136,8 @@ public final class G7CloneBoot {
         }
     }
 
-    /** USB test modes of the runner's --usb-mode: 0 = A none (default), 1 = B virtual USB device port only, 2 = C port + non-destructive enumeration, 3 = D = C plus a read-only getenv of five recovery variables. installer stays 0 in all of them. */
-    public static final int USB_NONE = 0, USB_PORT = 1, USB_PORT_PROBE = 2, USB_PORT_GETENV = 3;
+    /** USB test modes of the runner's --usb-mode: 0 = A none (default), 1 = B virtual USB device port only, 2 = C port + non-destructive enumeration, 3 = D = C plus a read-only getenv of five recovery variables, 4 = E = D plus the fixed auto-boot true + saveenv sequence (clone-001 only). installer stays 0 in all of them. */
+    public static final int USB_NONE = 0, USB_PORT = 1, USB_PORT_PROBE = 2, USB_PORT_GETENV = 3, USB_AUTOBOOT_FIX = 4;
 
     public static Start start(File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus) {
         return start(nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, USB_NONE);
@@ -152,7 +152,8 @@ public final class G7CloneBoot {
     }
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode) {
-        if (usbMode < USB_NONE || usbMode > USB_PORT_GETENV) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
+        if (usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
+        if (usbMode == USB_AUTOBOOT_FIX && (cloneDir == null || !"clone-001".equals(cloneDir.getName()))) return new Start(false, "E 모드(auto-boot 켜기)는 clone-001에서만 허용됩니다. 시작하지 않았습니다.", null);
         synchronized (G7ExecLauncher.START_LOCK) {
             String g = G7Isolation.gate(enabled, g7Live, runnerStatus);
             if (g != null) return new Start(false, g.replace("격리하지", "부팅하지").replace("아무것도 옮기지", "아무것도 시작하지"), null);

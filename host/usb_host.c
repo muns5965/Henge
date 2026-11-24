@@ -235,6 +235,26 @@ static void print_string(HvVirtioUsb *d, uint8_t idx) {
 static int g_getenv_enabled;
 void hv_usb_probe_enable_getenv(int on) { g_getenv_enabled = on; }
 
+/* One "getenv <name>": 0 = answered (out holds the text, possibly empty), -1 = a transfer failed. */
+static int getenv_one(HvVirtioUsb *d, const char *name, char *out, size_t outsz, int *sr_out, int *rr_out) {
+    char cmd[64];
+    int cl = snprintf(cmd, sizeof cmd, "getenv %s", name);
+    out[0] = 0;
+    int sr = hv_usb_control(d, 0x40, 0, 0, 0, cmd, (uint16_t)(cl + 1), 2000);
+    *sr_out = sr; *rr_out = 0;
+    if (sr < 0) return -1;
+    char resp[256];
+    memset(resp, 0, sizeof resp);
+    int rr = hv_usb_control(d, 0xC0, 0, 0, 0, resp, 255, 2000);
+    *rr_out = rr;
+    if (rr < 0) return -1;
+    resp[255] = 0;
+    size_t k = 0;
+    for (int j = 0; j < rr && j < 255 && resp[j] && k + 1 < outsz && k < 250; j++) out[k++] = (resp[j] >= 32 && resp[j] < 127) ? resp[j] : '?';
+    out[k] = 0;
+    return 0;
+}
+
 static void getenv_query(HvVirtioUsb *d, uint16_t pid) {
     if (pid < 0x1280 || pid > 0x1283) {
         fprintf(stderr, "usb getenv: skipped: PID 0x%04x is not a recovery-mode PID\n", pid);
@@ -242,28 +262,44 @@ static void getenv_query(HvVirtioUsb *d, uint16_t pid) {
     }
     static const char *const names[] = {"auto-boot", "boot-command", "boot-args", "bootdelay", "build-version"};
     for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
-        char cmd[64];
-        int cl = snprintf(cmd, sizeof cmd, "getenv %s", names[i]);
-        int sr = hv_usb_control(d, 0x40, 0, 0, 0, cmd, (uint16_t)(cl + 1), 2000);
-        if (sr < 0) {
-            fprintf(stderr, "usb getenv: %s: QUERY FAILED (send -> %d)\n", names[i], sr);
-            continue;
-        }
-        char resp[256];
-        memset(resp, 0, sizeof resp);
-        int rr = hv_usb_control(d, 0xC0, 0, 0, 0, resp, 255, 2000);
-        if (rr < 0) {
-            fprintf(stderr, "usb getenv: %s: QUERY FAILED (send %d, read -> %d)\n", names[i], sr, rr);
-            continue;
-        }
-        resp[255] = 0;
         char out[256];
-        int k = 0;
-        for (int j = 0; j < rr && j < 255 && resp[j] && k < 250; j++) out[k++] = (resp[j] >= 32 && resp[j] < 127) ? resp[j] : '?';
-        out[k] = 0;
-        if (k == 0) fprintf(stderr, "usb getenv: %s: EMPTY (unset, or no answer; cannot be told apart) (send %d, read %d)\n", names[i], sr, rr);
+        int sr, rr;
+        if (getenv_one(d, names[i], out, sizeof out, &sr, &rr) != 0) fprintf(stderr, "usb getenv: %s: QUERY FAILED (send %d, read %d)\n", names[i], sr, rr);
+        else if (!out[0]) fprintf(stderr, "usb getenv: %s: EMPTY (unset, or no answer; cannot be told apart) (send %d, read %d)\n", names[i], sr, rr);
         else fprintf(stderr, "usb getenv: %s = \"%s\" (send %d, read %d)\n", names[i], out, sr, rr);
     }
+}
+
+/* [2026-11-25, explicitly approved, ONE clone only] mode E: the single fixed sequence getenv auto-boot -> setenv auto-boot true -> getenv -> saveenv -> getenv. Each step
+   must succeed before the next is sent; it stops at the first failure; nothing else is ever sent (no reboot, no other variable, no free-form command), and it runs once per
+   process, at the first recovery prompt. */
+static int g_setenv_enabled;
+void hv_usb_probe_enable_autoboot_fix(int on) { g_setenv_enabled = on; }
+
+static int send_fixed(HvVirtioUsb *d, const char *cmd, const char *what) {
+    int r = hv_usb_control(d, 0x40, 0, 0, 0, (void *)cmd, (uint16_t)(strlen(cmd) + 1), 2000);
+    fprintf(stderr, "usb autoboot-fix: %s sent -> %d\n", what, r);
+    return r < 0 ? -1 : 0;
+}
+
+static void autoboot_fix(HvVirtioUsb *d, uint16_t pid) {
+    char v[256];
+    int sr, rr;
+    if (pid < 0x1280 || pid > 0x1283) { fprintf(stderr, "usb autoboot-fix: STOP: PID 0x%04x is not a recovery-mode PID, nothing sent\n", pid); return; }
+    if (getenv_one(d, "auto-boot", v, sizeof v, &sr, &rr) != 0) { fprintf(stderr, "usb autoboot-fix: STOP: first getenv auto-boot failed (send %d, read %d), nothing changed\n", sr, rr); return; }
+    fprintf(stderr, "usb autoboot-fix: step 1 getenv auto-boot = \"%s\"\n", v);
+    if (!strcmp(v, "true")) { fprintf(stderr, "usb autoboot-fix: already true, nothing sent\n"); return; }
+    if (strcmp(v, "false")) { fprintf(stderr, "usb autoboot-fix: STOP: unexpected current value, nothing changed\n"); return; }
+    if (send_fixed(d, "setenv auto-boot true", "step 2 setenv auto-boot true") != 0) { fprintf(stderr, "usb autoboot-fix: STOP at step 2\n"); return; }
+    usleep(300000);
+    if (getenv_one(d, "auto-boot", v, sizeof v, &sr, &rr) != 0) { fprintf(stderr, "usb autoboot-fix: STOP at step 3: getenv failed (send %d, read %d); saveenv NOT sent\n", sr, rr); return; }
+    fprintf(stderr, "usb autoboot-fix: step 3 getenv auto-boot = \"%s\"\n", v);
+    if (strcmp(v, "true")) { fprintf(stderr, "usb autoboot-fix: STOP at step 3: value did not change; saveenv NOT sent\n"); return; }
+    if (send_fixed(d, "saveenv", "step 4 saveenv") != 0) { fprintf(stderr, "usb autoboot-fix: STOP at step 4\n"); return; }
+    usleep(500000);
+    if (getenv_one(d, "auto-boot", v, sizeof v, &sr, &rr) != 0) fprintf(stderr, "usb autoboot-fix: step 5 getenv after saveenv FAILED (send %d, read %d); persistence is shown only by the next normal boot\n", sr, rr);
+    else fprintf(stderr, "usb autoboot-fix: step 5 getenv auto-boot after saveenv = \"%s\" (memory value only; persistence is shown only by the next normal boot)\n", v);
+    fprintf(stderr, "usb autoboot-fix: DONE (no reboot sent)\n");
 }
 
 static void *probe(void *arg) {
@@ -284,7 +320,10 @@ static void *probe(void *arg) {
         print_string(d, dd[16]);
     }
     if (n != 18) return NULL;
-    if (g_getenv_enabled) {
+    if (g_setenv_enabled) {
+        getenv_query(d, (uint16_t)(dd[10] | (dd[11] << 8)));
+        autoboot_fix(d, (uint16_t)(dd[10] | (dd[11] << 8)));
+    } else if (g_getenv_enabled) {
         /* Tried a few times: the guest may still be on its way into the recovery prompt when the bus first comes up. */
         for (int t = 0; t < 3; t++) {
             getenv_query(d, (uint16_t)(dd[10] | (dd[11] << 8)));

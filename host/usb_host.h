@@ -93,5 +93,7 @@ unsigned hv_libusb_data_bad_hist(int status);        /* never evicted: a count b
 void hv_usb_probe_start(HvVirtioUsb *d);
 /* Before hv_usb_probe_start: also ask five recovery environment variables (read-only; see host/usb_host.c). */
 void hv_usb_probe_enable_getenv(int on);
+/* Mode E only (one approved clone): the fixed getenv/setenv auto-boot true/getenv/saveenv sequence in host/usb_host.c. Needs hv_usb_probe_enable_getenv(1) too. */
+void hv_usb_probe_enable_autoboot_fix(int on);
 
 #endif

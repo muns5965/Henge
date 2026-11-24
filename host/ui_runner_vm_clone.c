@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--rom") && more) rom = argv[++i];
         else if (!strcmp(argv[i], "--clone-dir") && more) clone_dir = argv[++i];
         else if (!strcmp(argv[i], "--ecid-dir") && more) ecid_dir = argv[++i];
-        else if (!strcmp(argv[i], "--usb-mode") && more) { usb_mode = atol(argv[++i]); if (usb_mode < 0 || usb_mode > 3) { fprintf(stderr, "ui_runner_vm_clone: --usb-mode must be 0, 1, 2 or 3\n"); return 2; } }
+        else if (!strcmp(argv[i], "--usb-mode") && more) { usb_mode = atol(argv[++i]); if (usb_mode < 0 || usb_mode > 4) { fprintf(stderr, "ui_runner_vm_clone: --usb-mode must be 0, 1, 2, 3 or 4\n"); return 2; } }
         else if (!strcmp(argv[i], "--ram-mb") && more) ram_mb = atol(argv[++i]);
         else if (!strcmp(argv[i], "--cpus") && more) cpus = atol(argv[++i]);
         else if (!strcmp(argv[i], "--jit-mb") && more) jit_mb = atol(argv[++i]);
@@ -190,10 +190,21 @@ int main(int argc, char **argv) {
     cfg.seed = 0;
     /* USB test modes (explicitly approved): 0 = none, 1 = the guest-facing virtual USB device port only, 2 = port plus hv_usb_probe_start's non-destructive enumeration -- exactly what host/ui_runner_vm.c
        sets for its normal boot. installer stays 0 in every mode; this is not host USB and not the restore (usbmuxd/idevicerestore) path. */
+    if (usb_mode == 4) {
+        /* Mode E (explicitly approved for ONE clone): refused unless the verified clone folder is named exactly clone-001. */
+        const char *bn = strrchr(cl.real, '/'); bn = bn ? bn + 1 : cl.real;
+        if (strcmp(bn, "clone-001") != 0) {
+            fprintf(stderr, "ui_runner_vm_clone: usb mode 4 is approved for clone-001 only\n");
+            printf("ui_runner_vm_clone RESULT: FAILED, usb mode 4 is approved for clone-001 only; not started\n");
+            return 2;
+        }
+    }
     cfg.usb_on_normal_boot = usb_mode >= 1;
     cfg.usb_probe_on_normal_boot = usb_mode >= 2;
     /* Mode 3 = mode 2 plus a read-only "getenv" of five recovery variables (host/usb_host.c); no setenv/saveenv/reboot exists anywhere in that path. */
     hv_usb_probe_enable_getenv(usb_mode >= 3);
+    /* Mode 4 = mode 3 plus the fixed auto-boot sequence (host/usb_host.c autoboot_fix); the only write this binary can make to the recovery environment. */
+    hv_usb_probe_enable_autoboot_fix(usb_mode >= 4);
     char why[160], line[400];
     if (clone_boot_config_ok(&cfg, ecid, 1, why, sizeof why) != 0) {
         fprintf(stderr, "ui_runner_vm_clone: the settings were refused: %s\n", why);
@@ -215,7 +226,7 @@ int main(int argc, char **argv) {
     printf("ui_runner_vm_clone: started pid %d, verified-clone virtual machine mode (normal boot, writable clone, nonzero machine identity)\n", (int)getpid());
     hv_runner_config_line(&cfg, line, sizeof line);
     printf("ui_runner_vm_clone config (the structure passed to hv_vm_create): %s\n", line);
-    printf("ui_runner_vm_clone usb mode %ld (%s): usb_on_normal_boot=%d usb_probe_on_normal_boot=%d installer=%d\n", usb_mode, usb_mode == 0 ? "A none" : usb_mode == 1 ? "B port only" : usb_mode == 2 ? "C port+enumeration" : "D port+enumeration+getenv(read-only)",
+    printf("ui_runner_vm_clone usb mode %ld (%s): usb_on_normal_boot=%d usb_probe_on_normal_boot=%d installer=%d\n", usb_mode, usb_mode == 0 ? "A none" : usb_mode == 1 ? "B port only" : usb_mode == 2 ? "C port+enumeration" : usb_mode == 3 ? "D port+enumeration+getenv(read-only)" : "E clone-001 only: getenv + fixed setenv auto-boot true + saveenv",
            cfg.usb_on_normal_boot, cfg.usb_probe_on_normal_boot, cfg.installer);
     printf("ui_runner_vm_clone env: %d HV_* variable(s) removed%s%s\n", scrubbed, scrubbed ? ": " : "", scrubbed ? names : "");
     fflush(stdout);

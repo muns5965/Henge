@@ -94,7 +94,15 @@ public class G7CloneBootTest {
             check("usb mode " + um + " reaches the command line, installer/ecid flags still absent", us.started && String.join(" ", lastCmd).contains("--usb-mode " + um) && !String.join(" ", lastCmd).contains("--installer")); waitDone(us.run);
         }
         int beforeUsb = spawned;
-        check("unknown usb mode 4 / -1: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 4).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, -1).started && spawned == beforeUsb);
+        check("unknown usb mode 5 / -1: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 5).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, -1).started && spawned == beforeUsb);
+        int beforeE = spawned;
+        File other = new File(clone.getParentFile(), "clone-002");
+        check("mode E on a clone that is not clone-001: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, other, true, none, 4).started && spawned == beforeE);
+        if (clone.getName().equals("clone-001")) {
+            Fake ef = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+            G7CloneBoot.Start es = G7CloneBoot.startWith(sp(ef), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 4);
+            check("mode E on clone-001 reaches the command line as --usb-mode 4", es.started && String.join(" ", lastCmd).contains("--usb-mode 4") && !String.join(" ", lastCmd).contains("--installer")); waitDone(es.run);
+        } else System.out.println("INFO test clone is named " + clone.getName() + ", the clone-001 positive case is covered by the source rule");
         Fake nof = new Fake("ui_runner_vm_clone FRAME none class=no-frame (read=0)\n", 0, false);
         G7CloneBoot.Start ns = G7CloneBoot.startWith(sp(nof), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none); waitDone(ns.run);
         check("a 'no picture yet' answer is kept as a note the screen can show (not silence)", ns.run.frame() == null && ns.run.frameNote().contains("아직 보낼 화면이 없습니다") && ns.run.frameAnsweredMs > 0);

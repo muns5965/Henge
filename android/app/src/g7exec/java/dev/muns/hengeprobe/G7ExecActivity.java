@@ -268,14 +268,14 @@ public class G7ExecActivity extends Activity {
         final CheckBox ok = new CheckBox(this); ok.setText("선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의합니다(원본은 쓰지 않음).");
         ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         final android.widget.RadioGroup usb = new android.widget.RadioGroup(this);
-        String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)", "D. C + 복구 환경변수 5개 읽기 전용 조회(getenv)"};
+        String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)", "D. C + 복구 환경변수 5개 읽기 전용 조회(getenv)", "E. D + auto-boot를 true로 저장(clone-001 전용, 값을 바꿈)"};
         for (int i = 0; i < um.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(um[i]); rb.setId(1000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); usb.addView(rb); }
         usb.check(1000);
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(ok);
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(box)
                 .setNegativeButton("취소", null)
                 .setPositiveButton("부팅", (d, w) -> {
-                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), Math.max(0, Math.min(3, usb.getCheckedRadioButtonId() - 1000)));
+                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000)));
                     status.setText(st.message);
                     if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
                 }).show();

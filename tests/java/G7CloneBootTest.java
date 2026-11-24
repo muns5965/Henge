@@ -79,6 +79,7 @@ public class G7CloneBootTest {
         check("a valid clone starts: " + s.message, s.started && spawned == 1 && s.run != null);
         String cmd = String.join(" ", lastCmd);
         check("command: clone dir, ecid-dir, bounded; no ecid value, no original files", cmd.contains("--clone-dir " + clone.getAbsolutePath()) && cmd.contains("--ecid-dir " + priv.getPath()) && cmd.contains("--seconds " + G7CloneBoot.RUN_SECONDS) && !cmd.contains(hex) && !cmd.contains("--ecid ") && !cmd.contains("macos_disk.img"));
+        check("default usb mode is A (0) on the command line", cmd.contains("--usb-mode 0"));
         waitDone(s.run);
         File log = G7ExecLauncher.logFile(files, s.run.logName());
         String lt = new String(Files.readAllBytes(log.toPath()), StandardCharsets.UTF_8);
@@ -87,6 +88,13 @@ public class G7CloneBootTest {
         G7CloneBoot.Frame fr = s.run.frame();
         check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: 4x2 class=mostly-black-small-content"));
         check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("디스크 flush: 성공") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
+        for (int um = 1; um <= 2; um++) {
+            Fake uf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+            G7CloneBoot.Start us = G7CloneBoot.startWith(sp(uf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, um);
+            check("usb mode " + um + " reaches the command line, installer/ecid flags still absent", us.started && String.join(" ", lastCmd).contains("--usb-mode " + um) && !String.join(" ", lastCmd).contains("--installer")); waitDone(us.run);
+        }
+        int beforeUsb = spawned;
+        check("unknown usb mode 3 / -1: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 3).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, -1).started && spawned == beforeUsb);
         Fake nof = new Fake("ui_runner_vm_clone FRAME none class=no-frame (read=0)\n", 0, false);
         G7CloneBoot.Start ns = G7CloneBoot.startWith(sp(nof), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none); waitDone(ns.run);
         check("a 'no picture yet' answer is kept as a note the screen can show (not silence)", ns.run.frame() == null && ns.run.frameNote().contains("아직 보낼 화면이 없습니다") && ns.run.frameAnsweredMs > 0);

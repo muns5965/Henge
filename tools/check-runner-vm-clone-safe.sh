@@ -15,7 +15,7 @@
 #   source  5. readonly_storage/no_net/installer are never assigned in this file (they come from hv_runner_make_config, untouched); ecid
 #              and seed ARE assigned here, exactly once each, and nowhere else safety-relevant is touched
 #           6. the settings are checked (installed_boot_config_ok, NOT hv_runner_config_ok) before the machine is created, there is one
-#              hv_vm_create call, and its argument is the checked structure; the usb device port is checked absent (installer stays 0)
+#              hv_vm_create call, and its argument is the checked structure; the usb device port presence is checked against the requested usb mode (installer stays 0)
 #           7. the options the program accepts are exactly the allowed list; it sets no environment variable (it only removes HV_* ones)
 # What this cannot show: that the engine does not reach the network or write a file by some other path; that is what a strace-based run
 # (mirroring tools/c1vm-test.sh, not yet extended to this binary -- tracked as a follow-up) would be for.
@@ -84,7 +84,9 @@ n=$(grep -cE '(^|[^a-z_])unsetenv[[:space:]]*\(' $R); [ "$n" = 0 ] || bad "$R ca
 l5=$(grep -n 'scrubbed < 0' $R | head -1 | cut -d: -f1); { [ -n "$l5" ] && [ "$l5" -lt "$l3" ]; } || bad "$R: the scrub result must be checked before hv_vm_create"
 l4=$(grep -n 'hv_runner_scrub_env(' $R | head -1 | cut -d: -f1); { [ -n "$l4" ] && [ "$l4" -lt "$l3" ]; } || bad "$R: the scrub must come before hv_vm_create"
 grep -q 'bd->vusb' $R || bad "$R: the check that the machine has no USB device port is missing"
-grep -q 'usb_present)' $R || bad "$R: must refuse to run if the usb device port is unexpectedly present (installer stays 0 in this binary)"
+grep -q 'usb_present != cfg.usb_on_normal_boot' $R || bad "$R: must refuse to run if the usb device port presence differs from the requested usb mode"
+grep -q 'cfg.usb_probe_on_normal_boot = usb_mode >= 2' $R && grep -q 'cfg.usb_on_normal_boot = usb_mode >= 1' $R || bad "$R: the usb mode must map to exactly the two host-only usb flags"
+grep -q 'c->installer) BAD' $R || bad "$R: installer must stay refused in every usb mode"
 grep -q 'hv_runner_make_config(&cfg, rom, cl.disk, cl.aux,' $R || bad "$R: the machine must be given the descriptor paths of the files that were checked (cl.disk, cl.aux)"
 grep -q 'flock(c->dirfd, LOCK_EX | LOCK_NB)' $H || bad "$H: the clone folder must be locked"
 grep -q '/proc/self/fd/%d' $H || bad "$H: the checked files must be handed over as descriptor paths"
@@ -95,7 +97,7 @@ l6=$(grep -n 'hv_vm_start(1' $R | head -1 | cut -d: -f1); l7=$(grep -n 'hv_vm_st
 grep -q 'hv_vm_flush_disks_checked()' $R || bad "$R: the disk flush result must be checked (hv_vm_flush_disks_checked)"
 # 7
 opts=$(grep -o '"--[a-z-]*"' $R | sort -u | tr -d '"' | tr '\n' ' ')
-[ "$opts" = "--clone-dir --cpus --ecid-dir --jit-mb --ram-mb --rom --seconds --shm --stop-wait-ms " ] || bad "$R: the accepted options are '$opts'"
+[ "$opts" = "--clone-dir --cpus --ecid-dir --jit-mb --ram-mb --rom --seconds --shm --stop-wait-ms --usb-mode " ] || bad "$R: the accepted options are '$opts'"
 if grep -nE '(^|[^a-z_])(setenv|putenv)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' > /dev/null; then bad "$R / $C set an environment variable"; fi
 if grep -nE '\b(system|popen|fork|exec[a-z]*|socket|connect|dlopen)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' | grep -v '^[^:]*:[0-9]*:.*\*/' > /dev/null; then bad "$R / $C call a process-start or network function"; fi
 

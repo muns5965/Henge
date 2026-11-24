@@ -12,7 +12,7 @@
    Output: the same status lines as the installed runner, plus memory lines from read-only procfs: g7-process once at start, g7-mem-stage at each big start-up allocation, g7-mem every 10 s, g7-mem-pss on the first sample and then about every 100 s, "FRAME" lines on the stdin word "frame" (a downsampled copy of what the machine shows
    and a pixel-statistics class: an estimate), and a final VERDICT line that separates "the machine stopped (confirmed)" from "macOS booted" (never claimed here).
    host/ui_runner_vm_installed.c is unchanged: it still boots read-only.
-   Arguments: --shm PATH --rom F --clone-dir D --ecid-dir D  [--ram-mb N (2048) --cpus N (2) --jit-mb N (64) --seconds N --stop-wait-ms N]. Stdin: "quit" stops, "status" prints one status line, "frame" prints one FRAME line.
+   Arguments: --shm PATH --rom F --clone-dir D --ecid-dir D  [--ram-mb N (2048) --cpus N (2) --jit-mb N (64) --seconds N --stop-wait-ms N --usb-mode 0|1|2 (0)]. Stdin: "quit" stops, "status" prints one status line, "frame" prints one FRAME line.
    Exit codes: 0 stopped and confirmed; 1 settings refused or machine not made; 2 bad arguments; 3 stop not confirmed. Output lines start with "ui_runner_vm_clone". */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -66,6 +66,7 @@ static int clone_boot_config_ok(const HvVmConfig *c, uint64_t ecid, int clone_ve
     if (!c->readonly_storage && !clone_verified) BAD("writable storage without a verified clone");
     if (!c->no_net) BAD("the guest network is not off");
     if (c->installer) BAD("installer boot must be OFF (normal boot, not DFU)");
+    if (c->usb_probe_on_normal_boot && !c->usb_on_normal_boot) BAD("usb probe requested without the usb device port");
     if (ecid == 0) BAD("no valid ECID in vm_ecid.txt");
     if (c->jit_rx || c->jit_rw) BAD("host-provided JIT memory");
     if (!c->rom || !c->disk || !c->aux || !*c->rom || !*c->disk || !*c->aux) BAD("a path is missing");
@@ -136,7 +137,7 @@ static void frame_line(void) {
 
 int main(int argc, char **argv) {
     const char *shm_path = NULL, *rom = NULL, *clone_dir = NULL, *ecid_dir = NULL; HvClone cl;
-    long ram_mb = 2048, cpus = 2, jit_mb = 64, seconds = 0, stop_wait_ms = 5000;
+    long ram_mb = 2048, cpus = 2, jit_mb = 64, seconds = 0, stop_wait_ms = 5000, usb_mode = 0;   /* usb_mode: 0 = A none, 1 = B device port only, 2 = C port + enumeration (the same two flags host/ui_runner_vm.c sets) */
     
     for (int i = 1; i < argc; i++) {
         int more = i + 1 < argc;
@@ -144,13 +145,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--rom") && more) rom = argv[++i];
         else if (!strcmp(argv[i], "--clone-dir") && more) clone_dir = argv[++i];
         else if (!strcmp(argv[i], "--ecid-dir") && more) ecid_dir = argv[++i];
+        else if (!strcmp(argv[i], "--usb-mode") && more) { usb_mode = atol(argv[++i]); if (usb_mode < 0 || usb_mode > 2) { fprintf(stderr, "ui_runner_vm_clone: --usb-mode must be 0, 1 or 2\n"); return 2; } }
         else if (!strcmp(argv[i], "--ram-mb") && more) ram_mb = atol(argv[++i]);
         else if (!strcmp(argv[i], "--cpus") && more) cpus = atol(argv[++i]);
         else if (!strcmp(argv[i], "--jit-mb") && more) jit_mb = atol(argv[++i]);
         else if (!strcmp(argv[i], "--seconds") && more) seconds = atol(argv[++i]);
         else if (!strcmp(argv[i], "--stop-wait-ms") && more) stop_wait_ms = atol(argv[++i]);
         else {
-            fprintf(stderr, "ui_runner_vm_clone: unknown or incomplete argument '%s' (accepted: --shm --rom --clone-dir --ecid-dir --ram-mb --cpus --jit-mb --seconds --stop-wait-ms)\n", argv[i]);
+            fprintf(stderr, "ui_runner_vm_clone: unknown or incomplete argument '%s' (accepted: --shm --rom --clone-dir --ecid-dir --ram-mb --cpus --jit-mb --seconds --stop-wait-ms --usb-mode)\n", argv[i]);
             return 2;
         }
     }
@@ -185,6 +187,10 @@ int main(int argc, char **argv) {
     cfg.readonly_storage = 0;   /* the clone's disk and AUX are writable, and only because clone_dir_ok passed above; the original install pair is a different folder this binary never names */
     cfg.ecid = ecid;
     cfg.seed = 0;
+    /* USB test modes (explicitly approved): 0 = none, 1 = the guest-facing virtual USB device port only, 2 = port plus hv_usb_probe_start's non-destructive enumeration -- exactly what host/ui_runner_vm.c
+       sets for its normal boot. installer stays 0 in every mode; this is not host USB and not the restore (usbmuxd/idevicerestore) path. */
+    cfg.usb_on_normal_boot = usb_mode >= 1;
+    cfg.usb_probe_on_normal_boot = usb_mode >= 2;
     char why[160], line[400];
     if (clone_boot_config_ok(&cfg, ecid, 1, why, sizeof why) != 0) {
         fprintf(stderr, "ui_runner_vm_clone: the settings were refused: %s\n", why);
@@ -206,6 +212,8 @@ int main(int argc, char **argv) {
     printf("ui_runner_vm_clone: started pid %d, verified-clone virtual machine mode (normal boot, writable clone, nonzero machine identity)\n", (int)getpid());
     hv_runner_config_line(&cfg, line, sizeof line);
     printf("ui_runner_vm_clone config (the structure passed to hv_vm_create): %s\n", line);
+    printf("ui_runner_vm_clone usb mode %ld (%s): usb_on_normal_boot=%d usb_probe_on_normal_boot=%d installer=%d\n", usb_mode, usb_mode == 0 ? "A none" : usb_mode == 1 ? "B port only" : "C port+enumeration",
+           cfg.usb_on_normal_boot, cfg.usb_probe_on_normal_boot, cfg.installer);
     printf("ui_runner_vm_clone env: %d HV_* variable(s) removed%s%s\n", scrubbed, scrubbed ? ": " : "", scrubbed ? names : "");
     fflush(stdout);
 
@@ -220,9 +228,9 @@ int main(int argc, char **argv) {
     }
     HvVmapple *bd = hv_vm_board();
     int usb_present = bd && bd->vusb ? 1 : 0;
-    printf("ui_runner_vm_clone: machine created in %.0f ms; usb device port present: %d (want 0, normal boot without the usb_on_normal_boot diagnostic)\n", (now() - t0) * 1e3, usb_present);
-    if (!bd || usb_present) {
-        printf("ui_runner_vm_clone RESULT: FAILED, usb device port present=%d, expected 0 for this binary; not started\n", usb_present);
+    printf("ui_runner_vm_clone: machine created in %.0f ms; usb device port present: %d (want %d for usb mode %ld)\n", (now() - t0) * 1e3, usb_present, cfg.usb_on_normal_boot, usb_mode);
+    if (!bd || usb_present != cfg.usb_on_normal_boot) {
+        printf("ui_runner_vm_clone RESULT: FAILED, usb device port present=%d, expected %d for usb mode %ld; not started\n", usb_present, cfg.usb_on_normal_boot, usb_mode);
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
         return 1;
     }

@@ -136,11 +136,23 @@ public final class G7CloneBoot {
         }
     }
 
+    /** USB test modes of the runner's --usb-mode: 0 = A none (default), 1 = B virtual USB device port only, 2 = C port + non-destructive enumeration. installer stays 0 in all of them. */
+    public static final int USB_NONE = 0, USB_PORT = 1, USB_PORT_PROBE = 2;
+
     public static Start start(File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus) {
-        return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus);
+        return start(nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, USB_NONE);
+    }
+
+    public static Start start(File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode) {
+        return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, usbMode);
     }
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus) {
+        return startWith(sp, roms, enabled, g7Live, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, USB_NONE);
+    }
+
+    static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode) {
+        if (usbMode < USB_NONE || usbMode > USB_PORT_PROBE) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
         synchronized (G7ExecLauncher.START_LOCK) {
             String g = G7Isolation.gate(enabled, g7Live, runnerStatus);
             if (g != null) return new Start(false, g.replace("격리하지", "부팅하지").replace("아무것도 옮기지", "아무것도 시작하지"), null);
@@ -166,6 +178,7 @@ public final class G7CloneBoot {
             cmd.add("--ecid-dir"); cmd.add(pdir.getPath());   // plain canonical paths: the runner refuses anything else
             cmd.add("--seconds"); cmd.add(String.valueOf(RUN_SECONDS));
             cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add("64");
+            cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode));
             Process p;
             try { p = sp.spawn(cmd); }
             catch (IOException e) { try { logOut.close(); } catch (IOException ignored) { } return new Start(false, "실행 파일을 시작하지 못했습니다: " + G7ExecLauncher.mask(String.valueOf(e.getMessage()), ecid), null); }

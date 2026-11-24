@@ -56,6 +56,8 @@ public class G7CloneBootTest {
         Files.write(new File(broken, "vm_ecid.txt").toPath(), ("ecid=0x" + Long.toHexString(G7CloneTest.ECID) + "\n").getBytes());
         Files.write(new File(broken, "AVPBooter.vmapple2.bin").toPath(), new byte[] {1});
         check("a clone whose disk is missing is refused by validate (explicitly) and shown as not bootable", G7Clone.validate(bd, broken, G7CloneTest.ECID) != null && G7CloneBoot.describeAll(broken).toString().contains("부팅 불가"));
+        File viaLink = new File(Files.createTempDirectory("lnk").toFile(), "files"); Files.createSymbolicLink(viaLink.toPath(), priv.toPath());
+        check("the app folder reached through a symbolic link (as /data/user/0 on Android) still lists its clone as bootable", G7CloneBoot.listValid(viaLink).size() == 1 && G7CloneBoot.describeAll(viaLink).toString().contains("부팅 가능"));
         File noLib = Files.createTempDirectory("nolib").toFile();
         check("binary not packaged: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, noLib, ext, priv, files, clone, true, none).started && spawned == 0);
         File mk = new File(clone, "clone_state.txt"); byte[] mkb = Files.readAllBytes(mk.toPath());

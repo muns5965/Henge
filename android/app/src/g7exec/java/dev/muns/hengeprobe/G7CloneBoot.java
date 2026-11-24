@@ -42,8 +42,9 @@ public final class G7CloneBoot {
     static boolean hasLive() { Run c = CURRENT; return c != null && !c.finished(); }
 
     /** The clone folders under vm/clones/ that pass G7Clone.validate() for this ECID (the list the person picks from). Looks only. */
-    public static List<File> listValid(File priv) {
+    public static List<File> listValid(File privIn) {
         List<File> out = new ArrayList<>();
+        File priv; try { priv = privIn.getCanonicalFile(); } catch (IOException e) { return out; }   // the app's folder is reached through a link on Android: validate() wants plain paths
         long ecid = G7ProbeLauncher.readEcid(priv);
         File[] k = new File(priv, "clones").listFiles();
         if (k == null || ecid <= 0) return out;
@@ -53,8 +54,9 @@ public final class G7CloneBoot {
     }
 
     /** One line per folder under vm/clones/: usable, or why it cannot be booted (so a clone that cannot boot is shown as such, not hidden). */
-    public static List<String> describeAll(File priv) {
+    public static List<String> describeAll(File privIn) {
         List<String> out = new ArrayList<>();
+        File priv; try { priv = privIn.getCanonicalFile(); } catch (IOException e) { out.add("앱 폴더 경로를 확인하지 못했습니다"); return out; }
         long ecid = G7ProbeLauncher.readEcid(priv);
         File[] k = new File(priv, "clones").listFiles();
         if (k == null) return out;

@@ -25,11 +25,12 @@ static void fresh(void) { hv_net_guard_reset(); hv_g7_extra_flags(); }
 int main(void) {
     const char *ip = "17.253.1.1";   /* any public address; the policy keys on the NAME, the address is only checked for being public */
     size_t n = 0; const HvG7NetHost *h = hv_g7_net_hosts(&n);
-    CHECK(n == 3, "exactly three hosts listed (%zu)", n);
+    CHECK(n == 4, "exactly four hosts listed (%zu)", n);
     int wild = 0, port_ok = 1;
     for (size_t i = 0; i < n; i++) { if (strchr(h[i].name, '*') || h[i].name[0] == '.') wild++; if (h[i].port != 443) port_ok = 0; }
     CHECK(!wild && port_ok, "no wildcard / suffix entry, every port 443");
     CHECK(!strcmp(h[0].name, "gs.apple.com") && !strcmp(h[1].name, "gs.apple.com.akadns.net") && !strcmp(h[2].name, "gs.apple.com.v.aaplimg.com"), "the three TSS hosts, exact names");
+    CHECK(!strcmp(h[3].name, "wkms-public.apple.com") && h[3].port == 443, "the approved URLAsset host, exact name, port 443");
 
     fresh();
     CHECK(hv_g7_extra_flags() == 0 && hv_g7_net_registered_ok(), "extra flags 0; registration ok (and idempotent)");
@@ -41,6 +42,8 @@ int main(void) {
     CHECK(http(ip, 443, "evil.gs.apple.com") == HV_NET_DENY, "sub-domain of a listed host denied");
     CHECK(http(ip, 443, "apple.com") == HV_NET_DENY, "parent domain denied");
     CHECK(http(ip, 443, "gs.apple.com.evil.com") == HV_NET_DENY, "look-alike suffix denied");
+    CHECK(http(ip, 80, "wkms-public.apple.com") == HV_NET_DENY && http(ip, 8443, "wkms-public.apple.com") == HV_NET_DENY, "wkms-public.apple.com: other ports denied");
+    CHECK(http(ip, 443, "wkms.sd.apple.com") == HV_NET_DENY && http(ip, 443, "evil.wkms-public.apple.com") == HV_NET_DENY && http(ip, 443, "wkms-public.apple.com.evil.com") == HV_NET_DENY && http(ip, 443, "apple.com") == HV_NET_DENY, "wkms-public.apple.com: sibling, sub-domain, look-alike and parent denied");
     CHECK(http(ip, 443, "gs.apple.com.") == HV_NET_DENY, "trailing-dot form not silently accepted");
     CHECK(http(ip, 443, NULL) == HV_NET_DENY, "bare address (no name) denied");
     CHECK(http("127.0.0.1", 443, "gs.apple.com") == HV_NET_DENY, "loopback with an allowed name denied");
@@ -49,6 +52,7 @@ int main(void) {
 
     /* URLAsset / key-request check */
     CHECK(url("https://gs.apple.com/TSS/controller?action=2") == HV_NET_ALLOW, "https URL on a listed host allowed");
+    CHECK(url("https://wkms-public.apple.com/x") == HV_NET_ALLOW && url("http://wkms-public.apple.com/x") == HV_NET_DENY && url("https://wkms-public.apple.com:8443/x") == HV_NET_DENY && url("https://wkms.sd.apple.com/keys/fetch") == HV_NET_DENY, "URLAsset check: the approved host over https:443 only; http, other port and the key host stay refused");
     CHECK(url("http://gs.apple.com/x") == HV_NET_DENY, "http URL denied");
     CHECK(url("https://user:pw@gs.apple.com/x") == HV_NET_DENY, "user info denied");
     CHECK(url("https://updates.cdn-apple.com/x") == HV_NET_DENY, "unlisted URL host denied");

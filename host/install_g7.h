@@ -5,7 +5,8 @@
    it would be wiped) and before the tool is entered (hv_restore_session_run_client). Only destinations that the SOURCE confirms are listed:
      gs.apple.com, gs.apple.com.akadns.net, gs.apple.com.v.aaplimg.com, port 443: the three https TSS hosts of third_party/libtatsu/src/tss.c (the plain-http ones are not built:
      HV_TSS_HTTPS_ONLY, and port 80 is not listed anyway), the same three G2..G6 already use.
-   NOT listed, on purpose, because their host names are chosen by the DEVICE at run time and no source names them: the URLAsset download (restore.c restore_send_url_asset), the
+     wkms-public.apple.com, port 443: the URLAsset host the device asked for in run g7_run_1795484190481 (refusal line `g7-net-deny: purpose=URL`), approved by the user on 2026-11-24 (docs/g7-new-destinations.md).
+   NOT listed, on purpose, because their host names are chosen by the DEVICE at run time and no source names them (only what a run actually refused and the user approved is added, one exact host:port at a time): the URLAsset download (restore.c restore_send_url_asset), the
    image-decryption-key request (restore.c), an FDR target. They are refused by default; a refused named destination is written to the denied log (host name and port, never a URL),
    which the runner prints after the restore, so that an approved run can show exactly what was missing. No wildcard, no suffix match, no other port. */
 #include <stddef.h>

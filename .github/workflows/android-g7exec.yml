@@ -20,6 +20,11 @@ on:
     paths:
       - android/app/src/g7exec/**
       - android/app/build.gradle
+      # the runner is built from these too (virtual USB device, CPU core, host layer, third-party restore stack): a change in any of them must build and check this APK (a push never publishes)
+      - devices/**
+      - core/**
+      - host/**
+      - third_party/**
       - host/g7_*.c
       - host/g7_*.h
       - host/runner_g7_core.*

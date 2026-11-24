@@ -5,8 +5,8 @@
      g7-alive: t=<s>s guest_blocks=cpu0:<n>,cpu1:<n> disk_done=<n> disk_inflight=<n> usb_cmds=<n> progress=yes|no
    and when the counters have not moved for two samples in a row (60 s or more) the line is
      g7-stall: quiet=<s>s guest_blocks=... disk_done=... disk_inflight=<n> disk_last=<read|write|flush|other>@<s>s usb_cmds=... hint=<text>
-   The hint separates the two cases the log alone cannot: a disk request that started long ago and never finished (the host may be stuck in storage), or nothing in flight (the guest
-   is idle or waiting for something the host has not sent). Numbers and fixed words only: no path, no identifier, no URL. It reports; it changes nothing. */
+   The hint is a direction to investigate, not a verdict: a disk request that started long ago and never finished points at the storage path; with nothing in flight the cause is still open
+   (an idle guest, an undelivered interrupt, a blocked emulator thread, a wait on the network). Numbers and fixed words only: no path, no identifier, no URL. It reports; it changes nothing. */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,13 +40,21 @@ static inline int hv_g7w_step(HvG7WatchState *st, const HvG7WatchSample *s, char
         return 0;
     }
     uint64_t quiet = s->t_s - st->quiet_since_s;
+    /* a direction to investigate, never a verdict: with nothing in flight the cause can still be an interrupt that was not delivered, an emulator thread blocked on a lock, or a wait on the host network */
     const char *hint = s->disk_inflight > 0 && s->disk_last_age_s >= quiet
-        ? "a disk request started before the quiet period and has not finished: the host may be stuck in storage"
+        ? "a disk request started before the quiet period and has not finished: look at the storage path first"
         : s->disk_inflight > 0 ? "a disk request is in flight but started recently"
-        : "no disk request in flight: the guest is idle or waiting for something the host has not sent";
+        : "no disk request in flight: the guest may be waiting, an interrupt may not have been delivered, or an emulator thread may be blocked; this line cannot tell which";
     snprintf(line, cap, "g7-stall: quiet=%llus guest_blocks=cpu0:%llu,cpu1:%llu disk_done=%llu disk_inflight=%llu disk_last=%s@%llus usb_cmds=%llu hint=%s\n",
              (unsigned long long)quiet, (unsigned long long)s->blocks[0], (unsigned long long)s->blocks[1], (unsigned long long)s->disk_done,
              (unsigned long long)s->disk_inflight, hv_g7w_type(s->disk_last_type), (unsigned long long)s->disk_last_age_s, (unsigned long long)s->usb_cmds, hint);
     return 1;
+}
+
+/* The disk line, written right after each alive/stall line from a separate probe (stat and statvfs can block when storage is stuck: the line before it is already out, and a missing
+   g7-disk line after an alive line is itself a sign). state: 0 ok, anything else = the disk file could not be inspected. MiB / GiB numbers only. */
+static inline void hv_g7w_disk_line(char *line, size_t cap, int state_ok, uint64_t size, uint64_t allocated, uint64_t host_free) {
+    if (!state_ok) { snprintf(line, cap, "g7-disk: unavailable\n"); return; }
+    snprintf(line, cap, "g7-disk: allocated=%lluMiB logical=%lluGiB host_free=%lluMiB\n", (unsigned long long)(allocated >> 20), (unsigned long long)(size >> 30), (unsigned long long)(host_free >> 20));
 }
 #endif

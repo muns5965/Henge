@@ -100,14 +100,14 @@ static void on_term(int sig) { (void)sig; hv_g7_restore_request_stop(); }
 
 /* Watchdog (host/g7_watch.h): every HV_G7W_TICK_S seconds one `g7-alive:` line, or `g7-stall:` after two quiet samples, built from read-only counters. It reports only; it never
    touches the restore, the VM or the disk. Started right before the restore runs, stopped and joined right after. */
-static volatile int g_watch_stop;
+static int g_watch_stop;   /* __atomic */
 static void *watch_main(void *arg) {
-    (void)arg;
+    const char *dir_copy = (const char *)arg;   /* the directory that holds the install disk (the pair directory) */
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     HvG7WatchState st; memset(&st, 0, sizeof st);
-    for (unsigned waited = 0; !g_watch_stop;) {
+    for (unsigned waited = 0; !__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED);) {
         usleep(1000 * 1000);
-        if (g_watch_stop) break;
+        if (__atomic_load_n(&g_watch_stop, __ATOMIC_RELAXED)) break;
         if (++waited < HV_G7W_TICK_S) continue;
         waited = 0;
         struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -120,6 +120,10 @@ static void *watch_main(void *arg) {
         char line[400];
         hv_g7w_step(&st, &s, line, sizeof line);
         { ssize_t r = write(2, line, strlen(line)); (void)r; }   /* one write: no stdio lock */
+        /* the disk probe comes AFTER the line above: stat/statvfs may block on stuck storage, and then only this thread waits */
+        { HvDiskInfo di; memset(&di, 0, sizeof di); char note[64]; int ok = hv_install_disk_check(dir_copy, &di, note, (int)sizeof note) == HV_DISK_OK;
+          hv_g7w_disk_line(line, sizeof line, ok, di.size, di.allocated, di.dir_free);
+          ssize_t r2 = write(2, line, strlen(line)); (void)r2; }
     }
     return NULL;
 }
@@ -137,9 +141,9 @@ static int real_restore(void) {
     hv_g7_trace_reset();
     hv_net_guard_observe_request(1);   /* TEMPORARY (user-approved 2026-11-24): Apple sub-hosts on 443 are let through and reported as g7-net-observe lines; remove once the exact list is known */
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
-    pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, NULL) == 0;   /* failure only means no watchdog lines */
+    pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, S.dir) == 0;   /* failure only means no watchdog lines */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
-    if (wd_on) { g_watch_stop = 1; pthread_join(wd, NULL); }
+    if (wd_on) { __atomic_store_n(&g_watch_stop, 1, __ATOMIC_RELAXED); pthread_join(wd, NULL); }
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
     { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */
     HvNetStats ns; hv_net_guard_stats(&ns);

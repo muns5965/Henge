@@ -18,9 +18,9 @@ int main(void) {
     CHECK(hv_g7w_step(&st, &b, l, sizeof l) == 0 && strstr(l, "progress=no") && !strncmp(l, "g7-alive", 8), "one quiet sample: still an alive line, progress=no");
     HvG7WatchSample c = S(90, 100, 10, 5, 0, 0, 0, 3);
     CHECK(hv_g7w_step(&st, &c, l, sizeof l) == 1 && !strncmp(l, "g7-stall: quiet=60s ", 20), "two quiet samples: a stall line, quiet=60s (counted from the last movement)");
-    CHECK(strstr(l, "disk_inflight=0") && strstr(l, "no disk request in flight"), "nothing in flight: the hint names an idle or waiting guest");
+    CHECK(strstr(l, "disk_inflight=0") && strstr(l, "no disk request in flight") && strstr(l, "cannot tell which") && !strstr(l, "guest is idle"), "nothing in flight: the hint lists several causes and does not claim an idle guest");
     HvG7WatchSample d = S(120, 100, 10, 5, 1, 118, 4, 3);
-    CHECK(hv_g7w_step(&st, &d, l, sizeof l) == 1 && strstr(l, "quiet=90s") && strstr(l, "disk_last=flush@118s") && strstr(l, "the host may be stuck in storage"), "a flush that started before the quiet period and never finished: the hint names storage");
+    CHECK(hv_g7w_step(&st, &d, l, sizeof l) == 1 && strstr(l, "quiet=90s") && strstr(l, "disk_last=flush@118s") && strstr(l, "look at the storage path first"), "a flush that started before the quiet period and never finished: the hint names storage");
     HvG7WatchSample e = S(150, 100, 10, 5, 1, 3, 1, 3);
     CHECK(hv_g7w_step(&st, &e, l, sizeof l) == 1 && strstr(l, "disk_last=write@3s") && strstr(l, "started recently"), "a recent request in flight is not blamed on storage");
     HvG7WatchSample f = S(180, 100, 11, 5, 0, 0, 0, 3);
@@ -35,6 +35,9 @@ int main(void) {
     { int ok = 1; memset(&st, 0, sizeof st); z.t_s = 1; hv_g7w_step(&st, &z, l, sizeof l); z.t_s = 31; hv_g7w_step(&st, &z, l, sizeof l); z.t_s = 61; int r = hv_g7w_step(&st, &z, l, sizeof l);
       ok = r == 1 && strstr(l, "disk_last=other@") != NULL; CHECK(ok, "an unknown virtio type is named 'other'"); }
     { int bad = 0; for (const char *q = l; *q; q++) if (*q == '/') bad++; CHECK(!bad, "no path separators in a line"); }
+    { char d[200]; hv_g7w_disk_line(d, sizeof d, 1, 128ULL << 30, 5ULL << 30, 120ULL << 30);
+      CHECK(!strcmp(d, "g7-disk: allocated=5120MiB logical=128GiB host_free=122880MiB\n"), "disk line: allocated MiB, logical GiB, host free MiB");
+      hv_g7w_disk_line(d, sizeof d, 0, 0, 0, 0); CHECK(!strcmp(d, "g7-disk: unavailable\n"), "disk line when the file cannot be inspected"); }
     printf(g_fail ? "G7WATCH FAILED (%d)\n" : "G7WATCH OK (%d failed)\n", g_fail);
     return g_fail != 0;
 }

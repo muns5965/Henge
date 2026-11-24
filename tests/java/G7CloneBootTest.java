@@ -85,6 +85,10 @@ public class G7CloneBootTest {
         G7CloneBoot.Frame fr = s.run.frame();
         check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: 4x2 class=mostly-black-small-content"));
         check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("디스크 flush: 성공") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
+        Fake nof = new Fake("ui_runner_vm_clone FRAME none class=no-frame (read=0)\n", 0, false);
+        G7CloneBoot.Start ns = G7CloneBoot.startWith(sp(nof), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none); waitDone(ns.run);
+        check("a 'no picture yet' answer is kept as a note the screen can show (not silence)", ns.run.frame() == null && ns.run.frameNote().contains("아직 보낼 화면이 없습니다") && ns.run.frameAnsweredMs > 0);
+        Thread.sleep(1100);
         check("malformed frame lines are refused", G7CloneBoot.parseFrame("ui_runner_vm_clone FRAME src=1x1 out=2x2 class=x nonblack_pct=1 colors=1 estimate=pixel-statistics-only data=ff") == null && G7CloneBoot.parseFrame("hello") == null && G7CloneBoot.parseFrame(frameLine.replace("out=4x2", "out=200x2")) == null);
         check("describeAll lists the clone as bootable", G7CloneBoot.describeAll(priv).toString().contains("부팅 가능"));
 

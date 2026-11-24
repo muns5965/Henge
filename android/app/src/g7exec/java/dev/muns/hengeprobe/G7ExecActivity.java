@@ -117,7 +117,7 @@ public class G7ExecActivity extends Activity {
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
         cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유"); root.addView(cbShare);
         cbFrame = new Button(this); cbFrame.setText("지금 화면 확인(러너에 요청)"); root.addView(cbFrame);
-        cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 잠시 뒤 아래에 나타납니다(자동으로도 30초마다 갱신)."); } });
+        cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 러너 응답이 아래(이미지 자리)에 표시됩니다. 화면이 아직 없으면 그 이유가 나옵니다."); } });
         cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
         cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(cbImageNote);
         cbtn.setOnClickListener(v -> confirmCloneBoot());
@@ -276,6 +276,7 @@ public class G7ExecActivity extends Activity {
             cbImageNote.setText("화면 사본 " + f.w + "x" + f.h + ", 통계 분류(추정): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요.");
             cbShownFrame = f;
         }
+        if (f == null) cbImageNote.setText(r.frameNote() + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"));
         if (r.finished()) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict()); return; }
         log.postDelayed(this::cbootPoll, 2000);
     }

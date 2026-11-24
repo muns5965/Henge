@@ -87,7 +87,7 @@ public final class G7CloneBoot {
     private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) disk_flush=(ok|FAILED|not-attempted) macos_boot=not-determined.*$");
 
     public static final class Run {
-        volatile Frame frame; volatile String verdictLine;
+        volatile Frame frame; volatile String verdictLine, frameNote = "아직 러너에 화면을 요청하지 않았습니다."; volatile long frameAnsweredMs;
         final Process proc; final String logName; final G7BootStage.Tracker stages = new G7BootStage.Tracker();
         private final StringBuilder tail = new StringBuilder();
         private volatile boolean finished; private volatile int exitCode = Integer.MIN_VALUE; private volatile boolean cancelled;
@@ -100,6 +100,8 @@ public final class G7CloneBoot {
         public synchronized String tail() { return tail.toString(); }
         public String stageSummary() { return stages.summary(); }
         public Frame frame() { return frame; }
+        /** What the runner last said about a picture: 'no picture yet' with the reason, or the class of the last one. */
+        public String frameNote() { return frameNote; }
         /** Asks the runner for a picture now (it answers with one FRAME line). */
         public void requestFrame() {
             if (finished) return;
@@ -184,8 +186,9 @@ public final class G7CloneBoot {
                     G7BootStage.Stage s = run.stages.feed(line, System.currentTimeMillis() - run.t0);
                     if (line.startsWith("ui_runner_vm_clone FRAME ")) {   // the picture is kept in memory for the screen, never written; the log gets a short line without the pixels
                         Frame f = parseFrame(line);
-                        if (f != null) { run.frame = f; run.put("g7-frame: " + f.w + "x" + f.h + " class=" + f.cls + " nonblack_pct=" + f.nonblackPct + " colors=" + f.colors + " (estimate from pixel statistics only)\n", false); }
-                        else run.put("g7-frame: none or malformed\n", false);
+                        run.frameAnsweredMs = System.currentTimeMillis();
+                        if (f != null) { run.frameNote = "마지막 응답: 화면 있음(" + f.cls + ")"; run.frame = f; run.put("g7-frame: " + f.w + "x" + f.h + " class=" + f.cls + " nonblack_pct=" + f.nonblackPct + " colors=" + f.colors + " (estimate from pixel statistics only)\n", false); }
+                        else { String rest = line.substring("ui_runner_vm_clone FRAME ".length()); run.frameNote = "러너 응답: 아직 보낼 화면이 없습니다(" + (rest.length() > 120 ? rest.substring(0, 120) : rest) + "). 게스트가 화면을 아직 내지 않았거나 프레임이 0개일 수 있습니다."; run.put("g7-frame: " + run.frameNote + "\n", false); }
                         continue;
                     }
                     if (line.startsWith("ui_runner_vm_clone VERDICT:")) run.verdictLine = line;

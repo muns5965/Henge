@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include "../host/install_g7.h"
 #include "../host/net_guard.h"
@@ -80,6 +83,31 @@ int main(void) {
     hv_g7_extra_flags();
     CHECK(!hv_g7_net_registered_ok(), "full list: registration reported as failed, host stays refused");
     CHECK(http(ip, 443, "gs.apple.com") == HV_NET_DENY, "unregistered because full: denied");
+
+    /* live refusal lines (opt-in): reported when refused, bounded, names/ports/purpose/reason only, decisions unchanged */
+    {
+        char path[] = "/tmp/g7netliveXXXXXX"; int tf = mkstemp(path); int saved = dup(2);
+        fresh();
+        CHECK(http(ip, 443, "wkms.sd.apple.com") == HV_NET_DENY, "(live off) a refusal prints nothing");
+        fflush(stderr); dup2(tf, 2);
+        hv_net_guard_live_log(1);
+        fresh();   /* the switch survives a reset */
+        for (int i = 0; i < 25; i++) http(ip, 443, "wkms.sd.apple.com");   /* 1st, 10th reported */
+        CHECK(url("https://secret.example/path/token?ecid=1234567890#x") == HV_NET_DENY, "(live on) a URL refusal is still a refusal");
+        CHECK(http(ip, 443, "gs.apple.com") == HV_NET_ALLOW, "(live on) an allowed destination is still allowed and prints nothing");
+        for (int i = 0; i < 40; i++) { char b[32]; snprintf(b, sizeof b, "h%d.example", i); http(ip, 443, b); }   /* more than 24 different destinations */
+        hv_net_guard_live_log(0);
+        http(ip, 443, "after-off.example");
+        fflush(stderr); dup2(saved, 2); close(saved); close(tf);
+        char buf[16384] = ""; FILE *f = fopen(path, "r"); size_t got = f ? fread(buf, 1, sizeof buf - 1, f) : 0; buf[got] = 0; if (f) fclose(f); remove(path);
+        int lines = 0; for (char *q = buf; *q; q++) if (*q == '\n') lines++;
+        CHECK(strstr(buf, "g7-net-deny: purpose=HTTP host=wkms.sd.apple.com port=443 reason=host not on the allow list count=1\n") != NULL, "first refusal printed with purpose, host, port, reason");
+        CHECK(strstr(buf, "host=wkms.sd.apple.com port=443 reason=host not on the allow list count=10\n") != NULL && !strstr(buf, "count=2\n") && !strstr(buf, "count=25\n"), "repeats are counted: printed again only at 10 (25 refusals gave 2 lines)");
+        CHECK(strstr(buf, "purpose=URL host=secret.example port=443 reason=host not on the allow list") != NULL, "a URL refusal prints host and port only");
+        CHECK(!strstr(buf, "path") && !strstr(buf, "token") && !strstr(buf, "1234567890") && !strstr(buf, "ecid"), "no URL path, query, token or identifier in any line");
+        CHECK(!strstr(buf, "gs.apple.com port") && !strstr(buf, "after-off"), "nothing for an allowed destination or after switching it off");
+        CHECK(strstr(buf, "more destinations refused than are listed") != NULL && lines <= 24 + 6, "more than 24 different destinations: one 'more' line, output stays bounded (%d lines)", lines);
+    }
 
     printf(g_fail ? "G7NET FAILED (%d)\n" : "G7NET OK (%d failed)\n", g_fail);
     return g_fail != 0;

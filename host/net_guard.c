@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/un.h>
+#include <unistd.h>
 
 #include <libimobiledevice-glue/socket.h>
 
@@ -33,6 +34,16 @@ static char g_log[MAXL][144];
 static int g_nlog;
 static int g_active;
 static int g_engine;   /* engine threads inside hv_net_guard_engine_enter/leave */
+/* Live refusal lines (opt-in, hv_net_guard_live_log): a refused destination is reported the moment it is refused, not only when the run ends, because a run that stalls never
+   reaches its closing summary. Bounded: one line the first time a (purpose, host, port, reason) is refused and again when its count reaches 10, 100, 1000 ...; at most LIVEMAX
+   different destinations are tracked, further ones share one "more destinations" line. The line is composed under the lock and written after it is released (one write(2),
+   no stdio lock, no callback), so a slow reader of the output cannot hold the policy lock. */
+#define LIVEMAX 24
+typedef struct { char host[NAMEMAX]; unsigned port; int purpose; char reason[64]; unsigned long count; } Live;
+static Live g_live[LIVEMAX];
+static int g_nlive;
+static int g_live_on;
+static unsigned long g_live_other;
 #ifdef HV_NET_TEST_LOOPBACK
 /* TEST BUILDS ONLY (never compiled into the app; tools/check-no-test-flags.sh checks the shipped objects): one exact 127.0.0.1:port for the HTTP purpose, so a
    fake TSS server on this machine can be reached. Every other loopback port, other private addresses, and every other purpose stay refused. */
@@ -44,6 +55,34 @@ static void note_denied(const char *ip, unsigned port, const char *why) {
     if (g_nlog == MAXL) { memmove(g_log[0], g_log[1], sizeof g_log[0] * (MAXL - 1)); g_nlog--; }
     snprintf(g_log[g_nlog++], sizeof g_log[0], "%s:%u %s", ip, port, why);
 }
+
+static const char *purpose_name(int p) { return p == HV_NET_P_FDR ? "FDR" : p == HV_NET_P_HTTP ? "HTTP" : p == HV_NET_P_URL ? "URL" : "DEFAULT"; }
+
+/* Under g_mu. Fills line (and returns 1) when this refusal is to be reported now. host is already restricted to letters, digits . - _ or an address. */
+static int live_note(char *line, size_t cap, int purpose, const char *host, unsigned port, const char *reason) {
+    if (!g_live_on) return 0;
+    int i = 0;
+    for (; i < g_nlive; i++)
+        if (g_live[i].purpose == purpose && g_live[i].port == port && !strcmp(g_live[i].host, host) && !strcmp(g_live[i].reason, reason)) break;
+    if (i == g_nlive) {
+        if (g_nlive == LIVEMAX) {
+            if (++g_live_other != 1) return 0;
+            snprintf(line, cap, "g7-net-deny: more destinations refused than are listed here (see the closing summary if the run ends)\n");
+            return 1;
+        }
+        Live *l = &g_live[g_nlive++];
+        snprintf(l->host, sizeof l->host, "%s", host); l->port = port; l->purpose = purpose; snprintf(l->reason, sizeof l->reason, "%s", reason); l->count = 0;
+    }
+    unsigned long c = ++g_live[i].count, t = 1;
+    while (t < c && t <= 100000000UL) t *= 10;
+    if (c != t) return 0;   /* only the 1st, 10th, 100th ... */
+    snprintf(line, cap, "g7-net-deny: purpose=%s host=%s port=%u reason=%s count=%lu\n", purpose_name(purpose), host, port, reason, c);
+    return 1;
+}
+
+static void live_emit(const char *line) { if (line[0]) { ssize_t r = write(2, line, strlen(line)); (void)r; } }
+
+void hv_net_guard_live_log(int on) { pthread_mutex_lock(&g_mu); g_live_on = on != 0; pthread_mutex_unlock(&g_mu); }
 
 /* 0: public. Otherwise a short class name. IPv4-mapped IPv6 is judged as the IPv4 address it carries. */
 static const char *classify(const struct sockaddr *a, char *ip, size_t ipcap, unsigned *port) {
@@ -91,7 +130,7 @@ static const char *classify(const struct sockaddr *a, char *ip, size_t ipcap, un
 static void setwhy(char *why, size_t cap, const char *s) { if (why && cap) snprintf(why, cap, "%s", s); }
 
 int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *name, int purpose, char *why, size_t cap) {
-    char ip[64] = "-", reason[64] = "";
+    char ip[64] = "-", reason[64] = "", live[200] = "";
     unsigned port = 0;
     int verdict = HV_NET_DENY;
     /* the local exceptions belong to the library's own link to the private usbmuxd; an address the DEVICE chose (FDR) or a web request never uses them */
@@ -143,8 +182,11 @@ int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *na
             snprintf(who, sizeof who, "%s/%s", nm, ip);
         } else snprintf(who, sizeof who, "%s", ip);
         note_denied(who, port, reason);
+        { const char *hl = (name && *name) ? who : ip; char hb[64]; size_t k2 = 0; if (name && *name) { for (; who[k2] && who[k2] != '/' && k2 < sizeof hb - 1; k2++) hb[k2] = who[k2]; hb[k2] = 0; hl = hb; }
+          live_note(live, sizeof live, purpose, hl, port, reason); }
     }
     pthread_mutex_unlock(&g_mu);
+    live_emit(live);
     setwhy(why, cap, reason);
     return verdict;
 }
@@ -177,7 +219,7 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
         }
     }
     int verdict = HV_NET_DENY;
-    char line[96];
+    char line[96], live[200] = "";
     pthread_mutex_lock(&g_mu);
     if (!reason) {
         for (int i = 0; i < g_nhost && verdict == HV_NET_DENY; i++)
@@ -189,8 +231,11 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
         /* the host name and port only: no path, query or user info */
         snprintf(line, sizeof line, "%s", reason);
         note_denied(host[0] ? host : "-", port, line);
+        { char hb[NAMEMAX]; size_t k = 0; for (; host[k] && k < 48; k++) { char c = host[k]; hb[k] = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') ? c : '?'; } hb[k] = 0;
+          live_note(live, sizeof live, HV_NET_P_URL, hb[0] ? hb : "-", port, line); }
     }
     pthread_mutex_unlock(&g_mu);
+    live_emit(live);
     setwhy(why, cap, verdict == HV_NET_ALLOW ? "approved host" : reason);
     return verdict;
 }
@@ -198,6 +243,7 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
 void hv_net_guard_reset(void) {
     pthread_mutex_lock(&g_mu);
     g_nlocal = g_nunix = g_nhost = g_nlog = 0;
+    g_nlive = 0; g_live_other = 0;   /* the live switch itself is the program's choice and survives a reset */
 #ifdef HV_NET_TEST_LOOPBACK
     g_test_lo_port = 0;
 #endif

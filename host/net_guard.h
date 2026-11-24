@@ -43,13 +43,19 @@ int hv_net_guard_allow_host(const char *name, uint16_t port);
 
 /* Why a connection is made. DEFAULT: the library's own link to the private usbmuxd (the registered local endpoints apply). FDR: a host:port the DEVICE named.
    HTTP: curl (TSS, URLAsset). For FDR and HTTP the registered local endpoints and unix paths are NOT consulted: they cannot reach the private usbmuxd. */
-enum { HV_NET_P_DEFAULT = 0, HV_NET_P_FDR = 1, HV_NET_P_HTTP = 2 };
+enum { HV_NET_P_DEFAULT = 0, HV_NET_P_FDR = 1, HV_NET_P_HTTP = 2, HV_NET_P_URL = 3 /* label only: the URLAsset check */ };
 
 /* The decision, for tests and the hooks. name may be NULL. why (if not NULL) receives a short reason. len is checked against the family's structure size first. */
 int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *name, int purpose, char *why, size_t cap);
 int hv_net_guard_check(const struct sockaddr *a, socklen_t len, const char *name, char *why, size_t cap);
 /* The URLAsset decision: https only, no user info, host name on the allow list for that port. */
 int hv_net_guard_check_url(const char *url, char *why, size_t cap);
+
+/* Opt-in (off by default): report each refused destination at once on stderr as one line
+     g7-net-deny: purpose=<DEFAULT|FDR|HTTP|URL> host=<name or address> port=<n> reason=<text> count=<n>
+   the first time it is refused and again at counts 10, 100, 1000 ...  Host name (letters, digits . - _ , at most 48 characters) or address, port, purpose and reason only: never a URL,
+   path, query, user info or identifier. At most 24 different destinations are tracked. It reports; it never changes a decision, and it does not touch the allow list. */
+void hv_net_guard_live_log(int on);
 
 typedef struct { int attempts, allowed, denied, url_attempts, url_denied; } HvNetStats;
 void hv_net_guard_stats(HvNetStats *s);

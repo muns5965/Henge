@@ -103,6 +103,7 @@ static int real_restore(void) {
     HvG7RestoreOps ops = {op_start, op_poll, op_cancel, op_sleep, NULL};
     HvG7RestoreLimits lim = S.lim;
     hv_g7_trace_reset();
+    hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
     { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */

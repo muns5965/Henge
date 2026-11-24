@@ -40,7 +40,9 @@ public final class G7ExecLauncher {
     static final String IPSW_SHA256 = "3d87686b691ac765eb6a6b3082b2334e2af9710096a00432dd519af89ff2ea78";
     static final String IPSW_NAME = "UniversalMac_15.6.1_24G90_Restore.ipsw";
     static final long IPSW_BYTES = 16_814_137_790L;
-    static final int CANCEL_GRACE_SECONDS = 90;   /* the runner's own grace is 60 s */
+    static final int CANCEL_GRACE_SECONDS = 90;
+    static volatile int CANCEL_GRACE_SECONDS_FOR_TEST = 0;   /* 0 = use CANCEL_GRACE_SECONDS; only the plain-JVM test sets it */
+    static int graceSeconds() { return CANCEL_GRACE_SECONDS_FOR_TEST > 0 ? CANCEL_GRACE_SECONDS_FOR_TEST : CANCEL_GRACE_SECONDS; }   /* the runner's own grace is 60 s */
     /** One log file PER RUN (never appended to, never overwritten: CREATE_NEW), at most MAX_LOG_BYTES of (filtered, see DiagFilter) output plus a closing block of a few KiB. Runs are only possible while no
      *  install file exists, so the total stays small. When the limit is reached the streamed output stops, but the last g7-result line, the tail and the exit code are still written. */
     static final int MAX_LOG_BYTES = 4 * 1024 * 1024;
@@ -105,27 +107,61 @@ public final class G7ExecLauncher {
     /** True while a run of this app process is going (what start() refuses on and G7Isolation checks). */
     static boolean hasLiveRun() { Run c = CURRENT; return c != null && !c.finished(); }
 
-    /** A running (or finished) process of the execution build. */
+    /** After the runner has ended, how long the output pipe may stay open before the log is closed as incomplete (a child that kept the pipe must not keep the screen on "running"). */
+    static volatile long drainMillis = 3000;
+    /** After SIGKILL: how long to wait for the process to really end before saying so. */
+    static volatile long forceConfirmSeconds = 10;
+
+    /** A running (or finished) process of the execution build. "finished" means the process itself has ended (waitFor returned), never merely that its output stopped. */
     public static final class Run {
         private final Process proc;
         private final StringBuilder tail = new StringBuilder();
         private volatile int exit = Integer.MIN_VALUE;
         private volatile boolean cancelAsked;
+        private volatile boolean killSent, killUnconfirmed, logIncomplete;
+        final Object logLock = new Object();
+        private OutputStream logOut;          // guarded by logLock; null once closed
+        private long written; private boolean truncated; private String lastResult = "";   // guarded by logLock
         private final long ecid;
         volatile String logName = "";
         Run(Process p, long ecid) { this.proc = p; this.ecid = ecid; }
         public String logName() { return logName; }
         public boolean finished() { return exit != Integer.MIN_VALUE; }
         public int exitCode() { return exit; }
+        public boolean killSent() { return killSent; }
+        public boolean killUnconfirmed() { return killUnconfirmed; }
+        public boolean logIncomplete() { return logIncomplete; }
         public synchronized String tail() { return tail.toString(); }
         synchronized void append(String s) { tail.append(s); if (tail.length() > TAIL_BYTES) tail.replace(0, tail.length() - TAIL_BYTES, ""); }
-        /** SIGTERM first (the runner cancels the restore and keeps the pair in_progress); killed after CANCEL_GRACE_SECONDS. Safe to call twice. */
+        /** A line written by this app (not by the runner): into the tail and, while the log is open and not full, into the file. */
+        void note(String line) { synchronized (logLock) { try { put(line + "\n"); } catch (IOException ignored) { } } }
+        /** Into the tail, and into the log while it is open and below the limit. Callers may be the reader, the watcher and the cancel thread. */
+        void put(String text) throws IOException {
+            synchronized (logLock) {
+                if (text.isEmpty()) return;
+                append(text);
+                if (logOut == null || truncated) return;
+                byte[] o = text.getBytes(StandardCharsets.UTF_8);
+                int k = (int) Math.min(o.length, MAX_LOG_BYTES - written);
+                logOut.write(o, 0, k); written += k;
+                if (k < o.length) truncated = true;
+            }
+        }
+        /** SIGTERM first (the runner cancels the restore and keeps the pair in_progress); SIGKILL after CANCEL_GRACE_SECONDS, then the end is checked and the outcome is said plainly. Safe to call twice. */
         public void cancel() {
             if (cancelAsked || finished()) return;
             cancelAsked = true;
             proc.destroy();
             Thread t = new Thread(() -> {
-                try { if (!proc.waitFor(CANCEL_GRACE_SECONDS, TimeUnit.SECONDS)) proc.destroyForcibly(); } catch (InterruptedException e) { proc.destroyForcibly(); }
+                boolean ended;
+                try { ended = proc.waitFor(graceSeconds(), TimeUnit.SECONDS); } catch (InterruptedException e) { ended = false; }
+                if (ended) return;
+                killSent = true;
+                note("g7-kill: SIGKILL sent after " + graceSeconds() + " s without an end");
+                proc.destroyForcibly();
+                boolean gone;
+                try { gone = proc.waitFor(forceConfirmSeconds, TimeUnit.SECONDS); } catch (InterruptedException e) { gone = false; }
+                if (!gone) { killUnconfirmed = true; note("g7-kill-unconfirmed: the process did not end within " + forceConfirmSeconds + " s after SIGKILL (no g7-exit is written for it)"); }
             });
             t.setDaemon(true);
             t.start();
@@ -166,7 +202,8 @@ public final class G7ExecLauncher {
     static String mask(String text, long ecid) {
         if (text == null || ecid <= 0) return text;
         String h = Long.toHexString(ecid);
-        return text.replace("0x" + h, "(ECID)").replace(h, "(ECID)").replace(h.toUpperCase(), "(ECID)");
+        String r = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(h), java.util.regex.Pattern.CASE_INSENSITIVE).matcher(text.replace("0x" + h, "(ECID)").replace("0X" + h.toUpperCase(), "(ECID)")).replaceAll("(ECID)");
+        return r.replace(Long.toString(ecid), "(ECID)");
     }
 
     /** The one public way to start. The switch is the committed constant. */
@@ -232,57 +269,61 @@ public final class G7ExecLauncher {
 
     private static void streamToLog(final Run run, final Process p, final OutputStream lo, final long ecid) {
         final InputStream in = p.getInputStream();
-        Thread t = new Thread(() -> {
+        synchronized (run.logLock) { run.logOut = lo; }
+        // collector: only reads the output pipe into the log. It may never end (a child that kept the pipe), which must not decide whether the run is over.
+        final Thread reader = new Thread(() -> {
             final DiagFilter filter = new DiagFilter();
-            final long[] written = {0};
-            final boolean[] truncated = {false};
-            final String[] lastResult = {""};
             final ByteArrayOutputStream lb = new ByteArrayOutputStream();
             try {
-                lo.write(("g7-start: " + System.currentTimeMillis() + "\n").getBytes(StandardCharsets.UTF_8));
+                run.put("g7-start: " + System.currentTimeMillis() + "\n");
                 byte[] b = new byte[4096]; int n;
                 while ((n = in.read(b)) > 0) {
                     for (int i = 0; i < n; i++) {
                         byte c = b[i];
                         if (c != '\n') lb.write(c);
-                        if (c == '\n' || lb.size() >= MAX_LINE_BYTES) { keep(run, lo, filter, lb, ecid, written, truncated, lastResult); lb.reset(); }
+                        if (c == '\n' || lb.size() >= MAX_LINE_BYTES) { keep(run, filter, lb, ecid); lb.reset(); }
                     }
                 }
-                if (lb.size() > 0) keep(run, lo, filter, lb, ecid, written, truncated, lastResult);
-                put(run, lo, filter.finish(), written, truncated);
+                if (lb.size() > 0) keep(run, filter, lb, ecid);
+                run.put(filter.finish());
             } catch (IOException ignored) { }
+        });
+        reader.setDaemon(true);
+        // watcher: the end of the process is the end of the run; the pipe only gets a short time to deliver the last output
+        Thread watcher = new Thread(() -> {
             int code;
             try { code = p.waitFor(); } catch (InterruptedException e) { code = -1; Thread.currentThread().interrupt(); }
-            try {
-                if (truncated[0]) {
-                    lo.write(("\n--- log limit reached: the output after this point is not kept here; the last result line and the tail follow ---\n"
-                            + (lastResult[0].isEmpty() ? "" : lastResult[0] + "\n") + "--- tail ---\n" + run.tail()).getBytes(StandardCharsets.UTF_8));
-                }
-                String end = "\ng7-exit: " + code + "\n";
-                lo.write(end.getBytes(StandardCharsets.UTF_8)); lo.flush(); lo.close();
-            } catch (IOException ignored) { }
-            run.append("\ng7-exit: " + code + "\n");
+            try { reader.join(drainMillis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            final boolean complete = !reader.isAlive();
+            synchronized (run.logLock) {
+                run.logIncomplete = !complete;
+                try {
+                    if (run.logOut != null) {
+                        if (run.truncated) {
+                            run.logOut.write(("\n--- log limit reached: the output after this point is not kept here; the last result line and the tail follow ---\n"
+                                    + (run.lastResult.isEmpty() ? "" : run.lastResult + "\n") + "--- tail ---\n" + run.tail()).getBytes(StandardCharsets.UTF_8));
+                        }
+                        String inc = complete ? "" : "\ng7-log: incomplete (the output pipe was still open " + drainMillis + " ms after the process ended; later output is not kept)";
+                        String end = inc + "\ng7-exit: " + code + "\n";
+                        run.logOut.write(end.getBytes(StandardCharsets.UTF_8)); run.logOut.flush(); run.logOut.close();
+                    }
+                } catch (IOException ignored) { }
+                run.logOut = null;
+                run.append((complete ? "" : "\ng7-log: incomplete") + "\ng7-exit: " + code + "\n");
+            }
+            if (!complete) { try { in.close(); } catch (IOException | RuntimeException ignored) { } }
             run.exit = code;
         });
-        t.setDaemon(true);
-        t.start();
+        watcher.setDaemon(true);
+        reader.start();
+        watcher.start();
     }
 
     /** One complete line: masked, filtered, shown in the tail and (until the limit) written to the log. */
-    private static void keep(Run run, OutputStream lo, DiagFilter filter, ByteArrayOutputStream lb, long ecid, long[] written, boolean[] truncated, String[] lastResult) throws IOException {
+    private static void keep(Run run, DiagFilter filter, ByteArrayOutputStream lb, long ecid) throws IOException {
         String line = mask(new String(lb.toByteArray(), StandardCharsets.UTF_8), ecid);
-        if (line.startsWith("g7-result:")) lastResult[0] = line.length() > 1024 ? line.substring(0, 1024) : line;   // remembered even when the log is full
-        put(run, lo, filter.accept(line), written, truncated);
-    }
-
-    private static void put(Run run, OutputStream lo, String text, long[] written, boolean[] truncated) throws IOException {
-        if (text.isEmpty()) return;
-        run.append(text);
-        if (truncated[0]) return;
-        byte[] o = text.getBytes(StandardCharsets.UTF_8);
-        int k = (int) Math.min(o.length, MAX_LOG_BYTES - written[0]);
-        lo.write(o, 0, k); written[0] += k;
-        if (k < o.length) truncated[0] = true;
+        if (line.startsWith("g7-result:")) { synchronized (run.logLock) { run.lastResult = line.length() > 1024 ? line.substring(0, 1024) : line; } }   // remembered even when the log is full
+        run.put(filter.accept(line));
     }
 
     /** The only files the log provider may hand out: run logs of this app, by plain name. Returns null for anything else. */
@@ -313,7 +354,29 @@ public final class G7ExecLauncher {
         int[] pid = new int[1];
         int st = runnerStatus(procRoot, selfPid, ownerRef, pid);
         if (st < 0) return procRoot == null || procRoot.listFiles() == null ? "실행기 프로세스: 확인 불가(/proc을 읽을 수 없음)" : "실행기 프로세스: 확인 불가(조회가 제한되어 결과를 믿을 수 없음)";
-        return st == 1 ? "실행기 프로세스: 발견(pid " + pid[0] + ")" : "실행기 프로세스: 미발견(종료의 증명은 아님)";
+        return st == 1 ? "실행기 프로세스: 발견(pid " + pid[0] + ", " + describeState(procState(procRoot, pid[0])) + ")" : "실행기 프로세스: 미발견(종료의 증명은 아님)";
+    }
+
+    /** The one-letter state from /proc/&lt;pid&gt;/status ("State:" line), read only; '?' when it cannot be read or is not a letter. Only this letter ever leaves the file. */
+    static char procState(File procRoot, int pid) {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(new File(new File(procRoot, Integer.toString(pid)), "status")), StandardCharsets.UTF_8))) {
+            for (String line; (line = r.readLine()) != null; ) {
+                if (line.startsWith("State:")) { String v = line.substring(6).trim(); return v.length() > 0 && "RSDZTtXIWK".indexOf(v.charAt(0)) >= 0 ? v.charAt(0) : '?'; }
+            }
+        } catch (IOException | RuntimeException e) { /* unreadable: unknown */ }
+        return '?';
+    }
+
+    static String describeState(char c) {
+        switch (c) {
+            case 'R': return "상태 R: 실행 중";
+            case 'S': return "상태 S: 대기(신호로 종료 가능)";
+            case 'D': return "상태 D: 커널 대기(신호로 끝낼 수 없음)";
+            case 'Z': return "상태 Z: 종료됐으나 아직 회수되지 않음";
+            case 'T': case 't': return "상태 " + c + ": 정지됨";
+            case '?': return "상태 확인 불가";
+            default: return "상태 " + c;
+        }
     }
 
     /** 1 = a runner process was found (pid in out[0]), 0 = the list is trustworthy and has none, -1 = cannot tell. */
@@ -365,8 +428,16 @@ public final class G7ExecLauncher {
         Run r = CURRENT;
         File f = newestLog(filesDir);
         StringBuilder s = new StringBuilder();
-        if (r != null && !r.finished()) s.append("상태: 실행 중").append(r.cancelAsked ? " (취소 요청됨 — 아직 끝나지 않음)" : "");
-        else if (r != null) s.append("상태: 종료 — ").append(meaning(r.exitCode()));
+        if (r != null && !r.finished()) {
+            s.append("상태: 실행 중");
+            if (r.killUnconfirmed) s.append(" (강제 종료(SIGKILL)를 보냈으나 종료가 확인되지 않음 — 앱을 강제 종료하고, 그래도 남으면 휴대폰을 재시작하세요)");
+            else if (r.killSent) s.append(" (취소 후 강제 종료(SIGKILL)를 보냄 — 종료 확인 중)");
+            else if (r.cancelAsked) s.append(" (취소 요청됨 — 아직 끝나지 않음)");
+        } else if (r != null) {
+            s.append("상태: 종료 — ").append(meaning(r.exitCode()));
+            if (r.killSent) s.append("\n강제 종료(SIGKILL)로 끝났습니다. 정상 취소가 아니며 g7-result가 없을 수 있습니다.");
+            if (r.logIncomplete) s.append("\n로그 수집 미완료: 프로세스가 끝난 뒤에도 출력 파이프가 닫히지 않았습니다.");
+        }
         else if (f == null) return "상태: 실행 기록 없음" + ps;
         else {
             String t = readTail(f, 400000);

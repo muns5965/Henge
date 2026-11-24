@@ -34,6 +34,7 @@ public class G7ExecLauncherTest {
     }
 
     static List<String> lastCmd;
+    static G7ExecLauncher.Spawner spawner0(Process p) { return c -> { spawned++; lastCmd = c; return p; }; }
     static G7ExecLauncher.Spawner spawner(FakeProcess p) { return c -> { spawned++; lastCmd = c; return p; }; }
     static File touch(File d, String n, byte[] b) throws IOException { File f = new File(d, n); Files.write(f.toPath(), b); return f; }
     static File rom;
@@ -183,11 +184,11 @@ public class G7ExecLauncherTest {
         File rp = new File(proc, "200"); rp.mkdir(); touch(rp, "cmdline", ("/data/app/x/lib/arm64/" + G7ExecLauncher.LIB_NAME + "\0--dir\0/x\0").getBytes());
         new File(proc, "abc").mkdir(); touch(proc, "cpuinfo", new byte[] {1});
         String found = G7ExecLauncher.runnerCheck(proc, 100, files7);
-        check("runner check: a process whose program is the runner is found (pid shown)", found.contains("발견(pid 200)"));
+        check("runner check: a process whose program is the runner is found (pid shown)", found.contains("발견(pid 200,"));
         new File(rp, "cmdline").delete(); rp.delete();
         File ep = new File(proc, "300"); ep.mkdir(); touch(ep, "cmdline", "x\0".getBytes());
         Files.createSymbolicLink(new File(ep, "exe").toPath(), new File("/data/app/y/lib/" + G7ExecLauncher.LIB_NAME).toPath());
-        check("runner check: found through the exe link too", G7ExecLauncher.runnerCheck(proc, 100, files7).contains("발견(pid 300)"));
+        check("runner check: found through the exe link too", G7ExecLauncher.runnerCheck(proc, 100, files7).contains("발견(pid 300,"));
         new File(ep, "exe").delete(); new File(ep, "cmdline").delete(); ep.delete();
         File bp = new File(proc, "400"); bp.mkdir(); touch(bp, "cmdline", ("/x/" + G7ExecLauncher.LIB_NAME + ".bak\0").getBytes());
         String nf = G7ExecLauncher.runnerCheck(proc, 100, files7);
@@ -203,6 +204,80 @@ public class G7ExecLauncherTest {
         check("logFile hands out a run log by its plain name", G7ExecLauncher.logFile(files7, okLog.getName()) != null);
         for (String badName : new String[] {null, "", "../x", "g7_run_1.txt", okLog.getName() + "/../x", "g7_run_0000000000001.txt", "vm_ecid.txt", "g7_run_" + "0000000000001" + ".txt.bak"})
             check("logFile refuses '" + badName + "'", G7ExecLauncher.logFile(files7, badName) == null);
+
+
+        // --- end detection is the process, not the pipe; SIGKILL is confirmed; states; ECID in decimal ---
+        // 1) the process ends but a child keeps the output pipe open: the run must still finish, the log says incomplete, g7-exit is written
+        G7ExecLauncher.drainMillis = 200;
+        final java.util.concurrent.atomic.AtomicBoolean release = new java.util.concurrent.atomic.AtomicBoolean(false);
+        Process holder = new Process() {
+            @Override public OutputStream getOutputStream() { return new java.io.ByteArrayOutputStream(); }
+            @Override public InputStream getInputStream() { return new InputStream() { boolean first = true;
+                @Override public int read() { return -1; }
+                @Override public int read(byte[] b, int o, int l) { if (first) { first = false; byte[] t = "last words\n".getBytes(StandardCharsets.UTF_8); System.arraycopy(t, 0, b, o, t.length); return t.length; }
+                    while (!release.get()) { try { Thread.sleep(5); } catch (InterruptedException e) { return -1; } } return -1; } }; }
+            @Override public InputStream getErrorStream() { return new ByteArrayInputStream(new byte[0]); }
+            @Override public int waitFor() { return 7; }
+            @Override public boolean waitFor(long t, TimeUnit u) { return true; }
+            @Override public int exitValue() { return 7; }
+            @Override public void destroy() { }
+        };
+        File files8 = Files.createTempDirectory("files8").toFile();
+        s = G7ExecLauncher.startWith(spawner0(holder), ROMS, true, lib, ext, priv, files8, true, SHA);
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        check("pipe held open after the process ended: the run still finishes with the process exit code", s.run.finished() && s.run.exitCode() == 7);
+        String l8 = G7ExecLauncher.readLogTail(files8, 100000);
+        check("...the last output is kept, the log says incomplete, and g7-exit is written", l8.contains("last words") && l8.contains("g7-log: incomplete") && l8.contains("g7-exit: 7") && s.run.logIncomplete());
+        check("...the screen says the log collection is incomplete (not a normal end)", G7ExecLauncher.summary(files8).contains("로그 수집 미완료"));
+        release.set(true);
+
+        // 2) SIGKILL is sent after the grace and is confirmed; a process that survives it is reported and gets no g7-exit
+        G7ExecLauncher.forceConfirmSeconds = 1;
+        final java.util.concurrent.atomic.AtomicBoolean killed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean unkillable = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Process stubborn = new Process() {
+            @Override public OutputStream getOutputStream() { return new java.io.ByteArrayOutputStream(); }
+            @Override public InputStream getInputStream() { return new InputStream() { @Override public int read() { while (true) { try { Thread.sleep(50); } catch (InterruptedException e) { return -1; } } } @Override public int read(byte[] b, int o, int l) { return read(); } }; }
+            @Override public InputStream getErrorStream() { return new ByteArrayInputStream(new byte[0]); }
+            @Override public int waitFor() { while (!(killed.get() && !unkillable.get())) { try { Thread.sleep(20); } catch (InterruptedException e) { return -1; } } return 137; }
+            @Override public boolean waitFor(long t, TimeUnit u) { try { u.sleep(Math.min(t, 1)); } catch (InterruptedException e) { return false; } return killed.get() && !unkillable.get(); }
+            @Override public int exitValue() { return 137; }
+            @Override public void destroy() { }
+            @Override public Process destroyForcibly() { killed.set(true); return this; }
+        };
+        File files9 = Files.createTempDirectory("files9").toFile();
+        G7ExecLauncher.CANCEL_GRACE_SECONDS_FOR_TEST = 1;
+        s = G7ExecLauncher.startWith(spawner0(stubborn), ROMS, true, lib, ext, priv, files9, true, SHA);
+        s.run.cancel();
+        for (int i = 0; i < 300 && !s.run.killUnconfirmed(); i++) Thread.sleep(20);
+        check("a process that survives SIGKILL is reported as not confirmed ended; the run is NOT finished", killed.get() && s.run.killSent() && s.run.killUnconfirmed() && !s.run.finished());
+        String l9 = G7ExecLauncher.readLogTail(files9, 100000);
+        check("...the log has g7-kill and g7-kill-unconfirmed and no g7-exit", l9.contains("g7-kill:") && l9.contains("g7-kill-unconfirmed:") && !l9.contains("g7-exit:"));
+        check("...the screen tells the user what to do", G7ExecLauncher.summary(files9).contains("종료가 확인되지 않음") && G7ExecLauncher.summary(files9).contains("재시작"));
+
+        unkillable.set(false);   // the process finally goes away
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        check("when the process finally ends the run finishes with the kill exit code", s.run.finished() && s.run.exitCode() == 137 && G7ExecLauncher.readLogTail(files9, 100000).contains("g7-exit: 137"));
+
+        // 3) process state letter from /proc/<pid>/status (read only; anything else is '?')
+        File proc2 = Files.createTempDirectory("proc2").toFile();
+        for (String[] st : new String[][] {{"11", "R (running)"}, {"12", "S (sleeping)"}, {"13", "D (disk sleep)"}, {"14", "Z (zombie)"}, {"15", "weird"}}) {
+            File d = new File(proc2, st[0]); d.mkdirs(); Files.write(new File(d, "status").toPath(), ("Name:\tx\nState:\t" + st[1] + "\nUid:\t1\n").getBytes());
+        }
+        check("state letters R S D Z are read", G7ExecLauncher.procState(proc2, 11) == 'R' && G7ExecLauncher.procState(proc2, 12) == 'S' && G7ExecLauncher.procState(proc2, 13) == 'D' && G7ExecLauncher.procState(proc2, 14) == 'Z');
+        check("an unknown letter or a missing file is '?'", G7ExecLauncher.procState(proc2, 15) == '?' && G7ExecLauncher.procState(proc2, 99) == '?' && G7ExecLauncher.procState(null, 1) == '?');
+        check("the state text says what each state means (Z = ended but not collected, D = kernel wait)", G7ExecLauncher.describeState('Z').contains("회수") && G7ExecLauncher.describeState('D').contains("커널") && G7ExecLauncher.describeState('?').contains("확인 불가"));
+
+        // 4) ECID in decimal, hex (any case, 0x, padded) is masked before it is stored
+        String dec = Long.toString(ecid);
+        String mixed = "ECID: " + dec + " UniqueChipID " + dec + " 0x" + hex + " " + hex.toUpperCase() + " 0000FE00-" + hex.toUpperCase() + " " + hex.substring(0, 5) + hex.substring(5).toUpperCase();
+        String masked = G7ExecLauncher.mask(mixed, ecid);
+        check("mask: decimal, 0x hex, upper/mixed case and padded forms are all replaced", !masked.contains(dec) && !masked.toLowerCase().contains(hex) && masked.contains("(ECID)"));
+        File files10 = Files.createTempDirectory("files10").toFile();
+        s = G7ExecLauncher.startWith(spawner(new FakeProcess("ECID: " + dec + "\nUniqueChipID " + dec + "\ng7-result: x\n", 0, false)), ROMS, true, lib, ext, priv, files10, true, SHA);
+        for (int i = 0; i < 100 && !s.run.finished(); i++) Thread.sleep(20);
+        check("log and tail contain no decimal ECID", !G7ExecLauncher.readLogTail(files10, 100000).contains(dec) && !s.run.tail().contains(dec));
+        G7ExecLauncher.drainMillis = 3000;
 
         // a spawner failure leaves no run
         s = G7ExecLauncher.startWith(c -> { throw new IOException("boom 0x" + hex); }, ROMS, true, lib, ext, priv, Files.createTempDirectory("files3").toFile(), true, SHA);

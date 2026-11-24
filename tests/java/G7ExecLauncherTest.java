@@ -279,6 +279,32 @@ public class G7ExecLauncherTest {
         check("log and tail contain no decimal ECID", !G7ExecLauncher.readLogTail(files10, 100000).contains(dec) && !s.run.tail().contains(dec));
         G7ExecLauncher.drainMillis = 3000;
 
+
+        // 5) an interrupt is not an end: the watcher waits again; a pipe whose close() never returns does not delay the published end
+        final java.util.concurrent.atomic.AtomicBoolean ended = new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicInteger waits = new java.util.concurrent.atomic.AtomicInteger();
+        Process intr = new Process() {
+            @Override public OutputStream getOutputStream() { return new java.io.ByteArrayOutputStream(); }
+            @Override public InputStream getInputStream() { return new InputStream() {
+                @Override public int read() { return -1; }
+                @Override public int read(byte[] b, int o, int l) { while (true) { try { Thread.sleep(50); } catch (InterruptedException e) { /* keep holding the pipe */ } } }
+                @Override public void close() { while (true) { try { Thread.sleep(50); } catch (InterruptedException e) { /* never returns */ } } } }; }
+            @Override public InputStream getErrorStream() { return new ByteArrayInputStream(new byte[0]); }
+            @Override public int waitFor() throws InterruptedException { if (waits.getAndIncrement() == 0) throw new InterruptedException("simulated"); while (!ended.get()) Thread.sleep(10); return 9; }
+            @Override public boolean isAlive() { return !ended.get(); }
+            @Override public int exitValue() { if (!ended.get()) throw new IllegalThreadStateException(); return 9; }
+            @Override public void destroy() { }
+        };
+        File files11 = Files.createTempDirectory("files11").toFile();
+        G7ExecLauncher.drainMillis = 100;
+        s = G7ExecLauncher.startWith(spawner0(intr), ROMS, true, lib, ext, priv, files11, true, SHA);
+        Thread.sleep(300);
+        check("after an interrupted wait the process is still alive: no end is recorded", !s.run.finished() && !G7ExecLauncher.readLogTail(files11, 100000).contains("g7-exit"));
+        ended.set(true);
+        for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
+        check("the real end (exit 9) is recorded once the process ends, although the pipe is held and its close() never returns", s.run.finished() && s.run.exitCode() == 9 && G7ExecLauncher.readLogTail(files11, 100000).contains("g7-exit: 9") && s.run.logIncomplete());
+        G7ExecLauncher.drainMillis = 3000;
+
         // a spawner failure leaves no run
         s = G7ExecLauncher.startWith(c -> { throw new IOException("boom 0x" + hex); }, ROMS, true, lib, ext, priv, Files.createTempDirectory("files3").toFile(), true, SHA);
         check("spawn failure: not started, ECID masked in the message", !s.started && !s.message.contains(hex));

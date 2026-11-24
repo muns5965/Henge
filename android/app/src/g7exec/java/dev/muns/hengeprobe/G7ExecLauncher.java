@@ -291,8 +291,13 @@ public final class G7ExecLauncher {
         reader.setDaemon(true);
         // watcher: the end of the process is the end of the run; the pipe only gets a short time to deliver the last output
         Thread watcher = new Thread(() -> {
-            int code;
-            try { code = p.waitFor(); } catch (InterruptedException e) { code = -1; Thread.currentThread().interrupt(); }
+            // the end is recorded only when the process has really ended: an interrupt is not an end, so wait again (the interrupt is passed on afterwards)
+            int code = 0; boolean interrupted = false;
+            while (true) {
+                try { code = p.waitFor(); break; }
+                catch (InterruptedException e) { interrupted = true; if (!p.isAlive()) { try { code = p.exitValue(); } catch (IllegalThreadStateException ex) { continue; } break; } }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
             try { reader.join(drainMillis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             final boolean complete = !reader.isAlive();
             synchronized (run.logLock) {
@@ -311,8 +316,12 @@ public final class G7ExecLauncher {
                 run.logOut = null;
                 run.append((complete ? "" : "\ng7-log: incomplete") + "\ng7-exit: " + code + "\n");
             }
-            if (!complete) { try { in.close(); } catch (IOException | RuntimeException ignored) { } }
-            run.exit = code;
+            run.exit = code;   // the confirmed end is published first; cleaning up the pipe afterwards may block and must not delay it
+            if (!complete) {
+                Thread closer = new Thread(() -> { try { in.close(); } catch (IOException | RuntimeException ignored) { } });
+                closer.setDaemon(true);
+                closer.start();
+            }
         });
         watcher.setDaemon(true);
         reader.start();

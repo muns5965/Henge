@@ -9,7 +9,7 @@
      - the files that passed are KEPT OPEN and the machine is given /proc/self/fd/N paths of them: a file swapped for another after the check is not what is written
      - writable storage is set ONLY after those checks passed (clone_boot_config_ok refuses writable storage without them); everything else hv_runner_config_ok guarantees stays (no guest network, installer 0)
      - the ECID is read from <ecid-dir>/vm_ecid.txt here and is never an option (it does not travel on a command line)
-   Output: the same status lines as the installed runner, plus g7-mem / g7-mem-stage / g7-mem-pss lines (read-only procfs), "FRAME" lines on the stdin word "frame" (a downsampled copy of what the machine shows
+   Output: the same status lines as the installed runner, plus memory lines from read-only procfs: g7-process once at start, g7-mem-stage at each big start-up allocation, g7-mem every 10 s, g7-mem-pss on the first sample and then about every 100 s, "FRAME" lines on the stdin word "frame" (a downsampled copy of what the machine shows
    and a pixel-statistics class: an estimate), and a final VERDICT line that separates "the machine stopped (confirmed)" from "macOS booted" (never claimed here).
    host/ui_runner_vm_installed.c is unchanged: it still boots read-only.
    Arguments: --shm PATH --rom F --clone-dir D --ecid-dir D  [--ram-mb N (2048) --cpus N (2) --jit-mb N (64) --seconds N --stop-wait-ms N]. Stdin: "quit" stops, "status" prints one status line, "frame" prints one FRAME line.
@@ -228,6 +228,14 @@ int main(int argc, char **argv) {
     }
 
     hv_vm_start(1, on_exit_cb);
+    if (hv_vm_start_failed()) {   /* a vCPU thread could not be created: the machine is not whole, do not report it as running */
+        printf("ui_runner_vm_clone RESULT: FAILED, the machine could not start all its threads; not running\n");
+        hv_vm_stop();
+        double tw = now(); while (!atomic_load(&g_exited) && (now() - tw) * 1000 < (double)stop_wait_ms) usleep(2000);
+        if (atomic_load(&g_exited)) (void)hv_vm_flush_disks_checked();
+        hv_shm_set_state(g_shm, HV_SHM_STOPPED);
+        return 1;
+    }
     hv_runner_set_ready(g_run, 1);
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
@@ -280,11 +288,11 @@ int main(int argc, char **argv) {
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);
     int confirmed = atomic_load(&g_exited);
-    if (confirmed) hv_vm_flush_disks();
+    int flush_rc = confirmed ? hv_vm_flush_disks_checked() : -2;   /* -2: not attempted (the machine's stop was not confirmed) */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
-    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s macos_boot=not-determined (a confirmed stop says only that the machine ended; it does not say macOS booted)\n", confirmed ? 1 : 0, stop_kind);
+    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s disk_flush=%s macos_boot=not-determined (a confirmed stop says only that the machine ended; it does not say macOS booted, and it is not a flush result)\n", confirmed ? 1 : 0, stop_kind, flush_rc == 0 ? "ok" : flush_rc == -2 ? "not-attempted" : "FAILED");
     fflush(stdout);
     if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
     return confirmed ? 0 : 3;

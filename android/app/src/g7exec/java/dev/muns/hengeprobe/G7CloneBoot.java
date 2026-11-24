@@ -84,7 +84,7 @@ public final class G7CloneBoot {
         for (int i = 0; i < rgb.length; i++) rgb[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
         return new Frame(w, h, rgb, m.group(3), Integer.parseInt(m.group(4)), Integer.parseInt(m.group(5)));
     }
-    private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) macos_boot=not-determined.*$");
+    private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) disk_flush=(ok|FAILED|not-attempted) macos_boot=not-determined.*$");
 
     public static final class Run {
         volatile Frame frame; volatile String verdictLine;
@@ -112,7 +112,8 @@ public final class G7CloneBoot {
             java.util.regex.Matcher m = VERDICT.matcher(v);
             if (!m.matches()) return "러너의 결과 줄을 해석하지 못했습니다. macOS 부팅 성공 여부는 판정하지 않았습니다.";
             String kind = m.group(2), who = kind.equals("guest-initiated") ? "게스트가 스스로 멈춤" : kind.equals("time-limit") ? "시험 시간 제한" : kind.equals("requested-quit") ? "사용자 취소/종료 요청" : kind.equals("signal") ? "신호로 종료" : kind.equals("app-closed") ? "앱이 닫음" : "입력 오류";
-            return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 종료 계기: " + who + ". macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
+            String fl = m.group(3).equals("ok") ? "성공" : m.group(3).equals("FAILED") ? "실패(디스크에 모두 반영됐다고 볼 수 없음)" : "시도하지 않음";
+            return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 디스크 flush: " + fl + "(종료 확인과 별개), 종료 계기: " + who + ". macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
         }
         synchronized void put(String text, boolean always) {
             tail.append(text); if (tail.length() > 6000) tail.replace(0, tail.length() - 6000, "");

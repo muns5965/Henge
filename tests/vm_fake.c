@@ -71,6 +71,7 @@ void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
 }
 void hv_vm_stop(void) { atomic_store(&g_stop, 1); }
 void hv_vm_flush_disks(void) {}
+int hv_vm_flush_disks_checked(void) { return 0; }
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) { *calls = 0; *refused = 0; }
 const char *hv_vm_reason_name(int reason) { (void)reason; return "fake machine stopped"; }
 /* The fake machine never runs guest code, so it never takes a PSCI call either: always "no halt record". */

@@ -72,7 +72,7 @@ public class G7CloneBootTest {
         String hex = Long.toHexString(G7CloneTest.ECID);
         StringBuilder px = new StringBuilder(); for (int i = 0; i < 4 * 2; i++) px.append(i == 0 ? "ffffff" : "000000");
         String frameLine = "ui_runner_vm_clone FRAME src=1920x1080 out=4x2 class=mostly-black-small-content nonblack_pct=12 colors=2 estimate=pixel-statistics-only data=" + px;
-        Fake ok = new Fake("hengevm: cpu 0 pc sample #1 pc=0x100 el=3\nui_runner_vm_clone frames published 4\nleak " + hex + "\n" + frameLine + "\nui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\nui_runner_vm_clone VERDICT: vm_stop_confirmed=1 stop_kind=time-limit macos_boot=not-determined (x)\n", 0, false);
+        Fake ok = new Fake("hengevm: cpu 0 pc sample #1 pc=0x100 el=3\nui_runner_vm_clone frames published 4\nleak " + hex + "\n" + frameLine + "\nui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\nui_runner_vm_clone VERDICT: vm_stop_confirmed=1 stop_kind=time-limit disk_flush=ok macos_boot=not-determined (x)\n", 0, false);
         G7CloneBoot.Start s = G7CloneBoot.startWith(sp(ok), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none);
         check("a valid clone starts: " + s.message, s.started && spawned == 1 && s.run != null);
         String cmd = String.join(" ", lastCmd);
@@ -84,7 +84,7 @@ public class G7CloneBootTest {
         check("finished run frees the gate", s.run.finished() && !G7ExecLauncher.hasLiveRun());
         G7CloneBoot.Frame fr = s.run.frame();
         check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: 4x2 class=mostly-black-small-content"));
-        check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
+        check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("디스크 flush: 성공") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
         check("malformed frame lines are refused", G7CloneBoot.parseFrame("ui_runner_vm_clone FRAME src=1x1 out=2x2 class=x nonblack_pct=1 colors=1 estimate=pixel-statistics-only data=ff") == null && G7CloneBoot.parseFrame("hello") == null && G7CloneBoot.parseFrame(frameLine.replace("out=4x2", "out=200x2")) == null);
         check("describeAll lists the clone as bootable", G7CloneBoot.describeAll(priv).toString().contains("부팅 가능"));
 

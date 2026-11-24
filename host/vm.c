@@ -418,6 +418,12 @@ void hv_vm_flush_disks(void) {
     hv_disk_flush(&aux);
 }
 
+/* Like hv_vm_flush_disks, but says whether BOTH flushes succeeded (0) or not (-1). A read-only disk reports 0. A confirmed machine stop is a separate fact from this. */
+int hv_vm_flush_disks_checked(void) {
+    int a = hv_disk_flush(&disk), b = hv_disk_flush(&aux);
+    return (a == 0 && b == 0) ? 0 : -1;
+}
+
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) {
     uint64_t c1, r1, c2, r2;
     hv_disk_write_stats(&disk, &c1, &r1);

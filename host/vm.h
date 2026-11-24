@@ -104,6 +104,7 @@ int hv_vm_run_cpu0(void);
 /* Stop at the next block; the CPUs' threads end. */
 void hv_vm_stop(void);
 void hv_vm_flush_disks(void);
+int hv_vm_flush_disks_checked(void);   /* 0 when both flushes succeeded, -1 otherwise */
 /* Writes the devices asked for on the root disk and the auxiliary storage (calls, and those refused). */
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused);
 const char *hv_vm_reason_name(int reason);

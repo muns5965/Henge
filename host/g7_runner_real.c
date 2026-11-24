@@ -13,6 +13,7 @@
 #include "g7_runner_real.h"
 #include "net_guard.h"
 #include "g7_watch.h"
+#include "g7_mem.h"
 #include "g7_tssdiag.h"
 #include "curl_last.h"
 #include <dirent.h>
@@ -126,7 +127,10 @@ static void *watch_main(void *arg) {
         char line[400];
         hv_g7w_step(&st, &s, line, sizeof line);
         { ssize_t r = write(2, line, strlen(line)); (void)r; }   /* one write: no stdio lock */
-        /* the disk probe comes AFTER the line above: stat/statvfs may block on stuck storage, and then only this thread waits */
+        /* the memory line (host/g7_mem.h): two procfs reads, which do not wait on storage, so it comes before the disk probe and is not lost behind it */
+        { HvG7Mem mem; hv_g7m_sample(&mem); hv_g7m_line(line, sizeof line, s.t_s, &mem);
+          ssize_t rm = write(2, line, strlen(line)); (void)rm; }
+        /* the disk probe comes AFTER the lines above: stat/statvfs may block on stuck storage, and then only this thread waits */
         { HvDiskInfo di; memset(&di, 0, sizeof di); char note[64]; int ok = hv_install_disk_check(dir_copy, &di, note, (int)sizeof note) == HV_DISK_OK;
           hv_g7w_disk_line(line, sizeof line, ok, di.size, di.allocated, di.dir_free);
           ssize_t r2 = write(2, line, strlen(line)); (void)r2; }

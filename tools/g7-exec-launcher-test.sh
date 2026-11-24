@@ -24,4 +24,8 @@ java -cp "$O4" dev.muns.hengeprobe.G7NetProbeTest; R4=$?
 O5="$OUT-storage"; rm -rf "$O5"; mkdir -p "$O5"
 javac -encoding UTF-8 -d "$O5" $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7ExecStorageTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2> "$O5/javac.log" || { echo "FAILED javac (storage)"; head -30 "$O5/javac.log"; exit 1; }
 java -cp "$O5" dev.muns.hengeprobe.G7ExecStorageTest; R5=$?
-[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ]
+# the exit-record formatter (pure, no Android classes)
+O6="$OUT-exitinfo"; rm -rf "$O6"; mkdir -p "$O6"
+javac -encoding UTF-8 -d "$O6" $X/G7ExitInfo.java tests/java/G7ExitInfoTest.java 2> "$O6/javac.log" || { echo "FAILED javac (exitinfo)"; head -30 "$O6/javac.log"; exit 1; }
+java -cp "$O6" dev.muns.hengeprobe.G7ExitInfoTest; R6=$?
+[ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ]

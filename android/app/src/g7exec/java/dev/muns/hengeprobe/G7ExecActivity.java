@@ -238,7 +238,18 @@ public class G7ExecActivity extends Activity {
         }, 2000);
     }
 
-    private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm")) + "\n" + G7ExecLauncher.runnerCheck(android.os.Process.myPid(), getFilesDir())); }
+    private void showSummary() { summary.setText(G7ExecLauncher.summary(getFilesDir(), new File(getFilesDir(), "vm")) + "\n" + G7ExecLauncher.runnerCheck(android.os.Process.myPid(), getFilesDir()) + "\n" + exitInfoText()); }
+
+    /** Reads this package's historical process exit records (API 30+; reading only). Any failure becomes one line, never an exception. */
+    private String exitInfoText() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            java.util.List<android.app.ApplicationExitInfo> in = am.getHistoricalProcessExitReasons(getPackageName(), 0, 10);
+            java.util.List<G7ExitInfo.Record> out = new java.util.ArrayList<>();
+            for (android.app.ApplicationExitInfo e : in) out.add(new G7ExitInfo.Record(e.getPid(), e.getProcessName(), e.getTimestamp(), e.getReason(), e.getStatus(), e.getDescription(), e.getPss(), e.getRss()));
+            return G7ExitInfo.format(out, android.os.Process.myPid(), 10);
+        } catch (Throwable t) { return "시스템 종료 기록을 읽지 못했습니다: " + t.getClass().getSimpleName(); }
+    }
 
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
     private void shareLog() { shareFile(G7ExecLauncher.newestLogFile(getFilesDir()), "G7 로그 공유"); }

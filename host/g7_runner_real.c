@@ -103,6 +103,7 @@ static int real_restore(void) {
     HvG7RestoreOps ops = {op_start, op_poll, op_cancel, op_sleep, NULL};
     HvG7RestoreLimits lim = S.lim;
     hv_g7_trace_reset();
+    hv_net_guard_observe_request(1);   /* TEMPORARY (user-approved 2026-11-24): Apple sub-hosts on 443 are let through and reported as g7-net-observe lines; remove once the exact list is known */
     hv_net_guard_live_log(1);   /* each refused destination is printed when it happens (a stalled run never reaches the closing list below); reports only, decides nothing */
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));

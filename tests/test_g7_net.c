@@ -117,6 +117,34 @@ int main(void) {
         CHECK(strstr(buf, "more destinations refused than are listed") != NULL && lines <= 24 + 6, "more than 24 different destinations: one 'more' line, output stays bounded (%d lines)", lines);
     }
 
+    /* TEMPORARY observation mode: off unless requested; Apple sub-hosts on 443 for HTTP/URL only; everything else unchanged */
+    {
+        fresh();
+        CHECK(!hv_net_guard_observe_requested() && http(ip, 443, "updates.cdn-apple.com") == HV_NET_DENY && url("https://x.apple.com/a") == HV_NET_DENY, "observation mode is off by default: sub-hosts stay refused");
+        char path[] = "/tmp/g7netobsXXXXXX"; int tf = mkstemp(path); int saved = dup(2);
+        fflush(stderr); dup2(tf, 2);
+        hv_net_guard_live_log(1);
+        hv_net_guard_observe_request(1);
+        fresh();   /* the request survives a reset; the suffixes are registered by the allow-list */
+        CHECK(hv_g7_net_registered_ok(), "observation suffixes registered");
+        CHECK(http(ip, 443, "updates.cdn-apple.com") == HV_NET_ALLOW && http(ip, 443, "x.y.apple.com") == HV_NET_ALLOW && http(ip, 443, "a.aaplimg.com") == HV_NET_ALLOW && http(ip, 443, "gs.apple.com.akadns.net") == HV_NET_ALLOW && http(ip, 443, "Z.APPLE.COM") == HV_NET_ALLOW, "Apple sub-hosts allowed on 443 (HTTP)");
+        CHECK(url("https://wkms.sd.apple.com/k") == HV_NET_ALLOW && url("https://a.cdn-apple.com/x") == HV_NET_ALLOW, "Apple sub-hosts allowed on https:443 (URL)");
+        CHECK(http(ip, 443, "apple.com") == HV_NET_DENY && http(ip, 443, "evilapple.com") == HV_NET_DENY && http(ip, 443, "apple.com.evil.com") == HV_NET_DENY && http(ip, 443, "x.akadns.net") == HV_NET_DENY && http(ip, 443, "x.example.com") == HV_NET_DENY && http(ip, 443, "..apple.com") == HV_NET_DENY && http(ip, 443, "a..apple.com") == HV_NET_DENY && http(ip, 443, "x.apple.com.") == HV_NET_DENY, "parent, look-alikes, other akadns.net customers, other domains and malformed names still refused");
+        CHECK(http(ip, 80, "x.apple.com") == HV_NET_DENY && http(ip, 8443, "x.apple.com") == HV_NET_DENY && url("http://x.apple.com/a") == HV_NET_DENY && url("https://x.apple.com:8443/a") == HV_NET_DENY && url("https://u@x.apple.com/a") == HV_NET_DENY, "other ports, http and user info still refused");
+        CHECK(http("10.0.0.5", 443, "x.apple.com") == HV_NET_DENY && http("127.0.0.1", 443, "x.apple.com") == HV_NET_DENY && http(ip, 443, NULL) == HV_NET_DENY, "private, loopback and nameless addresses are not relaxed");
+        { struct sockaddr_storage a = v4(ip, 443); CHECK(hv_net_guard_check_p((struct sockaddr *)&a, sizeof a, "x.apple.com", HV_NET_P_FDR, NULL, 0) == HV_NET_DENY && hv_net_guard_check_p((struct sockaddr *)&a, sizeof a, "x.apple.com", HV_NET_P_DEFAULT, NULL, 0) == HV_NET_DENY, "FDR and the library's own link are not covered"); }
+        CHECK(hv_net_guard_observe_suffix("com") == -1 && hv_net_guard_observe_suffix(".apple.com") == -1 && hv_net_guard_observe_suffix("Apple.com") == -1 && hv_net_guard_observe_suffix("a..com") == -1 && hv_net_guard_observe_suffix(NULL) == -1, "a bare TLD, a leading dot, upper case, an empty label and NULL are refused as suffixes");
+        for (int i = 0; i < 12; i++) http(ip, 443, "updates.cdn-apple.com");
+        hv_net_guard_observe_request(0);
+        hv_net_guard_live_log(0);
+        fresh();
+        CHECK(http(ip, 443, "updates.cdn-apple.com") == HV_NET_DENY, "switched off and reset: sub-hosts refused again");
+        fflush(stderr); dup2(saved, 2); close(saved); close(tf);
+        char buf[8192] = ""; FILE *f = fopen(path, "r"); size_t got = f ? fread(buf, 1, sizeof buf - 1, f) : 0; buf[got] = 0; if (f) fclose(f); remove(path);
+        CHECK(strstr(buf, "g7-net-observe: purpose=HTTP host=updates.cdn-apple.com port=443 count=1\n") && strstr(buf, "host=updates.cdn-apple.com port=443 count=10\n"), "observed hosts are reported (first and 10th)");
+        CHECK(strstr(buf, "g7-net-observe: purpose=URL host=wkms.sd.apple.com port=443 count=1\n") != NULL && !strstr(buf, "/k") && !strstr(buf, "u@"), "a URL observation prints host and port only");
+    }
+
     printf(g_fail ? "G7NET FAILED (%d)\n" : "G7NET OK (%d failed)\n", g_fail);
     return g_fail != 0;
 }

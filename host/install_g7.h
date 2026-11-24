@@ -17,6 +17,8 @@ typedef struct { const char *name; uint16_t port; } HvG7NetHost;
 const HvG7NetHost *hv_g7_net_hosts(size_t *n);
 /* Registers the list in net_guard (exact name + port). Returns the extra restore flags: none (0). A host that could not be registered stays unregistered, so its request is refused. */
 int hv_g7_extra_flags(void);
+/* TEMPORARY observation mode: when the program has asked for it (hv_net_guard_observe_request(1), default off), hv_g7_extra_flags() also registers the Apple suffixes in k_observe
+   (install_g7.c) with hv_net_guard_observe_suffix: sub-hosts of them are let through on 443 for HTTP/URL and reported as `g7-net-observe:` lines. The exact list above is unchanged. */
 /* 1 when every listed host was registered by the last hv_g7_extra_flags call. */
 int hv_g7_net_registered_ok(void);
 /* The gate install.c applies after hv_g7_extra_flags(): 0 = every listed host is registered, the tool may be entered; -1 = at least one is not, the tool must NOT be entered

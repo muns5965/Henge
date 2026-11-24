@@ -57,6 +57,16 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap);
    path, query, user info or identifier. At most 24 different destinations are tracked. It reports; it never changes a decision, and it does not touch the allow list. */
 void hv_net_guard_live_log(int on);
 
+/* TEMPORARY observation mode (off unless registered; emptied by hv_net_guard_reset). A registered suffix (lower-case letters, digits, '-', '.', at least two labels, at most 6) lets a
+   NAMED host that is a proper sub-domain of it (label boundary: "x.apple.com" for "apple.com", never "apple.com" itself or "evilapple.com") through, for the HTTP and URL purposes, on
+   port 443 only. Address checks (private, loopback, link-local ...) are not relaxed, FDR and the library's own link are not covered. With live logging on, each such host is reported as
+     g7-net-observe: purpose=<HTTP|URL> host=<name> port=443 count=<n>
+   (first time, then at 10, 100 ...), so the list of what a restore really needs can be written down and the mode removed. 0: registered/already registered; -1: invalid or full. */
+int hv_net_guard_observe_suffix(const char *suffix);
+/* The program's request (default off, survives hv_net_guard_reset): the G7 allow-list registers its suffixes only while this is on. */
+void hv_net_guard_observe_request(int on);
+int hv_net_guard_observe_requested(void);
+
 typedef struct { int attempts, allowed, denied, url_attempts, url_denied; } HvNetStats;
 void hv_net_guard_stats(HvNetStats *s);
 /* The last refused attempts, newest last, as "ip:port reason" text, one per line (at most 8). */

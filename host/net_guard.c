@@ -29,6 +29,11 @@ static char g_unix[MAXL][108];
 static int g_nunix;
 static Host g_host[MAXL];
 static int g_nhost;
+/* Observation suffixes (hv_net_guard_observe_suffix): temporary, off unless a caller registers one. */
+#define MAXSUF 6
+static char g_suf[MAXSUF][NAMEMAX];
+static int g_nsuf;
+static int g_obs_req;   /* the program's request for observation mode; survives a reset like the live switch */
 static HvNetStats g_st;
 static char g_log[MAXL][144];
 static int g_nlog;
@@ -39,7 +44,7 @@ static int g_engine;   /* engine threads inside hv_net_guard_engine_enter/leave 
    different destinations are tracked, further ones share one "more destinations" line. The line is composed under the lock and written after it is released (one write(2),
    no stdio lock, no callback), so a slow reader of the output cannot hold the policy lock. */
 #define LIVEMAX 24
-typedef struct { char host[NAMEMAX]; unsigned port; int purpose; char reason[64]; unsigned long count; } Live;
+typedef struct { char host[NAMEMAX]; unsigned port; int purpose; char reason[64]; unsigned long count; } Live;   /* reason "observed" = an observation-mode allow */
 static Live g_live[LIVEMAX];
 static int g_nlive;
 static int g_live_on;
@@ -76,13 +81,42 @@ static int live_note(char *line, size_t cap, int purpose, const char *host, unsi
     unsigned long c = ++g_live[i].count, t = 1;
     while (t < c && t <= 100000000UL) t *= 10;
     if (c != t) return 0;   /* only the 1st, 10th, 100th ... */
-    snprintf(line, cap, "g7-net-deny: purpose=%s host=%s port=%u reason=%s count=%lu\n", purpose_name(purpose), host, port, reason, c);
+    if (!strcmp(reason, "observed")) snprintf(line, cap, "g7-net-observe: purpose=%s host=%s port=%u count=%lu\n", purpose_name(purpose), host, port, c);
+    else snprintf(line, cap, "g7-net-deny: purpose=%s host=%s port=%u reason=%s count=%lu\n", purpose_name(purpose), host, port, reason, c);
     return 1;
 }
 
 static void live_emit(const char *line) { if (line[0]) { ssize_t r = write(2, line, strlen(line)); (void)r; } }
 
 void hv_net_guard_live_log(int on) { pthread_mutex_lock(&g_mu); g_live_on = on != 0; pthread_mutex_unlock(&g_mu); }
+
+/* Under g_mu. Observation mode: a NAMED host that is a proper sub-domain (label boundary) of a registered suffix, on port 443 only, with a name of letters, digits . - _ only.
+   Applies to the HTTP and URL purposes; never to FDR or the library's own link. The address checks (private, loopback ...) still run first and are not relaxed. */
+static int observe_match(const char *name, unsigned port, int purpose) {
+    if (!g_nsuf || !name || port != 443 || (purpose != HV_NET_P_HTTP && purpose != HV_NET_P_URL)) return 0;
+    size_t n = strnlen(name, NAMEMAX);
+    if (!n || n >= NAMEMAX || name[0] == '.' || name[n - 1] == '.') return 0;
+    for (size_t k = 0; k < n; k++) { char c = name[k]; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) return 0; if (c == '.' && name[k + 1] == '.') return 0; }
+    for (int i = 0; i < g_nsuf; i++) {
+        size_t m = strlen(g_suf[i]);
+        if (n > m + 1 && name[n - m - 1] == '.' && !strcasecmp(name + n - m, g_suf[i])) return 1;
+    }
+    return 0;
+}
+void hv_net_guard_observe_request(int on) { pthread_mutex_lock(&g_mu); g_obs_req = on != 0; pthread_mutex_unlock(&g_mu); }
+int hv_net_guard_observe_requested(void) { pthread_mutex_lock(&g_mu); int r = g_obs_req; pthread_mutex_unlock(&g_mu); return r; }
+int hv_net_guard_observe_suffix(const char *suffix) {
+    if (!suffix) return -1;
+    size_t m = strnlen(suffix, NAMEMAX);
+    if (m < 4 || m >= NAMEMAX || suffix[0] == '.' || suffix[m - 1] == '.' || !strchr(suffix, '.')) return -1;   /* at least two labels: never a bare "com" */
+    for (size_t k = 0; k < m; k++) { char c = suffix[k]; if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-') || (c == '.' && suffix[k + 1] == '.')) return -1; }
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_nsuf; i++) if (!strcmp(g_suf[i], suffix)) { pthread_mutex_unlock(&g_mu); return 0; }
+    if (g_nsuf == MAXSUF) { pthread_mutex_unlock(&g_mu); return -1; }
+    snprintf(g_suf[g_nsuf++], NAMEMAX, "%s", suffix);
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
 
 /* 0: public. Otherwise a short class name. IPv4-mapped IPv6 is judged as the IPv4 address it carries. */
 static const char *classify(const struct sockaddr *a, char *ip, size_t ipcap, unsigned *port) {
@@ -165,6 +199,12 @@ int hv_net_guard_check_p(const struct sockaddr *a, socklen_t len, const char *na
             else {
                 for (int i = 0; i < g_nhost && verdict == HV_NET_DENY; i++)
                     if (g_host[i].port == port && !strcasecmp(g_host[i].name, name)) { verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "approved host"); }
+                if (verdict == HV_NET_DENY && observe_match(name, port, purpose)) {
+                    char hb[64]; size_t k2 = 0;
+                    verdict = HV_NET_ALLOW; snprintf(reason, sizeof reason, "observed host");
+                    for (; name[k2] && k2 < 48; k2++) hb[k2] = name[k2]; hb[k2] = 0;
+                    live_note(live, sizeof live, purpose, hb, port, "observed");
+                }
                 if (verdict == HV_NET_DENY) snprintf(reason, sizeof reason, "host not on the allow list");
             }
         }
@@ -224,6 +264,12 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
     if (!reason) {
         for (int i = 0; i < g_nhost && verdict == HV_NET_DENY; i++)
             if (g_host[i].port == port && !strcasecmp(g_host[i].name, host)) verdict = HV_NET_ALLOW;
+        if (verdict == HV_NET_DENY && observe_match(host, port, HV_NET_P_URL)) {
+            char hb[64]; size_t k = 0;
+            verdict = HV_NET_ALLOW;
+            for (; host[k] && k < 48; k++) hb[k] = host[k]; hb[k] = 0;
+            live_note(live, sizeof live, HV_NET_P_URL, hb, port, "observed");
+        }
         if (verdict == HV_NET_DENY) reason = "host not on the allow list";
     }
     if (verdict == HV_NET_DENY) {
@@ -236,13 +282,13 @@ int hv_net_guard_check_url(const char *url, char *why, size_t cap) {
     }
     pthread_mutex_unlock(&g_mu);
     live_emit(live);
-    setwhy(why, cap, verdict == HV_NET_ALLOW ? "approved host" : reason);
+    setwhy(why, cap, verdict == HV_NET_ALLOW ? "approved or observed host" : reason);
     return verdict;
 }
 
 void hv_net_guard_reset(void) {
     pthread_mutex_lock(&g_mu);
-    g_nlocal = g_nunix = g_nhost = g_nlog = 0;
+    g_nlocal = g_nunix = g_nhost = g_nlog = g_nsuf = 0;
     g_nlive = 0; g_live_other = 0;   /* the live switch itself is the program's choice and survives a reset */
 #ifdef HV_NET_TEST_LOOPBACK
     g_test_lo_port = 0;

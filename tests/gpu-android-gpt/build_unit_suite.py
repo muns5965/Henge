@@ -13,7 +13,7 @@ meson=(root/'tests/meson.build').read_text()
 pairs=re.findall(r"executable\('([^']+)',\s*'([^']+\.c)'",meson)
 assert len(pairs)==76 and len({p[0] for p in pairs})==76
 # Also inventory top-level tests not registered as executable targets.
-extra=sorted(p for p in (root/'tests').glob('*.c') if p.name not in {v for _,v in pairs})
+extra=sorted(p for p in (root/'tests').glob('*.c') if p.name not in {v for _,v in pairs} and p.name!='android-memory-mock.c')
 entries=[(n,f,True) for n,f in pairs]+[(p.stem,p.name,False) for p in extra]
 manual={'skylight-lavapipe-render':'requires explicit shader arguments; covered by stages 7–8',
         'translator-microbench':'benchmark, not a unit-test assertion gate',

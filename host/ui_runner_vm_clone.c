@@ -33,6 +33,7 @@
 #include "clone_dir.h"
 #include "frame_shm.h"
 #include "g7_mem.h"
+#include "g7_diag.h"
 #include "runner_vm_core.h"
 #include "usb_host.h"
 #include "vm.h"
@@ -240,6 +241,7 @@ int main(int argc, char **argv) {
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
         return 1;
     }
+    hv_vm_machine()->stats_interval = 10;   /* engine's own periodic "stats" lines (stderr: WFI idle %, how long the CPU thread ran, blocks chained, retranslation, JIT use); hv_vm_create clears it, so it is set here, before the vCPUs start */
     HvVmapple *bd = hv_vm_board();
     int usb_present = bd && bd->vusb ? 1 : 0;
     printf("ui_runner_vm_clone: machine created in %.0f ms; usb device port present: %d (want %d for usb mode %ld)\n", (now() - t0) * 1e3, usb_present, cfg.usb_on_normal_boot, usb_mode);
@@ -264,6 +266,7 @@ int main(int argc, char **argv) {
     const char *why_stop = "quit", *stop_kind = "requested-quit";
     char reason_txt[700];   /* outlives the loop: why_stop may point at it after the break */
     double tstart = now(), next_frame = 0, next_mem = 0; unsigned nmem = 0;
+    HvG7DPrev diag_prev; hv_g7d_prev_init(&diag_prev);
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
         if (atomic_load(&g_sig)) { why_stop = "signal"; stop_kind = "signal"; break; }
@@ -313,6 +316,7 @@ int main(int argc, char **argv) {
         if (t >= next_mem) {   /* one memory line every 10 s (read-only procfs), the slower PSS on the first and every 10th */
             HvG7Mem m; hv_g7m_sample(&m); char ml[300]; hv_g7m_line(ml, sizeof ml, (uint64_t)(t - tstart), &m); fputs(ml, stdout);
             if (nmem == 0 || nmem % 10 == 9) { char pl[100]; hv_g7m_pss_line(pl, sizeof pl, (uint64_t)(t - tstart), hv_g7m_pss_kb()); fputs(pl, stdout); }
+            char d1[900], d2[1800]; hv_g7d_sample_lines(&diag_prev, (uint64_t)(t - tstart), d1, sizeof d1, d2, sizeof d2); fputs(d1, stdout); fputs(d2, stdout);   /* read-only: vmstat, PSI, swaps, one line per thread */
             fflush(stdout); nmem++; next_mem = t + 10.0;
         }
     }

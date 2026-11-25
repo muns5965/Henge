@@ -88,6 +88,10 @@ static int boot_args_display(HvBootDisplay *d) {
         }
         if (!found) return -1;
         const uint64_t *q = (const uint64_t *)(ram + found);
+        {   /* once per boot_args found: the kernel's runtime virtual base, so a kernel address in the pc samples can be turned into a file address (slide = virtBase - the kernel file's __TEXT vmaddr) */
+            static uint64_t logged;
+            if (logged != found) { logged = found; fprintf(stderr, "hengevm: boot_args at ram+%#llx: virtBase=%#llx physBase=%#llx (kernel slide = virtBase minus the kernel file's __TEXT address; the file is not here)\n", (unsigned long long)found, (unsigned long long)q[1], (unsigned long long)q[2]); }
+        }
         uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
         if (q[1] >> 40 == 0xfffffe && w >= 320 && w <= 8192 && hh >= 200 && hh <= 8192 && base >= VMAPPLE_MEM &&
             base - VMAPPLE_MEM + row * hh <= size) {

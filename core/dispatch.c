@@ -988,8 +988,8 @@ static int run_loop(HvCpu *cpu, int one) {
             uint64_t n = __atomic_load_n(&g_pcdiag_count[cpu->index], __ATOMIC_RELAXED);
             __atomic_store_n(&g_pcdiag_count[cpu->index], n + 1, __ATOMIC_RELAXED);
             if ((n % 200000) == 0)
-                fprintf(stderr, "hengevm: cpu %u pc sample #%llu pc=%#llx el=%u\n", cpu->index,
-                        (unsigned long long)(n + 1), (unsigned long long)cpu->pc, (unsigned)cpu->el);
+                fprintf(stderr, "hengevm: cpu %u pc sample #%llu pc=%#llx el=%u x30=%#llx\n", cpu->index,
+                        (unsigned long long)(n + 1), (unsigned long long)cpu->pc, (unsigned)cpu->el, (unsigned long long)cpu->x[30]); /* x30 is the raw link register, not necessarily the caller */
         }
 
         if ((m->log || m->gen_checks) && cpu->el && (cpu->sctlr_el1 & 1) && !((cpu->pc >> 55) & 1) && cpu->pc >= 0x100000000ull) { /* EL1 at a user address: how did we get here? */

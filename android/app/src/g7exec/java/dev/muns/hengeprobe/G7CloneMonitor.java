@@ -39,7 +39,7 @@ final class G7CloneMonitor {
     private final List<String> errors = new ArrayList<>();
 
     private static boolean noisy(String l) {
-        return l.startsWith("bdif usb diag:") || l.startsWith("hengevm: cpu ") || l.startsWith("g7-alive:") || l.startsWith("g7-disk:") || l.startsWith("g7-mem") || l.startsWith("hvgamma:")
+        return l.startsWith("bdif usb diag:") || l.startsWith("hengevm: cpu ") || l.startsWith("g7-alive:") || l.startsWith("g7-disk:") || l.startsWith("g7-mem") || l.startsWith("g7-diag") || l.startsWith("stats ") || l.startsWith("  cpu thread ran") || l.startsWith("  cpus:") || l.startsWith("  whole-TLB") || l.startsWith("  TLBI all") || l.startsWith("  switch-flush") || l.startsWith("  cache drops") || l.startsWith("hvgamma:")
                 || l.startsWith("[usb diag:") || l.startsWith("Uploading:");
     }
 

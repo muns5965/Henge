@@ -36,6 +36,7 @@ on:
       - tools/check-g7exec-*.sh
       - tools/g7-watch-test.sh
       - tools/g7-mem-test.sh
+      - tools/g7-diag-test.sh
       - tools/ui-runner-vm-clone-build.sh
       - tools/check-runner-vm-clone-safe.sh
       - tools/clone-dir-test.sh
@@ -43,6 +44,8 @@ on:
       - host/clone_dir.h
       - host/ui_runner_vm_clone.c
       - tests/test_g7_mem.c
+      - tests/test_g7_diag.c
+      - host/g7_diag.h
       - host/g7_mem.h
       - tests/test_g7_watch.c
       - tools/g7-tssdiag-test.sh
@@ -75,11 +78,12 @@ jobs:
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
-          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-diag-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
           tools/g7-watch-test.sh
           tools/g7-mem-test.sh
+          tools/g7-diag-test.sh
           tools/g7-tssdiag-test.sh
           tools/net-probe-test.sh build-netprobe-host
           tools/clone-dir-test.sh

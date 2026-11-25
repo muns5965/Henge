@@ -38,6 +38,9 @@ public class G7RestartPolicyTest {
         check(!p.decide(G7RunVerdict.parse(line(0, "guest-initiated", "not-attempted", "restart", "SYSTEM_RESET", "n/a", 50, 0)), false, t + 3).restart, "unconfirmed stop: no restart");
         check(!p.decide(G7RunVerdict.parse(line(1, "guest-initiated", "FAILED", "restart", "SYSTEM_RESET", "1", 50, 0)), false, t + 4).restart, "flush failed: no restart");
         check(!p.decide(G7RunVerdict.parse(line(1, "guest-initiated", "ok", "restart", "SYSTEM_RESET", "0", 50, 0)), false, t + 5).restart, "threads/workers not finished: no restart");
+        check(!p.decide(G7RunVerdict.parse(line(1, "guest-initiated", "ok", "restart", "SYSTEM_RESET", "n/a", 50, 0)), false, t + 6).restart, "quiesce not reported (n/a): no restart");
+        G7RunVerdict na = G7RunVerdict.parse(line(1, "guest-initiated", "ok", "restart", "SYSTEM_RESET", "n/a", 50, 0));
+        check(na.cleanStop() && !na.verifiedQuiesced() && v.verifiedQuiesced(), "reading an old/unreported line is not the same as the condition to act on it");
         // reset() by a person's own start; a restart only counts when allowed
         G7RestartPolicy q = new G7RestartPolicy(1, 60_000, new long[] {1000});
         check(q.decide(v, false, 0).restart && !q.decide(v, false, 1000).restart, "limit 1");

@@ -6,7 +6,7 @@ import java.util.ArrayDeque;
  * Decides whether the app starts the same clone again after the guest asked for a restart (PSCI SYSTEM_RESET). Pure Java, driven by the caller's clock.
  *
  * What is required (the original Henge restarts on a guest reset, and this does the same): a parsed VERDICT whose outcome is "restart", a confirmed stop, a disk flush that
- * succeeded, and every CPU thread and disk worker finished before the flush (quiesced not 0), and that the person did not stop the run. What is NOT required: a minimum uptime or a
+ * succeeded, and every CPU thread and disk worker finished before the flush (quiesced reported as 1; not reported is not enough), and that the person did not stop the run. What is NOT required: a minimum uptime or a
  * picture on the screen, because firmware and macOS updates restart before either. Only a reset LOOP is limited: at most maxRestarts restarts in windowMs, with a growing wait
  * between them. An error, a host stop, an unconfirmed stop, a failed flush or an older runner's line without outcome never restarts.
  */
@@ -30,7 +30,7 @@ public final class G7RestartPolicy {
         if (!v.isRestart()) return no("게스트의 재시작 요청(SYSTEM_RESET)이 아니라서 재시작하지 않습니다(" + v.outcome + ").");
         if (!v.stopConfirmed) return no("VM 종료가 확인되지 않아 재시작하지 않습니다.");
         if (!v.diskFlush.equals("ok")) return no("디스크 flush가 성공하지 않아 재시작하지 않습니다.");
-        if (v.quiesced == 0) return no("CPU 스레드·디스크 작업자가 모두 끝났는지 확인되지 않아 재시작하지 않습니다.");
+        if (v.quiesced != 1) return no("CPU 스레드·디스크 작업자 종료가 확인되지 않았습니다(" + (v.quiesced == 0 ? "일부 미종료" : "미보고") + "). 재시작하지 않습니다.");
         while (!restarts.isEmpty() && nowMs - restarts.peekFirst() > windowMs) restarts.pollFirst();
         if (restarts.size() >= maxRestarts) return no("재시작 반복 방지: " + (windowMs / 60000) + "분 안에 " + maxRestarts + "번 재시작했습니다. 더 이상 자동으로 재시작하지 않습니다.");
         long delay = backoffMs[Math.min(restarts.size(), backoffMs.length - 1)];

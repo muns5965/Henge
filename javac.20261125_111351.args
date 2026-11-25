@@ -1,0 +1,8 @@
+-encoding
+UTF-8
+-proc:none
+-d
+/tmp/jc
+-cp
+/dev/null
+android/app/src/g7exec/java/dev/muns/hengeprobe/G7RunVerdict.java

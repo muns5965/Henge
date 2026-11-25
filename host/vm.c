@@ -469,14 +469,22 @@ int hv_vm_quiesce(void) {
     int bad = 0;
     hv_machine_halt(&m, HV_HALT_HOST);
     atomic_store(&kicker_stopped, 1);
+    /* A handle is forgotten only for a thread that was joined: one that did not end stays recorded as still running. */
     for (int i = 1; i < ncpus; i++)
-        if (secondary_started[i] && join_bounded(secondary_threads[i], &secondary_ended[i], "a secondary CPU thread")) bad = 1;
-    if (kicker_started && join_bounded(kicker, &kicker_ended, "the kicker thread")) bad = 1;
-    kicker_started = 0;
-    memset(secondary_started, 0, sizeof secondary_started);
-    /* A DMA worker can still be writing after the guest CPUs have exited. */
-    hv_virtio_blk_stop(board.root_blk);
-    hv_virtio_blk_stop(board.aux_blk);
+        if (secondary_started[i]) {
+            if (join_bounded(secondary_threads[i], &secondary_ended[i], "a secondary CPU thread")) bad = 1;
+            else secondary_started[i] = 0;
+        }
+    if (kicker_started) {
+        if (join_bounded(kicker, &kicker_ended, "the kicker thread")) bad = 1;
+        else kicker_started = 0;
+    }
+    /* Only with every CPU thread gone are the disk workers stopped: a CPU still running could submit a new request after its worker had ended, and that request would never be done. */
+    if (!bad) {
+        /* A DMA worker can still be writing after the guest CPUs have exited. */
+        if (hv_virtio_blk_stop(board.root_blk) != 0) bad = 1;
+        if (hv_virtio_blk_stop(board.aux_blk) != 0) bad = 1;
+    }
     __atomic_store_n(&quiesce_result, bad ? 0 : 1, __ATOMIC_RELEASE);
     return bad ? -1 : 0;
 }
@@ -485,8 +493,9 @@ static void *cpu0_thread(void *unused) {
     (void)unused;
     hv_vm_cpu_qos();
     int r = hv_vm_run_cpu0();
-    hv_vm_quiesce();
-    hv_vm_flush_disks();
+    /* When the other threads or the disk workers could not be stopped, nothing says the writes the guest was told had completed all reached the file: the flush is NOT run (and not
+       reported as a success), and the end is still reported (hv_vm_quiesced_ok() says 0) so the caller can end the process and not restart it. */
+    if (hv_vm_quiesce() == 0) hv_vm_flush_disks();
     if (exit_cb) exit_cb(r);
     return NULL;
 }

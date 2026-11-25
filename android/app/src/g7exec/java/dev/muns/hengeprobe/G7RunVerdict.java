@@ -39,9 +39,14 @@ public final class G7RunVerdict {
                 s ? Long.parseLong(m.group(7)) : -1, s ? Long.parseLong(m.group(8)) : -1, s ? Long.parseLong(m.group(9)) : -1);
     }
 
-    /** The stop is confirmed, every disk write was flushed with success, and (when the runner says so) every CPU thread and disk worker was finished first. */
+    /** For READING a line (old logs included): the stop is confirmed, the flush succeeded and nothing says the threads/workers were left running (an older runner that did not report it passes). */
     public boolean cleanStop() {
         return stopConfirmed && diskFlush.equals("ok") && quiesced != 0;
+    }
+
+    /** For ACTING on a line (a restart): the runner SAID every CPU thread, the kicker and the disk workers were finished before the flush. Not reported (-1) is not enough. */
+    public boolean verifiedQuiesced() {
+        return stopConfirmed && diskFlush.equals("ok") && quiesced == 1;
     }
 
     public boolean isRestart() { return RESTART.equals(outcome); }

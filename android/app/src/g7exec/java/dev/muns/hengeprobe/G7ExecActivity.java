@@ -36,7 +36,7 @@ public class G7ExecActivity extends Activity {
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
     private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
-    private File restartClone; private int restartUsb; private volatile boolean restartPending;
+    private File restartClone; private int restartUsb; private volatile boolean restartPending; private int restartGen;   // restartGen changes whenever a scheduled restart is cancelled or a run starts: an old callback then does nothing
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
@@ -146,7 +146,13 @@ public class G7ExecActivity extends Activity {
             }, "g7-aux-compare").start();
         });
         cbtn.setOnClickListener(v -> confirmCloneBoot());
-        cbStop.setOnClickListener(v -> { restartPending = false; restartClone = null; G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
+        cbStop.setOnClickListener(v -> {
+            boolean wasPending = restartPending;
+            restartPending = false; restartClone = null; restartGen++;
+            G7CloneBoot.Run r = G7CloneBoot.current();
+            if (wasPending) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("예약된 자동 재시작을 취소했습니다."); }
+            else if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); }
+        });
         cbShare.setOnClickListener(v -> {   // the file on disk, not the Run object: still works after the app was restarted
             G7CloneBoot.Run r = G7CloneBoot.current();
             File f = r != null ? G7ExecLauncher.logFile(getFilesDir(), r.logName()) : null;
@@ -306,7 +312,7 @@ public class G7ExecActivity extends Activity {
                     G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode);
                     status.setText(st.message);
                     if (st.started) {
-                        restartPolicy.reset(); restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartPending = false;
+                        restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartPending = false;
                         cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll();
                     }
                 }).show();
@@ -324,8 +330,8 @@ public class G7ExecActivity extends Activity {
     }
 
     /** The guest asked for a restart and the policy allowed it: the same clone again, through the same gates as a person's start (validate, isolation, ROM/ECID). */
-    private void restartCloneBoot() {
-        if (!restartPending || restartClone == null) return;
+    private void restartCloneBoot(int gen) {
+        if (gen != restartGen || !restartPending || restartClone == null) return;   // cancelled, or a newer start/restart replaced this one
         restartPending = false;
         G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb);
         status.setText("자동 재시작: " + st.message);
@@ -353,7 +359,11 @@ public class G7ExecActivity extends Activity {
             if (restartClone != null && !restartPending) {
                 G7RestartPolicy.Decision d = restartPolicy.decide(r.parsedVerdict(), r.wasCancelled() || r.exitCode() != 0, System.currentTimeMillis());
                 msg += "\n" + d.reason;
-                if (d.restart) { restartPending = true; log.postDelayed(this::restartCloneBoot, d.delayMs); } else restartClone = null;
+                if (d.restart) {
+                    restartPending = true; final int gen = ++restartGen;
+                    cbtn.setEnabled(false); cbStop.setEnabled(true);   // while waiting: no second start, and the stop button cancels the restart
+                    log.postDelayed(() -> restartCloneBoot(gen), d.delayMs);
+                } else restartClone = null;
             }
             status.setText(msg);
             return;

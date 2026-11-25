@@ -133,6 +133,7 @@ static void *worker(void *opaque) {
         while (b->fence || b->claimed == __atomic_load_n(&b->submitted, __ATOMIC_ACQUIRE)) {
             if (b->stopping && !b->fence && b->claimed == b->submitted) {
                 pthread_mutex_unlock(&b->mu);
+                __atomic_add_fetch(&b->workers_exited, 1, __ATOMIC_RELEASE);
                 return NULL;
             }
             pthread_cond_wait(&b->cv, &b->mu);
@@ -214,14 +215,36 @@ void hv_virtio_blk_drain(HvVirtioBlk *b) {
     hv_virtio_blk_poll(b);
 }
 
-void hv_virtio_blk_stop(HvVirtioBlk *b) {
-    if (!b) return;
+/* Ask the workers to finish what they hold and end, and wait for them, but not forever: a request stuck in the kernel (a stalled storage device) must not keep the machine's end
+   from being reported. 0 when every worker ended and was joined; -1 when one did not end within HV_VBLK_STOP_WAIT_MS (it is detached and the caller must NOT treat the
+   disks as quiet: a write may still be in flight). */
+#define HV_VBLK_STOP_WAIT_MS 5000
+int hv_virtio_blk_stop(HvVirtioBlk *b) {
+    if (!b) return 0;
     pthread_mutex_lock(&b->mu);
     b->stopping = 1;
     pthread_cond_broadcast(&b->cv);
     pthread_mutex_unlock(&b->mu);
-    for (int i = 0; i < b->workers_started; i++) pthread_join(b->worker[i], NULL);
+    int waited = 0;
+    while (__atomic_load_n(&b->workers_exited, __ATOMIC_ACQUIRE) < b->workers_started && waited < HV_VBLK_STOP_WAIT_MS) {
+        pthread_mutex_lock(&b->mu);
+        pthread_cond_broadcast(&b->cv);
+        pthread_mutex_unlock(&b->mu);
+        usleep(1000);
+        waited++;
+    }
+    int bad = 0;
+    if (__atomic_load_n(&b->workers_exited, __ATOMIC_ACQUIRE) < b->workers_started) {
+        fprintf(stderr, "virtio-blk: %d of %d disk worker(s) did not end within %d ms after the stop; not joined (a request may still be in flight)\n",
+                b->workers_started - __atomic_load_n(&b->workers_exited, __ATOMIC_ACQUIRE), b->workers_started, HV_VBLK_STOP_WAIT_MS);
+        bad = -1;
+        for (int i = 0; i < b->workers_started; i++) pthread_detach(b->worker[i]);   /* a detached thread that did end is harmless; one that did not is left to the process end */
+    } else {
+        for (int i = 0; i < b->workers_started; i++) pthread_join(b->worker[i], NULL);
+    }
     b->workers_started = 0;
+    __atomic_store_n(&b->workers_exited, 0, __ATOMIC_RELEASE);
+    return bad;
 }
 
 /* Workers again after hv_virtio_blk_stop (a machine paused to be saved runs on). 0, or -1 if none started. */
@@ -246,7 +269,7 @@ int hv_virtio_blk_idle(HvVirtioBlk *b) {
 
 void hv_virtio_blk_destroy(HvVirtioBlk *b) {
     if (!b) return;
-    hv_virtio_blk_stop(b);
+    if (hv_virtio_blk_stop(b) != 0) return;   /* a worker that did not end still uses the structure: leaked on purpose rather than freed under it */
     pthread_mutex_destroy(&b->mu);
     pthread_cond_destroy(&b->cv);
     pthread_cond_destroy(&b->done_cv);

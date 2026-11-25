@@ -324,7 +324,7 @@ int main(int argc, char **argv) {
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);
     int confirmed = atomic_load(&g_exited);
-    int flush_rc = confirmed ? hv_vm_flush_disks_checked() : -2;   /* -2: not attempted (the machine's stop was not confirmed) */
+    int flush_rc = confirmed && hv_vm_quiesced_ok() == 1 ? hv_vm_flush_disks_checked() : -2;   /* -2 also when the other threads or the disk workers did not end: the flush alone then proves nothing */   /* -2: not attempted (the machine's stop was not confirmed) */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);

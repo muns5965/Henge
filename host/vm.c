@@ -108,6 +108,25 @@ static int bgra_all_black(const uint8_t *px, uint32_t w, uint32_t h) {
     return 1;
 }
 
+/* DIAGNOSTIC (log only, no effect on what is shown): why the PVG surface counts as black or not. Once at the first surface and then about every 30 s of calls (the pump asks ~10x/s), it
+   logs the surface size, how many pixels have a non-zero colour byte, the first such pixel and its value, and the largest colour byte. "boot-display-fallback-v2" also tells which build is running. */
+static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
+    static unsigned calls;
+    if (calls++ % 300) return;
+    size_t n = (size_t)w * h, nz = 0, first = (size_t)-1;
+    uint32_t firstv = 0, maxc = 0;
+    const uint32_t *p = (const uint32_t *)(const void *)px;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t v = p[i] & 0x00ffffffu;
+        if (!v) continue;
+        if (nz++ == 0) { first = i; firstv = p[i]; }
+        uint32_t m = v & 0xff; if (((v >> 8) & 0xff) > m) m = (v >> 8) & 0xff; if (((v >> 16) & 0xff) > m) m = (v >> 16) & 0xff;
+        if (m > maxc) maxc = m;
+    }
+    fprintf(stderr, "hengevm: display: boot-display-fallback-v2 surface %ux%u nonzero_pixels=%zu first=%zd (x=%zu y=%zu) first_value=0x%08x max_colour_byte=%u\n",
+            w, h, nz, first == (size_t)-1 ? (ssize_t)-1 : (ssize_t)first, w ? (first == (size_t)-1 ? 0 : first % w) : 0, w ? (first == (size_t)-1 ? 0 : first / w) : 0, firstv, maxc);
+}
+
 int hv_vm_boot_display(HvBootDisplay *d) {
     /* What the guest's GPU has drawn, once it has drawn anything. */
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
@@ -143,6 +162,7 @@ int hv_vm_boot_display(HvBootDisplay *d) {
             }
         }
         if (rc == 0) {
+            display_diag(pvg_live_buf, sw, sh);
             if (!bgra_all_black(pvg_live_buf, sw, sh)) {
                 d->pixels = pvg_live_buf;
                 d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;

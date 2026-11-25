@@ -40,12 +40,12 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
         setContentView(screen);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.6 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.6.1 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
         corpus.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.6 라이브러리 전체 단위시험");root.addView(units);
+        units=new Button(this);units.setText("5.6.1 라이브러리 전체 단위시험");root.addView(units);
         units.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
         compare=new Button(this);compare.setText("O0 / O3 / LTO · AIR 11종 정밀 비교");root.addView(compare);
         LinearLayout previews=new LinearLayout(this);previews.setOrientation(LinearLayout.HORIZONTAL);root.addView(previews);
@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
         run.setOnClickListener(v -> {run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
     }
     private void testCompare(){
-        StringBuilder t=new StringBuilder("5.6 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
+        StringBuilder t=new StringBuilder("5.6.1 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
         String[] modes={"debug","release","lto"};
         int passed=0;String baseline=null;
         java.util.Map<String,String> corpusBaseline=new java.util.HashMap<>();
@@ -146,7 +146,7 @@ public class MainActivity extends Activity {
                 }
                 corpusOk &= functions==66&&corpusBaseline.size()==66;
                 ok &= corpusOk;
-                t.append(String.format(Locale.ROOT,"CORPUS_COMPARE %s functions=%d sum_function_medians_ms=%.6f result=%s%n",modes[i],functions,sumWarm,corpusOk?"PASS":"FAIL"));
+                t.append(String.format(Locale.ROOT,"CORPUS_COMPARE %s functions=%d sum_function_medians_ms=%.6f timing_not_comparable result=%s%n",modes[i],functions,sumWarm,corpusOk?"PASS":"FAIL"));
                 label=String.format(Locale.ROOT,"%s\n%d/66 함수\n합산 %.3f ms",ok?"PASS":"FAIL",functions,sumWarm);
             }catch(Exception e){t.append("COMPARE ERROR ").append(modes[i]).append(' ').append(e).append('\n');}
             if(ok)passed++;
@@ -360,7 +360,7 @@ public class MainActivity extends Activity {
         runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.6\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.6.1\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");
@@ -422,6 +422,15 @@ public class MainActivity extends Activity {
             if(exe.isFile())t.append("BENCH exit=").append(auxiliary(new String[]{exe.getAbsolutePath(),"10000","--no-display"},t)).append('\n');
             else t.append("BENCH unavailable (see build manifest)\n");
         }catch(Exception e){t.append("BENCH ERROR ").append(e).append('\n');}
+        try{
+            t.append("\n--- memory correctness (MOCK, no real Vulkan driver) ---\n");
+            File exe=new File(getApplicationInfo().nativeLibraryDir,"libmemorymock.so");
+            int rc=auxiliary(new String[]{exe.getAbsolutePath()},t);
+            t.append("MEMORY MOCK RESULT ").append(rc==0?"PASS":"FAIL").append(" exit=").append(rc).append('\n');
+            t.append("\n--- patched library real Vulkan render smoke ---\n");
+            rc=auxiliary(new String[]{new File(getApplicationInfo().nativeLibraryDir,"libfixedsmoke.so").getAbsolutePath()},t);
+            t.append("PATCHED SMOKE exit=").append(rc).append("; inspect PASS/SKIP markers above\n");
+        }catch(Exception e){t.append("MEMORY TEST ERROR ").append(e).append('\n');}
         t.append("\nUNIT SUMMARY total=").append(total).append(" PASS=").append(pass).append(" FAIL=").append(fail).append(" SKIP=").append(skip).append(" BUILD_FAIL=").append(buildFail).append(" NOT_RUN=").append(notRun).append('\n');
         t.append("Scope: original standalone tests; PASS is not full Metal API or GPU semantic coverage.\n");
         final String snapshot=t.toString();

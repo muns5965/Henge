@@ -38,12 +38,12 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
         setContentView(screen);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.2 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.3 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
         corpus.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.2 라이브러리 전체 단위시험");root.addView(units);
+        units=new Button(this);units.setText("5.3 라이브러리 전체 단위시험");root.addView(units);
         units.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
         String[] titles={"1 · AIR 삼각형","2 · 텍스처 샘플링","3 · 알파 블렌딩","4 · RGBA16Float 및 공통 픽셀 변환","5 · 기기 내부 AIR 변환 및 그리기","6 · 외부 엔진 렌더 타겟 및 읽기"};
         for(int i=0;i<6;i++){
@@ -138,6 +138,15 @@ public class MainActivity extends Activity {
                     if(files!=null)for(File f:files){
                         String key=name+"/"+f.getName();String h=hash(f);boolean match=h.equals(expected.get(key));boolean val=valid.contains(key);
                         t.append(f.getName()).append(" SHA256 ").append(h).append(" hostMatch=").append(match).append(" hostSpirvVal=").append(val).append('\n');ok&=match&&val;count++;
+                        // Separate optimization evidence from the original translation result.
+                        File opt=new File(dir,f.getName()+".optimized");
+                        File optExe=new File(nativeDir,"libspirvopt.so"), valExe=new File(nativeDir,"libspirvval.so");
+                        long started=System.nanoTime();
+                        int optRc=auxiliary(new String[]{optExe.getAbsolutePath(),"--target-env=vulkan1.2","-O",f.getAbsolutePath(),"-o",opt.getAbsolutePath()},t);
+                        double optMs=(System.nanoTime()-started)/1e6;
+                        int valRc=optRc==0&&opt.isFile()?auxiliary(new String[]{valExe.getAbsolutePath(),"--target-env","vulkan1.2",opt.getAbsolutePath()},t):-1;
+                        t.append(String.format(Locale.ROOT,"OPT_COMPARE %s original=%d optimized=%d wall_ms=%.3f validation=%s; GPU semantics not tested%n",f.getName(),f.length(),opt.length(),optMs,valRc==0?"PASS":"FAIL"));
+
                     }
                     int hostCount=0;for(String key:expected.keySet())if(key.startsWith(name+"/"))hostCount++;
                     ok&=count==hostCount;
@@ -259,7 +268,7 @@ public class MainActivity extends Activity {
         runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.2\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.3\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");
@@ -315,6 +324,12 @@ public class MainActivity extends Activity {
                 }
             }
         }catch(Exception e){t.append("SUITE ERROR: ").append(e).append('\n');}
+        try{
+            t.append("\n--- protocol microbenchmark (decoder only; not FPS) ---\n");
+            File exe=new File(getApplicationInfo().nativeLibraryDir,"libut_translator_microbench.so");
+            if(exe.isFile())t.append("BENCH exit=").append(auxiliary(new String[]{exe.getAbsolutePath(),"10000","--no-display"},t)).append('\n');
+            else t.append("BENCH unavailable (see build manifest)\n");
+        }catch(Exception e){t.append("BENCH ERROR ").append(e).append('\n');}
         t.append("\nUNIT SUMMARY total=").append(total).append(" PASS=").append(pass).append(" FAIL=").append(fail).append(" SKIP=").append(skip).append(" BUILD_FAIL=").append(buildFail).append(" NOT_RUN=").append(notRun).append('\n');
         t.append("Scope: original standalone tests; PASS is not full Metal API or GPU semantic coverage.\n");
         final String snapshot=t.toString();

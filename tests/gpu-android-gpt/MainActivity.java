@@ -40,14 +40,14 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
         setContentView(screen);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.4 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.5 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
         corpus.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.4 라이브러리 전체 단위시험");root.addView(units);
+        units=new Button(this);units.setText("5.5 라이브러리 전체 단위시험");root.addView(units);
         units.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
-        compare=new Button(this);compare.setText("O0 / O3 / LTO 실제 Metal 삼각형 비교");root.addView(compare);
+        compare=new Button(this);compare.setText("O0 / O3 / LTO · AIR 11종 정밀 비교");root.addView(compare);
         LinearLayout previews=new LinearLayout(this);previews.setOrientation(LinearLayout.HORIZONTAL);root.addView(previews);
         String[] labels={"Debug O0","Release O3","Release + LTO"};
         for(int i=0;i<3;i++){
@@ -80,9 +80,10 @@ public class MainActivity extends Activity {
         run.setOnClickListener(v -> {run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
     }
     private void testCompare(){
-        StringBuilder t=new StringBuilder("5.4 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
+        StringBuilder t=new StringBuilder("5.5 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
         String[] modes={"debug","release","lto"};
         int passed=0;String baseline=null;
+        java.util.Map<String,String> corpusBaseline=new java.util.HashMap<>();
         try(BufferedReader br=new BufferedReader(new InputStreamReader(getAssets().open("build-flags.txt")))){
             String line;while((line=br.readLine())!=null)t.append(line).append('\n');
         }catch(Exception e){t.append("FLAGS ERROR ").append(e).append('\n');}
@@ -119,7 +120,34 @@ public class MainActivity extends Activity {
                 ok=same&&negative&&host&&equal;
                 java.util.Arrays.sort(translate);java.util.Arrays.sort(renderMs);
                 t.append(String.format(Locale.ROOT,"COMPARE %s translation_process_ms median=%.3f max=%.3f render_process_ms median=%.3f max=%.3f repeat_equal=%b baseline_equal=%b host_equal=%b negative=%b%n",modes[i],translate[3],translate[6],renderMs[3],renderMs[6],same,equal,host,negative));
-                label=String.format(Locale.ROOT,"%s\n변환 %.2f ms\nGPU 경로 %.2f ms",ok?"PASS":"FAIL",translate[3],renderMs[3]);
+                int functions=0;boolean corpusOk=true;double sumWarm=0;
+                try(BufferedReader manifest=new BufferedReader(new InputStreamReader(getAssets().open("manifest.txt")))){
+                    String name;while((name=manifest.readLine())!=null){
+                        if(!name.matches("[a-z0-9_]+"))throw new IOException("bad fixture");
+                        File cd=new File(dir,name);if(!cd.isDirectory()&&!cd.mkdirs())throw new IOException("mkdir");
+                        for(File old:cd.listFiles())if(!old.delete())throw new IOException("stale");
+                        t.append("\nCASE ").append(name).append(" MODE ").append(modes[i]).append('\n');
+                        int begin=t.length();
+                        int rc=auxiliary(new String[]{new File(nativeDir,"libbench_"+modes[i]+".so").getAbsolutePath(),asset(name+".airdata").getAbsolutePath(),name.endsWith("_vert")?"vertex":"fragment",cd.getAbsolutePath(),name.equals("login_xgc_frag")?"10":"100"},t);
+                        corpusOk &= rc==0;
+                        java.util.regex.Matcher metric=java.util.regex.Pattern.compile("NATIVE_BENCH fn=\\d+ first_ms=[0-9.]+ warm_n=\\d+ median_ms=([0-9.]+)").matcher(t.substring(begin));
+                        int metrics=0;while(metric.find()){sumWarm+=Double.parseDouble(metric.group(1));metrics++;}
+                        File[] outputs=cd.listFiles((d,n)->n.endsWith(".spv"));if(outputs==null||outputs.length==0){corpusOk=false;continue;}
+                        corpusOk &= metrics==outputs.length;
+                        for(File spv:outputs){
+                            functions++;String key=name+"/"+spv.getName(),sha=hash(spv);
+                            if(i==0)corpusBaseline.put(key,sha);
+                            boolean equalHash=sha.equals(corpusBaseline.get(key));
+                            int vr=auxiliary(new String[]{new File(nativeDir,"libspirvval.so").getAbsolutePath(),"--target-env","vulkan1.2",spv.getAbsolutePath()},t);
+                            corpusOk &= equalHash&&vr==0;
+                            t.append("CORPUS_SHA ").append(key).append(' ').append(sha).append(" baseline_equal=").append(equalHash).append(" val=").append(vr).append('\n');
+                        }
+                    }
+                }
+                corpusOk &= functions==66&&corpusBaseline.size()==66;
+                ok &= corpusOk;
+                t.append(String.format(Locale.ROOT,"CORPUS_COMPARE %s functions=%d sum_function_medians_ms=%.6f result=%s%n",modes[i],functions,sumWarm,corpusOk?"PASS":"FAIL"));
+                label=String.format(Locale.ROOT,"%s\n%d/66 함수\n합산 %.3f ms",ok?"PASS":"FAIL",functions,sumWarm);
             }catch(Exception e){t.append("COMPARE ERROR ").append(modes[i]).append(' ').append(e).append('\n');}
             if(ok)passed++;
             final Bitmap b=preview;final String status=label;
@@ -331,7 +359,7 @@ public class MainActivity extends Activity {
         runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.4\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.5\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");

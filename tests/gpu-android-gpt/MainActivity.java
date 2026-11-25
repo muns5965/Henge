@@ -40,12 +40,12 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
         setContentView(screen);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.5 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.6 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
         corpus.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.5 라이브러리 전체 단위시험");root.addView(units);
+        units=new Button(this);units.setText("5.6 라이브러리 전체 단위시험");root.addView(units);
         units.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
         compare=new Button(this);compare.setText("O0 / O3 / LTO · AIR 11종 정밀 비교");root.addView(compare);
         LinearLayout previews=new LinearLayout(this);previews.setOrientation(LinearLayout.HORIZONTAL);root.addView(previews);
@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
         run.setOnClickListener(v -> {run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
     }
     private void testCompare(){
-        StringBuilder t=new StringBuilder("5.5 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
+        StringBuilder t=new StringBuilder("5.6 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
         String[] modes={"debug","release","lto"};
         int passed=0;String baseline=null;
         java.util.Map<String,String> corpusBaseline=new java.util.HashMap<>();
@@ -232,11 +232,12 @@ public class MainActivity extends Activity {
                         // Separate optimization evidence from the original translation result.
                         File opt=new File(dir,f.getName()+".optimized");
                         File optExe=new File(nativeDir,"libspirvopt.so"), valExe=new File(nativeDir,"libspirvval.so");
+                        if(opt.exists()&&!opt.delete())throw new IOException("stale optimized output");
                         long started=System.nanoTime();
                         int optRc=auxiliary(new String[]{optExe.getAbsolutePath(),"--target-env=vulkan1.2","-O",f.getAbsolutePath(),"-o",opt.getAbsolutePath()},t);
                         double optMs=(System.nanoTime()-started)/1e6;
                         int valRc=optRc==0&&opt.isFile()?auxiliary(new String[]{valExe.getAbsolutePath(),"--target-env","vulkan1.2",opt.getAbsolutePath()},t):-1;
-                        t.append(String.format(Locale.ROOT,"OPT_COMPARE %s original=%d optimized=%d wall_ms=%.3f validation=%s; GPU semantics not tested%n",f.getName(),f.length(),opt.length(),optMs,valRc==0?"PASS":"FAIL"));
+                        t.append(String.format(Locale.ROOT,"OPT_COMPARE %s original=%d optimized=%d wall_ms=%.3f opt_exit=%d val_exit=%d validation=%s; original retained; GPU semantics not tested%n",f.getName(),f.length(),opt.length(),optMs,optRc,valRc,valRc==0?"PASS":"FAIL"));
 
                     }
                     int hostCount=0;for(String key:expected.keySet())if(key.startsWith(name+"/"))hostCount++;
@@ -359,7 +360,7 @@ public class MainActivity extends Activity {
         runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.5\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.6\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");

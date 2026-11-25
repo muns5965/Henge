@@ -99,7 +99,7 @@ int main(int argc,char **argv){
    o[0]=p[2];o[1]=p[1];o[2]=p[0];o[3]=p[3];
   }
  }
- if(stage==4){for(int y=0;y<H;y++)hv_half_row_to_bgra((const uint16_t*)raw+y*W*4,bgra+y*W*4,W);}
+ if(stage==4){const uint8_t *lut=hv_half_to_byte_table();if(!lut)return 2;for(int y=0;y<H;y++)hv_half_row_to_bgra((const uint16_t*)raw+y*W*4,bgra+y*W*4,W,lut);for(int y=0;y<H;y++)for(int x=0;x<W;x++){uint8_t *p=bgra+(y*W+x)*4;if(p[0]!=255||p[1]!=(uint8_t)((y/16)*.25f*255+.5f)||p[2]!=(uint8_t)((x/16)*.25f*255+.5f)||p[3]!=255)bad++;}}
  const char *out=getenv("GPU_TEST_OUTPUT");if(out){FILE *f=fopen(out,"wb");if(!f)return 2;size_t z=fwrite(bgra,1,sizeof bgra,f);int e=fclose(f);if(z!=sizeof bgra||e)return 2;}
  printf("STAGE %d pixels: %d checked, %u mismatched\n",stage,N,bad);printf("STAGE %d RESULT: %s\n",stage,bad?"FAIL":"PASS");vkUnmapMemory(d,rbm);return bad?1:0;
 }

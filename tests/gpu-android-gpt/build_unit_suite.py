@@ -111,7 +111,7 @@ def build(entry):
     name,src,registered=entry
     out='libut_'+name.replace('-','_')+'.so'
     group='MESON_TARGET' if registered else 'EXTRA_SOURCE'
-    if name in manual:
+    if name in manual and name!='translator-microbench':
         return (name,group,'NOT_RUN','-',manual[name])
     args=[cc,'-std=c11','-O2','-fPIE','-pie','-D_GNU_SOURCE','-DLAGFX_HAVE_VULKAN=1',
           '-DSRCDIR="tests"','-DLAGFX_TEST_FIXTURE_DIR="tests/fixtures"',
@@ -124,7 +124,7 @@ def build(entry):
     try:
         p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=90)
         (logs/(name+'.txt')).write_text(p.stdout)
-        if p.returncode==0: return (name,group,'BUILT',out,'-')
+        if p.returncode==0: return (name,group,'NOT_RUN' if name=='translator-microbench' else 'BUILT',out,'separate decoder benchmark' if name=='translator-microbench' else '-')
         (native/out).unlink(missing_ok=True)
         reason=next((x.strip() for x in p.stdout.splitlines() if 'error:' in x or 'undefined symbol' in x),'compiler exit '+str(p.returncode))
     except subprocess.TimeoutExpired:

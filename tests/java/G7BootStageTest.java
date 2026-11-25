@@ -17,6 +17,12 @@ public class G7BootStageTest {
         String s = t.summary();
         check("the summary has the times and says it is an estimate", s.contains("펌웨어 1초") && s.contains("커널 40초") && s.contains("사용자 공간 90초") && s.contains("화면 출력 100초") && s.contains("확정이 아님"));
         check("a tracker that saw nothing says so", new G7BootStage.Tracker().summary().contains("아직 보이지 않음"));
+        G7BootStage.Tracker r = new G7BootStage.Tracker();
+        check("recovery mode line is its own stage, once", r.feed("Entering iBootStage1 recovery mode, starting command prompt", 5000) == G7BootStage.Stage.RECOVERY && r.feed("Entering iBootStage1 recovery mode, starting command prompt", 6000) == null && r.seen(G7BootStage.Stage.RECOVERY));
+        check("EL0 after recovery is firmware, not user space", r.feed("hengevm: cpu 0 pc sample #200001 pc=0x7006c524 el=0 x30=0x70079a10", 205000) == G7BootStage.Stage.FIRMWARE && !r.seen(G7BootStage.Stage.USER));
+        check("summary says recovery", r.summary().contains("복구 모드") && r.summary().contains("사용자 공간 아직 보이지 않음"));
+        G7BootStage.Tracker u = new G7BootStage.Tracker();
+        check("without recovery EL0 is still user space", u.feed("hengevm: cpu 0 pc sample #1 pc=0x1000 el=0", 1000) == G7BootStage.Stage.USER);
         System.out.println(fails == 0 ? "G7BOOTSTAGE OK" : "G7BOOTSTAGE FAILED");
         System.exit(fails == 0 ? 0 : 1);
     }

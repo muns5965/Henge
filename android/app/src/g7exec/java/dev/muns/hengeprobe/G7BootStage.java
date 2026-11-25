@@ -10,9 +10,11 @@ import java.util.regex.Pattern;
  */
 public final class G7BootStage {
     private G7BootStage() {}
-    public enum Stage { FIRMWARE, KERNEL, USER, SCREEN }
+    public enum Stage { FIRMWARE, KERNEL, USER, SCREEN, RECOVERY }
     static final Pattern PC = Pattern.compile("hengevm: cpu [0-9]+ pc sample #[0-9]+ pc=(0x[0-9a-fA-F]+) el=([0-9])");
     static final Pattern FRAMES = Pattern.compile("frames published ([0-9]+)");
+    /** iBootStage1 prints this when it gives up on the normal boot and waits at its command prompt. */
+    static final Pattern RECOVERY = Pattern.compile("iBoot[A-Za-z0-9]* recovery mode");
     static final long KERNEL_BASE = 0xfffffe0000000000L;
 
     /** The stage of one pc sample, or null for a line that is not one. */
@@ -28,11 +30,18 @@ public final class G7BootStage {
 
     /** Remembers when each stage was first seen (seconds since the start of the run), and the last stage seen. */
     public static final class Tracker {
-        private final long[] first = {-1, -1, -1, -1};
+        private final long[] first = {-1, -1, -1, -1, -1};
         private Stage last;
         /** Feeds one output line; returns the stage when this line is the FIRST sign of it (so the caller can write one marker line), else null. */
         public synchronized Stage feed(String line, long elapsedMs) {
+            if (RECOVERY.matcher(line).find()) {
+                last = Stage.RECOVERY;
+                if (first[Stage.RECOVERY.ordinal()] < 0) { first[Stage.RECOVERY.ordinal()] = elapsedMs; return Stage.RECOVERY; }
+                return null;
+            }
             Stage s = of(line);
+            // After the firmware reported recovery mode, EL0 code is the firmware's own (iBoot runs part of itself at EL0): it is NOT macOS user space.
+            if (s == Stage.USER && first[Stage.RECOVERY.ordinal()] >= 0) s = Stage.FIRMWARE;
             if (s == null) {
                 Matcher f = FRAMES.matcher(line);
                 if (f.find() && !f.group(1).equals("0") && first[Stage.SCREEN.ordinal()] < 0) { first[Stage.SCREEN.ordinal()] = elapsedMs; return Stage.SCREEN; }
@@ -46,6 +55,7 @@ public final class G7BootStage {
             StringBuilder sb = new StringBuilder("부팅 단계(CPU 샘플로 추정한 값이며 확정이 아님): ");
             String[] names = {"펌웨어", "커널", "사용자 공간", "화면 출력"};
             for (int i = 0; i < 4; i++) sb.append(names[i]).append(' ').append(first[i] < 0 ? "아직 보이지 않음" : (first[i] / 1000) + "초").append(i < 3 ? ", " : "");
+            if (first[Stage.RECOVERY.ordinal()] >= 0) sb.append(" | iBoot 복구 모드 진입 ").append(first[Stage.RECOVERY.ordinal()] / 1000).append("초(이후 EL0 샘플은 사용자 공간으로 세지 않음)");
             if (last != null) sb.append(" | 마지막 샘플: ").append(last.name().toLowerCase());
             return sb.toString();
         }

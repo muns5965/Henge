@@ -57,44 +57,8 @@ int hv_vm_ncpus(void) { return ncpus; }
 static uint8_t *pvg_live_buf;
 static size_t pvg_live_cap;
 
-int hv_vm_boot_display(HvBootDisplay *d) {
-    /* What the guest's GPU has drawn, once it has drawn anything. */
-    HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
-    if (!pvg) return -1;
-    const uint8_t *frame;
-    uint32_t fw, fh;
-    if (hv_pvg_lite_frame(pvg, &frame, &fw, &fh) == 0) {
-        d->pixels = (uint8_t *)frame;
-        d->width = fw, d->height = fh, d->stride = fw * 4, d->source = HV_SCREEN_PVG;
-        return 0;
-    }
-    /* No real GPU frame (certainly true on Android: host/pvg_metal_stub.c's hv_pvg_metal_frame() always
-       returns -1 there) -- try the surface the guest itself last swapped before falling back to the raw
-       boot_args scan below. Read-only and bounded exactly like that scan; see hv_pvg_lite_live_surface_bgra()'s
-       own comment for the locking/ownership contract that makes this safe to call continuously while the
-       guest keeps running. */
-    if (!pvg_live_cap) {
-        pvg_live_cap = 1920u * 1080u * 4u;
-        pvg_live_buf = malloc(pvg_live_cap);
-        if (!pvg_live_buf) pvg_live_cap = 0;
-    }
-    if (pvg_live_buf) {
-        uint32_t sw, sh;
-        size_t need = 0;
-        int rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, &need);
-        if (rc != 0 && need > pvg_live_cap) {
-            uint8_t *grown = realloc(pvg_live_buf, need);
-            if (grown) {
-                pvg_live_buf = grown, pvg_live_cap = need;
-                rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, NULL);
-            }
-        }
-        if (rc == 0) {
-            d->pixels = pvg_live_buf;
-            d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;
-            return 0;
-        }
-    }
+/* The guest's own boot framebuffer (boot_args Video), found by scanning RAM. Split out of hv_vm_boot_display() so the PVG-surface branch can fall back to it. 0 on success, -1 if there is none. */
+static int boot_args_display(HvBootDisplay *d) {
     static uint64_t found; /* RAM offset of boot_args */
     uint8_t *ram = board.ram;
     uint64_t size = board.ram_size;
@@ -133,6 +97,70 @@ int hv_vm_boot_display(HvBootDisplay *d) {
         }
     }
     return -1;
+}
+
+/* True if every pixel's colour bytes are zero (alpha ignored: a black pixel may carry alpha 0xff). A surface the guest GPU never drew into stays all-zero. */
+static int bgra_all_black(const uint8_t *px, uint32_t w, uint32_t h) {
+    const uint64_t *q = (const uint64_t *)(const void *)px;   /* pvg_live_buf comes from malloc/realloc: 8-byte aligned */
+    size_t n = (size_t)w * h / 2;                              /* two pixels per word */
+    for (size_t i = 0; i < n; i++) if (q[i] & 0x00ffffff00ffffffull) return 0;
+    if (((size_t)w * h) & 1) { uint32_t last = ((const uint32_t *)(const void *)px)[(size_t)w * h - 1]; if (last & 0x00ffffffu) return 0; }
+    return 1;
+}
+
+int hv_vm_boot_display(HvBootDisplay *d) {
+    /* What the guest's GPU has drawn, once it has drawn anything. */
+    HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
+    if (!pvg) return -1;
+    const uint8_t *frame;
+    uint32_t fw, fh;
+    if (hv_pvg_lite_frame(pvg, &frame, &fw, &fh) == 0) {
+        d->pixels = (uint8_t *)frame;
+        d->width = fw, d->height = fh, d->stride = fw * 4, d->source = HV_SCREEN_PVG;
+        return 0;
+    }
+    /* No real GPU frame (certainly true on Android: host/pvg_metal_stub.c's hv_pvg_metal_frame() always
+       returns -1 there) -- try the surface the guest itself last swapped before falling back to the raw
+       boot_args scan below. Read-only and bounded exactly like that scan; see hv_pvg_lite_live_surface_bgra()'s
+       own comment for the locking/ownership contract that makes this safe to call continuously while the
+       guest keeps running. */
+    if (!pvg_live_cap) {
+        pvg_live_cap = 1920u * 1080u * 4u;
+        pvg_live_buf = malloc(pvg_live_cap);
+        if (!pvg_live_buf) pvg_live_cap = 0;
+    }
+    int surf_black = 0;
+    uint32_t surf_w = 0, surf_h = 0;
+    if (pvg_live_buf) {
+        uint32_t sw, sh;
+        size_t need = 0;
+        int rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, &need);
+        if (rc != 0 && need > pvg_live_cap) {
+            uint8_t *grown = realloc(pvg_live_buf, need);
+            if (grown) {
+                pvg_live_buf = grown, pvg_live_cap = need;
+                rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, NULL);
+            }
+        }
+        if (rc == 0) {
+            if (!bgra_all_black(pvg_live_buf, sw, sh)) {
+                d->pixels = pvg_live_buf;
+                d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;
+                return 0;
+            }
+            surf_black = 1, surf_w = sw, surf_h = sh;
+        }
+    }
+    /* The surface exists but is all black: the guest's GPU work was never executed (Android has no backend), so it would hide the boot framebuffer (the Apple logo) for good. Prefer the boot framebuffer, keep the surface as the last resort. */
+    if (surf_black) {
+        static int said;
+        if (!said) { said = 1; fprintf(stderr, "hengevm: display: PVG surface is all black; showing the boot framebuffer while it stays black\n"); }
+        if (boot_args_display(d) == 0) return 0;
+        d->pixels = pvg_live_buf;
+        d->width = surf_w, d->height = surf_h, d->stride = surf_w * 4, d->source = HV_SCREEN_PVG_SURFACE;
+        return 0;
+    }
+    return boot_args_display(d);
 }
 /* See the doc comment in vm.h: just reads back the `source` hv_vm_boot_display() itself already filled in,
    rather than re-deriving it from the pixel pointer -- a pointer-range check alone cannot any longer tell

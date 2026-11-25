@@ -93,6 +93,13 @@ public class G7CloneBootTest {
             G7CloneBoot.Start us = G7CloneBoot.startWith(sp(uf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, um);
             check("usb mode " + um + " reaches the command line, installer/ecid flags still absent", us.started && String.join(" ", lastCmd).contains("--usb-mode " + um) && !String.join(" ", lastCmd).contains("--installer")); waitDone(us.run);
         }
+        for (int secs : new int[]{900, 1800, 3600, 0}) {
+            Fake tf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+            G7CloneBoot.Start ts = G7CloneBoot.startWith(sp(tf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, secs);
+            check("run time " + secs + " s (0 = no limit) reaches the command line, the rest of the command is unchanged", ts.started && String.join(" ", lastCmd).contains("--seconds " + secs + " ") && String.join(" ", lastCmd).contains("--usb-mode 0") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 64")); waitDone(ts.run);
+        }
+        int beforeSecs = spawned;
+        check("a run time that is not one of the four choices (-1, 1, 7200): refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, -1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 7200).started && spawned == beforeSecs);
         int beforeUsb = spawned;
         check("unknown usb mode 5 / -1: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 5).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, -1).started && spawned == beforeUsb);
         int beforeE = spawned;

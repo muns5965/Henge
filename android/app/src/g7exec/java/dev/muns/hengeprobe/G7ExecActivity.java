@@ -36,7 +36,7 @@ public class G7ExecActivity extends Activity {
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
     private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
-    private File restartClone; private int restartUsb; private volatile boolean restartPending; private int restartGen;   // restartGen changes whenever a scheduled restart is cancelled or a run starts: an old callback then does nothing
+    private File restartClone; private int restartUsb, restartSeconds = G7CloneBoot.RUN_SECONDS; private volatile boolean restartPending; private int restartGen;   // restartGen changes whenever a scheduled restart is cancelled or a run starts: an old callback then does nothing
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
@@ -304,15 +304,22 @@ public class G7ExecActivity extends Activity {
         String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)", "D. C + 복구 환경변수 5개 읽기 전용 조회(getenv)", "E. D + auto-boot를 true로 저장(clone-001 전용, 값을 바꿈)"};
         for (int i = 0; i < um.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(um[i]); rb.setId(1000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); usb.addView(rb); }
         usb.check(1000);
-        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(ok);
-        new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(box)
+        final android.widget.RadioGroup lim = new android.widget.RadioGroup(this);
+        final String[] lm = {"실행 시간 15분(기존 시험용)", "실행 시간 30분", "실행 시간 1시간", "시간 제한 없음(중지 버튼으로 끝냄)"};
+        for (int i = 0; i < lm.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(lm[i]); rb.setId(2000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); lim.addView(rb); }
+        lim.check(2000);   // the old default, 15 minutes
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(ok);
+        final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // nine options and the clone list do not fit a phone's height
+        new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(sv)
                 .setNegativeButton("취소", null)
                 .setPositiveButton("부팅", (d, w) -> {
                     int mode = Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000));
-                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode);
+                    int limIdx = Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, lim.getCheckedRadioButtonId() - 2000));
+                    final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
+                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode, seconds);
                     status.setText(st.message);
                     if (st.started) {
-                        restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartPending = false;
+                        restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartSeconds = seconds; restartPending = false;
                         cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll();
                     }
                 }).show();
@@ -333,7 +340,7 @@ public class G7ExecActivity extends Activity {
     private void restartCloneBoot(int gen) {
         if (gen != restartGen || !restartPending || restartClone == null) return;   // cancelled, or a newer start/restart replaced this one
         restartPending = false;
-        G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb);
+        G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb, restartSeconds);
         status.setText("자동 재시작: " + st.message);
         if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
         else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again

@@ -78,3 +78,13 @@ xHCI 슬롯 검증(fc58667), disk.c fd=-1, vmapple 디스크 생성 실패 검�
 
 미반영: SCTLR(f512e8d)·CNTVOFF(8bde813)는 "시험 후 반영" — 이 환경에는 arm64 실행기가 없어 시험하지 못했고 JIT 오프셋과 묶여 있다. RestoreRamDisk 스트리밍, F_NOCACHE, 복원 러너 설정은 별도 작업.
 실기기 미검증: 재시작 동작, 종료 순서 변경이 복원 러너/installed 러너에 미치는 영향(복원 러너는 이번에 같은 hv_vm_start 경로를 쓴다).
+
+## 9. 갱신 (2026-11-25 오후): 실기기 결과와 이후 반영
+
+**실기기(APK 0.2+1a79de8, clone-001, 모드 A, 설치쌍·복제본 변경 없음):** 900초 시험 시간 제한까지 실행. iBootStage1 HALT 없음, CPU 샘플이 EL1(커널)과 EL0(사용자 공간)을 오감, 디스크 쓰기 요청 986건·거부 0건, 시간 제한에 의한 호스트 정지 후 `quiesced=1`, `disk_flush=ok`, 종료 코드 0, `outcome=host-stop psci=none`. 이로써 새 종료 구조(CPU·kicker·디스크 작업자 정리와 flush 순서)가 실기기에서 동작함이 확인됐다.
+
+**아직 미검증:** 게스트 SYSTEM_RESET/OFF 종료 경로와 자동 재시작(이번 실행에서는 게스트 종료가 없었다). SCTLR·CNTVOFF 이식이 기존 HALT를 없앴는지의 인과(이식 전후 비교 실행 없음; 이전 소스로 되돌려 확인하지 않는다). macOS가 로그인 화면까지 갔는지(화면을 가져오지 못해 판단 불가). 이전 보고의 "복제본 실행기에 시간 제한이 없다"는 틀렸다: `--seconds` 시험 시간 제한(앱 기본 900초)이 있고 도달하면 `stop_kind=time-limit`로 끝난다.
+
+**화면:** 게스트가 만든 화면 면은 fourcc `RGhA`(RGBA16Float, 픽셀당 8바이트)였고 `pvg_lite.c`는 `BGRA`만 허용해 PVG 프레임이 0장이었다(원본 `pvg_metal.m`은 이미 `RGhA`를 처리). 반영: 공통 모듈 `devices/pvg_half.h`(원본의 half→byte 표와 표시 인코딩 정책; `pvg_metal.m`도 같은 헤더 사용), `pvg_lite.c`의 live·last_surface·tally 경로가 `RGhA`를 `B,G,R,255`로 변환(픽셀 크기별 stride 검사, 표면이 페이지 목록 안에 들어가는지 검사), 거부 로그는 처음 1회 후 4096회마다. 시험: `tests/test_pvg.c`에 합성 데이터 13건(값·stride 패딩·페이지/오프셋 경계·로그 빈도·BGRA 회귀), x86 plain/ASan+UBSan 통과, half→float 변환은 65536개 값을 하드웨어 변환과 전수 비교해 일치. 한계: 실제 macOS 화면의 내용은 확인 전. `HV_PVG_HALF=linear`(모드 1)는 libm을 링크하는 빌드에서만 켜지고(`-DHV_HALF_LIBM`) Android 러너는 HV_* 환경변수를 제거하므로 모드 0 고정.
+
+**시간 제한:** 복제본 부팅 대화상자에서 15분/30분/1시간/제한 없음 선택(`--seconds 900|1800|3600|0`, 그 외 값은 거부). 중지·quiesce·flush 경로와 재시작 제한(10분에 3회)은 그대로이며, 자동 재시작은 같은 제한 시간을 따른다.

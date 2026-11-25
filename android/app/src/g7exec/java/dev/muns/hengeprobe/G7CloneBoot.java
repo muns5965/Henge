@@ -26,6 +26,9 @@ public final class G7CloneBoot {
 
     static final String LIB_NAME = "libg7cloneboot.so";
     static final int RUN_SECONDS = 900;
+    /** The run times a person may choose (seconds; 0 = no limit, the run then ends by the stop button, a guest end, a fatal engine error or the app closing). Anything else is refused. The stop, quiesce and flush path is the same for all of them. */
+    public static final int[] RUN_SECONDS_CHOICES = {900, 1800, 3600, 0};
+    static boolean validSeconds(int seconds) { for (int c : RUN_SECONDS_CHOICES) if (c == seconds) return true; return false; }
     static final String LOG_PREFIX = "g7_cboot_", LOG_SUFFIX = ".txt";
     static final int MAX_LOG_BYTES = 2 * 1024 * 1024;
     static final long STATUS_EVERY_MS = 30_000, STOP_WAIT_MS = 15_000;
@@ -183,7 +186,11 @@ public final class G7CloneBoot {
     }
 
     public static Start start(File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode) {
-        return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, usbMode);
+        return start(nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, usbMode, RUN_SECONDS);
+    }
+
+    public static Start start(File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
+        return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, usbMode, seconds);
     }
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus) {
@@ -191,6 +198,11 @@ public final class G7CloneBoot {
     }
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode) {
+        return startWith(sp, roms, enabled, g7Live, nativeLibDir, extVmDir, priv, filesDir, cloneDir, consent, runnerStatus, usbMode, RUN_SECONDS);
+    }
+
+    static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
+        if (!validSeconds(seconds)) return new Start(false, "허용되지 않은 실행 시간 제한이라 시작하지 않았습니다.", null);
         if (usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
         if (usbMode == USB_AUTOBOOT_FIX && (cloneDir == null || !"clone-001".equals(cloneDir.getName()))) return new Start(false, "E 모드(auto-boot 켜기)는 clone-001에서만 허용됩니다. 시작하지 않았습니다.", null);
         synchronized (G7ExecLauncher.START_LOCK) {
@@ -216,7 +228,7 @@ public final class G7CloneBoot {
             cmd.add("--rom"); cmd.add(rom.getPath());
             cmd.add("--clone-dir"); cmd.add(cdir.getPath());
             cmd.add("--ecid-dir"); cmd.add(pdir.getPath());   // plain canonical paths: the runner refuses anything else
-            cmd.add("--seconds"); cmd.add(String.valueOf(RUN_SECONDS));
+            cmd.add("--seconds"); cmd.add(String.valueOf(seconds));   // 0 = no limit (the runner then waits for the stop request, a guest end or a fatal error)
             cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add("64");
             cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode));
             Process p;

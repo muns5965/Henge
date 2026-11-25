@@ -139,7 +139,7 @@ jobs:
       - name: Run the engine tests natively (each test reported on its own)
         run: |
           status=0
-          for t in test_mmu test_jit test_mem test_exc; do
+          for t in test_mmu test_shutdown test_jit test_mem test_exc; do
             echo "=== $t"
             rc=0
             timeout 300 build-linux/$t || rc=$?

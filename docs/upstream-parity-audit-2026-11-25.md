@@ -69,3 +69,12 @@ D 정정: 원본 `recovery.c`(113·119행)에 `setenv auto-boot`/`saveenv`가 �
 ## 7. 한계
 
 - x86_64 샌드박스라 arm64 엔진 시험·NDK 빌드를 실행하지 않았다. 4개 동등 판정은 소스 읽기 기준이다. tl/ 62커밋은 제목·경로로 일괄 분류했고 나머지 103커밋은 개별 확인했다. 포크는 얕은 이력이라 장치별 포크 커밋은 코드 주석 날짜로 대신했다.
+
+## 8. 진행 상태 (2026-11-25, 승인 후 구현)
+
+반영됨(커밋 5784315, 68fd9b4, 931f7a2, 124835f 외): 종료 사유 보존(hv_vm_stop, pvpanic → hv_machine_halt), 스레드 핸들 보존과 CPU0 마지막 생성, 보조 CPU·kicker join(5초 상한), virtio-blk stop/start/idle/destroy, 그 뒤 flush와 종료 콜백,
+HV_HALT 이름, test_shutdown(CI의 native arm64에서 실행), VERDICT 구조화(outcome/psci/quiesced/uptime_s/disk_writes/disk_write_refused), G7RunVerdict·G7RestartPolicy와 단위시험, 재시작 연결(같은 복제본, E→D, 반복 제한 3회/10분, 2/8/30초),
+xHCI 슬롯 검증(fc58667), disk.c fd=-1, vmapple 디스크 생성 실패 검사, 빌드 산출물 추적 해제.
+
+미반영: SCTLR(f512e8d)·CNTVOFF(8bde813)는 "시험 후 반영" — 이 환경에는 arm64 실행기가 없어 시험하지 못했고 JIT 오프셋과 묶여 있다. RestoreRamDisk 스트리밍, F_NOCACHE, 복원 러너 설정은 별도 작업.
+실기기 미검증: 재시작 동작, 종료 순서 변경이 복원 러너/installed 러너에 미치는 영향(복원 러너는 이번에 같은 hv_vm_start 경로를 쓴다).

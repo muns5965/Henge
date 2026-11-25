@@ -1,4 +1,4 @@
-# S4 of docs/gpu-research/implementation-plan.md: does libapplegfx-vulkan (MIT, pinned SHA) compile for Android arm64 (NDK r27c, API 30)
+# S4 of docs/gpu-research/implementation-plan.md: does libapplegfx-vulkan (MIT, pinned SHA) compile for Android arm64 (NDK r27c, API 34 (the NDK libvulkan stub of API 30 lacks the Vulkan 1.3 entry points this library calls: vkCmdBeginRendering, vkCmdEndRendering, vkGetBufferDeviceAddress))
 # WITH the real Vulkan path, not the no-op stub path? Nothing runs on the runner and nothing here is linked into the Henge APK yet.
 # Runs by hand, and when this file itself changes on research/android-port (not on every push): it reads a different repository.
 name: Android GPU S4 (libapplegfx-vulkan NDK build)
@@ -36,7 +36,7 @@ jobs:
         run: |
           TC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
           SYS="$TC/sysroot"
-          LIBDIR="$SYS/usr/lib/aarch64-linux-android/30"
+          LIBDIR="$SYS/usr/lib/aarch64-linux-android/34"
           test -f "$LIBDIR/libvulkan.so" && test -f "$SYS/usr/include/vulkan/vulkan.h" || { echo "NDK has no libvulkan/vulkan.h at the expected place"; find "$SYS" -name 'libvulkan*' | head; exit 1; }
           mkdir -p pc
           cat > pc/vulkan.pc <<EOF
@@ -49,7 +49,7 @@ jobs:
           sed -i 's/^ *//' pc/vulkan.pc
           cat > android-arm64.ini <<EOF
           [binaries]
-          c = '$TC/bin/aarch64-linux-android30-clang'
+          c = '$TC/bin/aarch64-linux-android34-clang'
           ar = '$TC/bin/llvm-ar'
           strip = '$TC/bin/llvm-strip'
           pkg-config = 'pkg-config'

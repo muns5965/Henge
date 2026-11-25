@@ -45,7 +45,7 @@ jobs:
           done
       - name: Real macOS login AIR corpus translation and validation
         run: |
-          gcc -std=c11 -O2 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c /tmp/lagfx/build/libapplegfx-vulkan.a -lvulkan -lm -o /tmp/aircorpus
+          gcc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c /tmp/lagfx/build/libapplegfx-vulkan.a -lvulkan -lm -o /tmp/aircorpus
           mkdir -p /tmp/corpus
           printf '%s\n' login_viewporttondc_vert login_ubercomposite_vert login_vfx_vert login_colorfill_frag login_texturecopy_frag login_ubercomposite_frag_a login_ubercomposite_frag_b login_vfxu11_vert login_tvcmxc_isrc_frag login_vfxxgb_vert login_xgc_frag > /tmp/corpus/manifest.txt
           while read -r name; do
@@ -209,7 +209,7 @@ jobs:
           WRAP=(tests/gpu-android-gpt/vulkan_android_dispatch.c -Wl,--wrap=vkCreateDevice -Wl,--wrap=vkCmdBeginRendering -Wl,--wrap=vkCmdEndRendering -Wl,--wrap=vkGetBufferDeviceAddress)
           # Keep the five native filenames from the installed v3 APK.
           printf '%s\n' '#define main corpus_main' '#include "air_corpus.c"' '#undef main' '#define main triangle_main' '#include "air2spv_probe.c"' '#undef main' '#include <string.h>' 'int main(int argc,char **argv){if(argc>1&&!strcmp(argv[1],"--corpus"))return corpus_main(argc-1,argv+1);return triangle_main(argc,argv);}' > /tmp/combined-air.c
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Itests/gpu-android-gpt -Itests/gpu-validation -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/combined-air.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -fPIE -pie -Itests/gpu-android-gpt -Itests/gpu-validation -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/combined-air.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
           cp /tmp/corpus/manifest.txt /tmp/corpus/report.txt "$P/src/main/assets/"
           # Android treats APK entries ending in .bc as legacy RenderScript.
           # Keep identical AIR bytes under a neutral data extension.

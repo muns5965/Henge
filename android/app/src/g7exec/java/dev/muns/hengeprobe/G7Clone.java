@@ -41,6 +41,16 @@ public final class G7Clone {
     /** The data extents [start, end) of a file, in order, whole file. Throws IOException("sparse-unsupported") when the file system cannot tell holes from data. */
     public interface Extents { List<long[]> data(File f, long size) throws IOException; }
 
+    /** Real progress, in bytes of DATA extents (not the logical size of a sparse disk). phase: "check", "copy", "verify", "marker". Called from the copy thread, often: implementations must only store the numbers. */
+    public interface Progress { void update(String phase, long done, long total, String dir); }
+
+    /** Counts what was really processed; the total is the sum of the source's data extents, the same for the copy and for the verify pass. */
+    private static final class Prog {
+        final Progress p; final String dir; long total, copied, verified;
+        Prog(Progress p, String dir) { this.p = p; this.dir = dir; }
+        void phase(String ph, long done) { if (p != null) p.update(ph, done, total, dir); }
+    }
+
     public static final class Result {
         public final boolean ok; public final String message; public final File dir;
         Result(boolean ok, String message, File dir) { this.ok = ok; this.message = message; this.dir = dir; }
@@ -50,12 +60,20 @@ public final class G7Clone {
     private static boolean exists(Path p) { return Files.exists(p, LinkOption.NOFOLLOW_LINKS); }
 
     public static Result clone(File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
-        return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, runnerStatus, ex, sizer, freeBytes, cancel);
+        return clone(priv, runnerStatus, ex, sizer, freeBytes, cancel, null);
+    }
+
+    public static Result clone(File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel, Progress progress) {
+        return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, null, 0L, runnerStatus, ex, sizer, freeBytes, cancel, progress);
     }
 
     /** A verified sparse copy of an EXISTING verified clone (`from`, e.g. clone-001) instead of the install pair; `from` is only read. */
     public static Result cloneFromClone(File from, long ecid, File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
-        return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, from, ecid, runnerStatus, ex, sizer, freeBytes, cancel);
+        return cloneFromClone(from, ecid, priv, runnerStatus, ex, sizer, freeBytes, cancel, null);
+    }
+
+    public static Result cloneFromClone(File from, long ecid, File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel, Progress progress) {
+        return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, from, ecid, runnerStatus, ex, sizer, freeBytes, cancel, progress);
     }
 
     static Result cloneWith(boolean enabled, BooleanSupplier live, File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
@@ -63,6 +81,10 @@ public final class G7Clone {
     }
 
     static Result cloneWith(boolean enabled, BooleanSupplier live, File priv, File from, long ecid, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
+        return cloneWith(enabled, live, priv, from, ecid, runnerStatus, ex, sizer, freeBytes, cancel, null);
+    }
+
+    static Result cloneWith(boolean enabled, BooleanSupplier live, File priv, File from, long ecid, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel, Progress progress) {
         synchronized (G7ExecLauncher.START_LOCK) {
             // `base` is where the members and the state file are READ from: the install pair's folder, or an existing verified clone's folder. Copies always go to priv/clones/.
             File base = priv;
@@ -108,17 +130,22 @@ public final class G7Clone {
             File dir = null;
             for (int n = 1; n < 1000 && dir == null; n++) { File c = new File(clones, String.format("clone-%03d", n)); if (c.mkdir()) dir = c; }
             if (dir == null) return new Result(false, "복제 폴더 이름을 정할 수 없습니다(clone-001..999가 이미 있음).", null);
+            Prog prog = new Prog(progress, dir.getName());
+            for (List<long[]> es : ext) for (long[] e : es) prog.total += e[1] - e[0];
+            prog.phase("check", 0);
             List<File> partials = new ArrayList<>();
             List<File> created = new ArrayList<>();   // files of THIS call that already have their final names (removed again if the call fails)
             try {
                 for (int i = 0; i < src.size(); i++) {
                     File part = new File(dir, src.get(i).getName() + ".partial");
                     partials.add(part);
-                    copyOne(src.get(i), part, size[i], ext.get(i), cancel, freeBytes);
+                    prog.phase("copy", prog.copied);
+                    copyOne(src.get(i), part, size[i], ext.get(i), cancel, freeBytes, prog);
                 }
                 for (int i = 0; i < src.size(); i++) {
                     List<long[]> got = ex.data(partials.get(i), size[i]);
-                    String bad = verify(src.get(i), partials.get(i), size[i], ext.get(i), got, cancel);
+                    prog.phase("verify", prog.verified);
+                    String bad = verify(src.get(i), partials.get(i), size[i], ext.get(i), got, cancel, prog);
                     if (bad != null) throw new IOException("검증 실패(" + src.get(i).getName() + "): " + bad);
                 }
                 for (int i = 0; i < src.size(); i++)
@@ -141,6 +168,7 @@ public final class G7Clone {
                     Files.move(partials.get(i).toPath(), fin.toPath());
                     created.add(fin);
                 }
+                prog.phase("marker", prog.total);
                 String mk = "state=clone_complete\nsource_state=" + state + "\nlogical_disk_bytes=" + size[0] + "\nallocated_bytes=" + alloc + "\nmembers=" + src.size() + "\necid_tag=" + tag + "\n";
                 // the marker is written under a temporary name, forced to storage and renamed last: a marker that exists is a complete one
                 File tmp = new File(dir, MARKER + ".tmp"); created.add(tmp);
@@ -243,7 +271,7 @@ public final class G7Clone {
         return "정리하지 못한 파일이 있을 수 있습니다(" + dir.getName() + "에 marker가 없으면 복제본이 아닙니다).";
     }
 
-    private static void copyOne(File src, File dst, long size, List<long[]> extents, BooleanSupplier cancel, LongSupplier freeBytes) throws IOException {
+    private static void copyOne(File src, File dst, long size, List<long[]> extents, BooleanSupplier cancel, LongSupplier freeBytes, Prog prog) throws IOException {
         try (FileChannel mk = FileChannel.open(dst.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) { /* exclusive creation: an existing name is refused */ }
         try (RandomAccessFile len = new RandomAccessFile(dst, "rw")) { if (len.length() != 0) throw new IOException("target not empty"); len.setLength(size); }
         try (FileChannel in = FileChannel.open(src.toPath(), StandardOpenOption.READ); FileChannel out = FileChannel.open(dst.toPath(), StandardOpenOption.WRITE)) {
@@ -259,7 +287,7 @@ public final class G7Clone {
                     int n = in.read(buf, pos);
                     if (n <= 0) throw new IOException("read ended early at " + pos);
                     if (!allZero(buf.array(), n)) { buf.flip(); long w = pos; while (buf.hasRemaining()) w += out.write(buf, w); }
-                    pos += n;
+                    pos += n; prog.copied += n; prog.phase("copy", prog.copied);
                 }
             }
             out.force(true);
@@ -269,7 +297,7 @@ public final class G7Clone {
     private static boolean allZero(byte[] b, int n) { for (int i = 0; i < n; i++) if (b[i] != 0) return false; return true; }
 
     /** null when the copy matches: same logical size; every data extent of the copy inside a data extent of the source; the bytes of every source data extent equal (a hole in the copy reads as zeros). */
-    private static String verify(File src, File dst, long size, List<long[]> srcExt, List<long[]> dstExt, BooleanSupplier cancel) throws IOException {
+    private static String verify(File src, File dst, long size, List<long[]> srcExt, List<long[]> dstExt, BooleanSupplier cancel, Prog prog) throws IOException {
         if (dst.length() != size) return "logical size differs";
         for (long[] d : dstExt) {
             boolean inside = false;
@@ -286,7 +314,7 @@ public final class G7Clone {
                     int n = a.read(x, pos), m = b.read(y, pos);
                     if (n != want || m != want) return "short read at " + pos;
                     if (!java.util.Arrays.equals(x.array(), 0, want, y.array(), 0, want)) return "bytes differ at " + pos;
-                    pos += want;
+                    pos += want; prog.verified += want; prog.phase("verify", prog.verified);
                 }
             }
         }

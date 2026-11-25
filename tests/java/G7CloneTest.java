@@ -144,6 +144,26 @@ public class G7CloneTest {
         G7Clone.Result orr = run(true, false, ow, 0, SCAN, ENOUGH, () -> false);
         check("origin record failure: the copy is ok and verified, with a warning: " + orr.message, orr.ok && orr.message.contains("경고") && G7Clone.validate(orr.dir, ow, ECID) == null);
         check("origin record ok: no warning", !r.message.contains("경고") && !q2.message.contains("경고"));
+        // --- progress: real bytes, monotonic per phase, 100 % only after a successful finish ---
+        {
+            File pp = pair("in_progress"); G7CloneProgress pg = G7CloneProgress.begin("설치 쌍", 0L);
+            List<String> phases = new ArrayList<>(); long[] last = {-1}; boolean[] mono = {true}; String[] lastPh = {""};
+            G7Clone.Progress rec = (ph, dn, tt, dr) -> { if (!ph.equals(lastPh[0])) { phases.add(ph); lastPh[0] = ph; last[0] = -1; } if (dn < last[0]) mono[0] = false; last[0] = dn; pg.update(ph, dn, tt, dr); };
+            G7Clone.Result pr = G7Clone.cloneWith(true, () -> false, pp, null, 0L, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false, rec);
+            check("progress: phases come in order check, copy, verify, marker", pr.ok && phases.indexOf("copy") > phases.indexOf("check") && phases.indexOf("verify") > phases.indexOf("copy") && phases.indexOf("marker") > phases.indexOf("verify"));
+            check("progress: bytes never go backwards inside a phase", mono[0]);
+            check("progress: not 100 % until finish(true), then exactly 100 %", pg.percent() == 99 && pg.running);
+            pg.finish(pr.ok, pr.message);
+            check("progress: finished ok shows 100 % and is no longer running", pg.percent() == 100 && !pg.running && Boolean.TRUE.equals(pg.ok));
+            check("progress: the text names source and target and has no 100 % while running", pg.render(5000).contains("설치 쌍") && pg.render(5000).contains(pr.dir.getName()));
+        }
+        {
+            File pc = pair("in_progress"); G7CloneProgress pg = G7CloneProgress.begin("설치 쌍", 0L); int[] n = {0};
+            G7Clone.Result cr = G7Clone.cloneWith(true, () -> false, pc, null, 0L, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> ++n[0] > 3, pg);
+            pg.finish(cr.ok, cr.message);
+            check("progress: a cancelled clone never shows 100 %", !cr.ok && pg.percent() < 100 && Boolean.FALSE.equals(pg.ok));
+            check("progress: a cancelled clone leaves nothing behind", clonesCount(pc) == 0);
+        }
         System.out.println(fails == 0 ? "G7CLONE OK" : "G7CLONE FAILED");
         System.exit(fails == 0 ? 0 : 1);
     }

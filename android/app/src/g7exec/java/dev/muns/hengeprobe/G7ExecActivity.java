@@ -31,6 +31,7 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
+    private android.widget.ProgressBar cloneBar;
     private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
@@ -38,7 +39,7 @@ public class G7ExecActivity extends Activity {
     private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
     private File restartClone; private int restartUsb, restartSeconds = G7CloneBoot.RUN_SECONDS; private volatile boolean restartPending; private int restartGen;   // restartGen changes whenever a scheduled restart is cancelled or a run starts: an old callback then does nothing
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
-    private volatile boolean cloneCancel;
+    private static volatile boolean cloneCancel;   // static: the copy thread outlives the Activity; a recreated Activity's cancel button must still reach it
     private TextView storageInfo;
     private LinearLayout archiveBox;
     private final List<CheckBox> archiveBoxes = new ArrayList<>();
@@ -72,6 +73,7 @@ public class G7ExecActivity extends Activity {
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         status.setText(G7ExecLauncher.preflight(nativeDir, ext, priv).text);
         root.addView(status);
+        cloneBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); cloneBar.setMax(100); cloneBar.setVisibility(View.GONE); root.addView(cloneBar);
         add(root, "IPSW: macOS 15.6.1 (24G90)\nSHA-256 무결성 검사: 자동. 시작할 때 앱이 파일의 SHA-256을 계산해 내장 참조값과 비교하고, 다르면 아무것도 만들지 않고 차단합니다(계산값과 참조값을 화면에 표시).", 13);
         consent = new CheckBox(this);
         consent.setText("설치 디스크·AUX 생성, 저장소 쓰기, Apple 서버 요청을 포함하는 실제 복원 실행에 동의합니다.");
@@ -308,6 +310,15 @@ public class G7ExecActivity extends Activity {
                 .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
     }
 
+    /** Shows the running clone (also after the Activity was recreated: the state is in G7CloneProgress); polls every 500 ms until it ends. */
+    private void showCloneProgress() {
+        final G7CloneProgress pg = G7CloneProgress.current();
+        cloneBar.setVisibility(View.VISIBLE);
+        cloneBar.setProgress(pg.percent());
+        status.setText(pg.render(System.currentTimeMillis()));
+        if (pg.running) log.postDelayed(this::showCloneProgress, 500);
+    }
+
     private void confirmCloneFrom() {
         final List<File> clones = G7CloneBoot.listValid(privDir);
         if (clones.isEmpty()) { status.setText("복제 원본으로 쓸 검증된 복제본이 없습니다."); return; }
@@ -326,13 +337,14 @@ public class G7ExecActivity extends Activity {
 
     private void runCloneFrom(final File from) {
         setDeleteButtons(false); cloneBtn.setEnabled(false); cloneFromBtn.setEnabled(false); cancel.setEnabled(true);
-        status.setText("복제 중입니다… (" + from.getName() + " 은(는) 읽기만 합니다)");
+        final G7CloneProgress pg = G7CloneProgress.begin(from.getName(), System.currentTimeMillis()); showCloneProgress();
         new Thread(() -> {
-            String m;
+            String m; boolean good = false;
             try {
                 java.io.File priv = privDir.getCanonicalFile();
-                m = G7Clone.cloneFromClone(from, G7ProbeLauncher.readEcid(priv), priv, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel).message;
+                G7Clone.Result r = G7Clone.cloneFromClone(from, G7ProbeLauncher.readEcid(priv), priv, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel, pg); m = r.message; good = r.ok;
             } catch (java.io.IOException | RuntimeException e) { m = "복제 중 예기치 못한 오류가 났습니다. 원본은 바뀌지 않았습니다."; }
+            pg.finish(good, m);
             final String msg = m;
             runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cloneFromBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
         }, "g7-clone-from").start();
@@ -439,11 +451,12 @@ public class G7ExecActivity extends Activity {
 
     private void runClone() {
         setDeleteButtons(false); cloneBtn.setEnabled(false); cloneFromBtn.setEnabled(false); cancel.setEnabled(true);
-        status.setText("복제 중입니다… (원본은 읽기만 합니다)");
+        final G7CloneProgress pg = G7CloneProgress.begin("설치 쌍", System.currentTimeMillis()); showCloneProgress();
         new Thread(() -> {
-            String m;
-            try { m = G7Clone.clone(privDir, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel).message; }
+            String m; boolean good = false;
+            try { G7Clone.Result r = G7Clone.clone(privDir, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel, pg); m = r.message; good = r.ok; }
             catch (RuntimeException e) { m = "복제 중 예기치 못한 오류가 났습니다. 원본은 바뀌지 않았습니다."; }
+            pg.finish(good, m);
             final String msg = m;
             runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cloneFromBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
         }, "g7-clone").start();

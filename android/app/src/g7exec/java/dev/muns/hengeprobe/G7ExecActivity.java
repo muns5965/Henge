@@ -335,7 +335,8 @@ public class G7ExecActivity extends Activity {
         restartPending = false;
         G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb);
         status.setText("자동 재시작: " + st.message);
-        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); } else restartClone = null;
+        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
+        else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
     }
 
     private void cbootPoll() {

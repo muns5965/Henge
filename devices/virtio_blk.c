@@ -221,6 +221,7 @@ void hv_virtio_blk_drain(HvVirtioBlk *b) {
 #define HV_VBLK_STOP_WAIT_MS 5000
 int hv_virtio_blk_stop(HvVirtioBlk *b) {
     if (!b) return 0;
+    if (b->stop_failed) return -1;   /* a worker did not end before and is still out there: the failure is kept, never turned into a success by a later call */
     pthread_mutex_lock(&b->mu);
     b->stopping = 1;
     pthread_cond_broadcast(&b->cv);
@@ -233,23 +234,22 @@ int hv_virtio_blk_stop(HvVirtioBlk *b) {
         usleep(1000);
         waited++;
     }
-    int bad = 0;
     if (__atomic_load_n(&b->workers_exited, __ATOMIC_ACQUIRE) < b->workers_started) {
         fprintf(stderr, "virtio-blk: %d of %d disk worker(s) did not end within %d ms after the stop; not joined (a request may still be in flight)\n",
                 b->workers_started - __atomic_load_n(&b->workers_exited, __ATOMIC_ACQUIRE), b->workers_started, HV_VBLK_STOP_WAIT_MS);
-        bad = -1;
         for (int i = 0; i < b->workers_started; i++) pthread_detach(b->worker[i]);   /* a detached thread that did end is harmless; one that did not is left to the process end */
-    } else {
-        for (int i = 0; i < b->workers_started; i++) pthread_join(b->worker[i], NULL);
+        b->stop_failed = 1;   /* workers_started / workers_exited are kept as they are: start, idle and destroy all see that workers may still use the structure */
+        return -1;
     }
+    for (int i = 0; i < b->workers_started; i++) pthread_join(b->worker[i], NULL);
     b->workers_started = 0;
     __atomic_store_n(&b->workers_exited, 0, __ATOMIC_RELEASE);
-    return bad;
+    return 0;
 }
 
 /* Workers again after hv_virtio_blk_stop (a machine paused to be saved runs on). 0, or -1 if none started. */
 int hv_virtio_blk_start(HvVirtioBlk *b) {
-    if (!b || b->workers_started) return 0;
+    if (!b || b->workers_started || b->stop_failed) return b && b->stop_failed ? -1 : 0;
     pthread_mutex_lock(&b->mu);
     b->stopping = 0;
     pthread_mutex_unlock(&b->mu);
@@ -264,7 +264,7 @@ int hv_virtio_blk_start(HvVirtioBlk *b) {
 int hv_virtio_blk_idle(HvVirtioBlk *b) {
     if (!b) return 1;
     hv_virtio_blk_poll(b);
-    return !b->workers_started && b->published == b->submitted && !b->inflight;
+    return !b->stop_failed && !b->workers_started && b->published == b->submitted && !b->inflight;
 }
 
 void hv_virtio_blk_destroy(HvVirtioBlk *b) {

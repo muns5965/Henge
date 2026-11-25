@@ -251,11 +251,11 @@ int main(int argc, char **argv) {
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);
     int confirmed = atomic_load(&g_exited);
-    if (confirmed) hv_vm_flush_disks();
+    if (confirmed && hv_vm_quiesced_ok() != 0) hv_vm_flush_disks();   /* 0 = a thread or disk worker did not end: no flush, no teardown */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_installed RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
     fflush(stdout);
-    if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
+    if (confirmed && hv_vm_quiesced_ok() != 0) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
     return confirmed ? 0 : 3;
 }

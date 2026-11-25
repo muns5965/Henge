@@ -42,7 +42,7 @@ typedef struct HvVirtioBlk {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     pthread_t worker[HV_VBLK_WORKERS];
-    int stopping, workers_started, workers_exited;
+    int stopping, workers_started, workers_exited, stop_failed;
 } HvVirtioBlk;
 
 HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant);

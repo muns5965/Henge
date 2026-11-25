@@ -384,7 +384,7 @@ int main(int argc, char **argv) {
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);
     int confirmed = atomic_load(&g_exited);
-    if (confirmed) hv_vm_flush_disks();
+    if (confirmed && hv_vm_quiesced_ok() != 0) hv_vm_flush_disks();   /* 0 = a thread or disk worker did not end: no flush, no teardown */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_g4 RESULT: %s (%s), g4 %s (FAILED rows=%d), ignored input lines %ld\n",
@@ -392,6 +392,6 @@ int main(int argc, char **argv) {
            g4_start_failed ? "did not start" : g_g4_finish_failed == 0 ? "passed" : g_g4_finish_failed > 0 ? "FAILED" : "did not run to a verdict",
            g_g4_finish_failed, ignored);
     fflush(stdout);
-    if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
+    if (confirmed && hv_vm_quiesced_ok() != 0) { hv_runner_destroy(g_run); hv_shm_close(g_shm); }
     return (!confirmed) ? 3 : g4_start_failed ? 1 : (g_g4_finish_failed == 0) ? 0 : 1;
 }

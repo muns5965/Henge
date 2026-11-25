@@ -341,6 +341,8 @@ int main(int argc, char **argv) {
            confirmed ? 1 : 0, stop_kind, flush_rc == 0 ? "ok" : flush_rc == -2 ? "not-attempted" : "FAILED",
            outcome, psci_name, qok == 1 ? "1" : qok == 0 ? "0" : "n/a", (int)(now() - tstart), (unsigned long long)wcalls, (unsigned long long)wrefused);
     fflush(stdout);
-    if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
+    /* Only a machine whose threads and disk workers all ended is torn down here. When quiesce failed a thread or a disk worker may still use the runner, the shared state and the clone's
+       descriptors: they are left as they are and the process end (immediately below) releases them, so nothing is freed or unlocked under a live user. */
+    if (confirmed && qok == 1) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
     return confirmed ? 0 : 3;
 }

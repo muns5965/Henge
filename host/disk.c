@@ -2,6 +2,7 @@
 #include <errno.h>
 #include "../core/machine.h"
 #include "disk.h"
+#include "../core/waitdiag.h"
 
 /* F_NOCACHE and F_BARRIERFSYNC are Apple's. Elsewhere: no uncached writes (the
    caller treats that as "not available" and keeps writing through the cache),
@@ -59,7 +60,7 @@ void hv_disk_close(HvDisk *d) {
     d->fd = d->wfd = -1;
 }
 
-int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
+static int disk_read_impl(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
     if (off > d->size || len > d->size - off) return -1;
     uint8_t *p = buf;
     while (len) {
@@ -74,7 +75,7 @@ int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
     return 0;
 }
 
-int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
+static int disk_write_impl(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
     __atomic_add_fetch(&d->write_calls, 1, __ATOMIC_RELAXED);
     if (d->readonly || off > d->size || len > d->size - off) {
         __atomic_add_fetch(&d->write_refused, 1, __ATOMIC_RELAXED);
@@ -93,14 +94,31 @@ int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
     return 0;
 }
 
+/* Diagnostic timing only (core/waitdiag.h): the pread / pwrite loops, bracketed around the unchanged bodies above. */
+int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
+    uint64_t wd0 = hv_wd_begin(HV_WD_DISK_READ);
+    int rc = disk_read_impl(d, off, buf, len);
+    hv_wd_end(HV_WD_DISK_READ, wd0);
+    return rc;
+}
+
+int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
+    uint64_t wd0 = hv_wd_begin(HV_WD_DISK_WRITE);
+    int rc = disk_write_impl(d, off, buf, len);
+    hv_wd_end(HV_WD_DISK_WRITE, wd0);
+    return rc;
+}
+
 /* HV_FLUSH: 0 fsync; 1 nothing here, what was written is safe in the host's cache as long as the
    host runs; 2 fcntl(F_BARRIERFSYNC). */
 int hv_disk_flush(HvDisk *d) {
     if (d->readonly) return 0;
+    int rc;
+    uint64_t wd0;
     switch (hv_knob[HV_K_FLUSH]) {
     case 1: return 0;
-    case 2: return HV_FD_BARRIER_FSYNC(d->fd) == -1 ? -1 : 0;
-    default: return fsync(d->fd);
+    case 2: wd0 = hv_wd_begin(HV_WD_DISK_FSYNC); rc = HV_FD_BARRIER_FSYNC(d->fd) == -1 ? -1 : 0; hv_wd_end(HV_WD_DISK_FSYNC, wd0); return rc;
+    default: wd0 = hv_wd_begin(HV_WD_DISK_FSYNC); rc = fsync(d->fd); hv_wd_end(HV_WD_DISK_FSYNC, wd0); return rc;
     }
 }
 

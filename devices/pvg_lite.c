@@ -44,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "../core/machine.h"
 
@@ -72,6 +73,8 @@ struct HvPvgLite {
     uint32_t submitted[MAX_CHANNELS];
     uint32_t draining;
     uint32_t barrier_waits[MAX_CHANNELS];
+    /* Diagnostic only (hv_pvg_lite_chan_diag): doorbells rung per channel (0: the root ring's +0x1008) and the host time of the latest. Relaxed atomics, written by the ringing CPU. */
+    uint64_t db_count[MAX_CHANNELS], db_last_ns[MAX_CHANNELS];
     uint64_t barriers, barrier_drains, barrier_retries, barrier_timeouts;
     CFTypeRef layer; /* retained until replaced; layer_lock serializes lazy replay handoff */
     os_unfair_lock layer_lock;
@@ -124,6 +127,43 @@ static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t r
 }
 
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
+
+/* Diagnostic only: a doorbell was rung on `ch` (0: root ring). Two relaxed stores; no lock, no effect on the device. */
+static void note_doorbell(HvPvgLite *p, uint32_t ch) {
+    if (ch >= MAX_CHANNELS) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    __atomic_add_fetch(&p->db_count[ch], 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->db_last_ns[ch], (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, __ATOMIC_RELAXED);
+}
+
+/* Diagnostic only, read-only, callable from any thread (the runner's 10 s line): one compact line, "gfx-ch: root wp=<hex> rp=<hex> db=<n> age_ms=<n> | ch<N> wr=<hex> rd=<hex> pend=<hex> db=<n> age_ms=<n> | ...",
+   channels that were never rung and never written are left out. wr / rd are the free-running pointers in the guest's channel record (the same fields do_channel() uses; with the library's
+   gfx window (HV_WITH_LAGFX) it is the library that advances rd in that record). A channel whose rd stays put while wr is ahead and its doorbell age grows is stuck. root rp is this device's own
+   root_rp, which stays 0 when the library owns the window. The values are read without a lock, so one may be a moment old. Returns the length. */
+size_t hv_pvg_lite_chan_diag(HvPvgLite *p, char *out, size_t cap) {
+    size_t len = 0;
+    if (!p || !out || !cap) return 0;
+    out[0] = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#define CHD_APPEND(...) do { if (len + 1 < cap) { int k_ = snprintf(out + len, cap - len, __VA_ARGS__); if (k_ > 0) len = len + (size_t)k_ < cap ? len + (size_t)k_ : cap - 1; } } while (0)
+    uint64_t n0 = __atomic_load_n(&p->db_count[0], __ATOMIC_RELAXED), t0 = __atomic_load_n(&p->db_last_ns[0], __ATOMIC_RELAXED);
+    CHD_APPEND("gfx-ch: root wp=%x rp=%x db=%llu age_ms=%llu", __atomic_load_n(&p->regs[(0x1008 - 0x1000) / 4], __ATOMIC_RELAXED), __atomic_load_n(&p->root_rp, __ATOMIC_RELAXED),
+               (unsigned long long)n0, (unsigned long long)(t0 && now > t0 ? (now - t0) / 1000000 : 0));
+    uint64_t root = (uint64_t)__atomic_load_n(&p->regs[(0x101c - 0x1000) / 4], __ATOMIC_RELAXED) << 14;
+    for (uint32_t ch = 1; ch < MAX_CHANNELS; ch++) {
+        uint64_t n = __atomic_load_n(&p->db_count[ch], __ATOMIC_RELAXED), t = __atomic_load_n(&p->db_last_ns[ch], __ATOMIC_RELAXED);
+        uint32_t *rec = root ? hv_phys_ptr(p->m, root + 0x400 + 0x14 * (ch - 1), 0x14) : NULL;
+        uint32_t wr = rec ? __atomic_load_n(&rec[0], __ATOMIC_RELAXED) : 0, rd = rec ? __atomic_load_n(&rec[1], __ATOMIC_RELAXED) : 0;
+        if (!n && !wr && !rd) continue;
+        CHD_APPEND(" | ch%u wr=%x rd=%x pend=%x db=%llu age_ms=%llu", ch, wr, rd, wr - rd, (unsigned long long)n, (unsigned long long)(t && now > t ? (now - t) / 1000000 : 0));
+    }
+    CHD_APPEND("\n");
+#undef CHD_APPEND
+    return len;
+}
 
 static void do_root(HvPvgLite *p) {
     uint64_t buf = (uint64_t)reg(p, 0x1030) << 14;
@@ -1050,6 +1090,7 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     HvPvgLite *p = opaque;
     (void)size;
     if (off >= 0x1000 && off < 0x2000) p->regs[(off - 0x1000) / 4] = (uint32_t)v;
+    if (off == 0x1008) note_doorbell(p, 0); else if (off == 0x1020 && v < MAX_CHANNELS) note_doorbell(p, (uint32_t)v);   /* diagnostic only */
     /* Doorbells are answered here, on the CPU that rang: no waiting for CPU 0 to come by. */
     if (off == 0x1008) {
         do_root(p);
@@ -1107,6 +1148,7 @@ static void lagfx_display_hook(void *opaque, const uint32_t *cmd, uint32_t len) 
 static void gfx_write_lagfx(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     HvPvgLite *p = opaque;
     (void)size;
+    if (off == 0x1008) note_doorbell(p, 0); else if (off == 0x1020 && v < MAX_CHANNELS) note_doorbell(p, (uint32_t)v);   /* diagnostic only */
     hv_pvg_lagfx_write(p->lagfx, off, v);
 }
 #endif

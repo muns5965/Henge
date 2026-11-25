@@ -8,6 +8,7 @@
 
 #include "mmu.h"
 #include "sysreg.h"
+#include "waitdiag.h"
 
 extern void hv_exit(void);
 extern void hv_helper_entry(void);
@@ -148,7 +149,9 @@ __thread uint64_t hv_mmio_diag_pc;
 void hv_dev_lock(HvMachine *m) {
     if (pthread_mutex_trylock(&m->dev_mu) == 0) return;
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
+    uint64_t wd0 = hv_wd_begin_c(HV_WD_DEVLOCK);   /* diagnostic timing only: the contended path */
     pthread_mutex_lock(&m->dev_mu);
+    hv_wd_end_c(HV_WD_DEVLOCK, wd0);
     if (m->stats_interval) {
         m->stats.dev_waits++;
         m->stats.dev_wait_ticks += mach_absolute_time() - t0;
@@ -272,6 +275,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
     HvPerCpu *t = target->pc_state, *s = self ? self->pc_state : NULL;
     HvMachine *mm = target->m;
     uint64_t t0 = mm->stats_interval ? mach_absolute_time() : 0;
+    uint64_t wd0 = hv_wd_begin_c(HV_WD_SYNC);   /* diagnostic timing only */
     if (s) {
         __atomic_store_n(&s->tlb_live, 0, __ATOMIC_SEQ_CST); /* others need not wait for this one meanwhile */
         ack_wake(s);
@@ -292,6 +296,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
             sched_yield();
         }
     }
+    hv_wd_end_c(HV_WD_SYNC, wd0);
     if (s) {
         __atomic_store_n(&s->tlb_live, 1, __ATOMIC_SEQ_CST);
         hv_cpu_process_requests(self); /* anything that came in while we were not live */
@@ -306,7 +311,11 @@ void hv_big_lock(HvMachine *m) {
     if (!m->big_lock_on) return;
     pthread_mutex_lock(&m->big_mu);
     uint64_t me = m->big_next++;
-    while (m->big_serving != me) pthread_cond_wait(&m->big_cv, &m->big_mu);
+    if (m->big_serving != me) {   /* diagnostic timing only: the contended path */
+        uint64_t wd0 = hv_wd_begin_c(HV_WD_BIGLOCK);
+        while (m->big_serving != me) pthread_cond_wait(&m->big_cv, &m->big_mu);
+        hv_wd_end_c(HV_WD_BIGLOCK, wd0);
+    }
     pthread_mutex_unlock(&m->big_mu);
 }
 

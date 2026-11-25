@@ -226,7 +226,18 @@ jobs:
           # Cross-compile Khronos validator as a native executable, not a fake PASS shim.
           git clone --depth 1 --branch v2025.1 https://github.com/KhronosGroup/SPIRV-Tools.git /tmp/spirv-tools
           python3 /tmp/spirv-tools/utils/git-sync-deps
+          # Upstream overrides the cache option on Android; keep iOS behavior
+          # but allow the standalone Android validator executable.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/spirv-tools/CMakeLists.txt')
+          s=p.read_text()
+          old='if (IOS OR ANDROID)\n  set(SPIRV_SKIP_EXECUTABLES ON)\nendif()'
+          assert s.count(old)==1
+          p.write_text(s.replace(old,'if (IOS)\n  set(SPIRV_SKIP_EXECUTABLES ON)\nendif()'))
+          PY
           cmake -S /tmp/spirv-tools -B /tmp/spirv-android -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=OFF -DSPIRV_WERROR=OFF
+          ninja -C /tmp/spirv-android -t targets all | grep -E '^spirv-val:|^tools/spirv-val:'
           cmake --build /tmp/spirv-android --target spirv-val -j 4
           cp /tmp/spirv-android/tools/spirv-val "$P/src/main/jniLibs/arm64-v8a/libspirvval.so"
           cp /tmp/spirv-tools/LICENSE "$P/src/main/assets/spirv-tools-LICENSE.txt"

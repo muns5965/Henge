@@ -13,6 +13,7 @@
 #include "mmu.h"
 #include "sysreg.h"
 #include "translate.h"
+#include "waitdiag.h"
 
 void hv_flush_blocks(HvMachine *m) {
     /* Every other CPU is parked (stop_the_world): the one moment the TLB layout can change. */
@@ -71,9 +72,11 @@ static void unpark(HvCpu *cpu) {
         __atomic_store_n(&p->active, 1, __ATOMIC_SEQ_CST);
         if (!__atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST)) break;
         __atomic_store_n(&p->active, 0, __ATOMIC_SEQ_CST);
+        uint64_t wd0 = hv_wd_begin_c(HV_WD_UNPARK_STW);   /* diagnostic timing only */
         pthread_mutex_lock(&m->stw_mu);
         while (m->stw_active) pthread_cond_wait(&m->stw_cv, &m->stw_mu);
         pthread_mutex_unlock(&m->stw_mu);
+        hv_wd_end_c(HV_WD_UNPARK_STW, wd0);
     }
     __atomic_store_n(&p->tlb_live, 1, __ATOMIC_SEQ_CST);
     hv_cpu_process_requests(cpu); /* what came in while it was parked */
@@ -823,6 +826,7 @@ static void wait_while_off(HvCpu *cpu) {
     HvPerCpu *p = cpu->pc_state;
     hv_big_unlock(m);
     park(cpu);
+    uint64_t wd0 = hv_wd_begin_c(HV_WD_CPU_OFF);   /* diagnostic timing only */
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
     while (__atomic_load_n(&cpu->off, __ATOMIC_ACQUIRE) && !__atomic_load_n(&cpu->halted, __ATOMIC_ACQUIRE)) {
@@ -831,6 +835,7 @@ static void wait_while_off(HvCpu *cpu) {
     }
     __atomic_store_n(&cpu->parked_off, 0, __ATOMIC_SEQ_CST);
     pthread_mutex_unlock(&p->wake_mu);
+    hv_wd_end_c(HV_WD_CPU_OFF, wd0);
     unpark(cpu);
     hv_big_lock(m);
 }
@@ -846,6 +851,7 @@ static void stop_the_world(HvCpu *cpu) {
         __atomic_store_n(&m->flush_pending, 0, __ATOMIC_SEQ_CST);
         pthread_mutex_unlock(&m->stw_mu);
         hv_machine_kick_all(m);
+        uint64_t wd0 = hv_wd_begin_c(HV_WD_STW_LEAD);   /* diagnostic timing only */
         for (uint32_t spins = 0;; spins++) {
             int busy = 0;
             for (int i = 0; i < m->ncpus; i++)
@@ -854,18 +860,23 @@ static void stop_the_world(HvCpu *cpu) {
             hv_cpu_process_requests(cpu); /* one of them may be waiting on a TLBI of ours */
             if (spins > 100) sched_yield();
         }
+        hv_wd_end_c(HV_WD_STW_LEAD, wd0);
         if (m->gen_checks) for (int i = 0; i < m->ncpus; i++) if (m->cpus[i] && m->cpus[i] != cpu && m->cpus[i]->pc_state->active) fprintf(stderr, "hengevm: flush while cpu %d is active\n", i);
+        wd0 = hv_wd_begin_c(HV_WD_STW_FLUSH);
         pthread_mutex_lock(&m->tr_mu);
         hv_flush_blocks(m);
         pthread_mutex_unlock(&m->tr_mu);
+        hv_wd_end_c(HV_WD_STW_FLUSH, wd0);
         pthread_mutex_lock(&m->stw_mu);
         __atomic_store_n(&m->stw_active, 0, __ATOMIC_SEQ_CST);
         pthread_cond_broadcast(&m->stw_cv);
         pthread_mutex_unlock(&m->stw_mu);
     } else if (m->stw_active) {
         park(cpu);
+        uint64_t wd0 = hv_wd_begin_c(HV_WD_STW_PARK);   /* diagnostic timing only */
         while (m->stw_active) pthread_cond_wait(&m->stw_cv, &m->stw_mu);
         pthread_mutex_unlock(&m->stw_mu);
+        hv_wd_end_c(HV_WD_STW_PARK, wd0);
         unpark(cpu);
     } else {
         pthread_mutex_unlock(&m->stw_mu);

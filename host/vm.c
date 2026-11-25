@@ -353,6 +353,12 @@ void hv_vm_set_display_layer(void *layer) {
     if (previous) CFRelease(previous);
 }
 
+size_t hv_vm_gfx_diag(char *out, size_t cap) {   /* diagnostic only: see hv_pvg_lite_chan_diag */
+    HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
+    if (out && cap) out[0] = 0;
+    return pvg ? hv_pvg_lite_chan_diag(pvg, out, cap) : 0;
+}
+
 uint64_t hv_vm_gpu_frames(void) {
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
     return pvg ? hv_pvg_lite_gpu_frames(pvg) : 0;

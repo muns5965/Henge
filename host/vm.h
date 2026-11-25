@@ -55,6 +55,8 @@ extern void (*hv_prof_register)(void); /* debugging: each thread that will run g
 /* Frames go to this CAMetalLayer, drawn by the GPU, instead of hv_vm_boot_display. */
 void hv_vm_set_display_layer(void *layer);
 uint64_t hv_vm_gpu_frames(void);
+/* Diagnostic only: the gfx channels' ring pointers and doorbell counts as one line in out (empty before the display exists). Returns the length. */
+size_t hv_vm_gfx_diag(char *out, size_t cap);
 int hv_vm_ncpus(void);
 
 /* The boot framebuffer iBoot hands the kernel (XNU's boot_args video info):

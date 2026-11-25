@@ -1,4 +1,5 @@
 #include "virtio_blk.h"
+#include "../core/waitdiag.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -136,7 +137,9 @@ static void *worker(void *opaque) {
                 __atomic_add_fetch(&b->workers_exited, 1, __ATOMIC_RELEASE);
                 return NULL;
             }
+            uint64_t wd0 = hv_wd_begin(HV_WD_VBLK_IDLE);   /* diagnostic timing only */
             pthread_cond_wait(&b->cv, &b->mu);
+            hv_wd_end(HV_WD_VBLK_IDLE, wd0);
         }
         HvVblkReq *r = &b->ring[b->claimed % HV_VBLK_RING];
         uint32_t type = 0;
@@ -145,7 +148,11 @@ static void *worker(void *opaque) {
         b->claimed++;
         if (fence) {
             b->fence = 1;
-            while (b->inflight) pthread_cond_wait(&b->done_cv, &b->mu);
+            if (b->inflight) {   /* diagnostic timing only */
+                uint64_t wd0 = hv_wd_begin(HV_WD_VBLK_FENCE);
+                while (b->inflight) pthread_cond_wait(&b->done_cv, &b->mu);
+                hv_wd_end(HV_WD_VBLK_FENCE, wd0);
+            }
         }
         b->inflight++;
         pthread_mutex_unlock(&b->mu);
@@ -154,7 +161,10 @@ static void *worker(void *opaque) {
         __atomic_store_n(&g_vblk_last_type, (int)type, __ATOMIC_RELAXED);
         __atomic_store_n(&g_vblk_last_start_us, now_us(), __ATOMIC_RELAXED);
         __atomic_add_fetch(&g_vblk_inflight, 1, __ATOMIC_RELAXED);
+        int wd_site = fence ? HV_WD_VBLK_FLUSH : HV_WD_VBLK_REQ;   /* diagnostic timing only */
+        uint64_t wd_h = hv_wd_begin(wd_site);
         if (handle(b, &r->e, &r->written) != 0) r->written = 0;
+        hv_wd_end(wd_site, wd_h);
         __atomic_sub_fetch(&g_vblk_inflight, 1, __ATOMIC_RELAXED);
         __atomic_add_fetch(&g_vblk_done, 1, __ATOMIC_RELAXED);
         if (stats) {

@@ -36,6 +36,7 @@
 #include "g7_diag.h"
 #include "runner_vm_core.h"
 #include "usb_host.h"
+#include "../core/waitdiag.h"
 #include "vm.h"
 
 extern uint64_t hv_net_tx_frames, hv_net_rx_frames;
@@ -317,6 +318,11 @@ int main(int argc, char **argv) {
             HvG7Mem m; hv_g7m_sample(&m); char ml[300]; hv_g7m_line(ml, sizeof ml, (uint64_t)(t - tstart), &m); fputs(ml, stdout);
             if (nmem == 0 || nmem % 10 == 9) { char pl[100]; hv_g7m_pss_line(pl, sizeof pl, (uint64_t)(t - tstart), hv_g7m_pss_kb()); fputs(pl, stdout); }
             char d1[900], d2[1800]; hv_g7d_sample_lines(&diag_prev, (uint64_t)(t - tstart), d1, sizeof d1, d2, sizeof d2); fputs(d1, stdout); fputs(d2, stdout);   /* read-only: vmstat, PSI, swaps, one line per thread */
+            {   /* read-only wait-site timing (core/waitdiag.h): why a stalled boot stalled. wd: one line per wait site, wd-cpu: one per vCPU (last pc / exit reason / which wait it is in), gfx-ch: the gfx channels' ring pointers */
+                static char wd[6000], gl[1200];
+                size_t wl = hv_wd_report(wd, sizeof wd, (uint64_t)(t - tstart), hv_vm_machine()); if (wl) fputs(wd, stdout);
+                size_t gn = hv_vm_gfx_diag(gl, sizeof gl); if (gn) fputs(gl, stdout);
+            }
             fflush(stdout); nmem++; next_mem = t + 10.0;
         }
     }

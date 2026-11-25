@@ -277,6 +277,11 @@ typedef struct HvMachine {
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
+    /* The host counter when the machine started: every CPU's CNTVOFF, so the guest's virtual counter (its
+       mach_absolute_time) starts near 0 as on a Mac or under Virtualization.framework. With the host's own
+       count (days of uptime) macOS 12 took the user as idle for that long and put itself to sleep while
+       still starting up: its window server never drew. */
+    uint64_t cntvoff;
     /* Diagnostic record of the PSCI call that halted the machine (SYSTEM_OFF or SYSTEM_RESET only -- see
        core/exception.c's psci()); every other exit reason (wfi, fault, unsupported, a test's own stop) leaves
        psci_halt_valid 0. Captured AT THE HVC CALL ITSELF, inside psci(), not reconstructed afterward from

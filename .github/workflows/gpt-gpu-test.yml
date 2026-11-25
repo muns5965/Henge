@@ -169,11 +169,12 @@ jobs:
           grep -F 'Vulkan found' /tmp/lagfx/android-build/meson-logs/meson-log.txt
           ninja -C /tmp/lagfx/android-build libapplegfx-vulkan.a
           A=/tmp/lagfx/android-build/libapplegfx-vulkan.a
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
+          WRAP=(tests/gpu-android-gpt/vulkan_android_dispatch.c -Wl,--wrap=vkCreateDevice -Wl,--wrap=vkCmdBeginRendering -Wl,--wrap=vkCmdEndRendering -Wl,--wrap=vkGetBufferDeviceAddress)
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
           cp /tmp/lagfx/examples/triangle/out/triangle.air "$P/src/main/assets/"
           python3 tests/gpu-android-gpt/adapt_engine.py /tmp/lagfx/tests/vulkan-render.c /tmp/engine-test.c
-          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
           "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           cat > "$P/settings.gradle" <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }

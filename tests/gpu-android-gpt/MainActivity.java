@@ -100,7 +100,8 @@ public class MainActivity extends Activity {
                     File dir=new File(getFilesDir(),"corpus-"+name);if(!dir.isDirectory()&&!dir.mkdir())throw new IOException("mkdir");
                     File[] old=dir.listFiles();if(old==null)throw new IOException("list");
                     for(File f:old)if(!f.delete())throw new IOException("stale output");
-                    File air=asset(name+".air.bc");
+                    File air=asset(name+".airdata");
+                    t.append("AIR input SHA256: ").append(hash(air)).append('\n');
                     int start=t.length();int rc=auxiliary(new String[]{new File(nativeDir,"libairprobe.so").getAbsolutePath(),"--corpus",air.getAbsolutePath(),name.endsWith("_vert")?"vertex":"fragment",dir.getAbsolutePath()},t);
                     String result=t.substring(start);File[] files=dir.listFiles((d,n)->n.endsWith(".spv"));
                     boolean ok=rc==0&&files!=null&&files.length>0;int count=0;

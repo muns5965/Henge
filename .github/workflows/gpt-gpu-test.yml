@@ -43,6 +43,24 @@ jobs:
           for f in triangle_vertex.spv triangle_fragment.spv; do
             if spirv-val --target-env vulkan1.2 "$f" > /tmp/val.txt 2>&1; then echo "spirv-val $f PASS" >> provenance.txt; else echo "spirv-val $f FAIL (experimental input)" >> provenance.txt; cat /tmp/val.txt >> provenance.txt; fi
           done
+      - name: Real macOS login AIR corpus translation and validation
+        run: |
+          gcc -std=c11 -O2 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c /tmp/lagfx/build/libapplegfx-vulkan.a -lvulkan -lm -o /tmp/aircorpus
+          mkdir -p /tmp/corpus
+          printf '%s\n' login_viewporttondc_vert login_ubercomposite_vert login_vfx_vert login_colorfill_frag login_texturecopy_frag login_ubercomposite_frag_a login_ubercomposite_frag_b login_vfxu11_vert login_tvcmxc_isrc_frag login_vfxxgb_vert login_xgc_frag > /tmp/corpus/manifest.txt
+          while read -r name; do
+            mkdir -p "/tmp/corpus/$name"
+            case "$name" in *_vert) stage=vertex;; *) stage=fragment;; esac
+            cp "/tmp/lagfx/tests/fixtures/$name.air.bc" "/tmp/corpus/$name.air.bc"
+            echo "CASE $name $stage" >> /tmp/corpus/report.txt
+            if timeout 60 /tmp/aircorpus "/tmp/corpus/$name.air.bc" "$stage" "/tmp/corpus/$name" >> /tmp/corpus/report.txt 2>&1; then echo "TRANSLATION PASS" >> /tmp/corpus/report.txt; else echo "TRANSLATION FAIL rc=$?" >> /tmp/corpus/report.txt; fi
+            for f in "/tmp/corpus/$name/"*.spv; do
+              [ -f "$f" ] || continue
+              sha256sum "$f" >> /tmp/corpus/report.txt
+              if spirv-val --target-env vulkan1.2 "$f" >> /tmp/corpus/report.txt 2>&1; then echo "VALID $f PASS" >> /tmp/corpus/report.txt; else echo "VALID $f FAIL" >> /tmp/corpus/report.txt; fi
+            done
+          done < /tmp/corpus/manifest.txt
+          cat /tmp/corpus/report.txt
       - name: Adapt existing triangle harness (real readback + negative control)
         run: |
           python3 - <<'PY'
@@ -137,6 +155,8 @@ jobs:
           mkdir -p "$P/src/main/java/dev/muns/hengegputest" "$P/src/main/jniLibs/arm64-v8a" "$P/src/main/assets"
           cp tests/gpu-android-gpt/MainActivity.java "$P/src/main/java/dev/muns/hengegputest/"
           cp /tmp/gpu-assets/{triangle_vertex.spv,triangle_fragment.spv,full.spv,texture.spv,blend.spv,half.spv,provenance.txt} "$P/src/main/assets/"
+          cp /tmp/corpus/manifest.txt /tmp/corpus/report.txt "$P/src/main/assets/"
+          cp /tmp/corpus/*.air.bc "$P/src/main/assets/"
           cp /tmp/lagfx/LICENSE "$P/src/main/assets/libapplegfx-LICENSE.txt"
           "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
@@ -175,6 +195,7 @@ jobs:
           cp /tmp/lagfx/examples/triangle/out/triangle.air "$P/src/main/assets/"
           python3 tests/gpu-android-gpt/adapt_engine.py /tmp/lagfx/tests/vulkan-render.c /tmp/engine-test.c
           "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libaircorpus.so"
           "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           cat > "$P/settings.gradle" <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
@@ -186,13 +207,13 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest.v3'; minSdk 30; targetSdk 34; versionCode 3; versionName '3.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
-            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so'] } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.v4'; minSdk 30; targetSdk 34; versionCode 4; versionName '4.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so','**/libaircorpus.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT GPU Test 6" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT Metal Corpus" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>
@@ -202,7 +223,7 @@ jobs:
           cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-gpu-test.apk
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-gpu-test.apk
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-gpu-test.apk | head -5
-          cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/gpu-publish/
+          cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/corpus/report.txt /tmp/gpu-publish/
       - uses: actions/upload-artifact@v4
         with:
           name: henge-gpt-gpu-test-apk

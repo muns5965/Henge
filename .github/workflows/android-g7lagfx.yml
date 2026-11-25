@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 08bb533d38cb429aa5977b51b2a60feeb87a766e   # branch research/android-no-process: the library plus the optional LAGFX_NO_PROCESS
+  LAGFX_SHA: aac808e1c31b44c0543a108efd6f5fd006e496d4   # branch research/android-pfn-shift: research/android-no-process (LAGFX_NO_PROCESS) plus ring_page_shift (16 KiB ring pages)
 
 jobs:
   apk:

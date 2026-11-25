@@ -17,25 +17,26 @@ struct HvPvgLagfx {
     char *error;
 };
 
-/* The guest hands the library addresses that can be below this machine's RAM (ring base 0x1e71d000 against RAM at 0x70000000). If the address has
-   no RAM behind it as given, try it as an offset from the start of RAM. The first few failures log both addresses so the log shows which one was
-   wrong. The address as given always wins when it works. */
+/* Guest memory is reached with the address the library computed, unchanged. (An earlier version added the RAM base to any address below it; the
+   rings turned out to be 16 KiB-page numbers, so that read the wrong memory.) A failed lookup is logged a few times, with the first bytes at "address +
+   RAM base" for comparison only: nothing is read from or written to that address on the real path. */
 #define LAGFX_RAM_BASE 0x70000000ull
 static void *lagfx_ptr(HvPvgLagfx *g, uint64_t gpa, uint64_t length, uint64_t *used) {
     void *p = hv_phys_ptr(g->m, gpa, length);
     *used = gpa;
     if (p) return p;
-    if (gpa < LAGFX_RAM_BASE) {
-        p = hv_phys_ptr(g->m, gpa + LAGFX_RAM_BASE, length);
-        if (p) {
-            static int shown;
-            if (shown < 8) { shown++; fprintf(stderr, "hengevm: lagfx: gpa %#llx has no RAM; using RAM-relative %#llx (len %llu)\n", (unsigned long long)gpa, (unsigned long long)(gpa + LAGFX_RAM_BASE), (unsigned long long)length); }
-            *used = gpa + LAGFX_RAM_BASE;
-            return p;
-        }
-    }
     static int failed;
-    if (failed < 16) { failed++; fprintf(stderr, "hengevm: lagfx: gpa %#llx len %llu: no RAM as given nor as RAM-relative (%#llx)\n", (unsigned long long)gpa, (unsigned long long)length, (unsigned long long)(gpa + LAGFX_RAM_BASE)); }
+    if (failed < 16) {
+        failed++;
+        const uint8_t *alt = gpa < LAGFX_RAM_BASE ? hv_phys_ptr(g->m, gpa + LAGFX_RAM_BASE, length < 16 ? length : 16) : NULL;
+        fprintf(stderr, "hengevm: lagfx: gpa %#llx len %llu: no RAM there", (unsigned long long)gpa, (unsigned long long)length);
+        if (alt) {
+            fprintf(stderr, " (for comparison only, at %#llx:", (unsigned long long)(gpa + LAGFX_RAM_BASE));
+            for (uint64_t i = 0; i < (length < 16 ? length : 16); i++) fprintf(stderr, " %02x", alt[i]);
+            fputc(')', stderr);
+        }
+        fputc('\n', stderr);
+    }
     return NULL;
 }
 
@@ -119,6 +120,12 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
     d.shell.raise_interrupt = cb_raise_interrupt;
     d.mmio_region_size = 0x10000;   /* the gfx window the machine registered */
     d.thread_count = 0;             /* library default */
+    /* The guest's ring and shared-page numbers are 16 KiB page numbers (devices/pvg_lite.c shifts them by 14). A test setting until a real command has been
+       processed on the phone; 12 gives the library's old 4 KiB reading. */
+#ifndef HV_PVG_LAGFX_RING_PAGE_SHIFT
+#define HV_PVG_LAGFX_RING_PAGE_SHIFT 14
+#endif
+    d.ring_page_shift = HV_PVG_LAGFX_RING_PAGE_SHIFT;
     char *err = NULL;
     g->dev = lagfx_device_new(&d, &err);
     if (!g->dev) {

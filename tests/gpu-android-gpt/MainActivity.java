@@ -28,7 +28,16 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20,20,20,20);
-        ScrollView scroll = new ScrollView(this); scroll.addView(root); setContentView(scroll);
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        Button topCopy = new Button(this);
+        topCopy.setText("시험 로그 복사");
+        topCopy.setOnClickListener(v -> copyReport());
+        screen.addView(topCopy, new LinearLayout.LayoutParams(-1,-2));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(root);
+        screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
+        setContentView(screen);
         TextView heading = new TextView(this); heading.setText("GPT Metal 5.2 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
@@ -53,8 +62,17 @@ public class MainActivity extends Activity {
         render.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);render.setEnabled(false);worker.submit(this::testMetalRender);});
         log = new TextView(this); log.setTextIsSelectable(true); root.addView(log);
         Button copy = new Button(this); copy.setText("시험 로그 복사"); root.addView(copy);
-        copy.setOnClickListener(v -> ((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("GPU test",report)));
+        copy.setOnClickListener(v -> copyReport());
         run.setOnClickListener(v -> {run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
+    }
+    private void copyReport() {
+        String snapshot=report;
+        if(snapshot.isEmpty()){
+            Toast.makeText(this,"완료된 시험 로그가 없습니다.",Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("GPU test",snapshot));
+        Toast.makeText(this,"최근 완료 시험 로그 복사 완료",Toast.LENGTH_SHORT).show();
     }
     private File asset(String name) throws IOException {
         File f = new File(getFilesDir(),name);

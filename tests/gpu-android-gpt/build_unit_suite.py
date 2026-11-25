@@ -50,6 +50,61 @@ def adapt(src):
     text=re.sub(r'execl\((\w+),\s*"spirv-val",\s*(tmpl),',r'execl(\1, "spirv-val", "--target-env", "vulkan1.2", \2,',text)
     if src in ('handler-task.c','handler-memory.c'):
         text=text.replace('((uint64_t*)payload)[1][0]','((uint64_t*)payload)[1]').replace('((uint64_t*)payload)[1][1]','((uint64_t*)payload)[2]')
+    # Bind the real disassembler rather than relying on Android shell PATH.
+    text=text.replace('"/opt/homebrew/bin/spirv-dis",','getenv("LAGFX_ANDROID_SPIRV_DIS") ? getenv("LAGFX_ANDROID_SPIRV_DIS") : "/opt/homebrew/bin/spirv-dis",')
+    if src=='handler-memory.c':
+        text=text.replace('lagfx_memory_define_child_fifo(', 'lagfx_op_define_child_fifo(').replace('lagfx_memory_map_memory_immediate(', 'lagfx_op_map_memory_immediate(')
+        # The immediate command is packed: u32 then two u64, not aligned u64 array.
+        text=text.replace('((uint64_t*)payload)[1] = 0x2000ull;', 'memcpy(payload+4, &(uint64_t){0x2000ull}, 8);').replace('((uint64_t*)payload)[2] = 0x1000ull;', 'memcpy(payload+12, &(uint64_t){0x1000ull}, 8);')
+    if src=='handler-task.c':
+        text=text.replace('lagfx_task_define_host_task2(', 'lagfx_task_define_host_task(')
+    if src=='handler-sync-utility.c':
+        text=text.replace('#include <stdbool.h>', '#include "handlers/iosurface/iosurface.h"\n#include <stdbool.h>')
+        for old,new in [('lagfx_resource_set_placement','lagfx_op_set_object_placement'),('lagfx_resource_iosurface_create','lagfx_iosurface_create_backing2'),('lagfx_resource_iosurface_lookup','lagfx_iosurface_lookup'),('lagfx_util_device_info','lagfx_op_get_device_info')]:
+            text=text.replace(old+'(',new+'(')
+        for old,new in [('0x22','0x42'),('0x26','0x25'),('0x29','0x0e'),('0x2a','0x0a')]:
+            text=text.replace('.opcode = '+old+',','.opcode = '+new+',')
+    if src=='handler-display-vchan.c':
+        # Preserve negative short-payload checks and add real metadata assertions.
+        a=text.index('static int test_cursor_show(void)')
+        b=text.index('int main(void)',a)
+        text=text[:a]+r'''
+static int test_cursor_show(void) {
+    struct lagfx_protocol *p = calloc(1,sizeof(*p));
+    p->dev=&mock_dev;
+    uint8_t payload[16]={0};
+    vchan_store_le32(payload+4, ((uint32_t)20<<16)|10);
+    vchan_store_le32(payload+8,1);
+    vchan_store_le32(payload+12, ((uint32_t)3<<16)|2);
+    lagfx_cmd_header_t h={.opcode=0x13,.length=28,.payload_size=4,.payload=payload};
+    int short_ok=lagfx_display_cursor_show(p,&h)==LAGFX_HANDLER_ERR_SIZE;
+    h.payload_size=16;
+    int ok=lagfx_display_cursor_show(p,&h)==LAGFX_HANDLER_OK &&
+        mock_dev.cursor_show.valid && mock_dev.cursor_show.x==10 &&
+        mock_dev.cursor_show.y==20 && mock_dev.cursor_show.visible==1 &&
+        mock_dev.cursor_show.hot_x==2 && mock_dev.cursor_show.hot_y==3;
+    printf("%s: cursor show rejects short payload and preserves metadata\n",short_ok&&ok?"PASS":"FAIL");
+    free(p);return !(short_ok&&ok);
+}
+static int test_cursor_glyph(void) {
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));
+    p->dev=&mock_dev;
+    uint8_t payload[32]={0};
+    vchan_store_le32(payload+4,32);vchan_store_le32(payload+8,32);
+    vchan_store_le32(payload+12,128);vchan_store_le32(payload+16,2);
+    vchan_store_le32(payload+20,3);vchan_store_le32(payload+24,0x10000);
+    lagfx_cmd_header_t h={.opcode=0x14,.length=44,.payload_size=4,.payload=payload};
+    int short_ok=lagfx_display_cursor_glyph(p,&h)==LAGFX_HANDLER_ERR_SIZE;
+    h.payload_size=32;
+    int ok=lagfx_display_cursor_glyph(p,&h)==LAGFX_HANDLER_OK &&
+        mock_dev.cursor_glyph.valid && mock_dev.cursor_glyph.width==32 &&
+        mock_dev.cursor_glyph.height==32 && mock_dev.cursor_glyph.bytes_per_row==128 &&
+        mock_dev.cursor_glyph.hot_x==2 && mock_dev.cursor_glyph.hot_y==3 &&
+        mock_dev.cursor_glyph.glyph_va==0x10000;
+    printf("%s: cursor glyph rejects short payload and preserves metadata (pixel capture not tested)\n",short_ok&&ok?"PASS":"FAIL");
+    free(p);return !(short_ok&&ok);
+}
+'''+text[b:]
     dest=adapted/src;dest.write_text(text)
     return dest
 def build(entry):

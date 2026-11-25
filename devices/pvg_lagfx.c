@@ -15,6 +15,8 @@ struct HvPvgLagfx {
     int gfx_irq;
     lagfx_device_t *dev;
     char *error;
+    void (*display_hook)(void *opaque, const uint32_t *cmd, uint32_t len);
+    void *display_opaque;
 };
 
 /* Guest memory is reached with the address the library computed, unchanged. (An earlier version added the RAM base to any address below it; the
@@ -103,6 +105,24 @@ static void cb_raise_interrupt(void *opaque, uint32_t vector) {
     hv_gicv3_pend(g->gic, g->gfx_irq);
 }
 
+/* Display ops 1/2/8 of the ARM64 protocol (set-page, ack, swap). The library hands them over as the guest wrote them; pvg_lite.c's own decoder owns
+   the shared display page and the swapped-surface state that the Surface frame path reads. The library still completes the stamp and raises the
+   interrupt for the command, so nothing here touches status or IRQ. */
+static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cmd, uint32_t len) {
+    HvPvgLagfx *g = opaque;
+    (void)chan_id;
+    if (!g->display_hook || !cmd || len < 12 || len > 4096) return;
+    uint32_t aligned[1024];           /* the ring bytes carry no alignment promise */
+    memcpy(aligned, cmd, len);
+    g->display_hook(g->display_opaque, aligned, len);
+}
+
+void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, const uint32_t *cmd, uint32_t len), void *opaque) {
+    if (!g) return;
+    g->display_hook = hook;
+    g->display_opaque = opaque;
+}
+
 HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const char **why) {
     static char reason[160];
     HvPvgLagfx *g = calloc(1, sizeof *g);
@@ -118,6 +138,9 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
     d.shell.read_memory = cb_read_memory;
     d.shell.write_memory = cb_write_memory;
     d.shell.raise_interrupt = cb_raise_interrupt;
+    d.shell.display_command = cb_display_command;
+    /* This machine's guest is the ARM64 vmapple one: cumulative root-ring pointer, Apple's Device Info table, 0x25/0x20 as Apple's pvg_metal.m reads them. */
+    d.protocol_mode = LAGFX_PROTO_ARM64_VMAPPLE;
     d.mmio_region_size = 0x10000;   /* the gfx window the machine registered */
     d.thread_count = 0;             /* library default */
     /* The guest's ring and shared-page numbers are 16 KiB page numbers (devices/pvg_lite.c shifts them by 14). A test setting until a real command has been

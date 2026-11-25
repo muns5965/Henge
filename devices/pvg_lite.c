@@ -1098,6 +1098,12 @@ static uint64_t gfx_read_lagfx(void *opaque, uint64_t off, unsigned size) {
     return hv_pvg_lagfx_read(p->lagfx, off);
 }
 
+/* The library's Display ops (1/2/8) land in the same decoder the built-in device uses, so the shared page and the swapped surface are the ones
+   hv_pvg_lite_live_surface_bgra() already reads. */
+static void lagfx_display_hook(void *opaque, const uint32_t *cmd, uint32_t len) {
+    hv_pvg_lite_command((HvPvgLite *)opaque, cmd, len);
+}
+
 static void gfx_write_lagfx(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     HvPvgLite *p = opaque;
     (void)size;
@@ -1128,6 +1134,7 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
         p->lagfx = hv_pvg_lagfx_create(m, gic, gfx_irq, &why);
         if (p->lagfx) {
             fprintf(stderr, "hengevm: pvg-lite: gfx window -> libapplegfx-vulkan\n");
+            hv_pvg_lagfx_set_display_hook(p->lagfx, lagfx_display_hook, p);
             hv_machine_add_mmio(m, gfx_pa, 0x10000, p, gfx_read_lagfx, gfx_write_lagfx, "gfx");
         } else {
             fprintf(stderr, "hengevm: pvg-lite: libapplegfx-vulkan refused (%s); using the built-in gfx device\n", why ? why : "no reason");

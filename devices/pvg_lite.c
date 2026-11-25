@@ -49,9 +49,16 @@
 
 #define MAX_CHANNELS 16
 
+#ifdef HV_WITH_LAGFX
+#include "pvg_lagfx.h"
+#endif
+
 struct HvPvgLite {
     HvMachine *m;
     HvGic *gic;
+#ifdef HV_WITH_LAGFX
+    HvPvgLagfx *lagfx;   /* non-NULL: the gfx window belongs to libapplegfx-vulkan (opt-in, see hv_pvg_lite_create) */
+#endif
     int gfx_irq, iosfc_irq;
     int log;
     uint32_t regs[0x1000 / 4]; /* +1000.. */
@@ -1083,6 +1090,21 @@ void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, ui
     }
 }
 
+#ifdef HV_WITH_LAGFX
+/* The gfx window handed to libapplegfx-vulkan (S7). Same shape as gfx_read/gfx_write; the library does the command decoding. */
+static uint64_t gfx_read_lagfx(void *opaque, uint64_t off, unsigned size) {
+    HvPvgLite *p = opaque;
+    (void)size;
+    return hv_pvg_lagfx_read(p->lagfx, off);
+}
+
+static void gfx_write_lagfx(void *opaque, uint64_t off, uint64_t v, unsigned size) {
+    HvPvgLite *p = opaque;
+    (void)size;
+    hv_pvg_lagfx_write(p->lagfx, off, v);
+}
+#endif
+
 HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_t iosfc_pa, int gfx_irq, int iosfc_irq) {
     HvPvgLite *p = calloc(1, sizeof *p);
     p->layer_lock = OS_UNFAIR_LOCK_INIT;
@@ -1094,6 +1116,20 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->iosfc_irq = iosfc_irq;
     p->log = getenv("HV_PVG_LITE_LOG") != NULL;
     p->tally = getenv("HV_PVG_TALLY") != NULL;
+#ifdef HV_WITH_LAGFX
+    /* Opt-in only: built with HV_WITH_LAGFX AND HV_PVG_LAGFX set AND the library accepts the device. Anything else keeps the path below, byte for byte. */
+    if (getenv("HV_PVG_LAGFX")) {
+        const char *why = NULL;
+        p->lagfx = hv_pvg_lagfx_create(m, gic, gfx_irq, &why);
+        if (p->lagfx) {
+            fprintf(stderr, "hengevm: pvg-lite: gfx window -> libapplegfx-vulkan\n");
+            hv_machine_add_mmio(m, gfx_pa, 0x10000, p, gfx_read_lagfx, gfx_write_lagfx, "gfx");
+        } else {
+            fprintf(stderr, "hengevm: pvg-lite: libapplegfx-vulkan refused (%s); using the built-in gfx device\n", why ? why : "no reason");
+        }
+    }
+    if (!p->lagfx)
+#endif
     hv_machine_add_mmio(m, gfx_pa, 0x10000, p, gfx_read, gfx_write, "gfx");
     hv_machine_add_mmio(m, iosfc_pa, 0x10000, p, iosfc_read, iosfc_write, "iosurface");
     return p;

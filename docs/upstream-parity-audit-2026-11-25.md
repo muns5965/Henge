@@ -33,10 +33,12 @@
 | 불필요한 동작 변경(후보) | 포크 PC 샘플링이 디스패치 핫패스에 있음 | 옵션화 또는 제거 검토 |
 | Android 호환성 변경 | memfd JIT(RW/RX), clear_cache, futex ulock, HV_SWITCH_FLUSH 기본 off | 유지 |
 | 플랫폼별 동등 구현 | 프로세스당 러너(메모리·fd·스레드·소켓 회수), PSCI wake/CPU_ON denial, resumable IPSW 다운로드, 중복 설치 방지 | 메모리 회수에 한정해 동등 |
-| Android 진단 기능 | psci_halt_* 기록, panic probe, hv_vm_flush_disks_checked, hv_vm_start_failed | 공통 진단 인터페이스+별도 모듈 분리 검토 |
+| Android 진단 기능 | psci_halt_* 기록, panic probe | 공통 진단 인터페이스+별도 모듈 분리 검토 |
+| 공통 VM 관리 API 개선 후보 | hv_vm_flush_disks_checked, hv_vm_start_failed | 시작 실패·저장 성공 여부를 호출자에 전달하는 정상 관리 기능. 진단 코드가 아님 |
 | 포크 독자 개선(공통 개선 후보) | HvPvgBackend 테이블, 링·길이 검증 강화, USB 하드닝, 읽기 전용 저장소 | 원본 기여 후보 |
 | 실험적 변경 | clone 러너 USB 모드 0~4, 모드 E(autoboot_fix) | 모드 E를 거친 clone-001은 AUX가 바뀐 시험본. 비교 시 분리 |
-| iOS 전용 | tl/(Mac 앱 변환 62커밋), Swift, Metal, snapshot.c, 즉시 재개, iOS JIT | Android 불필요 |
+| iOS 전용 | tl/(Mac 앱 변환 62커밋), Swift UI·앱 상태 관리, Metal, iOS JIT | Android 불필요 |
+| 공통 기능 + 플랫폼별 구현 | 스냅숏(CPU·RAM·장치 상태 저장·복원), VM 즉시 재개 | 현재 부팅과 무관해 후순위. Android에 영구 불필요로 분류하지 않음. snapshot.c는 Apple compression.h·GCD 의존이라 Android용 대체 구현 필요 |
 
 D 정정: 원본 `recovery.c`(113·119행)에 `setenv auto-boot`/`saveenv`가 있고 포크에도 있다. 일반 부팅 중 getenv(모드 D)·auto-boot 수정(모드 E)은 포크 시험 기능이다.
 
@@ -48,7 +50,7 @@ D 정정: 원본 `recovery.c`(113·119행)에 `setenv auto-boot`/`saveenv`가 �
 
 ## 5. 수정 순서 (제안, 미적용)
 
-1. 원본 시험 이식: test_shutdown.c(코어 순수 C, hv_machine_free·HV_HALT_* 필요), test_dt_fixup.c, test_mmu.c 블록. 포크에는 hv_machine_halt의 엔진 시험이 없다.
+1. 원본 시험 이식: test_shutdown.c(코어 순수 C, hv_machine_free·HV_HALT_* 필요), test_mmu.c 블록. test_dt_fixup.c는 dt_fixup 기능을 이식하지 않는 동안 제외. 포크에는 hv_machine_halt의 엔진 시험이 없다.
 2. 종료 사유 보존: hv_vm_stop·pvpanic → hv_machine_halt. 모든 호출자(복원/installed/clone/g4 러너) 영향 분석 후. 설치 러너의 USB·복원 작업자 생명주기에 같은 절차를 무조건 적용하지 않는다.
 3. 종료 순서: 스레드 핸들 보존, CPU0 마지막 생성, 보조 CPU·kicker join, virtio_blk stop, 그 뒤 flush(`hv_vm_flush_disks_checked`), 콜백.
 4. VERDICT에 구조화 필드(outcome, psci, uptime_s, write_errors 등) 추가. 기존 정규식과 호환.

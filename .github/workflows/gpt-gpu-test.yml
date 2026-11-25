@@ -235,8 +235,15 @@ jobs:
             LINK=()
             if [ "$mode" = lto ]; then LINK=(-flto); fi
             "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie "${LINK[@]}" -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$B/libapplegfx-vulkan.a" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libcompare_${mode}.so"
+            "$T/aarch64-linux-android30-clang" -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -fPIE -pie "${LINK[@]}" -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c "$B/libapplegfx-vulkan.a" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libbench_${mode}.so"
           done
           cat "$P/src/main/assets/build-flags.txt"
+          # Separate patched archive, preserving the original debug/release/LTO baseline.
+          git -C /tmp/lagfx worktree add --detach /tmp/lagfx-fixed ad61b03eaf3d2b28b7ff57e7e7742c6a4b16a812
+          meson setup /tmp/lagfx-fixed/android-build /tmp/lagfx-fixed --cross-file /tmp/android-cross.ini -Dtests=false --buildtype=release
+          ninja -C /tmp/lagfx-fixed/android-build libapplegfx-vulkan.a
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx-fixed/src -I/tmp/lagfx-fixed/include /tmp/lagfx-fixed/tests/vulkan-render.c /tmp/lagfx-fixed/android-build/libapplegfx-vulkan.a "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libfixedsmoke.so"
+
           # Keep the five native filenames from the installed v3 APK.
           printf '%s\n' '#define main corpus_main' '#include "air_corpus.c"' '#undef main' '#define main triangle_main' '#include "air2spv_probe.c"' '#undef main' '#include <string.h>' 'int main(int argc,char **argv){if(argc>1&&!strcmp(argv[1],"--corpus"))return corpus_main(argc-1,argv+1);return triangle_main(argc,argv);}' > /tmp/combined-air.c
           "$T/aarch64-linux-android30-clang" -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -fPIE -pie -Itests/gpu-android-gpt -Itests/gpu-validation -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/combined-air.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
@@ -287,23 +294,23 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest.suite54'; minSdk 30; targetSdk 34; versionCode 13; versionName '5.4-gpt'; ndk { abiFilters 'arm64-v8a' } }
-            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so','**/libskylight.so','**/libut_*.so','**/libspirvval.so','**/libspirvdis.so','**/libspirvopt.so','**/libcompare_*.so'] } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.suite55'; minSdk 30; targetSdk 34; versionCode 14; versionName '5.5-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so','**/libskylight.so','**/libut_*.so','**/libspirvval.so','**/libspirvdis.so','**/libspirvopt.so','**/libcompare_*.so','**/libbench_*.so','**/libfixedsmoke.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT Metal 5.4" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT Metal 5.5" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>
           EOF
           gradle -p "$P" assembleDebug --no-daemon --stacktrace
           mkdir -p /tmp/gpu-publish
-          cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-metal-5.4.apk
+          cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-metal-5.5.apk
           python3 - <<'PY'
           import zipfile, pathlib, hashlib
-          with zipfile.ZipFile('/tmp/gpu-publish/henge-gpt-metal-5.4.apk') as z:
+          with zipfile.ZipFile('/tmp/gpu-publish/henge-gpt-metal-5.5.apk') as z:
               assert z.testzip() is None
               assert not any(n.lower().endswith('.bc') for n in z.namelist()), 'Legacy RenderScript extension present'
               names=pathlib.Path('/tmp/corpus/manifest.txt').read_text().splitlines()
@@ -318,18 +325,21 @@ jobs:
               assert 'lib/arm64-v8a/libspirvdis.so' in z.namelist()
               assert 'lib/arm64-v8a/libspirvopt.so' in z.namelist()
               assert 'assets/build-flags.txt' in z.namelist()
-              for mode in ('debug','release','lto'): assert 'lib/arm64-v8a/libcompare_'+mode+'.so' in z.namelist()
+              for mode in ('debug','release','lto'):
+                  assert 'lib/arm64-v8a/libcompare_'+mode+'.so' in z.namelist()
+                  assert 'lib/arm64-v8a/libbench_'+mode+'.so' in z.namelist()
+              assert 'lib/arm64-v8a/libfixedsmoke.so' in z.namelist()
               for row in rows:
                   name,group,state,exe,reason=row.split('\t',4)
                   if state=='BUILT': assert 'lib/arm64-v8a/'+exe in z.namelist(),name
           PY
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-metal-5.4.apk
-          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-metal-5.4.apk | head -5
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-metal-5.5.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-metal-5.5.apk | head -5
           cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/corpus/report.txt /tmp/login_*-render.txt /tmp/gpu-publish/
           cp "$P/src/main/assets/unit-manifest.tsv" /tmp/gpu-publish/
           cp -r /tmp/unit-build-logs /tmp/gpu-publish/
           cp "$P/src/main/assets/build-flags.txt" /tmp/gpu-publish/
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-gpt-metal-5.4-apk
+          name: henge-gpt-metal-5.5-apk
           path: /tmp/gpu-publish/

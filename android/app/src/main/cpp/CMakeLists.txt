@@ -33,3 +33,10 @@ target_include_directories(henge_ui PRIVATE ${HENGE_ROOT}/host)
 target_compile_options(henge_ui PRIVATE -O1 -Wall -Wextra -Werror)
 target_link_libraries(henge_ui android log m)
 target_link_options(henge_ui PRIVATE -Wl,-z,max-page-size=16384)
+
+# S5 of docs/gpu-research: a read-only Vulkan device report (one VkInstance, questions only). A library of its own, loaded only when the
+# button of the G7 execution build asks for it, so a phone without libvulkan.so only loses that report.
+add_library(henge_vkprobe SHARED vkprobe_jni.c)
+target_compile_options(henge_vkprobe PRIVATE -O1 -Wall -Wextra)
+target_link_libraries(henge_vkprobe vulkan log)
+target_link_options(henge_vkprobe PRIVATE -Wl,-z,max-page-size=16384)

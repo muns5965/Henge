@@ -137,6 +137,16 @@ public class G7ExecActivity extends Activity {
         add(root, "[AUX 비교] 복원 전(macos_aux.initial)과 복원 후(macos_aux.img)의 AUX를 읽기 전용으로 비교하고, 복제본들의 AUX가 원본과 같은지도 봅니다. 아무것도 쓰거나 바꾸지 않습니다.", 13);
         auxBtn = new Button(this); auxBtn.setText("AUX 비교 실행(읽기 전용)"); root.addView(auxBtn);
         auxOut = new TextView(this); auxOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); auxOut.setTextIsSelectable(true); root.addView(auxOut);
+        add(root, "[Vulkan 장치 탐지] 이 폰의 Vulkan 장치와 기능을 읽기만 합니다(VkInstance 하나를 만들고 묻고 닫음). VM과 무관하며 아무것도 그리거나 쓰지 않습니다. GPU 이식(docs/gpu-research S5)의 근거 수집용입니다.", 13);
+        final Button vkBtn = new Button(this); vkBtn.setText("Vulkan 장치 탐지(읽기 전용)"); root.addView(vkBtn);
+        final TextView vkOut = new TextView(this); vkOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); vkOut.setTextIsSelectable(true); root.addView(vkOut);
+        vkBtn.setOnClickListener(v -> {
+            vkBtn.setEnabled(false); vkOut.setText("탐지하는 중…");
+            new Thread(() -> {
+                final String text = "SDK " + android.os.Build.VERSION.SDK_INT + ", " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + "\n" + VulkanProbe.report();
+                runOnUiThread(() -> { vkOut.setText(text); vkBtn.setEnabled(true); });
+            }, "g7-vulkan-probe").start();
+        });
         auxBtn.setOnClickListener(v -> {
             auxBtn.setEnabled(false); auxOut.setText("비교하는 중…");
             new Thread(() -> {

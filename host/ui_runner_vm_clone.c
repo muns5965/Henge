@@ -262,7 +262,7 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit", *stop_kind = "requested-quit";
-    char reason_txt[160];   /* outlives the loop: why_stop may point at it after the break */
+    char reason_txt[700];   /* outlives the loop: why_stop may point at it after the break */
     double tstart = now(), next_frame = 0, next_mem = 0; unsigned nmem = 0;
     char inl[256]; size_t ll = 0; long ignored = 0;
     for (;;) {
@@ -270,7 +270,21 @@ int main(int argc, char **argv) {
         if (hv_shm_app_closed(g_shm)) { why_stop = "app closed"; stop_kind = "app-closed"; break; }
         if (atomic_load(&g_exited)) {
             int er = atomic_load(&g_exit_reason);
-            snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s)", er, hv_vm_reason_name(er));
+            uint32_t pfn = 0, pcpu = 0; uint64_t ppc = 0, plr = 0;
+            /* Same read-only accessors host/ui_runner_vm.c uses: a PSCI SYSTEM_OFF/SYSTEM_RESET halt says which call, which cpu, pc and lr, and the raw stack words
+               (nothing is interpreted here). Without a PSCI record the line stays as before. */
+            if (hv_vm_psci_halt_info(&pfn, &pcpu, &ppc, &plr)) {
+                int rn = snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s), psci %s (fn=%#x) by cpu%u at pc=%#llx lr=%#llx",
+                                  er, hv_vm_reason_name(er), pfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET", pfn, pcpu, (unsigned long long)ppc, (unsigned long long)plr);
+                uint64_t psp = 0, px26 = 0, pstack[HV_PSCI_HALT_STACK_WORDS]; int pn = 0;
+                if (rn > 0 && (size_t)rn < sizeof reason_txt && hv_vm_psci_halt_stack(&psp, &px26, pstack, &pn)) {
+                    char words[HV_PSCI_HALT_STACK_WORDS * 17 + 1] = ""; size_t wo = 0;
+                    for (int i = 0; i < pn && wo + 18 < sizeof words; i++)
+                        wo += (size_t)snprintf(words + wo, sizeof words - wo, "%s%016llx", i ? "," : "", (unsigned long long)pstack[i]);
+                    snprintf(reason_txt + rn, sizeof reason_txt - (size_t)rn, " sp=%#llx x26=%#llx stack(sp+0..sp+%#x)=%s", (unsigned long long)psp, (unsigned long long)px26, pn * 8, words);
+                }
+            } else
+                snprintf(reason_txt, sizeof reason_txt, "the machine stopped itself, reason %d (%s) [no PSCI record: stop address or other]", er, hv_vm_reason_name(er));
             why_stop = reason_txt; stop_kind = "guest-initiated"; break;
         }
         if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; stop_kind = "time-limit"; break; }

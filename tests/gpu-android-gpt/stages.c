@@ -89,7 +89,7 @@ int main(int argc,char **argv){
  }
  vkCmdEndRenderPass(cb);barrier(cb,target,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
  VkBufferImageCopy cp={0};cp.imageSubresource=(VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};cp.imageExtent=(VkExtent3D){W,H,1};vkCmdCopyImageToBuffer(cb,target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,rb,1,&cp);CK(vkEndCommandBuffer(cb));VkSubmitInfo si={VK_STRUCTURE_TYPE_SUBMIT_INFO};si.commandBufferCount=1;si.pCommandBuffers=&cb;CK(vkQueueSubmit(q,1,&si,VK_NULL_HANDLE));CK(vkQueueWaitIdle(q));
- uint8_t *raw;CK(vkMapMemory(d,rbm,0,N*bytes,0,(void**)&raw));uint8_t bgra[N*4];unsigned bad=0;
+ uint8_t *raw;CK(vkMapMemory(d,rbm,0,N*bytes,0,(void**)&raw));uint8_t bgra[N*4];unsigned bad=0, converted_bad=0;
  for(int y=0;y<H;y++)for(int x=0;x<W;x++){
   int i=y*W+x;int expected[4]={0,0,0,255};uint8_t *o=bgra+i*4;
   if(stage==4){uint16_t *h=(uint16_t*)raw+i*4;float want[4]={(float)(x/16)*.25f,(float)(y/16)*.25f,1.5f,1.f};for(int k=0;k<4;k++){float a=hv_half_to_float(h[k]);if(!isfinite(a)||fabsf(a-want[k])>.001f){bad++;break;}}}
@@ -99,7 +99,7 @@ int main(int argc,char **argv){
    o[0]=p[2];o[1]=p[1];o[2]=p[0];o[3]=p[3];
   }
  }
- if(stage==4){const uint8_t *lut=hv_half_to_byte_table();if(!lut)return 2;for(int y=0;y<H;y++)hv_half_row_to_bgra((const uint16_t*)raw+y*W*4,bgra+y*W*4,W,lut);for(int y=0;y<H;y++)for(int x=0;x<W;x++){uint8_t *p=bgra+(y*W+x)*4;if(p[0]!=255||p[1]!=(uint8_t)((y/16)*.25f*255+.5f)||p[2]!=(uint8_t)((x/16)*.25f*255+.5f)||p[3]!=255)bad++;}}
+ if(stage==4){const uint8_t *lut=hv_half_to_byte_table();if(!lut)return 2;for(int y=0;y<H;y++)hv_half_row_to_bgra((const uint16_t*)raw+y*W*4,bgra+y*W*4,W,lut);for(int y=0;y<H;y++)for(int x=0;x<W;x++){uint8_t *p=bgra+(y*W+x)*4;if(p[0]!=255||p[1]!=(uint8_t)((y/16)*.25f*255+.5f)||p[2]!=(uint8_t)((x/16)*.25f*255+.5f)||p[3]!=255)converted_bad++;}}
  const char *out=getenv("GPU_TEST_OUTPUT");if(out){FILE *f=fopen(out,"wb");if(!f)return 2;size_t z=fwrite(bgra,1,sizeof bgra,f);int e=fclose(f);if(z!=sizeof bgra||e)return 2;}
- printf("STAGE %d pixels: %d checked, %u mismatched\n",stage,N,bad);printf("STAGE %d RESULT: %s\n",stage,bad?"FAIL":"PASS");vkUnmapMemory(d,rbm);return bad?1:0;
+ if(stage==4){printf("FP16 raw: %d checked, %u mismatched\n",N,bad);printf("BGRA converted: %d checked, %u mismatched\n",N,converted_bad);}else printf("STAGE %d pixels: %d checked, %u mismatched\n",stage,N,bad);bad+=converted_bad;printf("STAGE %d RESULT: %s\n",stage,bad?"FAIL":"PASS");vkUnmapMemory(d,rbm);return bad?1:0;
 }

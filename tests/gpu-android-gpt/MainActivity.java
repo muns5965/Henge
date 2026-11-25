@@ -101,7 +101,7 @@ public class MainActivity extends Activity {
                     File[] old=dir.listFiles();if(old==null)throw new IOException("list");
                     for(File f:old)if(!f.delete())throw new IOException("stale output");
                     File air=asset(name+".air.bc");
-                    int start=t.length();int rc=auxiliary(new String[]{new File(nativeDir,"libaircorpus.so").getAbsolutePath(),air.getAbsolutePath(),name.endsWith("_vert")?"vertex":"fragment",dir.getAbsolutePath()},t);
+                    int start=t.length();int rc=auxiliary(new String[]{new File(nativeDir,"libairprobe.so").getAbsolutePath(),"--corpus",air.getAbsolutePath(),name.endsWith("_vert")?"vertex":"fragment",dir.getAbsolutePath()},t);
                     String result=t.substring(start);File[] files=dir.listFiles((d,n)->n.endsWith(".spv"));
                     boolean ok=rc==0&&files!=null&&files.length>0;int count=0;
                     if(files!=null)for(File f:files){

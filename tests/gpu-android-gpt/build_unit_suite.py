@@ -133,8 +133,8 @@ static int compute_send(struct lagfx_protocol *p,uint32_t op,const uint8_t *data
 }
 '''+text[b:]
         # Retain other upstream subtests; replace only obsolete references.
+        text=text.replace('p->dev = &mock_dev;', 'p->dev = &mock_dev; p->magic=LAGFX_PROTOCOL_MAGIC;')
         def replace_test(name,body):
-            global_unused=None
             a=text.index('static int '+name+'(void)')
             b=text.find('\nstatic int ',a+1)
             if b<0:b=text.index('\nint main(void)',a)
@@ -156,9 +156,40 @@ static int test_define_child_fifo(void){
     free(p);return !ok;
 }
 ''')
-            text=text.replace('lagfx_memory_map_memory_immediate(', 'lagfx_op_map_memory_immediate(')
-            text=text.replace('((uint64_t*)payload)[1] = 0x2000ull;', 'memcpy(payload+4, &(uint64_t){0x2000ull}, 8);').replace('((uint64_t*)payload)[2] = 0x1000ull;', 'memcpy(payload+12, &(uint64_t){0x1000ull}, 8);')
+            text=replace_test('test_map_memory_immediate',r'''
+static int test_map_memory_immediate(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    uint8_t data[20]={0};put32(data,1);
+    uint64_t gpa=0x123456000ull,sz=0x500000;
+    memcpy(data+4,&gpa,8);memcpy(data+12,&sz,8);
+    int ok=compute_send(p,0x39,data,19)&&p->big_maps_n==0;
+    ok=ok&&compute_send(p,0x39,data,20)&&p->big_maps_n==1&&p->big_maps[0].gpa==gpa&&p->big_maps[0].size==sz;
+    ok=ok&&compute_send(p,0x39,data,20)&&p->big_maps_n==1;
+    gpa+=0x100000;sz=4096;memcpy(data+4,&gpa,8);memcpy(data+12,&sz,8);
+    ok=ok&&compute_send(p,0x39,data,20)&&p->big_maps_n==1;
+    printf("%s: live compute 0x39 large-map tracking, dedup, short and small input (not actual mapping)\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
+            text=replace_test('test_unmap_memory',r'''
+static int test_unmap_memory(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    p->magic=LAGFX_PROTOCOL_MAGIC;p->dev=&mock_dev;
+    uint8_t data[20]={0};uint64_t off=0x2000,len=0x1000;
+    memcpy(data+4,&off,8);memcpy(data+12,&len,8);
+    lagfx_cmd_header_t h={.opcode=3,.length=16,.payload_size=4,.payload=data};
+    int ok=lagfx_memory_unmap_memory(p,&h)==LAGFX_HANDLER_ERR_SIZE;
+    h.length=32;h.payload_size=20;
+    ok=ok&&lagfx_memory_unmap_memory(p,&h)==LAGFX_HANDLER_OK;
+    printf("%s: unmap rejects short payload and accepts packed 20-byte input (no shell callback)\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
         if src=='handler-task.c':
+            text=text.replace('((uint64_t*)payload)[1] = 0x1000ull;', 'memcpy(payload+4, &(uint64_t){0x1000ull}, 8);').replace('((uint64_t*)payload)[2] = 0x1000ull;', 'memcpy(payload+12, &(uint64_t){0x1000ull}, 8);')
+            text=text.replace('int rc = lagfx_task_define_task2(p, &hdr);','int rc = lagfx_task_define_task2(p, &hdr); lagfx_task_entry_t *t=lagfx_protocol_find_task(p,1); if(!t||!t->live||t->base_va!=0x1000||t->length!=0x1000)rc=LAGFX_HANDLER_ERR_STATE;')
+            text=text.replace('lagfx_task_define_task2(p, &def_hdr);','if(lagfx_task_define_task2(p, &def_hdr)!=LAGFX_HANDLER_OK||!lagfx_protocol_find_task(p,5)){free(p);return 1;}')
+            text=text.replace('int rc = lagfx_task_delete_task(p, &del_hdr);','int rc = lagfx_task_delete_task(p, &del_hdr); if(lagfx_protocol_find_task(p,5))rc=LAGFX_HANDLER_ERR_STATE;')
             text=replace_test('test_define_host_task2',r'''
 static int test_define_host_task2(void){
     struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
@@ -174,6 +205,20 @@ static int test_define_host_task2(void){
 }
 ''')
         if src=='handler-sync-utility.c':
+            text=replace_test('test_util_device_info',r'''
+static int test_util_device_info(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    p->magic=LAGFX_PROTOCOL_MAGIC;p->dev=&mock_dev;
+    uint8_t data[16]={0};put32(data,1);put32(data+4,0x4000);
+    memset(ram+0x4000,0xa5,8);
+    lagfx_cmd_header_t h={.opcode=0x0a,.length=16,.payload_size=4,.payload=data};
+    int ok=lagfx_op_get_device_info(p,&h)==LAGFX_HANDLER_ERR_SIZE&&get32(ram+0x4000)==0xa5a5a5a5u;
+    h.length=28;h.payload_size=16;
+    ok=ok&&lagfx_op_get_device_info(p,&h)==LAGFX_HANDLER_OK&&get32(ram+0x4000)==LAGFX_MAX_TASKS&&get32(ram+0x4004)==0xa5a5a5a5u;
+    printf("%s: legacy DeviceInfo packed 16-byte query, DMA reply and short-payload rejection\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
             text=replace_test('test_resource_set_placement',r'''
 static int test_resource_set_placement(void){
     struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
@@ -234,6 +279,10 @@ static int test_cursor_glyph(void) {
     free(p);return !(short_ok&&ok);
 }
 '''+text[b:]
+    if src=='handler-display-vchan.c':
+        text=text.replace('display_define_child_fifo allocates ring','display_define_child_fifo acknowledges command (geometry not implemented)')
+    if src=='triangle-lavapipe-e2e.c':
+        text=text.replace('lavapipe readback:', 'Vulkan device readback:')
     dest=adapted/src;dest.write_text(text)
     return dest
 def build(entry):

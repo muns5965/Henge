@@ -85,6 +85,12 @@ jobs:
               echo "- undefined vk* symbols: $(nm -D --undefined-only "$SO" | grep -c ' vk')"
               echo "- exported lagfx_* symbols: $(nm -D --defined-only "$SO" | grep -c ' lagfx_')"
             fi
+            A=$(find build-s4 -name 'libapplegfx-vulkan.a' -type f | head -1)
+            echo "- static library: ${A:-NOT BUILT}"
+            if [ -n "$A" ]; then
+              echo "- static: dlopen/dlsym imports: $(nm "$A" 2>/dev/null | grep -cE ' U (dlopen|dlsym)')"
+              echo "- static: socket/fork/exec imports: $(nm "$A" 2>/dev/null | grep -cE ' U (socket|connect|fork|execve|system|popen)')"
+            fi
             echo "- warnings: $(grep -c 'warning:' ninja.log || true), errors: $(grep -c 'error:' ninja.log || true)"
           } | tee report.md | tee -a "$GITHUB_STEP_SUMMARY"
           test -n "$(find build-s4 -name 'libapplegfx-vulkan.so*' -type f)"

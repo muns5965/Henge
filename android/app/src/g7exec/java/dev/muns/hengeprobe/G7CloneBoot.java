@@ -161,7 +161,14 @@ public final class G7CloneBoot {
             }
             return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 디스크 flush: " + fl + "(종료 확인과 별개), 종료 계기: " + who + "." + more + " macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
         }
+        private static final java.util.regex.Pattern PID = java.util.regex.Pattern.compile("g7-process: runner_pid=(\\d{1,10})");
+        /** The runner's own pid (from its "g7-process: runner_pid=" line), 0 until that line has been seen. */
+        volatile int runnerPid;
+        /** One line of the app side (G7RunService) into the same log, so one file shows what the app did next to what the runner did. */
+        public void note(String text) { put("g7-service: " + text + "\n", true); }
         synchronized void put(String text, boolean always) {
+            java.util.regex.Matcher pm = PID.matcher(text);
+            if (pm.find()) { try { runnerPid = Integer.parseInt(pm.group(1)); } catch (NumberFormatException ignored) { } }
             tail.append(text); if (tail.length() > 6000) tail.replace(0, tail.length() - 6000, "");
             if (log == null) return;
             byte[] b = text.getBytes(StandardCharsets.UTF_8);

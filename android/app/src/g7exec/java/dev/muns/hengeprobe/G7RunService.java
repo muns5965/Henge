@@ -14,6 +14,11 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
 /**
  * Keeps the app's process (and the clone-boot runner it spawned) out of the cached/background state while a run is live.
  *
@@ -32,7 +37,34 @@ public final class G7RunService extends Service {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock lock;
-    private long idleMs;
+    private long idleMs, sinceNoteMs;
+    private boolean foreground;
+
+    /** One line to the live run's log (if there is one) so the device log shows whether the protection was really on. */
+    private static void note(String text) {
+        G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r != null && !r.finished()) r.note(text);
+    }
+
+    /** /proc/<pid>/<file> first line, or "?" (a process of another uid, a dead pid and a refused read all give "?"). */
+    private static String proc(int pid, String file) {
+        if (pid <= 0) return "?";
+        try {
+            java.util.List<String> l = Files.readAllLines(Paths.get("/proc/" + pid + "/" + file), StandardCharsets.UTF_8);
+            return l.isEmpty() ? "?" : l.get(0).trim();
+        } catch (IOException | RuntimeException e) { return "?"; }
+    }
+
+    /** The app process and the runner process are different processes: the runner's own state is read by its pid. oom_score_adj 0..200 = foreground-like, 900+ = cached (what compaction and the freezer act on). */
+    private String statusLine() {
+        G7CloneBoot.Run r = G7CloneBoot.current();
+        int pid = r == null ? 0 : r.runnerPid;
+        String stat = proc(pid, "stat");
+        String state = stat.indexOf(')') >= 0 && stat.length() > stat.indexOf(')') + 2 ? stat.substring(stat.indexOf(')') + 2, stat.indexOf(')') + 3) : "?";
+        return "status: app_foreground_service=" + (foreground ? 1 : 0) + " wakelock_held=" + (lock != null && lock.isHeld() ? 1 : 0)
+                + " runner_pid=" + pid + " runner_oom_score_adj=" + proc(pid, "oom_score_adj") + " runner_state=" + state
+                + " app_oom_score_adj=" + proc(android.os.Process.myPid(), "oom_score_adj");
+    }
 
     /** Starts the service; never throws (a refusal by the system only means the run is not protected, which the log shows by the memory pattern). */
     public static boolean start(Context c) {
@@ -58,7 +90,9 @@ public final class G7RunService extends Service {
         try {
             if (Build.VERSION.SDK_INT >= 34) startForeground(NOTE_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             else startForeground(NOTE_ID, n);
-        } catch (RuntimeException e) { stopSelf(); return START_NOT_STICKY; }
+            foreground = true;
+            note("foreground service active (type specialUse, sdk " + Build.VERSION.SDK_INT + ")");
+        } catch (RuntimeException e) { note("foreground service FAILED: " + e.getClass().getSimpleName() + " " + e.getMessage()); stopSelf(); return START_NOT_STICKY; }
         if (lock == null) {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
@@ -67,6 +101,7 @@ public final class G7RunService extends Service {
                 lock.acquire(LOCK_MAX_MS);
             }
         }
+        note("wakelock " + (lock != null && lock.isHeld() ? "held (max " + LOCK_MAX_MS / 3600_000L + " h, renewed while a run is live)" : "NOT held"));
         handler.removeCallbacks(poll);
         idleMs = 0;
         handler.postDelayed(poll, POLL_MS);
@@ -75,7 +110,12 @@ public final class G7RunService extends Service {
 
     private final Runnable poll = new Runnable() {
         @Override public void run() {
-            if (G7CloneBoot.hasLive()) idleMs = 0; else idleMs += POLL_MS;
+            if (G7CloneBoot.hasLive()) {
+                idleMs = 0;
+                if (lock != null) lock.acquire(LOCK_MAX_MS);   // renewed: a run without a time limit is not cut off by the lock's own timeout
+                sinceNoteMs += POLL_MS;
+                if (sinceNoteMs >= 60_000) { sinceNoteMs = 0; note(statusLine()); }
+            } else idleMs += POLL_MS;
             if (idleMs >= IDLE_STOP_MS) { stopSelf(); return; }
             handler.postDelayed(this, POLL_MS);
         }
@@ -83,8 +123,10 @@ public final class G7RunService extends Service {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(poll);
-        if (lock != null && lock.isHeld()) lock.release();
+        boolean was = lock != null && lock.isHeld();
+        if (was) lock.release();
         lock = null;
+        note("service stopped, wakelock " + (was ? "released" : "was not held"));
         super.onDestroy();
     }
 

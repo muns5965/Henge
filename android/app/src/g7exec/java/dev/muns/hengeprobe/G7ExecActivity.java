@@ -322,9 +322,17 @@ public class G7ExecActivity extends Activity {
                     status.setText(st.message);
                     if (st.started) {
                         restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartSeconds = seconds; restartPending = false;
-                        cbtn.setEnabled(false); cbStop.setEnabled(true); G7RunService.start(this); cbootPoll();
+                        cbtn.setEnabled(false); cbStop.setEnabled(true); startRunService(); cbootPoll();
                     }
                 }).show();
+    }
+
+    /** Starts the foreground service for a run that just started and writes the outcome of the request into that run's log. */
+    private void startRunService() {
+        boolean ok = G7RunService.start(this);
+        G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r != null) r.note("service start requested, accepted by the system=" + ok);
+        if (!ok) status.setText(status.getText() + "\n(포그라운드 서비스 시작 요청이 거부됐습니다. 실행은 보호 없이 계속됩니다.)");
     }
 
     /** The clone-boot status box: the live run's monitor, or (no run object, e.g. after a restart) the newest saved clone log. Keeps the scroll at the end when the reader was at the end. */
@@ -344,7 +352,7 @@ public class G7ExecActivity extends Activity {
         restartPending = false;
         G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb, restartSeconds);
         status.setText("자동 재시작: " + st.message);
-        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); G7RunService.start(this); cbootPoll(); }
+        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); startRunService(); cbootPoll(); }
         else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
     }
 

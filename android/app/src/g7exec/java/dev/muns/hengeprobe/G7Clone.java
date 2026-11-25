@@ -171,6 +171,18 @@ public final class G7Clone {
         } catch (IOException | RuntimeException e) { return false; }
     }
 
+    /** Where clone `name` was copied from, by the LAST line of priv/clone_origins.txt for that name ("install-pair" or "clone-NNN"); null when there is no record. */
+    static String originOf(File priv, String name) {
+        try {
+            String found = null;
+            for (String l : new String(Files.readAllBytes(new File(priv, "clone_origins.txt").toPath()), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
+                String[] w = l.split(" ");
+                if (w.length >= 2 && w[0].equals(name) && w[1].matches("from=(install-pair|clone-[0-9]{3})")) found = w[1].substring(5);
+            }
+            return found;
+        } catch (IOException | RuntimeException e) { return null; }
+    }
+
     /** The ECID TAG a state file carries ("ecid_tag=<16 hex>" on its second line), or "none". */
     static String tagOf(File stateFile) {
         try {

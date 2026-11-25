@@ -127,12 +127,28 @@ public final class G7AuxCompare {
         if (hit.isEmpty()) for (int i = 0; i < all.size() && i < 12; i++) r.append("  - ").append(all.get(i)).append('\n');
     }
 
-    /** Is a clone's AUX still byte-identical to the original's macos_aux.img? (A clone that was never booted must be.) */
+    /** Is a clone's AUX still byte-identical to the INSTALL PAIR's macos_aux.img? (Only a clone made from the install pair and never booted must be; a clone made from another clone can differ and still be a correct copy: see compareCloneToOrigin.) */
     public static String compareCloneToOriginal(File privIn, File cloneDirIn) {
         try {
             File priv = privIn.getCanonicalFile(), cd = cloneDirIn.getCanonicalFile();
             Img o = load(new File(priv, IMG), priv), c = load(new File(cd, IMG), cd);
             return cd.getName() + ": " + (o.sha.equals(c.sha) ? "원본 복원 후 AUX와 같음" : "원본과 다름(" + ranges(o.data, c.data).size() + "개 구간)");
+        } catch (IOException e) {
+            return cloneDirIn.getName() + ": 비교하지 못했습니다(" + e.getMessage() + ")";
+        }
+    }
+
+    /** The clone's AUX against the AUX of what it was really copied from (clone_origins.txt): the install pair or another clone. No record (made before that file existed): says so and falls back to the install pair. */
+    public static String compareCloneToOrigin(File privIn, File cloneDirIn) {
+        try {
+            File priv = privIn.getCanonicalFile(), cd = cloneDirIn.getCanonicalFile();
+            String from = G7Clone.originOf(priv, cd.getName());
+            if (from == null) return "출처 기록 없음(기록 기능 이전에 만든 복제본으로 보입니다) — 설치 원본 기준: " + compareCloneToOriginal(priv, cd);
+            if (from.equals("install-pair")) return "출처: 설치 쌍 — " + compareCloneToOriginal(priv, cd);
+            File src = new File(new File(priv, "clones"), from);
+            if (!from.matches("clone-[0-9]{3}") || !src.isDirectory()) return cd.getName() + ": 출처 " + from + " 폴더가 없어 비교하지 못했습니다";
+            Img o = load(new File(src, IMG), src), c = load(new File(cd, IMG), cd);
+            return cd.getName() + ": 출처 " + from + " — " + (o.sha.equals(c.sha) ? "AUX 같음(복제 정확)" : "AUX 다름(" + ranges(o.data, c.data).size() + "개 구간; " + from + "가 그 뒤 부팅으로 바뀌었거나 복제 문제)");
         } catch (IOException e) {
             return cloneDirIn.getName() + ": 비교하지 못했습니다(" + e.getMessage() + ")";
         }

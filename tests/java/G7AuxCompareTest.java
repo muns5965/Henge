@@ -31,6 +31,20 @@ public class G7AuxCompareTest {
         check("clone equal to the original's AUX", G7AuxCompare.compareCloneToOriginal(dir.toFile(), cl.toFile()).contains("같음"));
         Files.write(cl.resolve("macos_aux.img"), base);
         check("clone that differs is reported", G7AuxCompare.compareCloneToOriginal(dir.toFile(), cl.toFile()).contains("원본과 다름"));
+        // lineage: no record -> says so and uses the install pair; recorded origin -> compared with THAT folder
+        Files.write(cl.resolve("macos_aux.img"), after);
+        check("no origin record: reported, install pair used", G7AuxCompare.compareCloneToOrigin(dir.toFile(), cl.toFile()).contains("출처 기록 없음"));
+        Files.createDirectories(dir.resolve("clones"));
+        Path c1 = Files.createDirectory(dir.resolve("clones").resolve("clone-001")), c2 = Files.createDirectory(dir.resolve("clones").resolve("clone-002"));
+        byte[] booted = after.clone(); booted[G7AuxCompare.DATA_OFFSET + 100] = 7;   // clone-001 diverged from the install pair
+        Files.write(c1.resolve("macos_aux.img"), booted); Files.write(c2.resolve("macos_aux.img"), booted);
+        Files.write(dir.resolve("clone_origins.txt"), "clone-002 from=clone-001 source_state=in_progress t=1\n".getBytes());
+        String same = G7AuxCompare.compareCloneToOrigin(dir.toFile(), c2.toFile());
+        check("origin clone: equal AUX is a correct copy (although the install pair's AUX differs)", same.contains("출처 clone-001") && same.contains("AUX 같음") && G7AuxCompare.compareCloneToOriginal(dir.toFile(), c2.toFile()).contains("원본과 다름"));
+        Files.write(c2.resolve("macos_aux.img"), base);
+        check("origin clone: different AUX is reported", G7AuxCompare.compareCloneToOrigin(dir.toFile(), c2.toFile()).contains("AUX 다름"));
+        Files.write(dir.resolve("clone_origins.txt"), "clone-002 from=install-pair source_state=done t=1\nclone-002 from=clone-009 source_state=done t=2\n".getBytes());
+        check("the last record wins; a missing source folder is reported", G7AuxCompare.compareCloneToOrigin(dir.toFile(), c2.toFile()).contains("폴더가 없어"));
         Files.delete(dir.resolve("macos_aux.initial"));
         check("missing file: reported, no exception", G7AuxCompare.compareInitialToImage(dir.toFile()).contains("비교하지 못했습니다"));
         Path ln = dir.resolve("macos_aux.initial");

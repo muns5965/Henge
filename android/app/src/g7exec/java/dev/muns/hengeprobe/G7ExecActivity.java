@@ -160,7 +160,7 @@ public class G7ExecActivity extends Activity {
             new Thread(() -> {
                 StringBuilder o = new StringBuilder(G7AuxCompare.compareInitialToImage(privDir));
                 o.append("\n[복제본 AUX ↔ 원본 복원 후 AUX]\n");
-                for (File c : G7CloneBoot.listValid(privDir)) o.append(G7AuxCompare.compareCloneToOriginal(privDir, c)).append('\n');
+                for (File c : G7CloneBoot.listValid(privDir)) o.append(G7AuxCompare.compareCloneToOrigin(privDir, c)).append('\n');
                 final String text = o.toString();
                 runOnUiThread(() -> { auxOut.setText(text); auxBtn.setEnabled(true); });
             }, "g7-aux-compare").start();

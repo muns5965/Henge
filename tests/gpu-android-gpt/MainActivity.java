@@ -17,7 +17,9 @@ public class MainActivity extends Activity {
     private TextView log;
     private final ImageView[] images=new ImageView[6];
     private final TextView[] outcomes=new TextView[6];
-    private Button run, corpus, render, units;
+    private Button run, corpus, render, units, compare;
+    private final ImageView[] compareImages=new ImageView[3];
+    private final TextView[] compareStatus=new TextView[3];
     private final ImageView[] metalImages=new ImageView[2];
     private final TextView[] metalStatus=new TextView[2];
     private volatile Process child;
@@ -38,13 +40,25 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1,0,1f));
         setContentView(screen);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.3 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.4 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
-        corpus.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.3 라이브러리 전체 단위시험");root.addView(units);
-        units.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
+        corpus.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
+        units=new Button(this);units.setText("5.4 라이브러리 전체 단위시험");root.addView(units);
+        units.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
+        compare=new Button(this);compare.setText("O0 / O3 / LTO 실제 Metal 삼각형 비교");root.addView(compare);
+        LinearLayout previews=new LinearLayout(this);previews.setOrientation(LinearLayout.HORIZONTAL);root.addView(previews);
+        String[] labels={"Debug O0","Release O3","Release + LTO"};
+        for(int i=0;i<3;i++){
+            LinearLayout cell=new LinearLayout(this);cell.setOrientation(LinearLayout.VERTICAL);
+            previews.addView(cell,new LinearLayout.LayoutParams(0,-2,1f));
+            TextView title=new TextView(this);title.setText(labels[i]);cell.addView(title);
+            ImageView im=new ImageView(this);im.setBackgroundColor(Color.DKGRAY);compareImages[i]=im;
+            cell.addView(im,new LinearLayout.LayoutParams(-1,(int)(112*getResources().getDisplayMetrics().density)));
+            compareStatus[i]=new TextView(this);compareStatus[i].setText("미실행");cell.addView(compareStatus[i]);
+        }
+        compare.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);compare.setEnabled(false);worker.submit(this::testCompare);});
         String[] titles={"1 · AIR 삼각형","2 · 텍스처 샘플링","3 · 알파 블렌딩","4 · RGBA16Float 및 공통 픽셀 변환","5 · 기기 내부 AIR 변환 및 그리기","6 · 외부 엔진 렌더 타겟 및 읽기"};
         for(int i=0;i<6;i++){
             TextView title=new TextView(this);title.setText(titles[i]);title.setTextSize(18);root.addView(title);
@@ -59,11 +73,60 @@ public class MainActivity extends Activity {
             root.addView(im,new LinearLayout.LayoutParams(-1,(int)(240*getResources().getDisplayMetrics().density)));
             metalStatus[i]=new TextView(this);metalStatus[i].setText("미실행");root.addView(metalStatus[i]);
         }
-        render.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);render.setEnabled(false);worker.submit(this::testMetalRender);});
+        render.setOnClickListener(v->{run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);render.setEnabled(false);worker.submit(this::testMetalRender);});
         log = new TextView(this); log.setTextIsSelectable(true); root.addView(log);
         Button copy = new Button(this); copy.setText("시험 로그 복사"); root.addView(copy);
         copy.setOnClickListener(v -> copyReport());
-        run.setOnClickListener(v -> {run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
+        run.setOnClickListener(v -> {run.setEnabled(false);if(compare!=null)compare.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
+    }
+    private void testCompare(){
+        StringBuilder t=new StringBuilder("5.4 BUILD COMPARISON — identical AIR, real GPU readback; elapsed render includes process/setup/readback, not GPU timestamp or FPS\n");
+        String[] modes={"debug","release","lto"};
+        int passed=0;String baseline=null;
+        try(BufferedReader br=new BufferedReader(new InputStreamReader(getAssets().open("build-flags.txt")))){
+            String line;while((line=br.readLine())!=null)t.append(line).append('\n');
+        }catch(Exception e){t.append("FLAGS ERROR ").append(e).append('\n');}
+        for(int i=0;i<3;i++){
+            final int idx=i;Bitmap preview=null;boolean ok=false;String label="FAIL / incomplete";
+            runOnUiThread(()->{compareImages[idx].setImageDrawable(null);compareStatus[idx].setText("실행 중");});
+            try{
+                File nativeDir=new File(getApplicationInfo().nativeLibraryDir);
+                File dir=new File(getFilesDir(),"compare-"+modes[i]);if(!dir.isDirectory()&&!dir.mkdirs())throw new IOException("mkdir");
+                File air=asset("triangle.air"),v=new File(dir,"triangle_vertex.spv"),f=new File(dir,"triangle_fragment.spv");
+                double[] translate=new double[7],renderMs=new double[7];
+                String digest=null;boolean same=true;
+                for(int rep=-1;rep<7;rep++){
+                    for(File old:new File[]{v,f,new File(dir,"module_path.spv")})if(old.exists()&&!old.delete())throw new IOException("stale SPIR-V");
+                    long start=System.nanoTime();
+                    int rc=auxiliary(new String[]{new File(nativeDir,"libcompare_"+modes[i]+".so").getAbsolutePath(),air.getAbsolutePath(),dir.getAbsolutePath(),"triangle_vertex:vertex","triangle_fragment:fragment"},t);
+                    double tr=(System.nanoTime()-start)/1e6;
+                    if(rc!=0||!v.isFile()||!f.isFile())throw new IOException("translation failed "+rc);
+                    for(File spv:new File[]{v,f})if(auxiliary(new String[]{new File(nativeDir,"libspirvval.so").getAbsolutePath(),"--target-env","vulkan1.2",spv.getAbsolutePath()},t)!=0)throw new IOException("SPIR-V validation failed");
+                    File pixels=new File(dir,"positive.bgra");int off=t.length();start=System.nanoTime();
+                    int pr=execute(5,new File(nativeDir,"libgputest.so"),v,f,pixels,false,t);
+                    double rm=(System.nanoTime()-start)/1e6;
+                    if(pr!=0||!t.substring(off).contains("A5 RESULT: PASS")||readPixels(pixels)==null)throw new IOException("GPU positive failed");
+                    String h=hash(v)+":"+hash(f)+":"+hash(pixels);
+                    if(digest!=null&&!digest.equals(h))same=false;digest=h;
+                    preview=readPixels(pixels);
+                    if(rep>=0){translate[rep]=tr;renderMs[rep]=rm;}
+                }
+                int off=t.length();int neg=execute(5,new File(nativeDir,"libgputest.so"),v,f,new File(dir,"negative.bgra"),true,t);
+                boolean negative=neg==1&&t.substring(off).contains("A5 RESULT: FAIL")&&t.substring(off).contains("A4 RESULT: PASS");
+                boolean host=hash(v).equals(hash(asset("triangle_vertex.spv")))&&hash(f).equals(hash(asset("triangle_fragment.spv")));
+                if(i==0)baseline=digest;
+                boolean equal=baseline!=null&&baseline.equals(digest);
+                ok=same&&negative&&host&&equal;
+                java.util.Arrays.sort(translate);java.util.Arrays.sort(renderMs);
+                t.append(String.format(Locale.ROOT,"COMPARE %s translation_process_ms median=%.3f max=%.3f render_process_ms median=%.3f max=%.3f repeat_equal=%b baseline_equal=%b host_equal=%b negative=%b%n",modes[i],translate[3],translate[6],renderMs[3],renderMs[6],same,equal,host,negative));
+                label=String.format(Locale.ROOT,"%s\n변환 %.2f ms\nGPU 경로 %.2f ms",ok?"PASS":"FAIL",translate[3],renderMs[3]);
+            }catch(Exception e){t.append("COMPARE ERROR ").append(modes[i]).append(' ').append(e).append('\n');}
+            if(ok)passed++;
+            final Bitmap b=preview;final String status=label;
+            runOnUiThread(()->{if(b!=null){android.graphics.drawable.BitmapDrawable d=new android.graphics.drawable.BitmapDrawable(getResources(),b);d.setFilterBitmap(false);compareImages[idx].setImageDrawable(d);}compareStatus[idx].setText(status);});
+        }
+        t.append("COMPARE OVERALL ").append(passed).append("/3 PASS\n");
+        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);units.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);compare.setEnabled(true);});
     }
     private void copyReport() {
         String snapshot=report;
@@ -159,7 +222,7 @@ public class MainActivity extends Activity {
             }}
         }catch(Exception e){t.append("ERROR: ").append(e).append('\n');}
         t.append("\nCORPUS OVERALL: ").append(passed).append('/').append(total).append(" PASS; translation/structure only, no render claim\n");
-        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
+        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testMetalRender(){
         StringBuilder t=new StringBuilder("Actual translated Metal fragments; GLSL reference vertex only.\n");
@@ -201,7 +264,7 @@ public class MainActivity extends Activity {
             runOnUiThread(()->{if(b!=null){android.graphics.drawable.BitmapDrawable d=new android.graphics.drawable.BitmapDrawable(getResources(),b);d.setFilterBitmap(false);metalImages[idx].setImageDrawable(d);}metalStatus[idx].setText(pass?"PASS · 실제 GPU 픽셀":"FAIL / 미완료");report=snapshot;log.setText(snapshot);});
         }
         t.append("METAL RENDER OVERALL: ").append(passed).append("/2 PASS\n");
-        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);});
+        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);});
     }
     private int renderProcess(String[] args,File out,boolean negative,StringBuilder t)throws Exception{
         if(out.exists()&&!out.delete())throw new IOException("stale pixels");
@@ -265,10 +328,10 @@ public class MainActivity extends Activity {
             }
         }catch(Exception e){t.append("ERROR: ").append(e).append('\n');}
         t.append("\nOVERALL: ").append(passes).append("/6 PASS\n");final String s=t.toString();
-        runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
+        runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.3\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.4\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");
@@ -333,7 +396,7 @@ public class MainActivity extends Activity {
         t.append("\nUNIT SUMMARY total=").append(total).append(" PASS=").append(pass).append(" FAIL=").append(fail).append(" SKIP=").append(skip).append(" BUILD_FAIL=").append(buildFail).append(" NOT_RUN=").append(notRun).append('\n');
         t.append("Scope: original standalone tests; PASS is not full Metal API or GPU semantic coverage.\n");
         final String snapshot=t.toString();
-        runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);units.setEnabled(true);});
+        runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(compare!=null)compare.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);units.setEnabled(true);});
     }
     @Override protected void onDestroy(){Process p=child;if(p!=null)p.destroyForcibly();worker.shutdownNow();super.onDestroy();}
 }

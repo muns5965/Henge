@@ -34,6 +34,9 @@ public class G7ExecActivity extends Activity {
     private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame, auxBtn, cbCopy;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
+    // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
+    private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
+    private File restartClone; private int restartUsb; private volatile boolean restartPending;
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
     private volatile boolean cloneCancel;
     private TextView storageInfo;
@@ -143,7 +146,7 @@ public class G7ExecActivity extends Activity {
             }, "g7-aux-compare").start();
         });
         cbtn.setOnClickListener(v -> confirmCloneBoot());
-        cbStop.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
+        cbStop.setOnClickListener(v -> { restartPending = false; restartClone = null; G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); } });
         cbShare.setOnClickListener(v -> {   // the file on disk, not the Run object: still works after the app was restarted
             G7CloneBoot.Run r = G7CloneBoot.current();
             File f = r != null ? G7ExecLauncher.logFile(getFilesDir(), r.logName()) : null;
@@ -299,9 +302,13 @@ public class G7ExecActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(box)
                 .setNegativeButton("취소", null)
                 .setPositiveButton("부팅", (d, w) -> {
-                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000)));
+                    int mode = Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000));
+                    G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode);
                     status.setText(st.message);
-                    if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
+                    if (st.started) {
+                        restartPolicy.reset(); restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartPending = false;
+                        cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll();
+                    }
                 }).show();
     }
 
@@ -314,6 +321,15 @@ public class G7ExecActivity extends Activity {
         boolean atEnd = cbScroll.getScrollY() + cbScroll.getHeight() >= c.getHeight() - 40;
         cbMon.setText(text);
         if (atEnd) cbScroll.post(() -> cbScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    /** The guest asked for a restart and the policy allowed it: the same clone again, through the same gates as a person's start (validate, isolation, ROM/ECID). */
+    private void restartCloneBoot() {
+        if (!restartPending || restartClone == null) return;
+        restartPending = false;
+        G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb);
+        status.setText("자동 재시작: " + st.message);
+        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); } else restartClone = null;
     }
 
     private void cbootPoll() {
@@ -331,7 +347,17 @@ public class G7ExecActivity extends Activity {
             cbShownFrame = f;
         }
         if (f == null) cbImageNote.setText(r.frameNote() + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"));
-        if (r.finished()) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict()); return; }
+        if (r.finished()) {
+            cbtn.setEnabled(true); cbStop.setEnabled(false);
+            String msg = "복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict();
+            if (restartClone != null && !restartPending) {
+                G7RestartPolicy.Decision d = restartPolicy.decide(r.parsedVerdict(), r.wasCancelled() || r.exitCode() != 0, System.currentTimeMillis());
+                msg += "\n" + d.reason;
+                if (d.restart) { restartPending = true; log.postDelayed(this::restartCloneBoot, d.delayMs); } else restartClone = null;
+            }
+            status.setText(msg);
+            return;
+        }
         log.postDelayed(this::cbootPoll, 2000);
     }
 

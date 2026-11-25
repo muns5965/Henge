@@ -127,6 +127,9 @@ public final class G7CloneBoot {
         private OutputStream log; private int written;
         Run(Process p, String logName) { this.proc = p; this.logName = logName; }
         public boolean finished() { return finished; }
+        public boolean wasCancelled() { return cancelled; }
+        /** The parsed VERDICT line, or null (no line, or one that does not parse). */
+        public G7RunVerdict parsedVerdict() { return G7RunVerdict.parse(verdictLine); }
         public int exitCode() { return exitCode; }
         public String logName() { return logName; }
         public synchronized String tail() { return tail.toString(); }
@@ -147,7 +150,13 @@ public final class G7CloneBoot {
             if (!m.matches()) return "러너의 결과 줄을 해석하지 못했습니다. macOS 부팅 성공 여부는 판정하지 않았습니다.";
             String kind = m.group(2), who = kind.equals("guest-initiated") ? "게스트가 스스로 멈춤" : kind.equals("time-limit") ? "시험 시간 제한" : kind.equals("requested-quit") ? "사용자 취소/종료 요청" : kind.equals("signal") ? "신호로 종료" : kind.equals("app-closed") ? "앱이 닫음" : "입력 오류";
             String fl = m.group(3).equals("ok") ? "성공" : m.group(3).equals("FAILED") ? "실패(디스크에 모두 반영됐다고 볼 수 없음)" : "시도하지 않음";
-            return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 디스크 flush: " + fl + "(종료 확인과 별개), 종료 계기: " + who + ". macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
+            G7RunVerdict rv = G7RunVerdict.parse(v);
+            String more = "";
+            if (rv != null && rv.structured) {
+                String oc = rv.isRestart() ? "게스트가 재시작을 요청함(SYSTEM_RESET)" : rv.outcome.equals("shutdown") ? "게스트가 종료를 요청함(SYSTEM_OFF)" : rv.outcome.equals("halt-other") ? "PSCI 기록 없는 정지(정지 주소 등, 원인 미확인)" : rv.outcome.equals("host-stop") ? "호스트가 멈춤" : "종료 미확인";
+                more = " 결과: " + oc + ", 가동 " + rv.uptimeS + "초, CPU 스레드·디스크 작업자 정리: " + (rv.quiesced == 1 ? "완료" : rv.quiesced == 0 ? "일부 미종료" : "미보고") + ", 디스크 쓰기 " + rv.diskWrites + "건 중 거부 " + rv.diskWriteRefused + "건.";
+            }
+            return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 디스크 flush: " + fl + "(종료 확인과 별개), 종료 계기: " + who + "." + more + " macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
         }
         synchronized void put(String text, boolean always) {
             tail.append(text); if (tail.length() > 6000) tail.replace(0, tail.length() - 6000, "");

@@ -462,6 +462,9 @@ static int join_bounded(pthread_t t, _Atomic int *ended, const char *what) {
 
 /* After CPU 0 has left its run loop: stop every other CPU thread and the kicker, then finish the disk workers' DMA, so the flush that follows covers every write the
    guest was told had completed. Halts with HV_HALT "host" (3) only where no reason is recorded yet: a guest SYSTEM_OFF/RESET keeps its own. 0, or -1 if a thread was not joined. */
+static int quiesce_result = -1;   /* -1 not run, 0 a thread was not joined, 1 every thread joined and the blk workers stopped */
+int hv_vm_quiesced_ok(void) { return __atomic_load_n(&quiesce_result, __ATOMIC_ACQUIRE); }
+
 int hv_vm_quiesce(void) {
     int bad = 0;
     hv_machine_halt(&m, HV_HALT_HOST);
@@ -474,6 +477,7 @@ int hv_vm_quiesce(void) {
     /* A DMA worker can still be writing after the guest CPUs have exited. */
     hv_virtio_blk_stop(board.root_blk);
     hv_virtio_blk_stop(board.aux_blk);
+    __atomic_store_n(&quiesce_result, bad ? 0 : 1, __ATOMIC_RELEASE);
     return bad ? -1 : 0;
 }
 

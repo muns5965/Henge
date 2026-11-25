@@ -328,7 +328,18 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
-    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s disk_flush=%s macos_boot=not-determined (a confirmed stop says only that the machine ended; it does not say macOS booted, and it is not a flush result)\n", confirmed ? 1 : 0, stop_kind, flush_rc == 0 ? "ok" : flush_rc == -2 ? "not-attempted" : "FAILED");
+    /* Structured end result for the app (appended AFTER macos_boot=..., so the app's older pattern, which ends in ".*$", still matches). outcome says what the app may do next: only a
+       confirmed guest SYSTEM_RESET is "restart"; everything the host ended, an unconfirmed stop, or a halt without a PSCI record is not. */
+    uint32_t vfn = 0, vcpu = 0; uint64_t vpc = 0, vlr = 0;
+    int have_psci = hv_vm_psci_halt_info(&vfn, &vcpu, &vpc, &vlr);
+    const char *psci_name = !have_psci ? "none" : vfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET";
+    int guest_end = !strcmp(stop_kind, "guest-initiated");
+    const char *outcome = !confirmed ? "not-confirmed" : !guest_end ? "host-stop" : !have_psci ? "halt-other" : vfn == 0x84000008 ? "shutdown" : "restart";
+    int qok = hv_vm_quiesced_ok();
+    uint64_t wcalls = 0, wrefused = 0; hv_vm_disk_write_stats(&wcalls, &wrefused);
+    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s disk_flush=%s macos_boot=not-determined outcome=%s psci=%s quiesced=%s uptime_s=%d disk_writes=%llu disk_write_refused=%llu (a confirmed stop says only that the machine ended; it does not say macOS booted, and it is not a flush result; quiesced=1 means every CPU thread and the kicker were joined and the disk workers stopped before the flush)\n",
+           confirmed ? 1 : 0, stop_kind, flush_rc == 0 ? "ok" : flush_rc == -2 ? "not-attempted" : "FAILED",
+           outcome, psci_name, qok == 1 ? "1" : qok == 0 ? "0" : "n/a", (int)(now() - tstart), (unsigned long long)wcalls, (unsigned long long)wrefused);
     fflush(stdout);
     if (confirmed) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
     return confirmed ? 0 : 3;

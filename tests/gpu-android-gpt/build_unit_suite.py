@@ -92,18 +92,107 @@ static int test_unop_vfx_emits_fnegate(void) {
 }
 '''+text[b:]
         text=text.replace('BINOP/UNOP handlers exercised;','triangle translation smoke;')
-    if src=='handler-memory.c':
-        text=text.replace('lagfx_memory_define_child_fifo(', 'lagfx_op_define_child_fifo(').replace('lagfx_memory_map_memory_immediate(', 'lagfx_op_map_memory_immediate(')
-        # The immediate command is packed: u32 then two u64, not aligned u64 array.
-        text=text.replace('((uint64_t*)payload)[1] = 0x2000ull;', 'memcpy(payload+4, &(uint64_t){0x2000ull}, 8);').replace('((uint64_t*)payload)[2] = 0x1000ull;', 'memcpy(payload+12, &(uint64_t){0x1000ull}, 8);')
-    if src=='handler-task.c':
-        text=text.replace('lagfx_task_define_host_task2(', 'lagfx_task_define_host_task(')
-    if src=='handler-sync-utility.c':
-        text=text.replace('#include <stdbool.h>', '#include "handlers/iosurface/iosurface.h"\n#include <stdbool.h>')
-        for old,new in [('lagfx_resource_set_placement','lagfx_op_set_object_placement'),('lagfx_resource_iosurface_create','lagfx_iosurface_create_backing2'),('lagfx_resource_iosurface_lookup','lagfx_iosurface_lookup'),('lagfx_util_device_info','lagfx_op_get_device_info')]:
-            text=text.replace(old+'(',new+'(')
-        for old,new in [('0x22','0x42'),('0x26','0x25'),('0x29','0x0e'),('0x2a','0x0a')]:
-            text=text.replace('.opcode = '+old+',','.opcode = '+new+',')
+    if src in ('handler-memory.c','handler-task.c','handler-sync-utility.c'):
+        # Exercise real ring drainers, never the acknowledge-only test_api.c.
+        text=text.replace('#include <stdbool.h>', '#include "dispatchers/channel_0_dispatcher.h"\n#include "dispatchers/channel_compute_dispatcher.h"\n#include "dispatchers/ring_common.h"\n#include <stdbool.h>')
+        a=text.index('static bool mock_read(')
+        b=text.index('static int test_',a)
+        text=text[:a]+r'''
+static uint8_t ram[0x5000];
+static bool mock_read(void *op,uint64_t gpa,uint64_t len,void *out){
+    (void)op;
+    if(gpa>sizeof(ram)||len>sizeof(ram)-gpa)return false;
+    memcpy(out,ram+gpa,len);return true;
+}
+static bool mock_write(void *op,uint64_t gpa,uint64_t len,const void *in){
+    (void)op;
+    if(gpa>sizeof(ram)||len>sizeof(ram)-gpa)return false;
+    memcpy(ram+gpa,in,len);return true;
+}
+static struct lagfx_device mock_dev={.desc.shell.read_memory=mock_read,.desc.shell.write_memory=mock_write};
+static void put32(uint8_t *p,uint32_t v){memcpy(p,&v,4);}
+static uint32_t get32(const uint8_t *p){uint32_t v;memcpy(&v,p,4);return v;}
+static void packet(uint8_t *p,uint32_t op,const uint8_t *data,uint32_t n){
+    put32(p,op);put32(p+4,12+n);put32(p+8,1);memcpy(p+12,data,n);
+}
+static int root_send(struct lagfx_protocol *p,uint32_t op,const uint8_t *data,uint32_t n){
+    memset(ram,0,sizeof(ram));
+    packet(ram+0x1000,op,data,n);
+    p->magic=LAGFX_PROTOCOL_MAGIC;p->dev=&mock_dev;
+    p->ring_armed=true;p->ring_base_gpa=0x1000;p->ring_size=4096;
+    p->read_ptr=0;p->write_ptr=12+n;p->ring_shared_page_pfn=0;
+    return channel_0_dispatcher_drain(p)==1 && p->read_ptr==12+n;
+}
+static int compute_send(struct lagfx_protocol *p,uint32_t op,const uint8_t *data,uint32_t n){
+    memset(ram,0,sizeof(ram));
+    uint8_t *desc=ram+0x1000+LAGFX_RING_FIFO_DESC_BASE_OFFSET;
+    put32(desc,12+n);put32(desc+0x0c,1);put32(desc+0x10,2);
+    put32(ram+0x2000,3);packet(ram+0x3000,op,data,n);
+    p->magic=LAGFX_PROTOCOL_MAGIC;p->dev=&mock_dev;p->current_chan_id=1;p->ring_shared_page_pfn=1;
+    return channel_compute_dispatcher_drain(p,1)==1 && get32(desc+4)==12+n;
+}
+'''+text[b:]
+        # Retain other upstream subtests; replace only obsolete references.
+        def replace_test(name,body):
+            global_unused=None
+            a=text.index('static int '+name+'(void)')
+            b=text.find('\nstatic int ',a+1)
+            if b<0:b=text.index('\nint main(void)',a)
+            return text[:a]+body+'\n'+text[b:]
+        if src=='handler-memory.c':
+            text=replace_test('test_define_child_fifo',r'''
+static int test_define_child_fifo(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    uint8_t data[4];put32(data,3);
+    int ok=root_send(p,0x30,data,4);
+    lagfx_fifo_entry_t *f=lagfx_protocol_find_fifo(p,3);
+    ok=ok&&f&&f->live&&f->id==3;
+    ok=ok&&root_send(p,0x30,data,4)&&lagfx_protocol_find_fifo(p,3)==f;
+    unsigned live=0;for(unsigned i=0;i<LAGFX_MAX_FIFOS;i++)live+=p->fifos[i].live;
+    ok=ok&&live==1;
+    put32(data,4);ok=ok&&root_send(p,0x30,data,2)&&!lagfx_protocol_find_fifo(p,4);
+    ok=ok&&root_send(p,0x04,data,4)&&!lagfx_protocol_find_fifo(p,4);
+    printf("%s: live root 0x30 registers/deduplicates FIFO; short payload rejected; legacy 0x04 log-ack only (geometry not tested)\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
+            text=text.replace('lagfx_memory_map_memory_immediate(', 'lagfx_op_map_memory_immediate(')
+            text=text.replace('((uint64_t*)payload)[1] = 0x2000ull;', 'memcpy(payload+4, &(uint64_t){0x2000ull}, 8);').replace('((uint64_t*)payload)[2] = 0x1000ull;', 'memcpy(payload+12, &(uint64_t){0x1000ull}, 8);')
+        if src=='handler-task.c':
+            text=replace_test('test_define_host_task2',r'''
+static int test_define_host_task2(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    uint8_t data[16]={0};put32(data,2);put32(data+12,0x30000);
+    int ok=root_send(p,0x38,data,16);
+    lagfx_task_entry_t *t=lagfx_protocol_find_task(p,1);
+    ok=ok&&t&&t->live&&t->root_page_pfn==0x30000;
+    put32(data+12,0x40000);
+    ok=ok&&root_send(p,0x38,data,16)&&lagfx_protocol_find_task(p,1)==t&&t->root_page_pfn==0x40000;
+    put32(data,4);ok=ok&&root_send(p,0x38,data,12)&&!lagfx_protocol_find_task(p,2);
+    printf("%s: live root 0x38 registers task slot/PFN, updates and rejects short payload\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
+        if src=='handler-sync-utility.c':
+            text=replace_test('test_resource_set_placement',r'''
+static int test_resource_set_placement(void){
+    struct lagfx_protocol *p=calloc(1,sizeof(*p));if(!p)return 1;
+    p->tasks[0].live=true;p->tasks[0].id=7;
+    uint8_t data[8];put32(data,1);put32(data+4,0x1234);
+    int ok=compute_send(p,0x25,data,8);
+    ok=ok&&p->tasks[0].active_objects.count==1&&p->tasks[0].active_objects.object_ids[0]==0x1234;
+    ok=ok&&compute_send(p,0x25,data,8)&&p->tasks[0].active_objects.count==1;
+    put32(data+4,0x5678);ok=ok&&compute_send(p,0x25,data,4)&&p->tasks[0].active_objects.count==1;
+    ok=ok&&compute_send(p,0x25,data,8)&&p->tasks[0].active_objects.count==2&&p->tasks[0].active_objects.object_ids[1]==0x5678;
+    printf("%s: live compute 0x25 active-object registration/dedup/short payload; Henge 0x44 placement tables not covered\n",ok?"PASS":"FAIL");
+    free(p);return !ok;
+}
+''')
+            text=text.replace('#include <stdbool.h>', '#include "handlers/iosurface/iosurface.h"\n#include <stdbool.h>')
+            for old,new in [('lagfx_resource_iosurface_create','lagfx_iosurface_create_backing2'),('lagfx_resource_iosurface_lookup','lagfx_iosurface_lookup'),('lagfx_util_device_info','lagfx_op_get_device_info')]:
+                text=text.replace(old+'(',new+'(')
+            for old,new in [('0x22','0x42'),('0x29','0x0e'),('0x2a','0x0a')]:
+                text=text.replace('.opcode = '+old+',','.opcode = '+new+',')
     if src=='handler-display-vchan.c':
         # Preserve negative short-payload checks and add real metadata assertions.
         a=text.index('static int test_cursor_show(void)')

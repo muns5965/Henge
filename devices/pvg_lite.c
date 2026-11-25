@@ -38,6 +38,7 @@
 #include "../host/platform.h"
 #endif
 #include <stdatomic.h>
+#include "pvg_half.h"
 #include "pvg_lite.h"
 
 #include <stdio.h>
@@ -282,7 +283,8 @@ static int decode_surface(HvPvgLite *p, uint64_t mapping, uint32_t *fourcc_out, 
     memcpy(&sh, desc + 0x28, 8);
     memcpy(&row, desc + 0x30, 8);
     memcpy(&first, desc + 0x60, 4);
-    if (!(list & 1) || !sw || !sh || sw > 8192 || sh > 8192 || row < sw * 4 || row > 0x10000 || alloc > 64ull * 1024 * 1024) {
+    uint64_t bpp = fourcc == HV_FOURCC_RGHA ? 8 : 4; /* RGhA is RGBA16Float: 8 bytes a pixel, so its row needs twice the bytes */
+    if (!(list & 1) || !sw || !sh || sw > 8192 || sh > 8192 || row < sw * bpp || row > 0x10000 || alloc > 64ull * 1024 * 1024) {
         fprintf(stderr, "pvgpix %s mapping %llu: descriptor out of bounds (fourcc %08x alloc %llx w %llu h %llu row %llu)\n",
                 when, (unsigned long long)mapping, fourcc, (unsigned long long)alloc, (unsigned long long)sw, (unsigned long long)sh, (unsigned long long)row);
         return -1;
@@ -292,10 +294,47 @@ static int decode_surface(HvPvgLite *p, uint64_t mapping, uint32_t *fourcc_out, 
         fprintf(stderr, "pvgpix %s mapping %llu: page count out of bounds (%llu)\n", when, (unsigned long long)mapping, (unsigned long long)npages);
         return -1;
     }
+    /* The last pixel the copy touches (first + row * (height - 1) + width * bytes per pixel) must lie inside the pages the list holds. */
+    if (first + row * (sh - 1) + sw * bpp > (npages << 14)) {
+        fprintf(stderr, "pvgpix %s mapping %llu: the surface (%llux%llu, row %llu, %llu bytes a pixel, first %u) does not fit its %llu page(s)\n", when, (unsigned long long)mapping,
+                (unsigned long long)sw, (unsigned long long)sh, (unsigned long long)row, (unsigned long long)bpp, first, (unsigned long long)npages);
+        return -1;
+    }
     const uint32_t *pages = hv_phys_ptr(p->m, (uint64_t)(list & ~1u) << 12, npages * 4);
     if (!pages) { fprintf(stderr, "pvgpix %s mapping %llu: page list unreadable\n", when, (unsigned long long)mapping); return -1; }
     *fourcc_out = fourcc, *sw_out = sw, *sh_out = sh, *row_out = row, *first_out = first, *pages_out = pages, *npages_out = npages;
     return 0;
+}
+
+/* A fourcc this code can turn into BGRA bytes: 'BGRA' as it is, 'RGhA' (half-float RGBA) through the original's table (pvg_half.h). */
+static int fourcc_supported(uint32_t fourcc) { return fourcc == HV_FOURCC_BGRA || fourcc == HV_FOURCC_RGHA; }
+
+/* One row (`y`) of a decoded surface as `sw` BGRA pixels in `out` (sw * 4 bytes). 'BGRA' is copied unchanged; 'RGhA' is read as sw * 8 bytes and converted.
+   Any other fourcc is copied as 4 raw bytes a pixel (only the HV_PVG_TALLY diagnostic asks for that; the image paths refuse it before they get here).
+   0, or -1 when a page of the row is missing (nothing is guessed). */
+static int surface_row_bgra(HvPvgLite *p, const uint32_t *pages, uint64_t npages, uint32_t fourcc, uint32_t first, uint64_t row, uint64_t sw, uint64_t y, uint8_t *out) {
+    if (fourcc == HV_FOURCC_RGHA) {
+        uint16_t half[8192 * 4]; /* sw <= 8192 by decode_surface(); 64 KB on this thread's stack */
+        if (surface_read(p, pages, npages, first + y * row, half, sw * 8)) return -1;
+        const uint8_t *lut = hv_half_to_byte_table();
+        if (!lut) return -1;
+        hv_half_row_to_bgra(half, out, sw, lut);
+        return 0;
+    }
+    return surface_read(p, pages, npages, first + y * row, out, sw * 4);
+}
+
+/* The same refusal line, once, and then only a running count: at the first one, at every 4096th after that, and again if the refused format changes (a screen refreshing
+   thirty times a second printed it on every frame before). `kind` is "live" or "bgra". */
+static void log_refused(const char *kind, uint64_t mapping, uint32_t fourcc) {
+    static uint32_t last_fourcc[2];
+    static uint64_t count[2];
+    int k = kind[0] == 'l' ? 0 : 1;
+    if (last_fourcc[k] != fourcc) last_fourcc[k] = fourcc, count[k] = 0;
+    count[k]++;
+    if (count[k] == 1 || count[k] % 4096 == 0)
+        fprintf(stderr, "pvgpix %s mapping %llu: fourcc %08x is neither 'BGRA' (0x42475241) nor 'RGhA' (0x52476841); refusing to guess a channel order (%llu time(s) so far)\n",
+                kind, (unsigned long long)mapping, fourcc, (unsigned long long)count[k]);
 }
 
 /* [2026-11-21, explicitly approved, read-only diagnostic, per the review chain's "decode the mapped
@@ -327,7 +366,7 @@ static void tally_surface(HvPvgLite *p, uint64_t mapping, const char *when) {
     static uint32_t rgbseen[1u << 19]; /* one bit per possible 24-bit RGB value (alpha masked off), same reuse rule as rowbuf; cleared below each call */
     memset(rgbseen, 0, sizeof rgbseen);
     for (uint64_t y = 0; y < sh; y++) {
-        if (surface_read(p, pages, npages, first + y * row, rowbuf, sw * 4)) { missing_rows++; continue; }
+        if (surface_row_bgra(p, pages, npages, fourcc, first, row, sw, y, rowbuf)) { missing_rows++; continue; }   /* 'RGhA': the pixels as they are shown (converted) */
         for (uint64_t x = 0; x < sw; x++) {
             uint32_t px;
             memcpy(&px, rowbuf + x * 4, 4);
@@ -363,15 +402,14 @@ int hv_pvg_lite_last_surface_bgra(HvPvgLite *p, uint8_t **out, uint32_t *width, 
     uint64_t sw, sh, row, npages;
     const uint32_t *pages;
     if (decode_surface(p, p->last_mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "bgra") != 0) return -1;
-    if (fourcc != 0x42475241u /* 'BGRA' */) {
-        fprintf(stderr, "pvgpix bgra mapping %llu: fourcc %08x is not 'BGRA' (0x42475241); refusing to guess a channel order, no copy made\n",
-                (unsigned long long)p->last_mapping, fourcc);
+    if (!fourcc_supported(fourcc)) {
+        log_refused("bgra", p->last_mapping, fourcc);
         return -1;
     }
     uint8_t *buf = malloc(sw * sh * 4);
     if (!buf) return -1;
     for (uint64_t y = 0; y < sh; y++) {
-        if (surface_read(p, pages, npages, first + y * row, buf + y * sw * 4, sw * 4)) {
+        if (surface_row_bgra(p, pages, npages, fourcc, first, row, sw, y, buf + y * sw * 4)) {
             fprintf(stderr, "pvgpix bgra mapping %llu: row %llu unreadable, aborting copy\n", (unsigned long long)p->last_mapping, (unsigned long long)y);
             free(buf);
             return -1;
@@ -424,15 +462,14 @@ int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, ui
         uint64_t sw, sh, row, npages;
         const uint32_t *pages;
         if (decode_surface(p, p->last_mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "live") == 0) {
-            if (fourcc != 0x42475241u /* 'BGRA' */) {
-                fprintf(stderr, "pvgpix live mapping %llu: fourcc %08x is not 'BGRA' (0x42475241); refusing to guess a channel order\n",
-                        (unsigned long long)p->last_mapping, fourcc);
+            if (!fourcc_supported(fourcc)) {
+                log_refused("live", p->last_mapping, fourcc);
             } else if (sw * sh * 4 > buf_cap) {
                 if (need_out) *need_out = (size_t)(sw * sh * 4);
             } else {
                 int ok = 1;
                 for (uint64_t y = 0; y < sh && ok; y++) {
-                    if (surface_read(p, pages, npages, first + y * row, buf + y * sw * 4, sw * 4)) ok = 0;
+                    if (surface_row_bgra(p, pages, npages, fourcc, first, row, sw, y, buf + y * sw * 4)) ok = 0;
                 }
                 if (ok) { *width = (uint32_t)sw, *height = (uint32_t)sh, rc = 0; }
                 else fprintf(stderr, "pvgpix live mapping %llu: a row became unreadable mid-copy, discarding this frame\n", (unsigned long long)p->last_mapping);

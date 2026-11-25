@@ -206,25 +206,7 @@ static double now_seconds(void) {
     return (double)clock_gettime_nsec_np(CLOCK_MONOTONIC) * 1e-9;
 }
 
-/* How the half-float display surface is shown. WindowServer writes DISPLAY-ENCODED values there (extended sRGB: the guest's gray 128 is
-   0.502, measured with the colour probe), so mode 0 passes them through. Mode 1 treats them as LINEAR light and applies the sRGB encode,
-   which is what this code did before (and was only right for a linear display profile such as ACES CG Linear: with every other profile
-   it encodes twice and the screen looks pale). HV_PVG_HALF=linear selects mode 1 at start; with the colour probe on, a file named
-   mode-linear or mode-encoded in its folder switches it while running. */
-static _Atomic int hv_half_mode = -1;
-static int hv_half_mode_get(void) {
-    int m = atomic_load(&hv_half_mode);
-    if (m < 0) {
-        const char *e = getenv("HV_PVG_HALF");
-        m = e && !strcmp(e, "linear") ? 1 : 0;
-        atomic_store(&hv_half_mode, m);
-    }
-    return m;
-}
-static float hv_half_shown(float v, int mode) { /* what the screen shows for a half-float component */
-    v = v < 0 ? 0 : v > 1 ? 1 : v;
-    return mode == 1 ? (v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f) : v;
-}
+#include "pvg_half.h" /* hv_half_mode_get(), hv_half_shown(), the half-float to byte table: shared with pvg_lite.c (Android) */
 
 #include "pvg_colorprobe.h" /* HV_COLOR_PROBE: what the display is told and shown, for chasing colour problems */
 
@@ -1999,21 +1981,7 @@ typedef struct {
 }
 
 /* Every possible half-float value to a display byte, as the screen would show it in the current mode (see hv_half_mode). */
-static const uint8_t *half_to_byte(void) {
-    static uint8_t *tables[2];
-    int mode = hv_half_mode_get();
-    if (tables[mode]) return tables[mode];
-    uint8_t *t = malloc(65536);
-    for (uint32_t i = 0; i < 65536; i++) {
-        uint16_t bits = (uint16_t)i;
-        __fp16 h;
-        memcpy(&h, &bits, 2);
-        float v = h;
-        t[i] = !(v > 0) ? 0 : v >= 1 ? 255 : (uint8_t)(hv_half_shown(v, mode) * 255.0f + 0.5f);
-    }
-    tables[mode] = t;
-    return t;
-}
+static const uint8_t *half_to_byte(void) { return hv_half_to_byte_table(); }
 
 /* Op 4: a new pointer image in the kernel task's memory, premultiplied BGRA:
    {port, 0, offset, mapped length, stride, width, height, hot x, hot y, sum}. */

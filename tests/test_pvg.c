@@ -830,6 +830,117 @@ static void s_swap(void) {
     hv_pvg_lite_set_mode(1920, 1080);
 }
 
+/* ---- RGhA (half-float RGBA, 8 bytes a pixel) and BGRA surfaces through the plain-C display path (hv_pvg_lite_live_surface_bgra / _last_surface_bgra / tally) ----
+   Synthetic surfaces in guest pages; the expected bytes are written out by hand from the original's policy (display-encoded passthrough: clamp to [0,1], x255, +0.5;
+   negative, zero and NaN are 0; one and above, and +infinity, 255), not computed by the code under test. */
+static void put_desc(uint8_t *d, uint32_t listpn, uint32_t fourcc, uint64_t alloc, uint64_t w, uint64_t h, uint64_t row, uint32_t first) {
+    memset(d, 0, 0x400);
+    uint32_t list = (listpn << 2) | 1;   /* (listpn << 14) >> 12, present bit */
+    memcpy(d, &list, 4); memcpy(d + 4, &fourcc, 4);
+    memcpy(d + 0x18, &alloc, 8); memcpy(d + 0x20, &w, 8); memcpy(d + 0x28, &h, 8); memcpy(d + 0x30, &row, 8); memcpy(d + 0x60, &first, 4);
+}
+static int stderr_lines_with(int (*fn)(void *), void *arg, const char *needle, int *rc_out) {
+    fflush(stderr);
+    FILE *t = tmpfile();
+    int saved = dup(2);
+    dup2(fileno(t), 2);
+    int rc = fn(arg);
+    fflush(stderr);
+    dup2(saved, 2); close(saved);
+    if (rc_out) *rc_out = rc;
+    rewind(t);
+    char line[600]; int n = 0;
+    while (fgets(line, sizeof line, t)) if (strstr(line, needle)) n++;
+    fclose(t);
+    return n;
+}
+static uint8_t g_out[64 * 64 * 4];
+static int live_once(void *unused) { (void)unused; uint32_t w = 0, h = 0; size_t need = 0; return hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need); }
+static int live_many(void *unused) { int rc = 0; for (int i = 0; i < 5000; i++) rc = live_once(unused); return rc; }
+
+static void s_rgha(void) {
+    setenv("HV_PVG_TALLY", "1", 1);
+    hv_pvg_lite_set_mode(800, 600);
+    dev_new(1);
+    chan_setup(4, 1);
+    uint32_t dpn = alloc_page();
+    uint32_t a1[2] = {0, dpn};
+    chan_cmd(4, 1, 41, a1, 8); ring_bell(4);
+    uint32_t tabp = alloc_page(), descp = alloc_page(), listp = alloc_page(), datap = alloc_page();
+    ((uint32_t *)pgp(tabp))[0] = (uint32_t)((((uint64_t)descp << 14) >> 12) | 1);
+    ios_w(ios_o, 0x1010, (uint64_t)tabp << 14, 8);   /* the mapper's descriptor table */
+    ((uint32_t *)pgp(listp))[0] = (datap << 2) | 1;   /* one 16 KB data page */
+    uint8_t *desc = pgp(descp) + 0x400 * 3;
+    uint32_t swap[10] = {0, 0, 3, 0x5, 0, 0, 0, 0, 3, 0xabcd};   /* swap names mapping 3 */
+    chan_cmd(4, 8, 43, swap, 40); ring_bell(4);
+
+    /* 5 x 3 RGhA, 64 bytes a row (40 used, 24 padding that must never be read: 0xee) */
+    memset(pgp(datap), 0xee, 0x4000);
+    const uint16_t H05 = 0x3800, H1 = 0x3c00, H2 = 0x4000, HN1 = 0xbc00, HNAN = 0x7e00, HINF = 0x7c00, H0 = 0x0000, HTINY = 0x0001, H13 = 0x3555;
+    uint16_t px[3][5][4] = {
+        {{H05, H1, H0, H1}, {H1, H0, H0, H0}, {H0, H1, H0, H0}, {H0, H0, H1, H0}, {H2, HN1, HNAN, H0}},
+        {{HINF, H13, HTINY, H05}, {H05, H05, H05, H05}, {H1, H1, H1, H1}, {H0, H0, H0, H0}, {HN1, HN1, HN1, HN1}},
+        {{H13, H0, H1, H2}, {H0, H13, H1, H2}, {H1, H0, H13, H2}, {H05, H1, H2, H0}, {H2, H2, H2, H2}}};
+    for (int y = 0; y < 3; y++) memcpy(pgp(datap) + y * 64, px[y], 40);
+    put_desc(desc, listp, 0x52476841u, 64 * 3, 5, 3, 64, 0);
+    /* expected B, G, R, 255 per pixel (R,G,B from the halves: 0.5 -> 128, 1 -> 255, 2 -> 255, -1/NaN/0/tiny -> 0, inf -> 255, 0.3333 -> 85) */
+    uint8_t want[3][5][4] = {
+        {{0, 255, 128, 255}, {0, 0, 255, 255}, {0, 255, 0, 255}, {255, 0, 0, 255}, {0, 0, 255, 255}},
+        {{0, 85, 255, 255}, {128, 128, 128, 255}, {255, 255, 255, 255}, {0, 0, 0, 255}, {0, 0, 0, 255}},
+        {{255, 0, 85, 255}, {255, 85, 0, 255}, {85, 0, 255, 255}, {255, 255, 128, 255}, {255, 255, 255, 255}}};
+    uint32_t w = 0, h = 0; size_t need = 99;
+    memset(g_out, 0x77, sizeof g_out);
+    int rc = hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need);
+    EXPECT(rc == 0 && w == 5 && h == 3, "RGhA live: converted (rc %d, %ux%u)", rc, w, h);
+    EXPECT(rc == 0 && !memcmp(g_out, want, sizeof want), "RGhA live: the pixels are B,G,R,255 from the half-float R,G,B by the original's policy (rows packed 5 x 4 bytes, padding never read)");
+    EXPECT(g_out[sizeof want] == 0x77, "RGhA live: nothing written past width x height x 4 bytes");
+    uint8_t small[8]; need = 0;
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, small, sizeof small, &w, &h, &need) == -1 && need == 5 * 3 * 4, "RGhA live: a buffer too small is refused and the output size (4 bytes a pixel) is reported");
+    uint8_t *img = NULL; w = h = 0;
+    rc = hv_pvg_lite_last_surface_bgra(dev, &img, &w, &h);
+    EXPECT(rc == 0 && img && w == 5 && h == 3 && !memcmp(img, want, sizeof want), "RGhA last_surface: the same converted pixels");
+    free(img);
+    int tr = 0;
+    EXPECT(stderr_lines_with(live_once, NULL, "refusing", &tr) == 0 && tr == 0, "RGhA: a good surface logs no refusal");
+    hv_pvg_lite_tally_surface(dev, "rgha-test");   /* the diagnostic reads the converted pixels; ASan/UBSan check the bounds */
+
+    /* the row is shorter than 8 bytes a pixel needs: refused, whatever BGRA would have allowed */
+    put_desc(desc, listp, 0x52476841u, 64 * 3, 5, 3, 32, 0);
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need) == -1, "RGhA: a row of 32 bytes for 5 pixels of 8 is refused (stride check)");
+    /* the surface does not fit the pages the list holds (one page = 16384 bytes) */
+    put_desc(desc, listp, 0x52476841u, 64 * 3, 5, 300, 64, 0);
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need) == -1, "RGhA: a surface that runs past its page list is refused");
+    /* the first-page offset pushes the last row off the end of the one page */
+    put_desc(desc, listp, 0x52476841u, 64 * 3, 5, 3, 64, 0x4000 - 100);
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need) == -1, "RGhA: a first-page offset that pushes the surface past its pages is refused");
+    /* a page the list marks absent */
+    put_desc(desc, listp, 0x52476841u, 64 * 3, 5, 3, 64, 0);
+    ((uint32_t *)pgp(listp))[0] = datap << 2;   /* present bit clear */
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need) == -1, "RGhA: an absent page fails the frame, nothing is guessed");
+    ((uint32_t *)pgp(listp))[0] = (datap << 2) | 1;
+
+    /* an unknown format is refused and logged once, then counted (5000 refusals in a row print one line) */
+    put_desc(desc, listp, 0x41424344u, 64 * 3, 5, 3, 64, 0);
+    int n = stderr_lines_with(live_many, NULL, "refusing to guess", &tr);
+    EXPECT(tr == -1 && n >= 1 && n <= 3, "unknown fourcc: refused every time, 5000 refusals print %d line(s), not 5000", n);
+
+    /* BGRA is unchanged: copied byte for byte, row padding skipped */
+    put_desc(desc, listp, 0x42475241u, 32 * 3, 5, 3, 32, 0);
+    memset(pgp(datap), 0xee, 0x4000);
+    uint8_t bg[3][5][4];
+    for (int y = 0; y < 3; y++) for (int x = 0; x < 5; x++) for (int c = 0; c < 4; c++) bg[y][x][c] = (uint8_t)(y * 40 + x * 4 + c + 1);
+    for (int y = 0; y < 3; y++) memcpy(pgp(datap) + y * 32, bg[y], 20);
+    memset(g_out, 0x77, sizeof g_out);
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need);
+    EXPECT(rc == 0 && w == 5 && h == 3 && !memcmp(g_out, bg, sizeof bg), "BGRA live: unchanged, copied byte for byte");
+    img = NULL;
+    rc = hv_pvg_lite_last_surface_bgra(dev, &img, &w, &h);
+    EXPECT(rc == 0 && img && !memcmp(img, bg, sizeof bg), "BGRA last_surface: unchanged");
+    free(img);
+    unsetenv("HV_PVG_TALLY");
+    hv_pvg_lite_set_mode(1920, 1080);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     ram = aligned_alloc(0x4000, RSZ);
@@ -849,6 +960,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "fuzz")) s_fuzz(argc > 2 ? atoi(argv[2]) : 400);
     if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();
+    if (all || !strcmp(sc, "rgha")) s_rgha();
     printf("%s test_pvg %s\n", bad ? "FAIL" : "PASS", sc);
     return bad ? 1 : 0;
 }

@@ -2,6 +2,7 @@
 """Inventory upstream test targets; build separately so failures stay visible."""
 import concurrent.futures, pathlib, re, subprocess, sys, zipfile
 root=pathlib.Path('/tmp/lagfx')
+archive=pathlib.Path(sys.argv[3]) if len(sys.argv)>3 else root/'android-build/libapplegfx-vulkan.a'
 app=pathlib.Path(sys.argv[1])
 cc=sys.argv[2]
 here=pathlib.Path(__file__).resolve().parent
@@ -34,7 +35,7 @@ with zipfile.ZipFile(assets/'unit-fixtures.zip','w',zipfile.ZIP_DEFLATED) as z:
         z.write(root/'examples/triangle/out'/name,'unit-triangle/'+name)
     for p in sorted(pathlib.Path('/tmp/gpu-assets').glob('triangle_*.spv')):
         z.write(p,'unit-triangle/'+p.name)
-# Adapt only test-environment paths. No translator logic or assertions changed.
+# Adapt paths and stale test assumptions; production translator untouched.
 adapted=pathlib.Path('/tmp/unit-adapted'); adapted.mkdir(exist_ok=True)
 def adapt(src):
     p=root/'tests'/src
@@ -92,6 +93,39 @@ static int test_unop_vfx_emits_fnegate(void) {
 }
 '''+text[b:]
         text=text.replace('BINOP/UNOP handlers exercised;','triangle translation smoke;')
+        # A real math fixture is already independently tested for lowering.
+        # Require structural validation as well, rather than silently skipping.
+        a=text.index('static int test_call_dispatch_emits_extinst(void)')
+        b=text.index('/* SHUFFLEVEC mask resolution test:',a)
+        text=text[:a]+r'''
+static int test_call_dispatch_emits_extinst(void){
+    const char *paths[]={"tests/fixtures/mathclean_vertex.air.bc","tests/fixtures/scalarmath_vertex.air.bc"};
+    unsigned verified=0;
+    for(unsigned k=0;k<2;k++){
+        size_t n=0;uint8_t *air=slurp(paths[k],&n);lagfx_air_module_t *m=NULL;
+        if(!air||lagfx_air_module_open(air,n,&m)!=LAGFX_OK||!m){free(air);return 1;}
+        uint8_t *spv=NULL;size_t sz=0;
+        int ok=lagfx_air2spv_translate_module(m,&spv,&sz)==LAGFX_OK&&spv&&sz>=20&&sz%4==0;
+        unsigned ext=0;
+        if(ok){
+            const uint32_t *w=(const uint32_t*)spv;ok=w[0]==SPV_MAGIC;
+            for(size_t j=5;ok&&j<sz/4;){
+                unsigned wc=w[j]>>16;
+                if(!wc||wc>sz/4-j){ok=0;break;}
+                if((w[j]&65535)==12)ext++;
+                j+=wc;
+            }
+        }
+        int val=ok?spirv_val(spv,sz):-1;
+        printf("CALL fixture %s extinst=%u validation=%d\n",paths[k],ext,val);
+        if(ok&&ext&&val==1)verified++;
+        free(spv);lagfx_air_module_free(m);free(air);
+    }
+    printf("%s: real math AIR CALL emits validated OpExtInst\n",verified?"PASS":"FAIL");
+    return !verified;
+}
+'''+text[b:]
+
     if src in ('handler-memory.c','handler-task.c','handler-sync-utility.c'):
         # Exercise real ring drainers, never the acknowledge-only test_api.c.
         text=text.replace('#include <stdbool.h>', '#include "dispatchers/channel_0_dispatcher.h"\n#include "dispatchers/channel_compute_dispatcher.h"\n#include "dispatchers/ring_common.h"\n#include <stdbool.h>')
@@ -295,7 +329,7 @@ def build(entry):
           '-DSRCDIR="tests"','-DLAGFX_TEST_FIXTURE_DIR="tests/fixtures"',
           '-DLAGFX_HAVE_REAL_METALLIB=1','-DLAGFX_APPLE_SPV_BUILD_DIR="src/shaders/spv-apple"',
           '-I'+str(root/'include'),'-I'+str(root/'src'),'-I'+str(root/'android-build/src/shaders'),
-          str(adapt(src)),'-I'+str(root/'tests'),str(root/'android-build/libapplegfx-vulkan.a'),
+          str(adapt(src)),'-I'+str(root/'tests'),str(archive),
           str(here/'vulkan_android_dispatch.c'),
           '-Wl,--wrap=vkCreateDevice','-Wl,--wrap=vkCmdBeginRendering','-Wl,--wrap=vkCmdEndRendering',
           '-Wl,--wrap=vkGetBufferDeviceAddress','-lvulkan','-lm','-o',str(native/out)]

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 static double ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1000.0+t.tv_nsec/1e6;}
+static int cmp_double(const void *a,const void *b){double x=*(const double*)a,y=*(const double*)b;return (x>y)-(x<y);}
 static int scan(const uint8_t *b,size_t n,int *pos,int *img,int *sample,int *undef){
  if(n<20||n%4)return 0;
  const uint32_t *w=(const uint32_t*)b;if(w[0]!=0x07230203)return 0;
@@ -20,7 +21,7 @@ static int scan(const uint8_t *b,size_t n,int *pos,int *img,int *sample,int *und
  return 1;
 }
 int main(int argc,char **argv){
- if(argc!=4)return 2;FILE *f=fopen(argv[1],"rb");if(!f)return 2;
+ if(argc!=4&&argc!=5)return 2;int repeats=argc==5?atoi(argv[4]):0;if(repeats<0||repeats>1000)return 2;FILE *f=fopen(argv[1],"rb");if(!f)return 2;
  if(fseek(f,0,SEEK_END))return 2;long n=ftell(f);if(n<=0||n>4194304)return 2;rewind(f);
  uint8_t *air=malloc(n);if(!air||fread(air,1,n,f)!=(size_t)n)return 2;fclose(f);
  double start=ms();lagfx_air_module_t *m=NULL;if(lagfx_air_module_open(air,n,&m)!=LAGFX_OK||!m){puts("MODULE FAIL");return 1;}
@@ -42,6 +43,17 @@ int main(int argc,char **argv){
   double elapsed=ms()-begin;unsigned neg=0,ops=0;
   if(blob&&sz>=20&&sz%4==0){const uint32_t *w=(const uint32_t*)blob;for(size_t j=5;j<sz/4;){unsigned wc=w[j]>>16;if(!wc||wc>sz/4-j)break;ops++;if((w[j]&65535)==127)neg++;j+=wc;}}
   printf("TRANSLATE_METRIC fn=%u ms=%.6f instructions=%u OpFNegate=%u\n",i,elapsed,ops,neg);
+  if(repeats&&st==LAGFX_OK&&blob&&sz){
+   double times[1000];int stable=1;
+   for(int k=0;k<repeats;k++){uint8_t *again=NULL;size_t bytes=0;double t0=ms();
+    int rc=lagfx_air2spv_translate_function(m,i,stage,&again,&bytes);times[k]=ms()-t0;
+    if(rc!=LAGFX_OK||!again||bytes!=sz||memcmp(blob,again,sz))stable=0;
+    free(again);if(!stable){bad++;break;}
+   }
+   if(stable){qsort(times,repeats,sizeof(double),cmp_double);
+    printf("NATIVE_BENCH fn=%u first_ms=%.6f warm_n=%d median_ms=%.6f p95_ms=%.6f max_ms=%.6f repeat_equal=1\n",i,elapsed,repeats,times[repeats/2],times[(repeats*95+99)/100-1],times[repeats-1]);
+   }else printf("NATIVE_BENCH fn=%u repeat_equal=0\n",i);
+  }
   int pos=0,img=0,sample=0,undef=0;int ok=st==LAGFX_OK&&blob&&scan(blob,sz,&pos,&img,&sample,&undef);
   printf("FUNCTION %u name=%s status=%d bytes=%zu position=%d image=%d sample=%d undef=%d structure=%s\n",i,name?name:"?",st,sz,pos,img,sample,undef,ok?"PASS":"FAIL");
   if(ok){char path[1024];int k=snprintf(path,sizeof path,"%s/%u.spv",argv[3],i);if(k<0||k>=(int)sizeof path)return 2;FILE *out=fopen(path,"wb");if(!out)return 2;size_t z=fwrite(blob,1,sz,out);int e=fclose(out);if(z!=sz||e)return 2;count++;}else bad++;

@@ -17,7 +17,7 @@ public class MainActivity extends Activity {
     private TextView log;
     private final ImageView[] images=new ImageView[6];
     private final TextView[] outcomes=new TextView[6];
-    private Button run, corpus, render;
+    private Button run, corpus, render, units;
     private final ImageView[] metalImages=new ImageView[2];
     private final TextView[] metalStatus=new TextView[2];
     private volatile Process child;
@@ -29,11 +29,13 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20,20,20,20);
         ScrollView scroll = new ScrollView(this); scroll.addView(root); setContentView(scroll);
-        TextView heading = new TextView(this); heading.setText("GPT Metal Corpus · 11 login shaders"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.0 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
-        corpus.setOnClickListener(v->{run.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
+        corpus.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
+        units=new Button(this);units.setText("5.0 라이브러리 전체 단위시험");root.addView(units);
+        units.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
         String[] titles={"1 · AIR 삼각형","2 · 텍스처 샘플링","3 · 알파 블렌딩","4 · RGBA16Float 및 공통 픽셀 변환","5 · 기기 내부 AIR 변환 및 그리기","6 · 외부 엔진 렌더 타겟 및 읽기"};
         for(int i=0;i<6;i++){
             TextView title=new TextView(this);title.setText(titles[i]);title.setTextSize(18);root.addView(title);
@@ -48,11 +50,11 @@ public class MainActivity extends Activity {
             root.addView(im,new LinearLayout.LayoutParams(-1,(int)(240*getResources().getDisplayMetrics().density)));
             metalStatus[i]=new TextView(this);metalStatus[i].setText("미실행");root.addView(metalStatus[i]);
         }
-        render.setOnClickListener(v->{run.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);render.setEnabled(false);worker.submit(this::testMetalRender);});
+        render.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);render.setEnabled(false);worker.submit(this::testMetalRender);});
         log = new TextView(this); log.setTextIsSelectable(true); root.addView(log);
         Button copy = new Button(this); copy.setText("시험 로그 복사"); root.addView(copy);
         copy.setOnClickListener(v -> ((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("GPU test",report)));
-        run.setOnClickListener(v -> {run.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
+        run.setOnClickListener(v -> {run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false); for(int i=0;i<6;i++){images[i].setImageDrawable(null);outcomes[i].setText("대기");} log.setText("실행 중…"); worker.submit(this::test);});
     }
     private File asset(String name) throws IOException {
         File f = new File(getFilesDir(),name);
@@ -130,7 +132,7 @@ public class MainActivity extends Activity {
             }}
         }catch(Exception e){t.append("ERROR: ").append(e).append('\n');}
         t.append("\nCORPUS OVERALL: ").append(passed).append('/').append(total).append(" PASS; translation/structure only, no render claim\n");
-        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
+        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testMetalRender(){
         StringBuilder t=new StringBuilder("Actual translated Metal fragments; GLSL reference vertex only.\n");
@@ -172,7 +174,7 @@ public class MainActivity extends Activity {
             runOnUiThread(()->{if(b!=null){android.graphics.drawable.BitmapDrawable d=new android.graphics.drawable.BitmapDrawable(getResources(),b);d.setFilterBitmap(false);metalImages[idx].setImageDrawable(d);}metalStatus[idx].setText(pass?"PASS · 실제 GPU 픽셀":"FAIL / 미완료");report=snapshot;log.setText(snapshot);});
         }
         t.append("METAL RENDER OVERALL: ").append(passed).append("/2 PASS\n");
-        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);});
+        final String snapshot=t.toString();runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);});
     }
     private int renderProcess(String[] args,File out,boolean negative,StringBuilder t)throws Exception{
         if(out.exists()&&!out.delete())throw new IOException("stale pixels");
@@ -236,7 +238,62 @@ public class MainActivity extends Activity {
             }
         }catch(Exception e){t.append("ERROR: ").append(e).append('\n');}
         t.append("\nOVERALL: ").append(passes).append("/6 PASS\n");final String s=t.toString();
-        runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
+        runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
+    }
+    private void testUnits(){
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.0\n");
+        int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
+        try{
+            File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");
+            try(java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(getAssets().open("unit-fixtures.zip"))){
+                java.util.zip.ZipEntry e;byte[] buf=new byte[8192];long size=0;
+                while((e=zip.getNextEntry())!=null){
+                    File target=new File(work,e.getName());if(!target.getCanonicalPath().startsWith(work.getCanonicalPath()+File.separator))throw new IOException("invalid fixture path");
+                    if(e.isDirectory()){if(!target.isDirectory()&&!target.mkdirs())throw new IOException("mkdir");}
+                    else {File parent=target.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("mkdir");
+                        try(FileOutputStream out=new FileOutputStream(target)){int n;while((n=zip.read(buf))!=-1){size+=n;if(size>64L*1024*1024)throw new IOException("fixture size limit");out.write(buf,0,n);}}
+                    }zip.closeEntry();
+                }
+            }
+            File nativeDir=new File(getApplicationInfo().nativeLibraryDir);
+            try(BufferedReader br=new BufferedReader(new InputStreamReader(getAssets().open("unit-manifest.tsv")))){
+                String line;while((line=br.readLine())!=null){
+                    String[] p=line.split("\t",5);if(p.length!=5)throw new IOException("manifest row");
+                    total++;String state=p[2],detail=p[4];
+                    if(state.equals("BUILT")){
+                        try{
+                            if(!p[3].matches("libut_[a-zA-Z0-9_]+\\.so"))throw new IOException("bad executable");
+                            File stdout=new File(work,"unit-"+total+".log");
+                            ProcessBuilder pb=new ProcessBuilder(new File(nativeDir,p[3]).getAbsolutePath());
+                            pb.directory(work);pb.redirectErrorStream(true);pb.redirectOutput(stdout);
+                            pb.environment().put("LAGFX_TRIANGLE_SPV_DIR",new File(work,"unit-triangle").getAbsolutePath());
+                            pb.environment().put("LAGFX_APPLE_SPV_DIR",new File(work,"src/shaders/spv-apple").getAbsolutePath());
+                            pb.environment().put("TMPDIR",work.getAbsolutePath());
+                            pb.environment().remove("LAGFX_FORCE_LAVAPIPE");pb.environment().remove("VK_ICD_FILENAMES");
+                            child=pb.start();boolean done=child.waitFor(30,TimeUnit.SECONDS);
+                            if(!done){child.destroyForcibly();child.waitFor(5,TimeUnit.SECONDS);}
+                            int rc=done?child.exitValue():124;child=null;
+                            StringBuilder output=new StringBuilder();
+                            try(BufferedReader lr=new BufferedReader(new FileReader(stdout))){String l;while((l=lr.readLine())!=null){if(output.length()<24000)output.append(l).append('\n');}}
+                            String raw=output.toString();
+                            boolean skipped=java.util.regex.Pattern.compile("(?im)\\bskip(?:ped|ping|s)?\\b|not run|no Vulkan ICD").matcher(raw).find();
+                            if(rc==77||(rc==0&&skipped)){state="SKIP";detail="exit="+rc+"; skip or partial-skip marker";}
+                            else if(rc==0){state="PASS";detail="exit=0";}
+                            else {state="FAIL";detail="exit="+rc;}
+                            t.append("\n--- ").append(p[0]).append(" ---\n").append(raw);
+                        }catch(Exception e){state="FAIL";detail=e.toString();if(child!=null){child.destroyForcibly();child=null;}}
+                    }
+                    switch(state){case "PASS":pass++;break;case "FAIL":fail++;break;case "SKIP":skip++;break;case "BUILD_FAIL":buildFail++;break;default:notRun++;}
+                    t.append("UNIT RESULT\t").append(p[0]).append('\t').append(p[1]).append('\t').append(state).append('\t').append(detail).append('\n');
+                    final String status="시험 "+total+" · PASS "+pass+" · FAIL "+fail+" · SKIP "+skip+" · BUILD_FAIL "+buildFail+" · NOT_RUN "+notRun;
+                    runOnUiThread(()->log.setText(status));
+                }
+            }
+        }catch(Exception e){t.append("SUITE ERROR: ").append(e).append('\n');}
+        t.append("\nUNIT SUMMARY total=").append(total).append(" PASS=").append(pass).append(" FAIL=").append(fail).append(" SKIP=").append(skip).append(" BUILD_FAIL=").append(buildFail).append(" NOT_RUN=").append(notRun).append('\n');
+        t.append("Scope: original standalone tests; PASS is not full Metal API or GPU semantic coverage.\n");
+        final String snapshot=t.toString();
+        runOnUiThread(()->{report=snapshot;log.setText(snapshot);run.setEnabled(true);corpus.setEnabled(true);render.setEnabled(true);units.setEnabled(true);});
     }
     @Override protected void onDestroy(){Process p=child;if(p!=null)p.destroyForcibly();worker.shutdownNow();super.onDestroy();}
 }

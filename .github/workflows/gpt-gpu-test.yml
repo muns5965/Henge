@@ -158,8 +158,8 @@ jobs:
           cp /tmp/corpus/manifest.txt /tmp/corpus/report.txt "$P/src/main/assets/"
           cp /tmp/corpus/*.air.bc "$P/src/main/assets/"
           cp /tmp/lagfx/LICENSE "$P/src/main/assets/libapplegfx-LICENSE.txt"
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
           # Cross-build the pinned external library with real Vulkan, not the no-op path.
           SYS="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           mkdir -p /tmp/android-pc
@@ -190,13 +190,17 @@ jobs:
           ninja -C /tmp/lagfx/android-build libapplegfx-vulkan.a
           A=/tmp/lagfx/android-build/libapplegfx-vulkan.a
           WRAP=(tests/gpu-android-gpt/vulkan_android_dispatch.c -Wl,--wrap=vkCreateDevice -Wl,--wrap=vkCmdBeginRendering -Wl,--wrap=vkCmdEndRendering -Wl,--wrap=vkGetBufferDeviceAddress)
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
           cp /tmp/lagfx/examples/triangle/out/triangle.air "$P/src/main/assets/"
           python3 tests/gpu-android-gpt/adapt_engine.py /tmp/lagfx/tests/vulkan-render.c /tmp/engine-test.c
-          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
-          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libaircorpus.so"
-          "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-android-gpt/air_corpus.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libaircorpus.so"
+          for lib in "$P/src/main/jniLibs/arm64-v8a/"*.so; do
+            echo "Checking 16KiB ELF alignment: $lib"
+            "$T/llvm-readelf" -lW "$lib"
+            "$T/llvm-readelf" -lW "$lib" | python3 -c 'import sys; rows=[l.split() for l in sys.stdin if l.strip().startswith("LOAD ")]; assert rows and all(int(r[-1],16)>=16384 and (int(r[1],16)-int(r[2],16))%16384==0 for r in rows),rows'
+          done
           cat > "$P/settings.gradle" <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -207,13 +211,13 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest.v4'; minSdk 30; targetSdk 34; versionCode 4; versionName '4.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.corpusfix'; minSdk 30; targetSdk 34; versionCode 5; versionName '4.1-gpt'; ndk { abiFilters 'arm64-v8a' } }
             packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so','**/libaircorpus.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT Metal Corpus" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT Metal Corpus 4.1" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>
@@ -221,10 +225,24 @@ jobs:
           gradle -p "$P" assembleDebug --no-daemon --stacktrace
           mkdir -p /tmp/gpu-publish
           cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-gpu-test.apk
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-gpu-test.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs /tmp/gpu-publish/henge-gpt-gpu-test.apk
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -c -v 4 /tmp/gpu-publish/henge-gpt-gpu-test.apk
+          python3 - <<'PY'
+          import zipfile
+          p='/tmp/gpu-publish/henge-gpt-gpu-test.apk'
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              libs=[i for i in z.infolist() if i.filename.startswith('lib/')]
+              assert len(libs)==6, [i.filename for i in libs]
+              for i in libs:
+                  assert i.filename.startswith('lib/arm64-v8a/lib') and i.filename.endswith('.so'),i.filename
+                  assert i.compress_type==zipfile.ZIP_DEFLATED, i.filename
+                  print(i.filename,i.file_size,'compressed')
+          PY
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump xmltree --file AndroidManifest.xml /tmp/gpu-publish/henge-gpt-gpu-test.apk | tee /tmp/apk-manifest.txt
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-gpu-test.apk | head -5
           cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/corpus/report.txt /tmp/gpu-publish/
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-gpt-gpu-test-apk
+          name: henge-gpt-metal-corpus-4.1-apk
           path: /tmp/gpu-publish/

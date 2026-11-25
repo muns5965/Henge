@@ -1,0 +1,230 @@
+name: GPT APK installation controls
+on:
+  push:
+    branches: [research/gpt-vulkan-render-test]
+    paths: ['.github/workflows/gpt-install-controls.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gpu-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Host AIR translator and Vulkan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build libvulkan-dev mesa-vulkan-drivers spirv-tools glslang-tools
+          git clone https://github.com/muns5965/libapplegfx-vulkan.git /tmp/lagfx
+          git -C /tmp/lagfx checkout 7574eac0d7396a9f49366f007c7fbeb44245826c
+          meson setup /tmp/lagfx/build /tmp/lagfx -Dtests=false
+          ninja -C /tmp/lagfx/build libapplegfx-vulkan.a
+          mkdir -p /tmp/gpu-assets
+          gcc -std=c11 -O2 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c /tmp/lagfx/build/libapplegfx-vulkan.a -lvulkan -lm -o /tmp/airprobe
+          gcc -std=c11 -O2 -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c /tmp/lagfx/build/libapplegfx-vulkan.a -lvulkan -lm -o /tmp/stubcompare
+          AIR=/tmp/lagfx/examples/triangle/out/triangle.air
+          LAGFX_LOG_LEVEL=trace LAGFX_LOG_FILE=/tmp/lagfx.log /tmp/airprobe "$AIR" /tmp/gpu-assets triangle_vertex:vertex triangle_fragment:fragment | tee /tmp/translation.txt
+          cd /tmp/gpu-assets
+          /tmp/stubcompare triangle_vertex.spv triangle_fragment.spv | tee /tmp/stub.txt
+          if grep -q 'equals_.*=1' /tmp/stub.txt; then exit 1; fi
+          test -s /tmp/lagfx.log
+          if grep -E 'falling back|emitting reference' /tmp/lagfx.log; then exit 1; fi
+          echo '7574eac0d7396a9f49366f007c7fbeb44245826c libapplegfx-vulkan (host AIR translation)' > provenance.txt
+          sha256sum "$AIR" triangle_vertex.spv triangle_fragment.spv >> provenance.txt
+          cat /tmp/translation.txt /tmp/stub.txt >> provenance.txt
+          for f in triangle_vertex.spv triangle_fragment.spv; do
+            if spirv-val --target-env vulkan1.2 "$f" > /tmp/val.txt 2>&1; then echo "spirv-val $f PASS" >> provenance.txt; else echo "spirv-val $f FAIL (experimental input)" >> provenance.txt; cat /tmp/val.txt >> provenance.txt; fi
+          done
+      - name: Adapt existing triangle harness (real readback + negative control)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('tests/gpu-validation/draw_triangle.c').read_text()
+          def replace(old,new):
+              global s
+              assert s.count(old)==1,old
+              s=s.replace(old,new)
+          replace('app.apiVersion = VK_API_VERSION_1_0;', 'uint32_t loader=VK_API_VERSION_1_0; PFN_vkEnumerateInstanceVersion version=(PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(NULL,"vkEnumerateInstanceVersion"); if(version) version(&loader); if(loader<VK_API_VERSION_1_2){fprintf(stderr,"Vulkan 1.2 loader required\\n");return 2;} app.apiVersion=VK_API_VERSION_1_2;')
+          replace('printf("device: %s (type=%d)\\n", props.deviceName, (int)props.deviceType);','printf("device: %s (type=%d), API %u.%u\\n", props.deviceName,(int)props.deviceType,VK_VERSION_MAJOR(props.apiVersion),VK_VERSION_MINOR(props.apiVersion)); if(props.apiVersion<VK_API_VERSION_1_2)return 2;')
+          replace('vkCmdDraw(cb, 3, 1, 0, 0);','if (!getenv("GPU_TEST_NO_DRAW")) vkCmdDraw(cb, 3, 1, 0, 0);')
+          replace('vkCmdEndRenderPass(cb);','''vkCmdEndRenderPass(cb);
+              VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+              barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+              barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+              barrier.oldLayout = barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+              barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+              barrier.image = img;
+              barrier.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+              vkCmdPipelineBarrier(cb,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,NULL,0,NULL,1,&barrier);''')
+          replace('vkQueueWaitIdle(q);','if (vkQueueWaitIdle(q) != VK_SUCCESS) return 2;')
+          replace('uint8_t *got = NULL; vkMapMemory(dev, bmem, 0, SZ, 0, (void **)&got);','''uint8_t *got = NULL; if (vkMapMemory(dev,bmem,0,SZ,0,(void **)&got)!=VK_SUCCESS || !got) return 2;
+              const char *out=getenv("GPU_TEST_OUTPUT");
+              if(out){FILE *fp=fopen(out,"wb");if(!fp)return 2;size_t written=fwrite(got,1,SZ,fp);int close_rc=fclose(fp);if(written!=SZ||close_rc)return 2;}''')
+          replace('vkCreateDevice(pd, &dci, NULL, &dev);','if(qf==UINT32_MAX || vkCreateDevice(pd,&dci,NULL,&dev)!=VK_SUCCESS) return 2;')
+          replace('vkQueueSubmit(q, 1, &si, VK_NULL_HANDLE);','if(vkQueueSubmit(q,1,&si,VK_NULL_HANDLE)!=VK_SUCCESS) return 2;')
+          Path('/tmp/draw_android.c').write_text(s)
+          PY
+          gcc -std=c11 -O2 /tmp/draw_android.c -lvulkan -lm -o /tmp/draw_host
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+          if [ ! -f "$VK_ICD_FILENAMES" ]; then export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name '*lvp*.json' | head -1)"; fi
+          GPU_TEST_OUTPUT=/tmp/host.bgra /tmp/draw_host /tmp/gpu-assets/triangle_vertex.spv /tmp/gpu-assets/triangle_fragment.spv | tee /tmp/host-positive.txt
+          test "$(stat -c%s /tmp/host.bgra)" = 16384
+          set +e
+          GPU_TEST_NO_DRAW=1 /tmp/draw_host /tmp/gpu-assets/triangle_vertex.spv /tmp/gpu-assets/triangle_fragment.spv > /tmp/host-negative.txt
+          rc=$?
+          set -e
+          test "$rc" = 1
+          grep 'A5 RESULT: FAIL' /tmp/host-negative.txt
+          grep 'A4 RESULT: PASS' /tmp/host-negative.txt
+      - name: Compile and verify stages 2–4 on lavapipe
+        run: |
+          cat > /tmp/full.vert <<'EOF'
+          #version 450
+          void main(){vec2 p=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2);gl_Position=vec4(p*2.0-1.0,0,1);}
+          EOF
+          cat > /tmp/texture.frag <<'EOF'
+          #version 450
+          layout(set=0,binding=0) uniform sampler2D tex;
+          layout(location=0) out vec4 color;
+          void main(){color=texture(tex,gl_FragCoord.xy/64.0);}
+          EOF
+          cat > /tmp/blend.frag <<'EOF'
+          #version 450
+          layout(push_constant) uniform PC {vec4 value;} pc;
+          layout(location=0) out vec4 color;
+          void main(){color=pc.value;}
+          EOF
+          cat > /tmp/half.frag <<'EOF'
+          #version 450
+          layout(location=0) out vec4 color;
+          void main(){color=vec4(floor(gl_FragCoord.x/16.0)*0.25,floor(gl_FragCoord.y/16.0)*0.25,1.5,1.0);}
+          EOF
+          glslangValidator -V /tmp/full.vert -o /tmp/gpu-assets/full.spv
+          for name in texture blend half; do
+            glslangValidator -V "/tmp/$name.frag" -o "/tmp/gpu-assets/$name.spv"
+            spirv-val --target-env vulkan1.0 "/tmp/gpu-assets/$name.spv"
+          done
+          spirv-val --target-env vulkan1.0 /tmp/gpu-assets/full.spv
+          gcc -std=c11 -O2 -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o /tmp/stages
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name '*lvp*.json' | head -1)"
+          for pair in 2:texture 3:blend 4:half; do
+            stage=${pair%:*}; shader=${pair#*:}
+            GPU_TEST_OUTPUT=/tmp/stage-$stage.bgra /tmp/stages "$stage" /tmp/gpu-assets/full.spv "/tmp/gpu-assets/$shader.spv" | tee "/tmp/stage-$stage.txt"
+            grep "STAGE $stage RESULT: PASS" "/tmp/stage-$stage.txt"
+            test "$(stat -c%s /tmp/stage-$stage.bgra)" = 16384
+            set +e
+            GPU_TEST_NO_DRAW=1 /tmp/stages "$stage" /tmp/gpu-assets/full.spv "/tmp/gpu-assets/$shader.spv" > "/tmp/stage-$stage-negative.txt"
+            rc=$?
+            set -e
+            test "$rc" = 1
+            grep "STAGE $stage RESULT: FAIL" "/tmp/stage-$stage-negative.txt"
+          done
+      - name: Build arm64 executable and standalone APK
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+          T="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          P=/tmp/gpu-app
+          mkdir -p "$P/src/main/java/dev/muns/hengegputest" "$P/src/main/jniLibs/arm64-v8a" "$P/src/main/assets"
+          git show 9e3f36fe06b270c9cc19f4a145c629e44f1930bf:tests/gpu-android-gpt/MainActivity.java > "$P/src/main/java/dev/muns/hengegputest/MainActivity.java"
+          cp /tmp/gpu-assets/{triangle_vertex.spv,triangle_fragment.spv,full.spv,texture.spv,blend.spv,half.spv,provenance.txt} "$P/src/main/assets/"
+          cp /tmp/lagfx/LICENSE "$P/src/main/assets/libapplegfx-LICENSE.txt"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
+          # Cross-build the pinned external library with real Vulkan, not the no-op path.
+          SYS="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          mkdir -p /tmp/android-pc
+          cat > /tmp/android-pc/vulkan.pc <<EOF
+          Name: Vulkan
+          Description: Android NDK Vulkan loader
+          Version: 1.3.0
+          Libs: -L$SYS/usr/lib/aarch64-linux-android/30 -lvulkan
+          Cflags: -I$SYS/usr/include
+          EOF
+          cat > /tmp/android-cross.ini <<EOF
+          [binaries]
+          c = '$T/aarch64-linux-android30-clang'
+          ar = '$T/llvm-ar'
+          strip = '$T/llvm-strip'
+          pkg-config = 'pkg-config'
+          [properties]
+          pkg_config_libdir = '/tmp/android-pc'
+          needs_exe_wrapper = true
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+          EOF
+          meson setup /tmp/lagfx/android-build /tmp/lagfx --cross-file /tmp/android-cross.ini -Dtests=false
+          grep -F 'Vulkan found' /tmp/lagfx/android-build/meson-logs/meson-log.txt
+          ninja -C /tmp/lagfx/android-build libapplegfx-vulkan.a
+          A=/tmp/lagfx/android-build/libapplegfx-vulkan.a
+          WRAP=(tests/gpu-android-gpt/vulkan_android_dispatch.c -Wl,--wrap=vkCreateDevice -Wl,--wrap=vkCmdBeginRendering -Wl,--wrap=vkCmdEndRendering -Wl,--wrap=vkGetBufferDeviceAddress)
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
+          cp /tmp/lagfx/examples/triangle/out/triangle.air "$P/src/main/assets/"
+          python3 tests/gpu-android-gpt/adapt_engine.py /tmp/lagfx/tests/vulkan-render.c /tmp/engine-test.c
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" "${WRAP[@]}" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
+          "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
+          cat > "$P/settings.gradle" <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'HengeGpuTest'
+          EOF
+          cat > "$P/build.gradle" <<'EOF'
+          plugins { id 'com.android.application' version '8.7.3' }
+          android {
+            namespace 'dev.muns.hengegputest'
+            compileSdk 34
+            defaultConfig { applicationId 'dev.muns.hengegputest.v3'; minSdk 30; targetSdk 34; versionCode 3; versionName '3.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so'] } }
+          }
+          EOF
+          cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application android:label="Henge GPT GPU Test 6" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+              <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+            </application>
+          </manifest>
+          EOF
+          # Baseline source, native libraries and manifest from installed v3.
+          # Distinct application IDs allow coexistence; label is kept unchanged.
+          mkdir -p /tmp/gpu-publish
+          cp "$P/build.gradle" /tmp/base.gradle
+          for variant in a b c; do
+            sed "s/dev.muns.hengegputest.v3/dev.muns.hengegputest.control$variant/" /tmp/base.gradle > "$P/build.gradle"
+            if [ "$variant" = b ]; then
+              cp /tmp/lagfx/tests/fixtures/login_*.air.bc "$P/src/main/assets/"
+            elif [ "$variant" = c ]; then
+              rm -f "$P/src/main/assets/"login_*.air.bc
+              cp tests/gpu-android-gpt/MainActivity.java "$P/src/main/java/dev/muns/hengegputest/"
+            fi
+            gradle -p "$P" assembleDebug --no-daemon --stacktrace
+            cp "$P/build/outputs/apk/debug/"*.apk "/tmp/gpu-publish/control-$variant.apk"
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "/tmp/gpu-publish/control-$variant.apk"
+            "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "/tmp/gpu-publish/control-$variant.apk" | head -5
+          done
+          sha256sum /tmp/gpu-publish/*.apk > /tmp/gpu-publish/SHA256SUMS.txt
+          # Variant C is an installation-only control; its corpus assets are deliberately absent.
+          exit 0
+          mkdir -p /tmp/gpu-publish
+          cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-gpu-test.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-gpu-test.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-gpu-test.apk | head -5
+          cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/gpu-publish/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-install-controls
+          path: /tmp/gpu-publish/

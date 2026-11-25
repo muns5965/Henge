@@ -29,12 +29,12 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20,20,20,20);
         ScrollView scroll = new ScrollView(this); scroll.addView(root); setContentView(scroll);
-        TextView heading = new TextView(this); heading.setText("GPT Metal 5.1 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
+        TextView heading = new TextView(this); heading.setText("GPT Metal 5.2 · upstream test suite"); heading.setTextSize(22); root.addView(heading);
         TextView info = new TextView(this); info.setText("독립 GPU 시험 · Henge VM 데이터 접근 없음\n1단계: 실제 AIR 변환 셰이더. 2~4단계: GLSL 기준 셰이더로 Vulkan 기능 독립 검증. 5단계: 기기 내부 AIR 변환. 6단계: 외부 엔진 clear/readback. PVG 연동 시험은 아닙니다."); root.addView(info);
         run = new Button(this); run.setText("6단계 전체 GPU 시험 시작"); root.addView(run);
         corpus=new Button(this);corpus.setText("macOS 로그인 Metal 셰이더 11종 변환 시험");root.addView(corpus);
         corpus.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);if(render!=null)render.setEnabled(false);log.setText("AIR corpus 실행 중");worker.submit(this::testCorpus);});
-        units=new Button(this);units.setText("5.1 라이브러리 전체 단위시험");root.addView(units);
+        units=new Button(this);units.setText("5.2 라이브러리 전체 단위시험");root.addView(units);
         units.setOnClickListener(v->{run.setEnabled(false);if(units!=null)units.setEnabled(false);corpus.setEnabled(false);render.setEnabled(false);units.setEnabled(false);log.setText("단위시험 준비 중");worker.submit(this::testUnits);});
         String[] titles={"1 · AIR 삼각형","2 · 텍스처 샘플링","3 · 알파 블렌딩","4 · RGBA16Float 및 공통 픽셀 변환","5 · 기기 내부 AIR 변환 및 그리기","6 · 외부 엔진 렌더 타겟 및 읽기"};
         for(int i=0;i<6;i++){
@@ -241,7 +241,7 @@ public class MainActivity extends Activity {
         runOnUiThread(()->{report=s;log.setText(s);run.setEnabled(true);if(units!=null)units.setEnabled(true);corpus.setEnabled(true);if(render!=null)render.setEnabled(true);});
     }
     private void testUnits(){
-        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.1\n");
+        StringBuilder t=new StringBuilder("UPSTREAM TEST INVENTORY — 5.2\n");
         int pass=0,fail=0,skip=0,buildFail=0,notRun=0,total=0;
         try{
             File work=new File(getFilesDir(),"unit-work");if(!work.isDirectory()&&!work.mkdirs())throw new IOException("workdir");
@@ -270,6 +270,7 @@ public class MainActivity extends Activity {
                             pb.environment().put("LAGFX_APPLE_SPV_DIR",new File(work,"src/shaders/spv-apple").getAbsolutePath());
                             pb.environment().put("TMPDIR",work.getAbsolutePath());
                             pb.environment().put("LAGFX_ANDROID_SPIRV_VAL",new File(nativeDir,"libspirvval.so").getAbsolutePath());
+                            pb.environment().put("LAGFX_ANDROID_SPIRV_DIS",new File(nativeDir,"libspirvdis.so").getAbsolutePath());
                             pb.environment().remove("LAGFX_FORCE_LAVAPIPE");pb.environment().remove("VK_ICD_FILENAMES");
                             child=pb.start();boolean done=child.waitFor(30,TimeUnit.SECONDS);
                             if(!done){child.destroyForcibly();child.waitFor(5,TimeUnit.SECONDS);}

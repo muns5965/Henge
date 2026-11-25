@@ -294,23 +294,23 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest.suite55'; minSdk 30; targetSdk 34; versionCode 14; versionName '5.5-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.suite56'; minSdk 30; targetSdk 34; versionCode 15; versionName '5.6-gpt'; ndk { abiFilters 'arm64-v8a' } }
             packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so','**/libskylight.so','**/libut_*.so','**/libspirvval.so','**/libspirvdis.so','**/libspirvopt.so','**/libcompare_*.so','**/libbench_*.so','**/libfixedsmoke.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT Metal 5.5" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT Metal 5.6" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>
           EOF
           gradle -p "$P" assembleDebug --no-daemon --stacktrace
           mkdir -p /tmp/gpu-publish
-          cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-metal-5.5.apk
+          cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-metal-5.6.apk
           python3 - <<'PY'
           import zipfile, pathlib, hashlib
-          with zipfile.ZipFile('/tmp/gpu-publish/henge-gpt-metal-5.5.apk') as z:
+          with zipfile.ZipFile('/tmp/gpu-publish/henge-gpt-metal-5.6.apk') as z:
               assert z.testzip() is None
               assert not any(n.lower().endswith('.bc') for n in z.namelist()), 'Legacy RenderScript extension present'
               names=pathlib.Path('/tmp/corpus/manifest.txt').read_text().splitlines()
@@ -333,13 +333,13 @@ jobs:
                   name,group,state,exe,reason=row.split('\t',4)
                   if state=='BUILT': assert 'lib/arm64-v8a/'+exe in z.namelist(),name
           PY
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-metal-5.5.apk
-          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-metal-5.5.apk | head -5
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-metal-5.6.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-metal-5.6.apk | head -5
           cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/corpus/report.txt /tmp/login_*-render.txt /tmp/gpu-publish/
           cp "$P/src/main/assets/unit-manifest.tsv" /tmp/gpu-publish/
           cp -r /tmp/unit-build-logs /tmp/gpu-publish/
           cp "$P/src/main/assets/build-flags.txt" /tmp/gpu-publish/
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-gpt-metal-5.5-apk
+          name: henge-gpt-metal-5.6-apk
           path: /tmp/gpu-publish/

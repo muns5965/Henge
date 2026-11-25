@@ -1,62 +1,80 @@
-<p align="center">
-  <img src="docs/icon.png" width="120" height="120" alt="Henge">
-</p>
+<p align="center"><img src="docs/icon.png" width="120" alt="Henge"></p>
 
 # Henge — Android port (experimental)
 
-An independent Android/ARM64 port of [Leviidev/Henge](https://github.com/Leviidev/Henge), originally developed for iPhone and iPad. This fork adapts Henge's own ARM64 emulation engine to Android; it is not a QEMU-based rewrite.
+[한국어](README.ko.md) · [Previous Android README](docs/archive/README-android-2026-11-25.md) · [Original upstream README](docs/upstream/README.md) · [Upstream Henge](https://github.com/Leviidev/Henge)
 
-**Work in progress — currently being tested on a Samsung Galaxy S26 Ultra (Android 17). macOS desktop boot on Android has not yet been verified.**
+Independent Android/ARM64 port of Leviidev/Henge, using Henge's ARM64 emulation engine rather than QEMU. Experimental; a complete macOS desktop boot is not established.
 
-[Original Henge README (archived)](docs/upstream/README.md) · [Upstream project](https://github.com/Leviidev/Henge) · [Android development branch](https://github.com/muns5965/Henge/tree/research/android-port) · [Builds / GitHub Actions](https://github.com/muns5965/Henge/actions)
+**Status: 2026-11-25.** Device: Samsung Galaxy S26 Ultra, Android 17, Adreno 840. Results below are developer-reported physical-device tests, not universal compatibility guarantees.
 
-## Changes from upstream
+## Graphics compatibility library
 
-| Area | Android port |
+[libapplegfx-vulkan](https://github.com/muns5965/libapplegfx-vulkan) ([tested revision](https://github.com/muns5965/libapplegfx-vulkan/tree/7574eac0d7396a9f49366f007c7fbeb44245826c)) is an experimentally verified Android ARM64 Metal AIR-to-SPIR-V translation and Vulkan graphics compatibility library. It is cross-built and exercised in the standalone Android GPU test APK; integration into the live Henge PVG backend remains unfinished.
+
+[GPU test branch](https://github.com/muns5965/Henge/tree/research/gpt-vulkan-render-test) · [4.4 CI run](https://github.com/muns5965/Henge/actions/runs/45575251001) · [4.4 APK artifact](https://github.com/muns5965/Henge/actions/runs/45575251001/artifacts/15004136515)
+
+## GPU compatibility matrix
+
+PASS = observed success; FAIL = observed failure; NOT TESTED = no completed verification. Expected negative-control failures are not product failures.
+
+| Test | Result | Evidence |
+| --- | --- | --- |
+| Android ARM64 build and launch | ✅ PASS | S26 Ultra |
+| Vulkan dynamic dispatch | ✅ PASS | Native engine test |
+| AIR triangle draw (stage 1) | ✅ PASS | 3,724 checked pixels, 0 mismatches |
+| Texture sampling (stage 2, GLSL) | ✅ PASS | 4,096/4,096 |
+| Alpha blending (stage 3, GLSL) | ✅ PASS | 4,096/4,096 |
+| FP16 render and conversion (stage 4, GLSL) | ✅ PASS | 4,096 raw and 4,096 converted pixels |
+| On-device AIR translation and draw (stage 5) | ✅ PASS | Host SHA-256 match; 3,724/3,724 |
+| External engine clear/readback (stage 6) | ✅ PASS | 4,096/4,096 |
+| ColorFill (stage 7) | ✅ PASS | 4,096/4,096; RGBA 00FF00FF |
+| TextureCopy (stage 8) | ✅ PASS | 4,096/4,096; RGBA 4080FFFF |
+| APK raw .bc packaging (4.2 / control B) | ❌ FAIL | Installation rejected |
+| APK neutral .airdata packaging (4.3/4.4) | ✅ PASS | Installed and executed |
+| ColorFill no-draw control | ❌ FAIL (expected) | 4,096 mismatches; exit 1; control PASS |
+| TextureCopy no-draw control | ❌ FAIL (expected) | 4,096 mismatches; exit 1; control PASS |
+| Real login vertex + fragment pair | ⬜ NOT TESTED | Reference GLSL vertex used for stages 7–8 |
+| Patterned Metal texture / UV accuracy | ⬜ NOT TESTED | Stage 8 uses uniform color |
+| UberComposite, Vfx, Xgc render | ⬜ NOT TESTED | Translation only |
+| Live Henge PVG integration / macOS desktop | ⬜ NOT TESTED | Standalone GPU APK |
+
+## macOS login shader corpus
+
+11 AIR modules, 66 defined-function translations reported successful; every emitted SPIR-V file matched the Linux host SHA-256 and passed host Vulkan 1.2 spirv-val. These are translation/structural checks, not proof of full Metal semantics. The Xgc size is for its main function; its other 55 reported functions were translated separately, not independently GPU-executed.
+
+| Function/module | Stage | Translation | Host hash / validation | Main SPIR-V bytes | GPU render |
+| --- | --- | --- | --- | ---: | --- |
+| ViewportToNDC | Vertex | 1/1 ✅ PASS | ✅ PASS | 2,056 | ⬜ NOT TESTED |
+| UberCompositeVertex | Vertex | 1/1 ✅ PASS | ✅ PASS | 1,952 | ⬜ NOT TESTED |
+| Vfx | Vertex | 1/1 ✅ PASS | ✅ PASS | 2,136 | ⬜ NOT TESTED |
+| ColorFill | Fragment | 1/1 ✅ PASS | ✅ PASS | 900 | ✅ PASS |
+| TextureCopy | Fragment | 1/1 ✅ PASS | ✅ PASS | 1,136 | ✅ PASS |
+| UberCompositeFragment A | Fragment | 1/1 ✅ PASS | ✅ PASS | 1,544 | ⬜ NOT TESTED |
+| UberCompositeFragment B | Fragment | 1/1 ✅ PASS | ✅ PASS | 1,524 | ⬜ NOT TESTED |
+| VfxU11 | Vertex | 1/1 ✅ PASS | ✅ PASS | 2,940 | ⬜ NOT TESTED |
+| TvcmXc_Isrc | Fragment | 1/1 ✅ PASS | ✅ PASS | 6,740 | ⬜ NOT TESTED |
+| VfxXgb | Vertex | 1/1 ✅ PASS | ✅ PASS | 10,208 | ⬜ NOT TESTED |
+| Xgc | Fragment | 56/56 ✅ PASS | ✅ PASS | 337,892 | ⬜ NOT TESTED |
+
+Stages 7–8: fresh device translation, real fragment shader, GLSL reference vertex, 64×64 readback. Total 8,192/8,192 expected pixels; no-draw controls produced 8,192/8,192 mismatches.
+
+## Android VM development
+
+The main Android branch is [research/android-port](https://github.com/muns5965/Henge/tree/research/android-port). Android NDK builds, native runner, JIT/MMU adaptations, restore transport, sparse disk/AUX handling, clone boot, shared-memory preview and diagnostics are under development.
+
+| VM milestone | Result |
 | --- | --- |
-| Build and runtime | Android NDK ARM64 builds, APK packaging, native runner processes and Android-specific platform integration |
-| CPU and JIT | Adaptation of the existing ARM64 JIT/MMU engine to Android, including memfd-backed executable mappings |
-| Restore | On-device G7 restore runner, IPSW SHA-256 verification, Android TLS transport and Apple signing-server retry diagnostics |
-| Virtual devices | USB transfer error handling, queue/backpressure and cancellation improvements, reduced repetitive BDIF diagnostics |
-| Storage | Sparse installation disk, AUX storage, incomplete-install preservation, storage management and verified sparse clones |
-| Boot testing | Separate writable clone-only normal-boot runner, machine identity checks and selectable virtual USB diagnostic modes |
-| Display | Shared-memory frame transport and a diagnostic frame preview; full Android desktop integration is not yet verified |
-| Diagnostics | Runtime logs, memory sampling (RSS/PSS), process exit history, AUX comparison and iBoot environment-variable queries |
+| ASR system image transfer and verification | ✅ PASS |
+| Cryptex and RecoveryOS installation | ✅ PASS |
+| Boot policy and bootable-volume setup | ✅ PASS |
+| System volume seal / complete restore | ⬜ NOT TESTED — completion not confirmed |
+| Clone iBoot Stage 1 and Stage 2 | ✅ PASS (reported later clone run) |
+| Normal macOS desktop boot | ⬜ NOT TESTED — no successful desktop session |
+| Full Android display, input, audio, networking parity | ⬜ NOT TESTED |
 
-These are development changes, not a claim of feature parity with the original iOS app.
+Guest test: macOS 15.6.1 (24G90), VirtualMac2,1. Preserve original disk and AUX; use clones for writable boot tests. See [G7 notes](docs/g7-analysis-notes.md), [Android G7 workflow](.github/workflows/android-g7exec.yml), and [Actions](https://github.com/muns5965/Henge/actions). Artifacts expire and may require sign-in.
 
-## Current device testing
+## Credits and licensing
 
-Status as of 2026-11-25 (developer-reported device tests).
-
-- Device: Samsung Galaxy S26 Ultra, Android 17.
-- Guest: macOS Sequoia 15.6.1 (24G90), VirtualMac2,1.
-- Experimental VM configuration: 2 GiB guest RAM, two vCPUs, 64 MiB JIT region, 128 GiB logical sparse disk.
-- The restore reached ASR system image transfer and verification, Cryptex installation, RecoveryOS installation, boot policy generation and bootable-volume setup.
-- The last observed restore stopped during `seal_system_volume`, before confirmed completion. The installation pair remains `in_progress`.
-- Clone-based normal boot reached iBootStage1 recovery mode. USB port/enumeration variations did not resolve it.
-- AUX inspection and live iBoot queries confirmed `auto-boot=false` and `boot-command=fsboot`. A clone-only auto-boot correction is being tested; persistence and subsequent normal boot are not yet confirmed.
-- No successful Android macOS desktop session has been demonstrated.
-
-## Experimental APKs
-
-See [GitHub Actions](https://github.com/muns5965/Henge/actions) for Android probe and G7 execution builds on `research/android-port`. Build artifacts may require GitHub sign-in and may expire. The start-enabled G7 APK is an explicitly published test build, not a stable release.
-
-Keep the original installation disk and AUX together. Do not delete app data or overwrite an incomplete installation while diagnosing it. Clone boot tests can write to the selected clone; they are not read-only tests of the original disk.
-
-## Development
-
-The Android port is developed on `research/android-port`. See the [Android G7 workflow](.github/workflows/android-g7exec.yml) for the runner and APK build steps, and [G7 analysis notes](docs/g7-analysis-notes.md) for diagnostic context. The original iOS build instructions and feature descriptions are preserved in the [archived README](docs/upstream/README.md).
-
-## Known limitations
-
-- Restore completion and normal macOS boot on Android remain unverified.
-- Long-running restore stability and process termination causes are still under investigation.
-- Full desktop display, input, networking, audio and upstream iOS feature parity are not established on Android.
-- Current APKs are intended for development and testing, not daily use.
-
-## Credits and licence
-
-Original Henge by [Leviidev](https://github.com/Leviidev). This is an independent fork; upstream iOS results should not be interpreted as Android results.
-
-GPL-2.0-or-later. See [LICENSE](LICENSE) and [licensing notes](docs/licensing.md). macOS and the Mac boot ROM belong to Apple and are not distributed as part of Henge.
+Original Henge by [Leviidev](https://github.com/Leviidev). Henge: GPL-2.0-or-later; see [LICENSE](LICENSE) and [licensing notes](docs/licensing.md). External library attribution and licensing are separate; see its repository. macOS and Mac boot ROM belong to Apple. No claim of full Metal API or macOS desktop compatibility is made.

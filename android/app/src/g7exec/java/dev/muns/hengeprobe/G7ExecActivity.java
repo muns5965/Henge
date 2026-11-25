@@ -31,7 +31,7 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
@@ -120,6 +120,8 @@ public class G7ExecActivity extends Activity {
         delCur.setOnClickListener(v -> confirmDeleteCurrent());
         cloneBtn = new Button(this); cloneBtn.setText("설치 쌍 희소 복제본 만들기(원본은 읽기만)"); root.addView(cloneBtn);
         cloneBtn.setOnClickListener(v -> confirmClone());
+        cloneFromBtn = new Button(this); cloneFromBtn.setText("기존 복제본에서 복제본 만들기(그 복제본은 읽기만)"); root.addView(cloneFromBtn);
+        cloneFromBtn.setOnClickListener(v -> confirmCloneFrom());
         add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).", 13);
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
@@ -306,6 +308,36 @@ public class G7ExecActivity extends Activity {
                 .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
     }
 
+    private void confirmCloneFrom() {
+        final List<File> clones = G7CloneBoot.listValid(privDir);
+        if (clones.isEmpty()) { status.setText("복제 원본으로 쓸 검증된 복제본이 없습니다."); return; }
+        final String[] names = new String[clones.size()];
+        for (int i = 0; i < names.length; i++) names[i] = clones.get(i).getName();
+        new AlertDialog.Builder(this).setTitle("복제할 기존 복제본 고르기")
+                .setItems(names, (d, which) -> {
+                    final File from = clones.get(which);
+                    new AlertDialog.Builder(this).setTitle(from.getName() + " 을(를) 복제")
+                            .setMessage(from.getName() + "의 지금 디스크·AUX 상태를 vm/clones/clone-NNN/ 로 복제합니다. " + from.getName() + "와 설치 원본은 읽기만 하고 바꾸지 않습니다. 복제 도중 그 복제본이 바뀌면 복제하지 않습니다. 복제본이 앞서 강제 종료된 적이 있으면 그 시점의 디스크 상태 그대로 복사됩니다. 정상 부팅이 확인된 복제본이라는 뜻은 아닙니다(구조·ECID 검증만 통과한 것). 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다.")
+                            .setNegativeButton("취소", null)
+                            .setPositiveButton("복제", (dd, ww) -> { cloneCancel = false; runCloneFrom(from); }).show();
+                })
+                .setNegativeButton("취소", null).show();
+    }
+
+    private void runCloneFrom(final File from) {
+        setDeleteButtons(false); cloneBtn.setEnabled(false); cloneFromBtn.setEnabled(false); cancel.setEnabled(true);
+        status.setText("복제 중입니다… (" + from.getName() + " 은(는) 읽기만 합니다)");
+        new Thread(() -> {
+            String m;
+            try {
+                java.io.File priv = privDir.getCanonicalFile();
+                m = G7Clone.cloneFromClone(from, G7ProbeLauncher.readEcid(priv), priv, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel).message;
+            } catch (java.io.IOException | RuntimeException e) { m = "복제 중 예기치 못한 오류가 났습니다. 원본은 바뀌지 않았습니다."; }
+            final String msg = m;
+            runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cloneFromBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
+        }, "g7-clone-from").start();
+    }
+
     private void confirmCloneBoot() {
         final List<File> clones = G7CloneBoot.listValid(privDir);
         if (clones.isEmpty()) {
@@ -406,14 +438,14 @@ public class G7ExecActivity extends Activity {
     }
 
     private void runClone() {
-        setDeleteButtons(false); cloneBtn.setEnabled(false); cancel.setEnabled(true);
+        setDeleteButtons(false); cloneBtn.setEnabled(false); cloneFromBtn.setEnabled(false); cancel.setEnabled(true);
         status.setText("복제 중입니다… (원본은 읽기만 합니다)");
         new Thread(() -> {
             String m;
             try { m = G7Clone.clone(privDir, runnerSt(), EXTENTS, SIZER, privDir::getUsableSpace, () -> cloneCancel).message; }
             catch (RuntimeException e) { m = "복제 중 예기치 못한 오류가 났습니다. 원본은 바뀌지 않았습니다."; }
             final String msg = m;
-            runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
+            runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cloneFromBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
         }, "g7-clone").start();
     }
 

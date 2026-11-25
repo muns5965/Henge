@@ -53,18 +53,34 @@ public final class G7Clone {
         return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, runnerStatus, ex, sizer, freeBytes, cancel);
     }
 
+    /** A verified sparse copy of an EXISTING verified clone (`from`, e.g. clone-001) instead of the install pair; `from` is only read. */
+    public static Result cloneFromClone(File from, long ecid, File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
+        return cloneWith(G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, priv, from, ecid, runnerStatus, ex, sizer, freeBytes, cancel);
+    }
+
     static Result cloneWith(boolean enabled, BooleanSupplier live, File priv, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
+        return cloneWith(enabled, live, priv, null, 0L, runnerStatus, ex, sizer, freeBytes, cancel);
+    }
+
+    static Result cloneWith(boolean enabled, BooleanSupplier live, File priv, File from, long ecid, IntSupplier runnerStatus, Extents ex, G7Storage.Sizer sizer, LongSupplier freeBytes, BooleanSupplier cancel) {
         synchronized (G7ExecLauncher.START_LOCK) {
+            // `base` is where the members and the state file are READ from: the install pair's folder, or an existing verified clone's folder. Copies always go to priv/clones/.
+            File base = priv;
+            if (from != null) {
+                String bad = validate(from, priv, ecid);
+                if (bad != null) return new Result(false, "복제 원본으로 고른 복제본(" + from.getName() + ")이 검증을 통과하지 못해 복제하지 않았습니다: " + bad + ". 아무것도 만들지 않았습니다.", null);
+                base = from;
+            }
             String g = G7Isolation.gate(enabled, live, runnerStatus);
             if (g != null) return new Result(false, g.replace("격리하지", "복제하지").replace("아무것도 옮기지", "아무것도 만들지"), null);
             if (G7Isolation.pending(priv)) return new Result(false, "끝나지 않은 격리가 있어 복제하지 않았습니다. 먼저 복구를 실행하세요.", null);
-            File disk = new File(priv, MEMBERS[0]), aux = new File(priv, MEMBERS[1]), init = new File(priv, MEMBERS[2]);
+            File disk = new File(base, MEMBERS[0]), aux = new File(base, MEMBERS[1]), init = new File(base, MEMBERS[2]);
             if (!regular(disk.toPath()) || !regular(aux.toPath())) return new Result(false, "복제할 설치 쌍(디스크·AUX)이 일반 파일로 없습니다. 아무것도 만들지 않았습니다.", null);
             if (exists(init.toPath()) && !regular(init.toPath())) return new Result(false, "AUX 원본 복사가 일반 파일이 아니어서 복제하지 않았습니다.", null);
-            String state = G7Storage.stateOf(new File(priv, "g7_state.txt"));
+            String state = G7Storage.stateOf(new File(base, "g7_state.txt"));
             if (!state.equals("in_progress") && !state.equals("done")) return new Result(false, "설치 쌍의 상태를 읽을 수 없어 복제하지 않았습니다.", null);
 
-            String tag = tagOf(new File(priv, "g7_state.txt"));
+            String tag = tagOf(new File(base, "g7_state.txt"));
             if (tag.equals("none")) return new Result(false, "원본 상태 파일에 ECID 태그가 없어 부팅할 수 없는 복제본이 되므로 복제하지 않았습니다. 아무것도 만들지 않았습니다.", null);
             List<File> src = new ArrayList<>();
             src.add(disk); src.add(aux); if (exists(init.toPath())) src.add(init);
@@ -114,7 +130,7 @@ public final class G7Clone {
                 // the state file (state word and ECID TAG; the ECID itself is not in it) is copied byte for byte; it is what ties the copy to the ECID of the restore
                 Path stateCopy = new File(dir, "g7_state.txt").toPath();
                 try (FileChannel c = FileChannel.open(stateCopy, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-                    ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(new File(priv, "g7_state.txt").toPath()));
+                    ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(new File(base, "g7_state.txt").toPath()));
                     while (b.hasRemaining()) c.write(b);
                     c.force(true);
                 }
@@ -136,13 +152,22 @@ public final class G7Clone {
                 created.remove(tmp);
                 Files.move(tmp.toPath(), new File(dir, MARKER).toPath());
                 created.add(new File(dir, MARKER));
-                return new Result(true, "복제본을 만들고 검증했습니다: " + dir.getName() + "(실제 " + G7Storage.fmt(alloc) + "). 원본은 읽기만 했습니다.", dir);
+                recordOrigin(priv, dir.getName(), from == null ? "install-pair" : from.getName(), state);
+                return new Result(true, "복제본을 만들고 검증했습니다: " + dir.getName() + "(실제 " + G7Storage.fmt(alloc) + ", 출처 " + (from == null ? "설치 쌍" : from.getName()) + "). 원본은 읽기만 했습니다.", dir);
             } catch (IOException | RuntimeException e) {
                 List<File> all = new ArrayList<>(partials); all.addAll(created); File tmpm = new File(dir, MARKER + ".tmp"); all.add(tmpm);
                 String cleaned = cleanup(dir, all);
                 return new Result(false, (e instanceof Cancelled ? "취소했습니다" : "복제하지 못했습니다: " + e.getMessage()) + ". " + cleaned + " 원본은 바뀌지 않았습니다.", null);
             }
         }
+    }
+
+    /** One line per clone in priv/clone_origins.txt ("clone-007 from=clone-001 source_state=in_progress t=<ms>"). Outside the clone folder on purpose: validate() and the runner accept only the known files inside it. Best effort: never fails the copy. */
+    static void recordOrigin(File priv, String name, String from, String state) {
+        try {
+            String line = name + " from=" + from + " source_state=" + state + " t=" + System.currentTimeMillis() + "\n";
+            Files.write(new File(priv, "clone_origins.txt").toPath(), line.getBytes(java.nio.charset.StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException | RuntimeException ignored) { }
     }
 
     /** The ECID TAG a state file carries ("ecid_tag=<16 hex>" on its second line), or "none". */

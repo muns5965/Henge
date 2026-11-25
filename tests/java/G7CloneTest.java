@@ -123,6 +123,20 @@ public class G7CloneTest {
         File untagged = pair("in_progress"); Files.write(new File(untagged, "g7_state.txt").toPath(), "state=in_progress\n".getBytes());
         String sb = snapshot(untagged); G7Clone.Result ur = run(true, false, untagged, 0, SCAN, ENOUGH, () -> false);
         check("a source without an ECID tag is refused at creation (it could never boot): " + ur.message, !ur.ok && ur.message.contains("ECID 태그") && clonesCount(untagged) == 0 && snapshot(untagged).equals(sb));
+        // a clone of an existing clone: same bytes as THAT clone, it and the install pair untouched, marker in the unchanged format, origin recorded outside the folder
+        File q = pair("in_progress"); G7Clone.Result q1 = run(true, false, q, 0, SCAN, ENOUGH, () -> false);
+        Files.write(new File(q1.dir, "macos_aux.img").toPath(), new byte[]{9, 9, 9}, java.nio.file.StandardOpenOption.WRITE);   // clone-001 diverges from the install pair (a boot wrote to it)
+        String snapPair = snapshot(q), snapC1 = snapshot(q1.dir);
+        G7Clone.Result q2 = G7Clone.cloneWith(true, () -> false, q, q1.dir, ECID, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false);
+        check("clone of a clone is made and verified: " + q2.message, q2.ok && q2.dir.getName().equals("clone-002"));
+        check("it has the bytes of the SOURCE CLONE, not of the install pair", Arrays.equals(sha(new File(q2.dir, "macos_aux.img")), sha(new File(q1.dir, "macos_aux.img"))) && !Arrays.equals(sha(new File(q2.dir, "macos_aux.img")), sha(new File(q, "macos_aux.img"))) && Arrays.equals(sha(new File(q2.dir, "macos_disk.img")), sha(new File(q1.dir, "macos_disk.img"))));
+        check("the source clone and the install pair are unchanged", snapshot(q).equals(snapPair) && snapshot(q1.dir).equals(snapC1));
+        check("the new clone passes validate (same marker format, no extra file)", G7Clone.validate(q2.dir, q, ECID) == null);
+        check("the origin is recorded outside the clone folder", new String(Files.readAllBytes(new File(q, "clone_origins.txt").toPath())).contains("clone-002 from=clone-001 source_state=in_progress"));
+        File bad = q1.dir; byte[] mb = Files.readAllBytes(new File(bad, "clone_state.txt").toPath()); Files.delete(new File(bad, "clone_state.txt").toPath());
+        G7Clone.Result q3 = G7Clone.cloneWith(true, () -> false, q, bad, ECID, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false);
+        check("an unfinished/invalid source clone is refused, nothing created", !q3.ok && clonesCount(q) == 2); Files.write(new File(bad, "clone_state.txt").toPath(), mb);
+        check("a source clone is refused for another ECID", !G7Clone.cloneWith(true, () -> false, q, q1.dir, ECID + 1, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false).ok && clonesCount(q) == 2);
         System.out.println(fails == 0 ? "G7CLONE OK" : "G7CLONE FAILED");
         System.exit(fails == 0 ? 0 : 1);
     }

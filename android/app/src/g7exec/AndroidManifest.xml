@@ -2,7 +2,20 @@
 <!-- The g7exec build type ONLY (merged over src/main). The general APK has no G7ExecActivity. The activity reads no Intent extras; it is a launcher entry of its own because
      nothing in the main app may name it. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Keep the process in the foreground-service state and the CPU awake while a clone boot runs (G7RunService). Nothing else. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application>
+        <service
+            android:name=".G7RunService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs a user-started virtual machine test; keeps the app out of the cached state while it runs" />
+        </service>
         <activity
             android:name=".G7ExecActivity"
             android:label="Henge G7 실행"

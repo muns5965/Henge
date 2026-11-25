@@ -50,6 +50,8 @@ public class G7ExecActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 7001);   // only so the foreground notice of a run is visible; the run works without it
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final File ext = new File(getExternalFilesDir(null), "vm"), priv = new File(getFilesDir(), "vm");
         final File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
@@ -150,7 +152,7 @@ public class G7ExecActivity extends Activity {
             boolean wasPending = restartPending;
             restartPending = false; restartClone = null; restartGen++;
             G7CloneBoot.Run r = G7CloneBoot.current();
-            if (wasPending) { cbtn.setEnabled(true); cbStop.setEnabled(false); status.setText("예약된 자동 재시작을 취소했습니다."); }
+            if (wasPending) { cbtn.setEnabled(true); cbStop.setEnabled(false); G7RunService.stop(this); status.setText("예약된 자동 재시작을 취소했습니다."); }
             else if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); }
         });
         cbShare.setOnClickListener(v -> {   // the file on disk, not the Run object: still works after the app was restarted
@@ -320,7 +322,7 @@ public class G7ExecActivity extends Activity {
                     status.setText(st.message);
                     if (st.started) {
                         restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartSeconds = seconds; restartPending = false;
-                        cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll();
+                        cbtn.setEnabled(false); cbStop.setEnabled(true); G7RunService.start(this); cbootPoll();
                     }
                 }).show();
     }
@@ -342,7 +344,7 @@ public class G7ExecActivity extends Activity {
         restartPending = false;
         G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb, restartSeconds);
         status.setText("자동 재시작: " + st.message);
-        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
+        if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); G7RunService.start(this); cbootPoll(); }
         else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
     }
 
@@ -371,7 +373,7 @@ public class G7ExecActivity extends Activity {
                     restartPending = true; final int gen = ++restartGen;
                     cbtn.setEnabled(false); cbStop.setEnabled(true);   // while waiting: no second start, and the stop button cancels the restart
                     log.postDelayed(() -> restartCloneBoot(gen), d.delayMs);
-                } else restartClone = null;
+                } else { restartClone = null; G7RunService.stop(this); }
             }
             status.setText(msg);
             return;

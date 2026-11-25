@@ -1,0 +1,98 @@
+# S4 of docs/gpu-research/implementation-plan.md: does libapplegfx-vulkan (MIT, pinned SHA) compile for Android arm64 (NDK r27c, API 30)
+# WITH the real Vulkan path, not the no-op stub path? Nothing runs on the runner and nothing here is linked into the Henge APK yet.
+# Runs by hand, and when this file itself changes on research/android-port (not on every push): it reads a different repository.
+name: Android GPU S4 (libapplegfx-vulkan NDK build)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - .github/workflows/android-gpu-s4.yml
+
+env:
+  NDK_VERSION: r27c
+  LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
+  LAGFX_SHA: 7574eac0d7396a9f49366f007c7fbeb44245826c
+
+jobs:
+  s4:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install meson, ninja and the Android NDK
+        run: |
+          pip install --break-system-packages meson ninja 2>&1 | tail -1
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Fetch the pinned source
+        run: |
+          git clone -q "$LAGFX_REPO" lagfx
+          git -C lagfx checkout -q "$LAGFX_SHA"
+          git -C lagfx rev-parse HEAD
+      - name: Cross file and a pkg-config entry for the NDK's own libvulkan
+        run: |
+          TC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+          SYS="$TC/sysroot"
+          LIBDIR="$SYS/usr/lib/aarch64-linux-android/30"
+          test -f "$LIBDIR/libvulkan.so" && test -f "$SYS/usr/include/vulkan/vulkan.h" || { echo "NDK has no libvulkan/vulkan.h at the expected place"; find "$SYS" -name 'libvulkan*' | head; exit 1; }
+          mkdir -p pc
+          cat > pc/vulkan.pc <<EOF
+          Name: vulkan
+          Description: NDK Vulkan loader
+          Version: 1.1.0
+          Libs: -L$LIBDIR -lvulkan
+          Cflags: -I$SYS/usr/include
+          EOF
+          sed -i 's/^ *//' pc/vulkan.pc
+          cat > android-arm64.ini <<EOF
+          [binaries]
+          c = '$TC/bin/aarch64-linux-android30-clang'
+          ar = '$TC/bin/llvm-ar'
+          strip = '$TC/bin/llvm-strip'
+          pkg-config = 'pkg-config'
+          [built-in options]
+          c_link_args = ['-llog']
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8-a'
+          endian = 'little'
+          [properties]
+          needs_exe_wrapper = true
+          EOF
+          sed -i 's/^ *//' android-arm64.ini
+      - name: Configure and build (library only, tests off)
+        run: |
+          cd lagfx
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/pc" meson setup ../build-s4 --cross-file ../android-arm64.ini -Dtests=false 2>&1 | tee ../meson-setup.log | tail -40
+          grep -E "Vulkan found|Vulkan not found" ../meson-setup.log || true
+          ninja -C ../build-s4 2>&1 | tee ../ninja.log | tail -40
+      - name: Report (the real Vulkan path is in only if this says so)
+        run: |
+          {
+            echo "## S4 result"
+            echo "- pinned: $(git -C lagfx rev-parse HEAD)"
+            grep -E "Vulkan found|Vulkan not found" meson-setup.log | sed 's/^/- meson: /'
+            echo "- compile flag LAGFX_HAVE_VULKAN in compile_commands: $(grep -c LAGFX_HAVE_VULKAN build-s4/compile_commands.json || true) entries"
+            SO=$(find build-s4 -name 'libapplegfx-vulkan.so*' -type f | head -1)
+            echo "- shared library: ${SO:-NOT BUILT}"
+            if [ -n "$SO" ]; then
+              file "$SO"
+              echo "- NEEDED: $(readelf -d "$SO" | grep NEEDED | tr -s ' ' | tr '\n' ' ')"
+              echo "- undefined vk* symbols: $(nm -D --undefined-only "$SO" | grep -c ' vk')"
+              echo "- exported lagfx_* symbols: $(nm -D --defined-only "$SO" | grep -c ' lagfx_')"
+            fi
+            echo "- warnings: $(grep -c 'warning:' ninja.log || true), errors: $(grep -c 'error:' ninja.log || true)"
+          } | tee report.md >> "$GITHUB_STEP_SUMMARY"
+          test -n "$(find build-s4 -name 'libapplegfx-vulkan.so*' -type f)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-s4-report
+          path: |
+            report.md
+            meson-setup.log
+            ninja.log

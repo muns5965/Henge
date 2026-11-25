@@ -22,7 +22,7 @@ jobs:
       - name: Host AIR translator and Vulkan dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build libvulkan-dev mesa-vulkan-drivers spirv-tools
+          sudo apt-get install -y meson ninja-build libvulkan-dev mesa-vulkan-drivers spirv-tools glslang-tools
           git clone https://github.com/muns5965/libapplegfx-vulkan.git /tmp/lagfx
           git -C /tmp/lagfx checkout 7574eac0d7396a9f49366f007c7fbeb44245826c
           meson setup /tmp/lagfx/build /tmp/lagfx -Dtests=false
@@ -82,6 +82,49 @@ jobs:
           test "$rc" = 1
           grep 'A5 RESULT: FAIL' /tmp/host-negative.txt
           grep 'A4 RESULT: PASS' /tmp/host-negative.txt
+      - name: Compile and verify stages 2–4 on lavapipe
+        run: |
+          cat > /tmp/full.vert <<'EOF'
+          #version 450
+          void main(){vec2 p=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2);gl_Position=vec4(p*2.0-1.0,0,1);}
+          EOF
+          cat > /tmp/texture.frag <<'EOF'
+          #version 450
+          layout(set=0,binding=0) uniform sampler2D tex;
+          layout(location=0) out vec4 color;
+          void main(){color=texture(tex,gl_FragCoord.xy/64.0);}
+          EOF
+          cat > /tmp/blend.frag <<'EOF'
+          #version 450
+          layout(push_constant) uniform PC {vec4 value;} pc;
+          layout(location=0) out vec4 color;
+          void main(){color=pc.value;}
+          EOF
+          cat > /tmp/half.frag <<'EOF'
+          #version 450
+          layout(location=0) out vec4 color;
+          void main(){color=vec4(floor(gl_FragCoord.x/16.0)*0.25,floor(gl_FragCoord.y/16.0)*0.25,1.5,1.0);}
+          EOF
+          glslangValidator -V /tmp/full.vert -o /tmp/gpu-assets/full.spv
+          for name in texture blend half; do
+            glslangValidator -V "/tmp/$name.frag" -o "/tmp/gpu-assets/$name.spv"
+            spirv-val --target-env vulkan1.0 "/tmp/gpu-assets/$name.spv"
+          done
+          spirv-val --target-env vulkan1.0 /tmp/gpu-assets/full.spv
+          gcc -std=c11 -O2 -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o /tmp/stages
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name '*lvp*.json' | head -1)"
+          for pair in 2:texture 3:blend 4:half; do
+            stage=${pair%:*}; shader=${pair#*:}
+            GPU_TEST_OUTPUT=/tmp/stage-$stage.bgra /tmp/stages "$stage" /tmp/gpu-assets/full.spv "/tmp/gpu-assets/$shader.spv" | tee "/tmp/stage-$stage.txt"
+            grep "STAGE $stage RESULT: PASS" "/tmp/stage-$stage.txt"
+            test "$(stat -c%s /tmp/stage-$stage.bgra)" = 16384
+            set +e
+            GPU_TEST_NO_DRAW=1 /tmp/stages "$stage" /tmp/gpu-assets/full.spv "/tmp/gpu-assets/$shader.spv" > "/tmp/stage-$stage-negative.txt"
+            rc=$?
+            set -e
+            test "$rc" = 1
+            grep "STAGE $stage RESULT: FAIL" "/tmp/stage-$stage-negative.txt"
+          done
       - name: Build arm64 executable and standalone APK
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -91,9 +134,10 @@ jobs:
           P=/tmp/gpu-app
           mkdir -p "$P/src/main/java/dev/muns/hengegputest" "$P/src/main/jniLibs/arm64-v8a" "$P/src/main/assets"
           cp tests/gpu-android-gpt/MainActivity.java "$P/src/main/java/dev/muns/hengegputest/"
-          cp /tmp/gpu-assets/{triangle_vertex.spv,triangle_fragment.spv,provenance.txt} "$P/src/main/assets/"
+          cp /tmp/gpu-assets/{triangle_vertex.spv,triangle_fragment.spv,full.spv,texture.spv,blend.spv,half.spv,provenance.txt} "$P/src/main/assets/"
           cp /tmp/lagfx/LICENSE "$P/src/main/assets/libapplegfx-LICENSE.txt"
           "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
           "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           cat > "$P/settings.gradle" <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
@@ -105,13 +149,13 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest'; minSdk 30; targetSdk 34; versionCode 1; versionName '1.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
-            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so'] } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.v2'; minSdk 30; targetSdk 34; versionCode 2; versionName '2.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT GPU Test" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT GPU Test 4" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>
@@ -121,7 +165,7 @@ jobs:
           cp "$P/build/outputs/apk/debug/"*.apk /tmp/gpu-publish/henge-gpt-gpu-test.apk
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify /tmp/gpu-publish/henge-gpt-gpu-test.apk
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging /tmp/gpu-publish/henge-gpt-gpu-test.apk | head -5
-          cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/gpu-publish/
+          cp /tmp/gpu-assets/provenance.txt /tmp/host-positive.txt /tmp/host-negative.txt /tmp/stage-*.txt /tmp/gpu-publish/
       - uses: actions/upload-artifact@v4
         with:
           name: henge-gpt-gpu-test-apk

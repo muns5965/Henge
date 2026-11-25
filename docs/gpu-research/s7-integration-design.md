@@ -29,7 +29,13 @@ device; that is not what it offers today.
    that rang. `hv_gicv3_pend` and `hv_dma_written` from a foreign thread must be shown safe (device lock rules in `core/machine.h`).
 4. **Guest speed.** The 2026-11-25 device runs show the guest nearly stopped after ~60 s (memory swapped out). Until a run shows the guest sending
    GPU work, the library cannot be observed doing anything. The foreground-service change (`G7RunService`) is the first thing to read in the next log.
-5. **Licence (G0).** The library is MIT; Henge is GPL-2.0-or-later (compatible direction). The shader-translation projects are a separate question.
+5. **Process creation inside the library (found by the S4 static-library check).** The static library imports `system`/`popen`:
+   `system("mkdir -p /tmp/lagfx-passes")` (display.c:122), `/tmp/lagfx-binds*` (draw_emit.c:1180, draw_descriptors.c:609: debug dumps) and
+   `popen("which llc ...")` (air2spirv/shader_translate.c:80: looks for an external LLVM tool). The clone runner's own safety check
+   (`tools/check-runner-vm-clone-safe.sh`) refuses process creation in the runner binary, and Android has no `/tmp` or `llc`. Before linking, those
+   calls must be removed or compiled out in the library (a patch to the fork, or the on-device translator of the GPU test branch instead of
+   shader_translate.c). Until then the library does not belong in the runner.
+6. **Licence (G0).** The library is MIT; Henge is GPL-2.0-or-later (compatible direction). The shader-translation projects are a separate question.
 
 ## Not done
 No wiring in `pvg_lite.c`, no CMake, no runner link, no run. Do not read the S4 "compiled with the real Vulkan path" result as "the guest can draw".

@@ -96,7 +96,7 @@ grep -q 'hv_runner_make_config(&cfg, rom, cl.disk, cl.aux,' $R || bad "$R: the m
 grep -q 'flock(c->dirfd, LOCK_EX | LOCK_NB)' $H || bad "$H: the clone folder must be locked"
 grep -q '/proc/self/fd/%d' $H || bad "$H: the checked files must be handed over as descriptor paths"
 grep -q 'hv_clone_ecid_tag(ecid, tag)' $H || bad "$H: the ECID tag must be computed here"
-[ "$(grep -c 'char reason_txt\[160\];' $R)" = 1 ] && [ "$(grep -n 'char reason_txt\[160\];' $R | cut -d: -f1)" -lt "$(grep -n 'for (;;) {' $R | tail -1 | cut -d: -f1)" ] || bad "$R: the stop-reason text must outlive the loop (declared before it)"
+[ "$(grep -c 'char reason_txt\[700\];' $R)" = 1 ] && [ "$(grep -n 'char reason_txt\[700\];' $R | cut -d: -f1)" -lt "$(grep -n 'for (;;) {' $R | tail -1 | cut -d: -f1)" ] || bad "$R: the stop-reason text must outlive the loop (declared before it)"
 l6=$(grep -n 'hv_vm_start(1' $R | head -1 | cut -d: -f1); l7=$(grep -n 'hv_vm_start_failed()' $R | head -1 | cut -d: -f1); l8=$(grep -n 'hv_shm_set_state(g_shm, HV_SHM_RUNNING)' $R | head -1 | cut -d: -f1)
 { [ -n "$l6" ] && [ -n "$l7" ] && [ -n "$l8" ] && [ "$l6" -lt "$l7" ] && [ "$l7" -lt "$l8" ]; } || bad "$R: hv_vm_start_failed() must be checked right after hv_vm_start and before the state becomes RUNNING"
 grep -q 'hv_vm_flush_disks_checked()' $R || bad "$R: the disk flush result must be checked (hv_vm_flush_disks_checked)"

@@ -41,7 +41,7 @@ jobs:
           sha256sum "$AIR" triangle_vertex.spv triangle_fragment.spv >> provenance.txt
           cat /tmp/translation.txt /tmp/stub.txt >> provenance.txt
           for f in triangle_vertex.spv triangle_fragment.spv; do
-            if spirv-val --target-env vulkan1.0 "$f" > /tmp/val.txt 2>&1; then echo "spirv-val $f PASS" >> provenance.txt; else echo "spirv-val $f FAIL (experimental input)" >> provenance.txt; cat /tmp/val.txt >> provenance.txt; fi
+            if spirv-val --target-env vulkan1.2 "$f" > /tmp/val.txt 2>&1; then echo "spirv-val $f PASS" >> provenance.txt; else echo "spirv-val $f FAIL (experimental input)" >> provenance.txt; cat /tmp/val.txt >> provenance.txt; fi
           done
       - name: Adapt existing triangle harness (real readback + negative control)
         run: |
@@ -52,6 +52,8 @@ jobs:
               global s
               assert s.count(old)==1,old
               s=s.replace(old,new)
+          replace('app.apiVersion = VK_API_VERSION_1_0;', 'uint32_t loader=VK_API_VERSION_1_0; PFN_vkEnumerateInstanceVersion version=(PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(NULL,"vkEnumerateInstanceVersion"); if(version) version(&loader); if(loader<VK_API_VERSION_1_2){fprintf(stderr,"Vulkan 1.2 loader required\\n");return 2;} app.apiVersion=VK_API_VERSION_1_2;')
+          replace('printf("device: %s (type=%d)\\n", props.deviceName, (int)props.deviceType);','printf("device: %s (type=%d), API %u.%u\\n", props.deviceName,(int)props.deviceType,VK_VERSION_MAJOR(props.apiVersion),VK_VERSION_MINOR(props.apiVersion)); if(props.apiVersion<VK_API_VERSION_1_2)return 2;')
           replace('vkCmdDraw(cb, 3, 1, 0, 0);','if (!getenv("GPU_TEST_NO_DRAW")) vkCmdDraw(cb, 3, 1, 0, 0);')
           replace('vkCmdEndRenderPass(cb);','''vkCmdEndRenderPass(cb);
               VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -138,6 +140,40 @@ jobs:
           cp /tmp/lagfx/LICENSE "$P/src/main/assets/libapplegfx-LICENSE.txt"
           "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie /tmp/draw_android.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -Idevices tests/gpu-android-gpt/stages.c -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libgpustages.so"
+          # Cross-build the pinned external library with real Vulkan, not the no-op path.
+          SYS="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          mkdir -p /tmp/android-pc
+          cat > /tmp/android-pc/vulkan.pc <<EOF
+          Name: Vulkan
+          Description: Android NDK Vulkan loader
+          Version: 1.3.0
+          Libs: -L$SYS/usr/lib/aarch64-linux-android/30 -lvulkan
+          Cflags: -I$SYS/usr/include
+          EOF
+          cat > /tmp/android-cross.ini <<EOF
+          [binaries]
+          c = '$T/aarch64-linux-android30-clang'
+          ar = '$T/llvm-ar'
+          strip = '$T/llvm-strip'
+          pkg-config = 'pkg-config'
+          [properties]
+          pkg_config_libdir = '/tmp/android-pc'
+          needs_exe_wrapper = true
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+          EOF
+          meson setup /tmp/lagfx/android-build /tmp/lagfx --cross-file /tmp/android-cross.ini -Dtests=false
+          grep -F 'Vulkan found' /tmp/lagfx/android-build/meson-logs/meson-log.txt
+          ninja -C /tmp/lagfx/android-build libapplegfx-vulkan.a
+          A=/tmp/lagfx/android-build/libapplegfx-vulkan.a
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_probe.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libairprobe.so"
+          "$T/aarch64-linux-android30-clang" -std=c11 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include tests/gpu-validation/air2spv_stub_compare.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libstubcompare.so"
+          cp /tmp/lagfx/examples/triangle/out/triangle.air "$P/src/main/assets/"
+          python3 tests/gpu-android-gpt/adapt_engine.py /tmp/lagfx/tests/vulkan-render.c /tmp/engine-test.c
+          "$T/aarch64-linux-android30-clang" -std=c11 -D_GNU_SOURCE -DLAGFX_HAVE_VULKAN=1 -O2 -fPIE -pie -I/tmp/lagfx/src -I/tmp/lagfx/include /tmp/engine-test.c "$A" -lvulkan -lm -o "$P/src/main/jniLibs/arm64-v8a/libenginetest.so"
           "$T/llvm-readelf" -h "$P/src/main/jniLibs/arm64-v8a/libgputest.so"
           cat > "$P/settings.gradle" <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
@@ -149,13 +185,13 @@ jobs:
           android {
             namespace 'dev.muns.hengegputest'
             compileSdk 34
-            defaultConfig { applicationId 'dev.muns.hengegputest.v2'; minSdk 30; targetSdk 34; versionCode 2; versionName '2.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
-            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so'] } }
+            defaultConfig { applicationId 'dev.muns.hengegputest.v3'; minSdk 30; targetSdk 34; versionCode 3; versionName '3.0-gpt'; ndk { abiFilters 'arm64-v8a' } }
+            packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libgputest.so','**/libgpustages.so','**/libairprobe.so','**/libstubcompare.so','**/libenginetest.so'] } }
           }
           EOF
           cat > "$P/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:label="Henge GPT GPU Test 4" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <application android:label="Henge GPT GPU Test 6" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
             </application>
           </manifest>

@@ -52,6 +52,46 @@ def adapt(src):
         text=text.replace('((uint64_t*)payload)[1][0]','((uint64_t*)payload)[1]').replace('((uint64_t*)payload)[1][1]','((uint64_t*)payload)[2]')
     # Bind the real disassembler rather than relying on Android shell PATH.
     text=text.replace('"/opt/homebrew/bin/spirv-dis",','getenv("LAGFX_ANDROID_SPIRV_DIS") ? getenv("LAGFX_ANDROID_SPIRV_DIS") : "/opt/homebrew/bin/spirv-dis",')
+    if src=='air2spv-translate-function-binop-unop-unit.c':
+        text=text.replace('#include "air2spv/translate.h"', '#include "air2spv/translate.h"\n#include "air2spv/translate_function.h"')
+        a=text.index('static int test_unop_vfx_emits_fnegate(void)')
+        b=text.index('/* CAST dispatch test:',a)
+        text=text[:a]+r'''
+static int test_unop_vfx_emits_fnegate(void) {
+    size_t n=0; uint8_t *air=slurp("tests/fixtures/login_xgc_frag.air.bc",&n);
+    lagfx_air_module_t *m=NULL;
+    if(!air || lagfx_air_module_open(air,n,&m)!=LAGFX_OK || !m){free(air);return 1;}
+    const unsigned indices[]={21,32,44}, expected[]={1,1,13};
+    uint32_t nf=0; const lagfx_air_function_t *fn=lagfx_air_module_functions(m,&nf);
+    int bad=0;
+    for(unsigned k=0;k<3;k++){
+        unsigned i=indices[k], in=0,out=0; uint32_t ni=0;
+        lagfx_air_function_body_t *body=NULL;
+        if(!fn || i>=nf || fn[i].is_proto || lagfx_air_function_body_open(m,i,&body)!=LAGFX_OK || !body){bad=1;continue;}
+        const lagfx_air_inst_t *ins=lagfx_air_function_body_instructions(body,&ni);
+        for(uint32_t j=0;ins && j<ni;j++)
+            if(ins[j].raw_code==56 && ins[j].num_ops>=2 && ins[j].ops[1]==0)in++;
+        lagfx_air_function_body_free(body);
+        uint8_t *spv=NULL;size_t sz=0;
+        int ok=lagfx_air2spv_translate_function(m,i,LAGFX_XLATE_STAGE_FRAGMENT,&spv,&sz)==LAGFX_OK && spv && sz>=20 && sz%4==0;
+        if(ok){
+            const uint32_t *w=(const uint32_t*)spv;
+            ok=w[0]==SPV_MAGIC;
+            for(size_t j=5;ok && j<sz/4;){
+                unsigned wc=w[j]>>16;
+                if(!wc || wc>sz/4-j){ok=0;break;}
+                if((w[j]&65535)==127)out++;
+                j+=wc;
+            }
+        }
+        ok=ok && in==expected[k] && out==in && spirv_val(spv,sz)==1;
+        printf("%s: Xgc fn=%u AIR FNeg=%u SPIR-V FNegate=%u expected=%u\n",ok?"PASS":"FAIL",i,in,out,expected[k]);
+        bad|=!ok;free(spv);
+    }
+    lagfx_air_module_free(m);free(air);return bad;
+}
+'''+text[b:]
+        text=text.replace('BINOP/UNOP handlers exercised;','triangle translation smoke;')
     if src=='handler-memory.c':
         text=text.replace('lagfx_memory_define_child_fifo(', 'lagfx_op_define_child_fifo(').replace('lagfx_memory_map_memory_immediate(', 'lagfx_op_map_memory_immediate(')
         # The immediate command is packed: u32 then two u64, not aligned u64 array.

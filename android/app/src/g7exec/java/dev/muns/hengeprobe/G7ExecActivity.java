@@ -312,7 +312,7 @@ public class G7ExecActivity extends Activity {
         final List<File> clones = G7CloneBoot.listValid(privDir);
         if (clones.isEmpty()) { status.setText("복제 원본으로 쓸 검증된 복제본이 없습니다."); return; }
         final String[] names = new String[clones.size()];
-        for (int i = 0; i < names.length; i++) names[i] = clones.get(i).getName();
+        for (int i = 0; i < names.length; i++) names[i] = G7CloneHistory.label(getFilesDir(), privDir, clones.get(i));
         new AlertDialog.Builder(this).setTitle("복제할 기존 복제본 고르기")
                 .setItems(names, (d, which) -> {
                     final File from = clones.get(which);
@@ -346,7 +346,7 @@ public class G7ExecActivity extends Activity {
             return;
         }
         final String[] names = new String[clones.size()];
-        for (int i = 0; i < names.length; i++) names[i] = clones.get(i).getName();
+        for (int i = 0; i < names.length; i++) names[i] = G7CloneHistory.label(getFilesDir(), privDir, clones.get(i));
         final int[] pick = {0};
         final CheckBox ok = new CheckBox(this); ok.setText("선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의합니다(원본은 쓰지 않음).");
         ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);

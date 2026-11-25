@@ -41,6 +41,8 @@ java -cp "$O9" dev.muns.hengeprobe.G7CloneBootTest; R9=$?
 java -cp "$O9" dev.muns.hengeprobe.G7BootStageTest; R10=$?
 javac -encoding UTF-8 -d "$O9" $X/G7AuxCompare.java $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7AuxCompareTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2>> "$O9/javac.log" || { echo "FAILED javac (auxcompare)"; head -30 "$O9/javac.log"; exit 1; }
 java -cp "$O9" dev.muns.hengeprobe.G7AuxCompareTest || R10=1
+javac -encoding UTF-8 -d "$O9" $X/G7CloneHistory.java $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7CloneHistoryTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2>> "$O9/javac.log" || { echo "FAILED javac (clonehistory)"; head -30 "$O9/javac.log"; exit 1; }
+java -cp "$O9" dev.muns.hengeprobe.G7CloneHistoryTest || R10=1
 java -cp "$O9" dev.muns.hengeprobe.G7CloneMonitorTest || R10=1
 java -cp "$O9" dev.muns.hengeprobe.G7RestartPolicyTest || R10=1
 [ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ] && [ $R9 = 0 ] && [ $R10 = 0 ]

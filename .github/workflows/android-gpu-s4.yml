@@ -86,7 +86,7 @@ jobs:
               echo "- exported lagfx_* symbols: $(nm -D --defined-only "$SO" | grep -c ' lagfx_')"
             fi
             echo "- warnings: $(grep -c 'warning:' ninja.log || true), errors: $(grep -c 'error:' ninja.log || true)"
-          } | tee report.md >> "$GITHUB_STEP_SUMMARY"
+          } | tee report.md | tee -a "$GITHUB_STEP_SUMMARY"
           test -n "$(find build-s4 -name 'libapplegfx-vulkan.so*' -type f)"
       - uses: actions/upload-artifact@v4
         if: always()

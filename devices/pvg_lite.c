@@ -1118,7 +1118,12 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->tally = getenv("HV_PVG_TALLY") != NULL;
 #ifdef HV_WITH_LAGFX
     /* Opt-in only: built with HV_WITH_LAGFX AND HV_PVG_LAGFX set AND the library accepts the device. Anything else keeps the path below, byte for byte. */
+#ifdef HV_PVG_LAGFX_DEFAULT_ON
+    /* The lagfx-only clone runner: it scrubs every HV_* variable from its environment at start, so the switch cannot be an HV_ variable there; the build itself says "on". */
+    if (1) {
+#else
     if (getenv("HV_PVG_LAGFX")) {
+#endif
         const char *why = NULL;
         p->lagfx = hv_pvg_lagfx_create(m, gic, gfx_irq, &why);
         if (p->lagfx) {

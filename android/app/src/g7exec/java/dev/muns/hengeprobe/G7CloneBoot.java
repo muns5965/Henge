@@ -34,7 +34,31 @@ public final class G7CloneBoot {
     static final long STATUS_EVERY_MS = 30_000, STOP_WAIT_MS = 15_000;
 
     interface Spawner { Process spawn(List<String> command) throws IOException; }
-    private static final Spawner REAL = c -> new ProcessBuilder(c).redirectErrorStream(true).start();
+    private static final Spawner REAL = c -> {
+        ProcessBuilder pb = new ProcessBuilder(c).redirectErrorStream(true);
+        lagfxEnv(pb.environment(), c);
+        return pb.start();
+    };
+
+    static final String LAGFX_LOG_PREFIX = "g7_lagfx_";
+    /** Two LAGFX_ variables for the lagfx build of the runner (libapplegfx-vulkan reads them; the normal runner ignores them, and the runner removes only HV_* ones): the log goes to its own file next to the run
+     *  log, and at trace level (the guest's GPU commands). Not an HV_ name, so the runner's scrub does not touch it. The folder comes from the --shm path, which is always in the app's files folder. */
+    static void lagfxEnv(java.util.Map<String, String> env, List<String> cmd) {
+        int i = cmd.indexOf("--shm");
+        if (i < 0 || i + 1 >= cmd.size()) return;
+        File dir = new File(cmd.get(i + 1)).getParentFile();
+        if (dir == null) return;
+        env.put("LAGFX_LOG_LEVEL", "trace");
+        env.put("LAGFX_LOG_FILE", new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt").getPath());
+    }
+
+    /** The newest lagfx log on disk (g7_lagfx_*.txt), or null. */
+    public static File newestLagfxLog(File filesDir) {
+        File[] l = filesDir.listFiles((d, n) -> n.matches("g7_lagfx_[0-9]{13}\\.txt"));
+        if (l == null || l.length == 0) return null;
+        Arrays.sort(l);
+        return l[l.length - 1];
+    }
 
     public static final class Start {
         public final boolean started; public final String message; public final Run run;

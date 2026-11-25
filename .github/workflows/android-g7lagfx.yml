@@ -1,0 +1,151 @@
+# .github/workflows/android-g7lagfx.yml
+#
+# The G7 START APK with the guest's GPU window handed to libapplegfx-vulkan (step 2-5 of the lagfx plan, docs/gpu-research/s7-integration-design.md). A SEPARATE workflow and artifact:
+# android-g7exec.yml, the general APK workflow and their binaries are not touched, and nothing here runs on their pushes.
+#   - libapplegfx-vulkan is built from a PINNED commit as a static library with -DLAGFX_NO_PROCESS (no system()/popen() call in it; checked with nm);
+#   - the clone-boot runner is linked with it and the Android Vulkan loader (tools/lagfx-clone-build.sh) and passes the lagfx copy of the static safety check (the one allowed addition: libvulkan.so);
+#   - the app (g7start build type, same package and key: it installs OVER the app and keeps ROM, ECID and clones) puts the library's trace log into its own file, g7_lagfx_<ms>.txt, shared with a button.
+# Link + static checks only: nothing is run on CI. A push builds and checks; the installable switch-ON APK is PUBLISHED only by a manual run with publish_start=true (explicit approval), as for android-g7exec.yml.
+name: Android G7 lagfx APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_start:
+        description: "Publish the switch-ON lagfx start APK (explicit approval only)"
+        type: boolean
+        default: false
+  push:
+    branches:
+      - research/android-port
+    paths:
+      - .github/workflows/android-g7lagfx.yml
+      - tools/lagfx-clone-build.sh
+      - tools/check-runner-vm-clone-lagfx-safe.sh
+      - devices/pvg_lagfx.*
+
+env:
+  NDK_VERSION: r27c
+  LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
+  LAGFX_SHA: 08bb533d38cb429aa5977b51b2a60feeb87a766e   # branch research/android-no-process: the library plus the optional LAGFX_NO_PROCESS
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install the Android NDK
+        run: |
+          curl -fsSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q ndk.zip -d "$HOME"
+          echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Build libapplegfx-vulkan (pinned) as a static library WITHOUT process-start calls
+        run: |
+          pip install --break-system-packages meson ninja 2>&1 | tail -1
+          git clone -q "$LAGFX_REPO" lagfx
+          git -C lagfx checkout -q "$LAGFX_SHA"
+          test "$(git -C lagfx rev-parse HEAD)" = "$LAGFX_SHA"
+          TC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+          SYS="$TC/sysroot"
+          LIBDIR="$SYS/usr/lib/aarch64-linux-android/34"
+          test -f "$LIBDIR/libvulkan.so" && test -f "$SYS/usr/include/vulkan/vulkan.h" || { echo "NDK has no libvulkan/vulkan.h at the expected place"; exit 1; }
+          echo "VULKAN_LIBDIR=$LIBDIR" >> "$GITHUB_ENV"
+          mkdir -p pc
+          printf 'Name: vulkan\nDescription: NDK Vulkan loader\nVersion: 1.1.0\nLibs: -L%s -lvulkan\nCflags: -I%s\n' "$LIBDIR" "$SYS/usr/include" > pc/vulkan.pc
+          printf "[binaries]\nc = '%s'\nar = '%s'\nstrip = '%s'\npkg-config = 'pkg-config'\n[built-in options]\nc_link_args = ['-llog']\n[host_machine]\nsystem = 'android'\ncpu_family = 'aarch64'\ncpu = 'armv8-a'\nendian = 'little'\n[properties]\nneeds_exe_wrapper = true\n" "$TC/bin/aarch64-linux-android34-clang" "$TC/bin/llvm-ar" "$TC/bin/llvm-strip" > android-arm64.ini
+          cd lagfx
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/pc" meson setup ../build-lagfx --cross-file ../android-arm64.ini -Dtests=false -Dc_args=-DLAGFX_NO_PROCESS 2>&1 | tee ../meson-setup.log | tail -30
+          grep -q "Vulkan found" ../meson-setup.log || { echo "the real Vulkan path is not in this build"; exit 1; }
+          ninja -C ../build-lagfx 2>&1 | tail -15
+          A=$(find ../build-lagfx -name 'libapplegfx-vulkan.a' -type f | head -1)
+          test -n "$A" || { echo "no static library"; exit 1; }
+          echo "LAGFX_A=$(realpath "$A")" >> "$GITHUB_ENV"
+          echo "LAGFX_DIR=$GITHUB_WORKSPACE/lagfx" >> "$GITHUB_ENV"
+          grep -c "LAGFX_NO_PROCESS" ../build-lagfx/compile_commands.json | sed 's/^/compile commands with LAGFX_NO_PROCESS: /'
+      - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
+        run: |
+          bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-diag-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh tools/lagfx-clone-build.sh tools/check-runner-vm-clone-lagfx-safe.sh
+          tools/check-g7exec-launcher-source.sh
+          tools/check-g7exec-runner-stdout.sh
+          tools/g7-watch-test.sh
+          tools/g7-mem-test.sh
+          tools/g7-diag-test.sh
+          tools/g7-tssdiag-test.sh
+          tools/net-probe-test.sh build-netprobe-host
+          tools/clone-dir-test.sh
+          tools/g7-exec-launcher-test.sh build-g7exec-java
+      - name: Build the engine objects, the restore stack WITHOUT stop switches, and the G7 execution runner (link; NOT run)
+        run: |
+          command -v cmake > /dev/null || sudo apt-get install -y -qq cmake > /dev/null
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/engine-build.sh build-engine
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="-llog" tools/devices-build.sh build-engine
+          CC="$T/aarch64-linux-android30-clang" EXTRA_LIBS="" tools/restore-g7-build.sh build-rs-g7
+          tools/check-restore-g7-build.sh build-rs-g7
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/g7-runner-build.sh real build-g7exec build-engine build-rs-g7
+          "$T/llvm-readelf" -h build-g7exec/g7_runner_real | grep -E "Class|Machine|Type"
+          mkdir -p android/app/src/g7exec/jniLibs/arm64-v8a
+          cp build-g7exec/g7_runner_real android/app/src/g7exec/jniLibs/arm64-v8a/libg7runner.so
+          # the clone-boot runner (host/ui_runner_vm_clone.c): a normal boot of a verified CLONE, storage writable only there; a separate binary so the installed runner stays read-only. Link + static check, NOT run.
+          # the lagfx build of it (same file name, so the launcher is unchanged): gfx window -> libapplegfx-vulkan; link + the lagfx copy of the static check, NOT run
+          CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/lagfx-clone-build.sh build-engine build-lagfx-clone
+          cp build-lagfx-clone/ui_runner_vm_clone android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so
+          "$T/llvm-readelf" -d android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so | grep NEEDED
+          echo "- lagfx clone runner: linked with libapplegfx-vulkan $LAGFX_SHA (static, LAGFX_NO_PROCESS), NEEDED listed above, lagfx static check passed, NOT run" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
+        run: |
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$T/aarch64-linux-android30-clang" CURLTOOL_LIBS="" tools/curltool-build.sh build-netprobe-arm
+          TP=third_party
+          "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -D_GNU_SOURCE -Ihost -c host/net_probe.c -o build-netprobe-arm/net_probe.o
+          "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -w -D_GNU_SOURCE -Ihost -I$TP/curl_include -I$TP/mbedtls/include -c host/curl_mbedtls.c -o build-netprobe-arm/curl_ship.o
+          "$T/aarch64-linux-android30-clang" -o build-netprobe-arm/net_probe build-netprobe-arm/net_probe.o build-netprobe-arm/curl_ship.o build-netprobe-arm/obj/*.o -lm
+          "$T/llvm-readelf" -h build-netprobe-arm/net_probe | grep -E "Class|Machine|Type"
+          cp build-netprobe-arm/net_probe android/app/src/g7exec/jniLibs/arm64-v8a/libnetprobe.so
+      - name: Install SDK platform, build tools and CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/probe.keystore"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/probe.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a temporary key (it cannot install over the general app)."
+          fi
+      - name: Version code (shared rule, tools/ci-version-code.sh)
+        run: echo "HENGE_VERSION_CODE=$(tools/ci-version-code.sh)" >> "$GITHUB_ENV"
+      - name: Build the G7 start APK (switch ON; built and checked every run, published only on request)
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle -p android assembleG7start --no-daemon --stacktrace
+      - name: Check the APK (runner present as AArch64, launcher present)
+        run: |
+          ls -l android/app/build/outputs/apk/g7start/
+          READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh start android/app/build/outputs/apk/g7start/app-g7start.apk
+          echo "- G7 lagfx start APK: built and checked (switch ON marker, runner as AArch64); published: ${{ inputs.publish_start == true }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Show the start APK's package, versionCode and certificate (only when it is published)
+        if: ${{ inputs.publish_start == true }}
+        run: |
+          APK=android/app/build/outputs/apk/g7start/app-g7start.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | grep -E "^package:" | cut -c1-160
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish_start == true }}
+        with:
+          name: henge-g7-lagfx-apk
+          path: android/app/build/outputs/apk/g7start/app-g7start.apk

@@ -27,4 +27,4 @@ else
   echo "FAILED  link ui_runner_vm_clone"; grep -o "undefined reference to .*" "$OUT/uirvmc/link.log" | sort -u | head -30; head -30 "$OUT/uirvmc/link.log" | cut -c1-200; exit 1
 fi
 file "$OUT/ui_runner_vm_clone" 2>/dev/null || true
-EXPECT_ARCH=${EXPECT_ARCH-AArch64} tools/check-runner-vm-clone-safe.sh "$OUT/ui_runner_vm_clone"
+EXPECT_ARCH=${EXPECT_ARCH-AArch64} ${CLONE_SAFE_CHECK:-tools/check-runner-vm-clone-safe.sh} "$OUT/ui_runner_vm_clone"   # CLONE_SAFE_CHECK: only tools/lagfx-clone-build.sh sets it (the lagfx copy of the check, which also allows libvulkan.so)

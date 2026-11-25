@@ -44,6 +44,12 @@ public class G7CloneBootTest {
 
         java.util.function.IntSupplier none = () -> 0;
         Fake f0 = new Fake("", 0, false);
+        { java.util.Map<String, String> env = new java.util.HashMap<>();
+          G7CloneBoot.lagfxEnv(env, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+          check("lagfx env: trace level and a log file next to the run logs", "trace".equals(env.get("LAGFX_LOG_LEVEL")) && env.get("LAGFX_LOG_FILE") != null && env.get("LAGFX_LOG_FILE").startsWith(files.getPath() + "/g7_lagfx_") && new File(env.get("LAGFX_LOG_FILE")).getName().matches("g7_lagfx_[0-9]{13}\\.txt"));
+          java.util.Map<String, String> e2 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e2, java.util.Arrays.asList("/x/libg7cloneboot.so", "--rom", "/r"));
+          check("lagfx env: no --shm, nothing set", e2.isEmpty());
+          check("lagfx env: no HV_ variable (the runner removes those)", env.keySet().stream().noneMatch(k -> k.startsWith("HV_"))); }
         check("switch off: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, false, () -> false, lib, ext, priv, files, clone, true, none).started && spawned == 0);
         check("no consent: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, false, none).started && spawned == 0);
         check("a G7 run is live: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> true, lib, ext, priv, files, clone, true, none).started && spawned == 0);

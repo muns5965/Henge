@@ -31,7 +31,7 @@ import java.util.List;
 public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbFrame, auxBtn, cbCopy;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
@@ -124,6 +124,12 @@ public class G7ExecActivity extends Activity {
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
         cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유(전체 파일)"); root.addView(cbShare);
+        cbLagfx = new Button(this); cbLagfx.setText("lagfx(GPU) 로그 공유(전체 파일)"); root.addView(cbLagfx);
+        cbLagfx.setOnClickListener(v -> {   // g7_lagfx_*.txt exists only after a run of the lagfx build of the runner
+            File f = G7CloneBoot.newestLagfxLog(getFilesDir());
+            if (f == null) { status.setText("공유할 lagfx 로그 파일이 없습니다(g7_lagfx_*.txt 없음: lagfx 빌드로 복제본 부팅을 한 번 실행해야 생깁니다)."); return; }
+            try { shareFile(f, "lagfx 로그 공유"); } catch (RuntimeException e) { status.setText("lagfx 로그 공유 실패: " + e.getClass().getSimpleName() + " " + e.getMessage()); }
+        });
         cbCopy = new Button(this); cbCopy.setText("복제본 부팅 로그 끝부분 복사"); root.addView(cbCopy);
         add(root, "아래 상자는 '복제본 부팅'의 상태·로그입니다(복원 로그와 다름). 반복되는 USB 진단 줄은 화면에서만 묶어 보이며 로그 파일에는 모두 남습니다.", 12);
         cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE); cbMon.setTextIsSelectable(true);

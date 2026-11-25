@@ -203,6 +203,10 @@ public class G7ExecLauncherTest {
         // only run logs of the app can be handed out (by plain name)
         File okLog = G7ExecLauncher.newestLog(files7);
         check("logFile hands out a run log by its plain name", G7ExecLauncher.logFile(files7, okLog.getName()) != null);
+        File lg = new File(files7, "g7_lagfx_1795613674355.txt"); Files.write(lg.toPath(), "x".getBytes());
+        check("logFile hands out the lagfx log by its plain name", G7ExecLauncher.logFile(files7, lg.getName()) != null);
+        for (String badName : new String[] {"g7_lagfx_1.txt", "g7_lagfx_1795613674355.txt.bak", "lagfx.log", "../g7_lagfx_1795613674355.txt"})
+            check("logFile refuses '" + badName + "'", G7ExecLauncher.logFile(files7, badName) == null);
         for (String badName : new String[] {null, "", "../x", "g7_run_1.txt", okLog.getName() + "/../x", "g7_run_0000000000001.txt", "vm_ecid.txt", "g7_run_" + "0000000000001" + ".txt.bak"})
             check("logFile refuses '" + badName + "'", G7ExecLauncher.logFile(files7, badName) == null);
 

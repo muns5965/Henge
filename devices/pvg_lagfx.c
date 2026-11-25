@@ -17,11 +17,34 @@ struct HvPvgLagfx {
     char *error;
 };
 
+/* The guest hands the library addresses that can be below this machine's RAM (ring base 0x1e71d000 against RAM at 0x70000000). If the address has
+   no RAM behind it as given, try it as an offset from the start of RAM. The first few failures log both addresses so the log shows which one was
+   wrong. The address as given always wins when it works. */
+#define LAGFX_RAM_BASE 0x70000000ull
+static void *lagfx_ptr(HvPvgLagfx *g, uint64_t gpa, uint64_t length, uint64_t *used) {
+    void *p = hv_phys_ptr(g->m, gpa, length);
+    *used = gpa;
+    if (p) return p;
+    if (gpa < LAGFX_RAM_BASE) {
+        p = hv_phys_ptr(g->m, gpa + LAGFX_RAM_BASE, length);
+        if (p) {
+            static int shown;
+            if (shown < 8) { shown++; fprintf(stderr, "hengevm: lagfx: gpa %#llx has no RAM; using RAM-relative %#llx (len %llu)\n", (unsigned long long)gpa, (unsigned long long)(gpa + LAGFX_RAM_BASE), (unsigned long long)length); }
+            *used = gpa + LAGFX_RAM_BASE;
+            return p;
+        }
+    }
+    static int failed;
+    if (failed < 16) { failed++; fprintf(stderr, "hengevm: lagfx: gpa %#llx len %llu: no RAM as given nor as RAM-relative (%#llx)\n", (unsigned long long)gpa, (unsigned long long)length, (unsigned long long)(gpa + LAGFX_RAM_BASE)); }
+    return NULL;
+}
+
 /* Guest memory is reached through hv_phys_ptr(): a host pointer, or NULL for an address with no RAM behind it (or one that crosses the end of a region). */
 static bool cb_read_memory(void *opaque, uint64_t gpa, uint64_t length, void *dst) {
     HvPvgLagfx *g = opaque;
     if (!dst || length == 0) return length == 0;
-    const void *src = hv_phys_ptr(g->m, gpa, length);
+    uint64_t used;
+    const void *src = lagfx_ptr(g, gpa, length, &used);
     if (!src) return false;
     memcpy(dst, src, length);
     return true;
@@ -30,10 +53,11 @@ static bool cb_read_memory(void *opaque, uint64_t gpa, uint64_t length, void *ds
 static bool cb_write_memory(void *opaque, uint64_t gpa, uint64_t length, const void *srcbuf) {
     HvPvgLagfx *g = opaque;
     if (!srcbuf || length == 0) return length == 0;
-    void *dst = hv_phys_ptr(g->m, gpa, length);
+    uint64_t used;
+    void *dst = lagfx_ptr(g, gpa, length, &used);
     if (!dst) return false;
     memcpy(dst, srcbuf, length);
-    hv_dma_written(g->m, gpa, length);
+    hv_dma_written(g->m, used, length);
     return true;
 }
 
@@ -57,7 +81,8 @@ static bool cb_map_memory(void *opaque, lagfx_task_t *task, uint64_t virtual_off
     HvPvgLagfx *g = opaque;
     uint64_t at = virtual_offset;
     for (size_t i = 0; i < range_count; i++) {
-        void *host = hv_phys_ptr(g->m, ranges[i].guest_physical_address, ranges[i].length);
+        uint64_t used;
+        void *host = lagfx_ptr(g, ranges[i].guest_physical_address, ranges[i].length, &used);
         if (!host) return false;
         if (!lagfx_task_map_host_memory(task, at, host, ranges[i].length, read_only)) return false;
         at += ranges[i].length;

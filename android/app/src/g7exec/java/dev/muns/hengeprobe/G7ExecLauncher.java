@@ -450,7 +450,9 @@ public final class G7ExecLauncher {
         try { return isRunnerPath(Files.readSymbolicLink(exe.toPath()).toString()); } catch (IOException | RuntimeException e) { return false; }
     }
 
-    static boolean isRunnerPath(String p) { return p.equals(LIB_NAME) || p.endsWith("/" + LIB_NAME); }
+    /** The clone-boot runner (G7CloneBoot.LIB_NAME) counts as a runner too: a live one must block copying, isolating and deleting after the app itself was restarted and its in-memory state is gone. */
+    static final String CLONEBOOT_LIB_NAME = "libg7cloneboot.so";
+    static boolean isRunnerPath(String p) { return p.equals(LIB_NAME) || p.endsWith("/" + LIB_NAME) || p.equals(CLONEBOOT_LIB_NAME) || p.endsWith("/" + CLONEBOOT_LIB_NAME); }
 
     public static String summary(File filesDir, File privVmDir) {
         String ps = pairState(privVmDir);

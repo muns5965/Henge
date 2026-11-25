@@ -137,6 +137,13 @@ public class G7CloneTest {
         G7Clone.Result q3 = G7Clone.cloneWith(true, () -> false, q, bad, ECID, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false);
         check("an unfinished/invalid source clone is refused, nothing created", !q3.ok && clonesCount(q) == 2); Files.write(new File(bad, "clone_state.txt").toPath(), mb);
         check("a source clone is refused for another ECID", !G7Clone.cloneWith(true, () -> false, q, q1.dir, ECID + 1, () -> 0, SCAN, SIZER, () -> ENOUGH, () -> false).ok && clonesCount(q) == 2);
+        // a live clone-boot runner is recognised by its program name just like the install runner
+        check("isRunnerPath: both runner programs, nothing else", G7ExecLauncher.isRunnerPath("/data/app/x/lib/arm64/libg7cloneboot.so") && G7ExecLauncher.isRunnerPath("libg7cloneboot.so") && G7ExecLauncher.isRunnerPath("/x/libg7runner.so") && !G7ExecLauncher.isRunnerPath("/x/xlibg7cloneboot.so") && !G7ExecLauncher.isRunnerPath("/x/libother.so"));
+        // an origin record that cannot be written does not fail the copy, but the message says so
+        File ow = pair("in_progress"); Files.createDirectories(new File(ow, "clone_origins.txt").toPath());   // a folder where the file should be: the append fails
+        G7Clone.Result orr = run(true, false, ow, 0, SCAN, ENOUGH, () -> false);
+        check("origin record failure: the copy is ok and verified, with a warning: " + orr.message, orr.ok && orr.message.contains("경고") && G7Clone.validate(orr.dir, ow, ECID) == null);
+        check("origin record ok: no warning", !r.message.contains("경고") && !q2.message.contains("경고"));
         System.out.println(fails == 0 ? "G7CLONE OK" : "G7CLONE FAILED");
         System.exit(fails == 0 ? 0 : 1);
     }

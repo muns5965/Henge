@@ -152,8 +152,8 @@ public final class G7Clone {
                 created.remove(tmp);
                 Files.move(tmp.toPath(), new File(dir, MARKER).toPath());
                 created.add(new File(dir, MARKER));
-                recordOrigin(priv, dir.getName(), from == null ? "install-pair" : from.getName(), state);
-                return new Result(true, "복제본을 만들고 검증했습니다: " + dir.getName() + "(실제 " + G7Storage.fmt(alloc) + ", 출처 " + (from == null ? "설치 쌍" : from.getName()) + "). 원본은 읽기만 했습니다.", dir);
+                boolean recorded = recordOrigin(priv, dir.getName(), from == null ? "install-pair" : from.getName(), state);
+                return new Result(true, "복제본을 만들고 검증했습니다: " + dir.getName() + "(실제 " + G7Storage.fmt(alloc) + ", 출처 " + (from == null ? "설치 쌍" : from.getName()) + "). 원본은 읽기만 했습니다." + (recorded ? "" : "\n경고: 복제 출처를 clone_origins.txt에 기록하지 못했습니다(복제본 자체는 정상)."), dir);
             } catch (IOException | RuntimeException e) {
                 List<File> all = new ArrayList<>(partials); all.addAll(created); File tmpm = new File(dir, MARKER + ".tmp"); all.add(tmpm);
                 String cleaned = cleanup(dir, all);
@@ -162,12 +162,13 @@ public final class G7Clone {
         }
     }
 
-    /** One line per clone in priv/clone_origins.txt ("clone-007 from=clone-001 source_state=in_progress t=<ms>"). Outside the clone folder on purpose: validate() and the runner accept only the known files inside it. Best effort: never fails the copy. */
-    static void recordOrigin(File priv, String name, String from, String state) {
+    /** One line per clone in priv/clone_origins.txt ("clone-007 from=clone-001 source_state=in_progress t=<ms>"). Outside the clone folder on purpose: validate() and the runner accept only the known files inside it. Best effort: a failure does not fail the copy, but the result message says so. */
+    static boolean recordOrigin(File priv, String name, String from, String state) {
         try {
             String line = name + " from=" + from + " source_state=" + state + " t=" + System.currentTimeMillis() + "\n";
             Files.write(new File(priv, "clone_origins.txt").toPath(), line.getBytes(java.nio.charset.StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (IOException | RuntimeException ignored) { }
+            return true;
+        } catch (IOException | RuntimeException e) { return false; }
     }
 
     /** The ECID TAG a state file carries ("ecid_tag=<16 hex>" on its second line), or "none". */
@@ -231,6 +232,7 @@ public final class G7Clone {
     }
 
     private static void copyOne(File src, File dst, long size, List<long[]> extents, BooleanSupplier cancel, LongSupplier freeBytes) throws IOException {
+        try (FileChannel mk = FileChannel.open(dst.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) { /* exclusive creation: an existing name is refused */ }
         try (RandomAccessFile len = new RandomAccessFile(dst, "rw")) { if (len.length() != 0) throw new IOException("target not empty"); len.setLength(size); }
         try (FileChannel in = FileChannel.open(src.toPath(), StandardOpenOption.READ); FileChannel out = FileChannel.open(dst.toPath(), StandardOpenOption.WRITE)) {
             ByteBuffer buf = ByteBuffer.allocate(CHUNK);

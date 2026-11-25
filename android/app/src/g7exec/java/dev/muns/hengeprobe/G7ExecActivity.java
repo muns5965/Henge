@@ -303,7 +303,7 @@ public class G7ExecActivity extends Activity {
 
     private void confirmClone() {
         new AlertDialog.Builder(this).setTitle("희소 복제본 만들기")
-                .setMessage("지금 vm/의 설치 쌍(디스크·AUX)을 vm/clones/clone-NNN/ 로 복제합니다. 원본은 읽기만 하고 바꾸지 않으며 상태(in_progress)도 그대로입니다. 디스크의 구멍은 그대로 두고 실제 데이터만 복사하고(구멍 정보가 없는 파일시스템이면 복사하지 않습니다), 끝나면 데이터를 다시 읽어 검증합니다. 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다. 취소 버튼으로 중단할 수 있습니다. 복제본으로 부팅하는 기능은 아직 켜지 않았습니다.")
+                .setMessage("지금 vm/의 설치 쌍(디스크·AUX)을 vm/clones/clone-NNN/ 로 복제합니다. 원본은 읽기만 하고 바꾸지 않으며 상태(in_progress 또는 done)도 그대로입니다. 디스크의 구멍은 그대로 두고 실제 데이터만 복사하고(구멍 정보가 없는 파일시스템이면 복사하지 않습니다), 끝나면 데이터를 다시 읽어 검증합니다. 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다. 취소 버튼으로 중단할 수 있습니다. 복제본 부팅은 아래 '복제본 부팅' 항목에서 따로 시작합니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
     }
@@ -317,7 +317,7 @@ public class G7ExecActivity extends Activity {
                 .setItems(names, (d, which) -> {
                     final File from = clones.get(which);
                     new AlertDialog.Builder(this).setTitle(from.getName() + " 을(를) 복제")
-                            .setMessage(from.getName() + "의 지금 디스크·AUX 상태를 vm/clones/clone-NNN/ 로 복제합니다. " + from.getName() + "와 설치 원본은 읽기만 하고 바꾸지 않습니다. 복제 도중 그 복제본이 바뀌면 복제하지 않습니다. 복제본이 앞서 강제 종료된 적이 있으면 그 시점의 디스크 상태 그대로 복사됩니다. 정상 부팅이 확인된 복제본이라는 뜻은 아닙니다(구조·ECID 검증만 통과한 것). 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다.")
+                            .setMessage(from.getName() + "의 지금 디스크·AUX 상태를 vm/clones/clone-NNN/ 로 복제합니다. " + from.getName() + "와 설치 원본은 읽기만 하고 바꾸지 않습니다. 복제 도중 그 복제본이 바뀌면 복제하지 않습니다. 그 복제본의 지금 디스크 상태 그대로 복사됩니다(게스트 macOS를 정상 종료하지 않고 VM만 멈췄다면 게스트 파일시스템이 정상 종료 상태가 아닐 수 있습니다). 정상 부팅이 확인된 복제본이라는 뜻은 아닙니다(구조·ECID 검증만 통과한 것). 여유 공간이 복제본 크기 + 8GiB 이상 필요하고 몇 분 걸릴 수 있습니다.")
                             .setNegativeButton("취소", null)
                             .setPositiveButton("복제", (dd, ww) -> { cloneCancel = false; runCloneFrom(from); }).show();
                 })

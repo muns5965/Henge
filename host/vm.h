@@ -103,6 +103,9 @@ void hv_vm_cpu_qos(void);
 int hv_vm_run_cpu0(void);
 /* Stop at the next block; the CPUs' threads end. */
 void hv_vm_stop(void);
+/* After CPU 0 has left its run loop (the CPU 0 thread calls it before the flush and the exit callback): halt where no reason is recorded, join the other CPU threads and the
+   kicker (bounded wait), stop the virtio-blk workers. 0, or -1 if a thread was not joined. */
+int hv_vm_quiesce(void);
 void hv_vm_flush_disks(void);
 int hv_vm_flush_disks_checked(void);   /* 0 when both flushes succeeded, -1 otherwise */
 /* Writes the devices asked for on the root disk and the auxiliary storage (calls, and those refused). */

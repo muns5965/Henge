@@ -358,12 +358,20 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     return 0;
 }
 
+/* Thread handles and "ended" flags are kept (as in the original Henge's host/vm.c) so the CPU 0 thread can join every other thread before it flushes the disks and
+   reports the end: a secondary CPU or the kicker still running past the exit callback could touch memory the caller is about to release. */
+static pthread_t secondary_threads[HV_MAX_CPUS], kicker;
+static int secondary_started[HV_MAX_CPUS], kicker_started;
+static _Atomic int secondary_ended[HV_MAX_CPUS], kicker_ended;
+static _Atomic int kicker_stopped;
+
 static void *kicker_thread(void *unused) {
     (void)unused;
-    for (;;) {
+    while (!atomic_load(&kicker_stopped)) {
         usleep(1000);
         hv_machine_kick_all(&m);
     }
+    atomic_store(&kicker_ended, 1);
     return NULL;
 }
 
@@ -410,6 +418,7 @@ static void *secondary_thread(void *arg) {
     if (!__atomic_load_n(&c->halted, __ATOMIC_ACQUIRE))
         fprintf(stderr, "hengevm: cpu %u stopped (%s) at pc %llx el%u\n", c->index, hv_vm_reason_name(r),
                 (unsigned long long)c->pc, c->el);
+    atomic_store(&secondary_ended[c->index], 1);
     return NULL;
 }
 
@@ -435,10 +444,44 @@ int hv_vm_run_cpu0(void) {
     return hv_run(&cpus[0]);
 }
 
+/* Join one thread, but not forever: a vCPU stuck in a host call must not keep the exit callback (and so the app's "the machine stopped") from ever being reported. The wait is
+   bounded; a thread that has not ended by then is left running and said so, and the stop is still reported (the caller can see the message). */
+#define HV_JOIN_WAIT_MS 5000
+static int join_bounded(pthread_t t, _Atomic int *ended, const char *what) {
+    for (int waited = 0; !atomic_load(ended); waited++) {
+        if (waited >= HV_JOIN_WAIT_MS) {
+            fprintf(stderr, "hengevm: %s did not end within %d ms after the stop; not joined\n", what, HV_JOIN_WAIT_MS);
+            pthread_detach(t);
+            return -1;
+        }
+        usleep(1000);
+    }
+    pthread_join(t, NULL);
+    return 0;
+}
+
+/* After CPU 0 has left its run loop: stop every other CPU thread and the kicker, then finish the disk workers' DMA, so the flush that follows covers every write the
+   guest was told had completed. Halts with HV_HALT "host" (3) only where no reason is recorded yet: a guest SYSTEM_OFF/RESET keeps its own. 0, or -1 if a thread was not joined. */
+int hv_vm_quiesce(void) {
+    int bad = 0;
+    hv_machine_halt(&m, HV_HALT_HOST);
+    atomic_store(&kicker_stopped, 1);
+    for (int i = 1; i < ncpus; i++)
+        if (secondary_started[i] && join_bounded(secondary_threads[i], &secondary_ended[i], "a secondary CPU thread")) bad = 1;
+    if (kicker_started && join_bounded(kicker, &kicker_ended, "the kicker thread")) bad = 1;
+    kicker_started = 0;
+    memset(secondary_started, 0, sizeof secondary_started);
+    /* A DMA worker can still be writing after the guest CPUs have exited. */
+    hv_virtio_blk_stop(board.root_blk);
+    hv_virtio_blk_stop(board.aux_blk);
+    return bad ? -1 : 0;
+}
+
 static void *cpu0_thread(void *unused) {
     (void)unused;
     hv_vm_cpu_qos();
     int r = hv_vm_run_cpu0();
+    hv_vm_quiesce();
     hv_vm_flush_disks();
     if (exit_cb) exit_cb(r);
     return NULL;
@@ -458,22 +501,33 @@ void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
        as configured, so the machine is stopped instead of limping on. If CPU 0's own thread was the one that failed nobody else would report the end, so the exit callback is
        called here (reason HV_EXIT_NONE: not a halt, not a fault); in the other cases CPU 0's thread, stopped by hv_vm_stop(), reports it as it always does. */
     int rc, failed = 0, cpu0_failed = 0;
+    atomic_store(&kicker_stopped, 0);
+    atomic_store(&kicker_ended, 0);
+    /* Every join handle is published before CPU 0 can reach its exit callback, so CPU 0 is created last (as in the original Henge). */
+    for (int i = 1; i < ncpus; i++) {
+        atomic_store(&secondary_ended[i], 0);
+        secondary_started[i] = (rc = pthread_create(&secondary_threads[i], &attr, secondary_thread, &cpus[i])) == 0;
+        if (!secondary_started[i]) fprintf(stderr, "hengevm: CPU %d thread did not start (error %d)\n", i, rc), failed = 1;
+    }
+    kicker_started = (rc = pthread_create(&kicker, NULL, kicker_thread, NULL)) == 0;
+    if (!kicker_started) fprintf(stderr, "hengevm: kicker thread did not start (error %d)\n", rc), failed = 1;
     if (cpu0 && (rc = pthread_create(&t, &attr, cpu0_thread, NULL)) != 0) fprintf(stderr, "hengevm: CPU 0 thread did not start (error %d)\n", rc), failed = cpu0_failed = 1;
-    for (int i = 1; i < ncpus; i++)
-        if ((rc = pthread_create(&t, &attr, secondary_thread, &cpus[i])) != 0) fprintf(stderr, "hengevm: CPU %d thread did not start (error %d)\n", i, rc), failed = 1;
-    if ((rc = pthread_create(&t, NULL, kicker_thread, NULL)) != 0) fprintf(stderr, "hengevm: kicker thread did not start (error %d)\n", rc), failed = 1;
     HV_STAGE("vcpus_started");
     if (failed) {
         __atomic_store_n(&start_failed, 1, __ATOMIC_RELEASE);   /* callers that can fail (the G7 runner) ask hv_vm_start_failed(); HV_EXIT_NONE alone is not an error code */
         hv_vm_stop();
-        if (cpu0_failed && exit_cb) exit_cb(HV_EXIT_NONE);
+        if (cpu0_failed) {
+            hv_vm_quiesce();
+            if (exit_cb) exit_cb(HV_EXIT_NONE);
+        }
     }
 }
 
+/* A host stop records "3" only where no reason is recorded yet (hv_machine_halt compares against 0): a guest SYSTEM_OFF (1) / SYSTEM_RESET (2) or a pvpanic (4) that came
+   first is not overwritten, so the first reason is what the runners report. It also wakes a CPU parked in PSCI CPU_OFF. */
 void hv_vm_stop(void) {
-    for (int i = 0; i < ncpus; i++) __atomic_store_n(&cpus[i].halted, 3, __ATOMIC_RELEASE); /* the dispatchers stop at the next block */
+    hv_machine_halt(&m, HV_HALT_HOST);
     hv_machine_kick_all(&m);
-    for (int i = 0; i < ncpus; i++) hv_cpu_wake(&cpus[i]);
 }
 
 /* macOS's virtio mouse driver drops BTN_RIGHT, so the right button is a Control-click, with the right

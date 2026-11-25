@@ -31,9 +31,9 @@ fi
 # instructions need an Armv8.5 assembler target (dit, pauth, ...).
 $CC $CFLAGS -march=armv8.5-a -Itests -c tests/harness.S -o "$OUT/harness.o" || { echo "FAILED  tests/harness.S"; exit 1; }
 tfail=0
-for t in mmu jit mem exc; do
-  if [ $t = mmu ]; then
-    srcs="tests/test_mmu.c"
+for t in mmu shutdown jit mem exc; do
+  if [ $t = mmu ] || [ $t = shutdown ]; then
+    srcs="tests/test_$t.c"
   else
     $CC $CFLAGS -march=armv8.5-a -Itests -c "tests/${t}_programs.S" -o "$OUT/${t}_programs.o" 2> "$OUT/${t}_programs.log" || { echo "FAILED  tests/${t}_programs.S"; cat "$OUT/${t}_programs.log"; tfail=1; continue; }
     srcs="tests/test_$t.c $OUT/${t}_programs.o $OUT/harness.o"

@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 7ff024f8550ffecd2b3df07a424e9b61959857cb   # research/android-pfn-shift: + lagfx_device_signal_display
+  LAGFX_SHA: 18c73153f0ef8a52d9d0097a3eb4c6507976722e   # research/android-pfn-shift: + i1 constants / any-all fix, undef fail-closed
 
 jobs:
   apk:

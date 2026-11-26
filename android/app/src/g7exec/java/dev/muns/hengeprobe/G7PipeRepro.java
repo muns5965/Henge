@@ -50,8 +50,9 @@ final class G7PipeRepro {
         List<String> ids = new ArrayList<>();
         String listOut = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000);
         for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
+        if (ids.isEmpty()) { buf.write(("ladder: --list-rows gave no rows; output:\n" + listOut + "\n").getBytes(StandardCharsets.UTF_8)); return 2; }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
-        int r0 = -9, built = 0, fail = 0, bad = 0;
+        int r0 = -9, built = 0, fail = 0, bad = 0; boolean complete = false;
         long end = System.currentTimeMillis() + 840_000L;
         try {
         for (String id : ids) {
@@ -63,16 +64,19 @@ final class G7PipeRepro {
             if (rowLine == null) { o.append("pipeline-reduce: row=").append(id).append(" result=").append(ec[0] == -2 ? "TIMEOUT" : "CRASH").append(" exit=").append(ec[0]).append(" (no row line; process ended)\n"); bad++; continue; }
             o.append(rowLine).append("\n");
             if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
-            if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL") ? 1 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
+            if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL vk=-13(") ? 1 : rowLine.contains("result=FAIL") ? 4 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
         }
         o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
+            complete = System.currentTimeMillis() <= end && !ids.isEmpty();
         } catch (RuntimeException | InterruptedException | IOException e) {
             o.append("ladder: ABORTED: ").append(e).append(" (the rows above were completed)\n");
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
         } finally {
+            o.append("ladder-status: R0=").append(r0 == 1 ? "same -13 (reproduced)" : r0 == 0 ? "BUILT (not reproduced)" : r0 == 4 ? "FAIL with a different VkResult" : r0 == -9 ? "no R0 line" : "undecided (crash/timeout/invalid)")
+             .append("; run=").append(complete ? "complete" : "INCOMPLETE (aborted, time budget, or no rows)").append(" (the two are independent)\n");
             buf.write(o.toString().getBytes(StandardCharsets.UTF_8));   // whatever was collected so far is always handed to the result window
         }
-        return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;   // 0 reproduced (R0 FAIL), 1 not reproduced (R0 BUILT), 2 undecided
+        return !complete ? -3 : r0 == 1 ? 0 : r0 == 0 ? 1 : 2;   // an incomplete run never reports a plain verdict   // 0 reproduced (R0 FAIL), 1 not reproduced (R0 BUILT), 2 undecided
     }
 
     private static String runOne(List<String> c, File redDir, int timeoutS, int[] exitOut, int maxBytes) throws IOException, InterruptedException {
@@ -111,7 +115,14 @@ final class G7PipeRepro {
     static final class Result { final boolean started; final int exitCode; final String text; final File file; Result(boolean s, int c, String t, File f) { started = s; exitCode = c; text = t; file = f; } }
 
     /** Runs the repro on one bundle. Blocking: call from a worker thread. */
+    private static final java.util.concurrent.atomic.AtomicBoolean BUSY = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     static Result run(File nativeLibDir, File bundle, boolean matrix, boolean reduce, android.content.res.AssetManager assets, File logDir) {
+        if (!BUSY.compareAndSet(false, true)) return new Result(false, -1, "다른 재현 시험이 이미 실행 중입니다.", null);
+        try { return run0(nativeLibDir, bundle, matrix, reduce, assets, logDir); } finally { BUSY.set(false); }
+    }
+
+    private static Result run0(File nativeLibDir, File bundle, boolean matrix, boolean reduce, android.content.res.AssetManager assets, File logDir) {
         if (!isPackaged(nativeLibDir)) return new Result(false, -1, "재현 실행 파일(" + LIB_NAME + ")이 이 APK에 없습니다.", null);
         if (bundle == null || !bundle.isDirectory()) return new Result(false, -1, "번들 폴더가 없습니다.", null);
         List<String> cmd = new ArrayList<>();

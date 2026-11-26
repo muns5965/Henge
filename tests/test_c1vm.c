@@ -353,6 +353,13 @@ static void test_env(void) {
     CHECK(!getenv("HV_RUN_INSTALLER") && !getenv("HV_USB_ON_NORMAL") && !getenv("HV_RAM_FILE") && !getenv("HV_VUSB_PROBE") && left[0] == 0, "they are gone, nothing left");
     CHECK(getenv("HVX_NOT") && getenv("MYHV_OK"), "names that only look similar stay (HVX_NOT, MYHV_OK)");
     CHECK(hv_runner_scrub_env(NULL, 0, NULL, 0) == 0, "second pass: nothing to remove, clean (0)");
+    /* [2026-11-26] The display-events experiment: the scrub removes HV_PVG_DISPLAY_EVENTS (so that name can never reach the device from a runner), and leaves the app's own
+       request name G7_PVG_DISPLAY_EVENTS, which the clone runner reads after the scrub (host/ui_runner_vm_clone.c). */
+    setenv("HV_PVG_DISPLAY_EVENTS", "1", 1); setenv("G7_PVG_DISPLAY_EVENTS", "1", 1);
+    n = hv_runner_scrub_env(names, sizeof names, left, sizeof left);
+    CHECK(n == 1 && strstr(names, "HV_PVG_DISPLAY_EVENTS") && !getenv("HV_PVG_DISPLAY_EVENTS"), "HV_PVG_DISPLAY_EVENTS is scrubbed (%d)", n);
+    CHECK(getenv("G7_PVG_DISPLAY_EVENTS") && strcmp(getenv("G7_PVG_DISPLAY_EVENTS"), "1") == 0, "G7_PVG_DISPLAY_EVENTS survives the scrub, so the runner can read the request");
+    unsetenv("G7_PVG_DISPLAY_EVENTS");
     for (int i = 0; i < 300; i++) { char nm[32]; snprintf(nm, sizeof nm, "HV_MANY_%d", i); setenv(nm, "1", 1); }
     CHECK(hv_runner_scrub_env(NULL, 0, NULL, 0) == 300, "300 variables all removed");
     CHECK(!getenv("HV_MANY_299") && !getenv("HV_MANY_0"), "the first and the last are gone");

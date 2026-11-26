@@ -23,6 +23,11 @@ int hv_pvg_lite_frame(HvPvgLite *p, const uint8_t **pixels, uint32_t *width, uin
    while the machine runs: call before hv_vm_create. */
 void hv_pvg_lite_set_test_pattern(int on);
 
+/* Display-events experiment (VBL + display cause bit; see devices/pvg_lite.c). The clone runner scrubs every HV_* variable, so it passes its own request here (before
+   hv_vm_create); without a call the device falls back to HV_PVG_DISPLAY_EVENTS. _applied returns what the device will actually use. */
+void hv_pvg_lite_set_display_events(int on);
+int hv_pvg_lite_display_events_applied(void);
+
 /* Between the device and its Metal side (pvg_metal.m). */
 typedef struct HvPvgMetal HvPvgMetal;
 HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite);

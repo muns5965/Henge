@@ -219,6 +219,16 @@ int main(int argc, char **argv) {
         hv_pvg_lite_set_test_pattern(tp);
         printf("ui_runner_vm_clone display test pattern: %s\n", tp ? "ON (marker file pvg_test_pattern says 1; the guest's swapped surface is overwritten by a diagnostic picture)" : "off");
     }
+    /* Display-events experiment (default OFF). The scrub above removes every HV_* variable, including HV_PVG_DISPLAY_EVENTS, so that name can never reach the device from here
+       (the 2026-11-26 21:36 run showed "1 HV_* variable(s) removed: HV_PVG_DISPLAY_EVENTS" and the device stayed off). The app passes a name outside HV_*; it is read AFTER the scrub
+       and handed to the device directly. The scrub itself is unchanged. */
+    {
+        const char *rq = getenv("G7_PVG_DISPLAY_EVENTS");
+        int want = rq && *rq && *rq != '0';
+        hv_pvg_lite_set_display_events(want);
+        int got = hv_pvg_lite_display_events_applied();
+        printf("ui_runner_vm_clone display events: requested=%d applied=%d%s\n", want, got, want == got ? "" : "  WARNING: request and applied value differ");
+    }
     char why[160], line[400];
     if (clone_boot_config_ok(&cfg, ecid, 1, why, sizeof why) != 0) {
         fprintf(stderr, "ui_runner_vm_clone: the settings were refused: %s\n", why);

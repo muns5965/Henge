@@ -4,5 +4,5 @@ package dev.muns.hengeprobe;
 final class BuildConfig {
     private BuildConfig() {}
     static final boolean G7_START_ENABLED = true;
-    static final String G7_BUILD_KIND = "G7-BUILD-KIND:START-ON";
+    static final String G7_HENGE_SHA = "test", G7_LAGFX_SHA = "test", G7_BUILD_KIND = "G7-BUILD-KIND:START-ON";
 }

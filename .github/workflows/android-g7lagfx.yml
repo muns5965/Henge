@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 35e43cbddd39e200ec95cbb46ac331582cd8f1ab   # research/android-pfn-shift: fail-closed capability analysis, shufflevec undef warning, pair-specific dump harness, RGhA write-back test (on top of 82258ff)
+  LAGFX_SHA: 4261294873ec3177ac035da5da8b83ba1d524e0c   # research/android-pfn-shift: + colour attachment 0 blend decode (on top of 35e43cb)
 
 jobs:
   apk:

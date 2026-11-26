@@ -418,11 +418,14 @@ public class G7ExecActivity extends Activity {
         pat.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         final CheckBox gx = new CheckBox(this); gx.setText("실험: GPU 명령 실제 실행(Render/Blit을 Vulkan으로 실행. 끄면 해석만 함)");
         gx.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final CheckBox gw = new CheckBox(this); gw.setText("실험: 렌더링한 화면 표면을 exec마다 게스트 메모리로 되쓰기(LAGFX_ARM64_MAPPED_WRITEBACK, GPU 실행을 켰을 때만 의미 있음. 원인 분리를 위해 끌 수 있음)");
-        gw.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); gw.setChecked(true);
+        final android.widget.RadioGroup gw = new android.widget.RadioGroup(this);
+        final TextView gwt = new TextView(this); gwt.setText("실험: 렌더링한 화면 표면을 게스트 메모리로 되쓰기(LAGFX_ARM64_MAPPED_WRITEBACK, GPU 실행을 켰을 때만 의미 있음)"); gwt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        final String[] gwl = { "끔(되쓰기는 flag 4·동기화 때만)", "즉시: 그린 exec마다 되쓰기 (=1)", "지연: 디스플레이 명령 직전에 한 번 (=swap, 실험)" };
+        for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); gw.addView(rb); }
+        gw.check(3001);   // the default the earlier checkbox had: immediate
         final CheckBox gd = new CheckBox(this); gd.setText("진단: 게스트 셰이더·파이프라인 데이터 저장(앱 외부 저장 폴더 g7_gpudump, 크기 제한)");
         gd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(gx); box.addView(gw); box.addView(gd); box.addView(ok);
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(gx); box.addView(gwt); box.addView(gw); box.addView(gd); box.addView(ok);
         final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // nine options and the clone list do not fit a phone's height
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(sv)
                 .setNegativeButton("취소", null)
@@ -432,7 +435,7 @@ public class G7ExecActivity extends Activity {
                     final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
                     G7Storage.setPatternMarker(privDir, pat.isChecked());
                     G7CloneBoot.gpuExec = gx.isChecked();
-                    G7CloneBoot.gpuWriteback = gw.isChecked();
+                    G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
                     File xd = getExternalFilesDir(null);
                     G7CloneBoot.gpuDumpDir = gd.isChecked() ? new File(xd != null ? xd : getFilesDir(), "g7_gpudump") : null;
                     G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode, seconds);

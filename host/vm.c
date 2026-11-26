@@ -114,9 +114,11 @@ static int bgra_all_black(const uint8_t *px, uint32_t w, uint32_t h) {
 
 /* DIAGNOSTIC (log only, no effect on what is shown): why the PVG surface counts as black or not. Once at the first surface and then about every 30 s of calls (the pump asks ~10x/s), it
    logs the surface size, how many pixels have a non-zero colour byte, the first such pixel and its value, and the largest colour byte. "boot-display-fallback-v2" also tells which build is running. */
+static void save_frame_png(const uint8_t *bgra, uint32_t w, uint32_t h);
 static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
     static unsigned calls;
     if (calls++ % 300) return;
+    save_frame_png(px, w, h);
     size_t n = (size_t)w * h, nz = 0, first = (size_t)-1;
     uint32_t firstv = 0, maxc = 0;
     const uint32_t *p = (const uint32_t *)(const void *)px;
@@ -129,6 +131,64 @@ static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
     }
     fprintf(stderr, "hengevm: display: boot-display-fallback-v2 surface %ux%u nonzero_pixels=%zu first=%zd (x=%zu y=%zu) first_value=0x%08x max_colour_byte=%u\n",
             w, h, nz, first == (size_t)-1 ? (ssize_t)-1 : (ssize_t)first, w ? (first == (size_t)-1 ? 0 : first % w) : 0, w ? (first == (size_t)-1 ? 0 : first / w) : 0, firstv, maxc);
+}
+
+/* DIAGNOSTIC (file only, no effect on what is shown): the full-resolution frame the shell reads, as an uncompressed PNG, next to the GPU dump (the folder the start dialog
+   passes in LAGFX_ARM64_DUMP_DIR; nothing is written when it is not set). Called from display_diag (~every 30 s); a frame identical to the last saved one is skipped and
+   at most 6 files are written (6 MB each at 1920x1080). Stored deflate blocks, so no compression library is needed. */
+static uint32_t png_crc_table[256];
+static void png_crc_init(void) {
+    if (png_crc_table[1]) return;
+    for (uint32_t n = 0; n < 256; n++) { uint32_t c = n; for (int k = 0; k < 8; k++) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1; png_crc_table[n] = c; }
+}
+static uint32_t png_crc(uint32_t crc, const uint8_t *b, size_t n) { crc = ~crc; while (n--) crc = png_crc_table[(crc ^ *b++) & 0xff] ^ (crc >> 8); return ~crc; }
+static void png_be32(uint8_t *o, uint32_t v) { o[0] = (uint8_t)(v >> 24), o[1] = (uint8_t)(v >> 16), o[2] = (uint8_t)(v >> 8), o[3] = (uint8_t)v; }
+static int png_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n) {
+    uint8_t h[8]; png_be32(h, n); memcpy(h + 4, type, 4);
+    uint32_t c = png_crc(0, h + 4, 4); c = png_crc(c, data, n);
+    uint8_t t[4]; png_be32(t, c);
+    return fwrite(h, 1, 8, f) == 8 && (n == 0 || fwrite(data, 1, n, f) == n) && fwrite(t, 1, 4, f) == 4;
+}
+static void save_frame_png(const uint8_t *bgra, uint32_t w, uint32_t h) {
+    static unsigned saved; static uint64_t last_hash;
+    const char *dir = getenv("LAGFX_ARM64_DUMP_DIR");
+    if (!dir || !*dir || saved >= 6 || !w || !h || w > 8192 || h > 8192) return;
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < (size_t)w * h; i += 7) { hash ^= ((const uint32_t *)(const void *)bgra)[i]; hash *= 1099511628211ull; }
+    if (hash == last_hash) return;
+    size_t raw_n = (size_t)h * (1 + (size_t)w * 3);
+    uint8_t *raw = malloc(raw_n);
+    if (!raw) return;
+    for (uint32_t y = 0; y < h; y++) {
+        uint8_t *o = raw + (size_t)y * (1 + (size_t)w * 3);
+        const uint8_t *in = bgra + (size_t)y * w * 4;
+        *o++ = 0;
+        for (uint32_t x = 0; x < w; x++, in += 4) *o++ = in[2], *o++ = in[1], *o++ = in[0];
+    }
+    char path[512]; snprintf(path, sizeof path, "%s/g7_frame_%u.png", dir, saved);
+    FILE *f = fopen(path, "wb");
+    if (!f) { free(raw); return; }
+    png_crc_init();
+    static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 13, 10, 26, 10 };
+    uint8_t ihdr[13]; png_be32(ihdr, w); png_be32(ihdr + 4, h); ihdr[8] = 8, ihdr[9] = 2, ihdr[10] = 0, ihdr[11] = 0, ihdr[12] = 0;
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < raw_n; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
+    size_t nblk = (raw_n + 65534) / 65535, zn = 2 + raw_n + nblk * 5 + 4;
+    uint8_t *z = malloc(zn);
+    int ok = z != NULL;
+    if (ok) {
+        size_t o = 0; z[o++] = 0x78; z[o++] = 0x01;
+        for (size_t off = 0; off < raw_n; off += 65535) {
+            size_t n = raw_n - off < 65535 ? raw_n - off : 65535;
+            z[o++] = off + n >= raw_n ? 1 : 0; z[o++] = (uint8_t)n; z[o++] = (uint8_t)(n >> 8); z[o++] = (uint8_t)~n; z[o++] = (uint8_t)(~n >> 8);
+            memcpy(z + o, raw + off, n); o += n;
+        }
+        png_be32(z + o, (b << 16) | a); o += 4;
+        ok = fwrite(sig, 1, 8, f) == 8 && png_chunk(f, "IHDR", ihdr, 13) && png_chunk(f, "IDAT", z, (uint32_t)o) && png_chunk(f, "IEND", NULL, 0);
+    }
+    fclose(f); free(z); free(raw);
+    if (ok) { saved++; last_hash = hash; fprintf(stderr, "hengevm: display: saved full frame %ux%u to %s\n", w, h, path); }
+    else remove(path);
 }
 
 int hv_vm_boot_display(HvBootDisplay *d) {

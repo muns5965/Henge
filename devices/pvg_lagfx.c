@@ -21,17 +21,19 @@ struct HvPvgLagfx {
     void *display_opaque;
     const uint8_t *(*surface_hook)(void *opaque, uint32_t mapping);
     void *surface_opaque;
-    volatile int closing;
+    atomic_int closing;     /* set once by destroy; checked with sequentially consistent loads */
     atomic_int inflight;   /* threads currently inside a library call made through this glue (MMIO from a vCPU, the tick, the exit handler) */
 };
 
 /* Teardown guard. A vCPU thread can be inside lagfx_mmio_write() (and the library inside one of this file's callbacks) while another thread destroys the
    device. enter() refuses once closing is set; destroy() sets closing, then waits (bounded) for the threads already inside. If they do not leave in time the
-   device and the glue are LEAKED, never freed under them. */
+   device is LEAKED, never freed under them. The glue struct itself is never freed (about 100 bytes): a thread that read the pointer just before destroy must still be able
+   to look at `closing` without touching freed memory. */
 static bool g_enter(HvPvgLagfx *g) {
-    if (!g || g->closing || !g->dev) return false;
+    if (!g || atomic_load(&g->closing)) return false;
     atomic_fetch_add(&g->inflight, 1);
-    if (g->closing) { atomic_fetch_sub(&g->inflight, 1); return false; }   /* destroy started between the check and the increment */
+    if (atomic_load(&g->closing)) { atomic_fetch_sub(&g->inflight, 1); return false; }   /* destroy started between the check and the increment: it may already have freed the device, never touched here */
+    if (!g->dev) { atomic_fetch_sub(&g->inflight, 1); return false; }   /* (dev is only cleared after closing is set and inflight drained) */
     return true;
 }
 static void g_leave(HvPvgLagfx *g) { atomic_fetch_sub(&g->inflight, 1); }
@@ -119,7 +121,7 @@ static bool cb_unmap_memory(void *opaque, lagfx_task_t *task, uint64_t virtual_o
 static void cb_raise_interrupt(void *opaque, uint32_t vector) {
     HvPvgLagfx *g = opaque;
     (void)vector;   /* this machine has one gfx interrupt line */
-    if (!g || g->closing) return;   /* the guest is going away */
+    if (!g || atomic_load(&g->closing)) return;   /* the guest is going away */
     hv_gicv3_pend(g->gic, g->gfx_irq);
 }
 
@@ -129,7 +131,7 @@ static void cb_raise_interrupt(void *opaque, uint32_t vector) {
 static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cmd, uint32_t len) {
     HvPvgLagfx *g = opaque;
     (void)chan_id;
-    if (!g || g->closing || !g->display_hook || !cmd || len < 12 || len > 4096) return;
+    if (!g || atomic_load(&g->closing) || !g->display_hook || !cmd || len < 12 || len > 4096) return;
     uint32_t aligned[1024];           /* the ring bytes carry no alignment promise */
     memcpy(aligned, cmd, len);
     g->display_hook(g->display_opaque, aligned, len);
@@ -139,7 +141,7 @@ static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cm
    lives in a guest display surface. The slot is copied; nothing is kept and the library is not re-entered. */
 static bool cb_get_surface_desc(void *opaque, uint32_t mapping_id, uint8_t *out, size_t cap, size_t *len_out) {
     HvPvgLagfx *g = opaque;
-    if (!g || g->closing || !out || !g->surface_hook) return false;
+    if (!g || atomic_load(&g->closing) || !out || !g->surface_hook) return false;
     const uint8_t *d = g->surface_hook(g->surface_opaque, mapping_id);
     if (!d) return false;
     size_t n = cap < 0x400 ? cap : 0x400;
@@ -214,7 +216,7 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
 
 void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     if (!g) return;
-    g->closing = 1;   /* from here no new MMIO / tick / exit-handler call reaches the library */
+    atomic_store(&g->closing, 1);   /* from here no new MMIO / tick / exit-handler call reaches the library */
     if (s_exit_g == g) s_exit_g = NULL;
     for (int ms = 0; ms < 3000 && atomic_load(&g->inflight) > 0; ms++) {   /* threads already inside finish (the library's own waits are bounded) */
         struct timespec ts = { 0, 1000000 };
@@ -226,8 +228,7 @@ void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     }
     g->display_hook = NULL, g->surface_hook = NULL;   /* a late callback finds no hook */
     lagfx_device_free(g->dev);
-    g->dev = NULL;
-    free(g);
+    g->dev = NULL;   /* g itself stays allocated on purpose (see g_enter) */
 }
 
 void hv_pvg_lagfx_root_ptrs(HvPvgLagfx *g, uint32_t *wp, uint32_t *rp) {

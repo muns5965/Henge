@@ -48,8 +48,8 @@ public final class G7CloneBoot {
     /** Name of the VM log (g7_cboot_*) of the run being started; written to run-info.txt so the export needs no time matching. */
     static volatile String vmLogName = "";
     static volatile boolean gpuExec = false;
-    /** Experiment switch, independent of gpuExec (only meaningful with it): LAGFX_ARM64_MAPPED_WRITEBACK=1. */
-    static volatile boolean gpuWriteback = false;
+    /** Experiment switch, independent of gpuExec (only meaningful with it): LAGFX_ARM64_MAPPED_WRITEBACK. 0 = not set, 1 = "1" (write back after every exec that drew), 2 = "swap" (owed surfaces are paid before a display command). */
+    static volatile int gpuWritebackMode = 0;
     static volatile File gpuDumpDir = null;
 
     static void lagfxEnv(java.util.Map<String, String> env, List<String> cmd) {
@@ -62,7 +62,7 @@ public final class G7CloneBoot {
         env.put("LAGFX_LOG_FILE", lagfxLog.getPath());
         StringBuilder note = new StringBuilder();
         env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK");   // never inherit these from the parent environment: the start dialog alone decides
-        if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWriteback) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else note.append("write-back experiment off; "); } else note.append("GPU execution off; ");
+        if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");
         else {

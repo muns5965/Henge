@@ -54,13 +54,26 @@ public final class G7CloneBoot {
         File dir = new File(cmd.get(i + 1)).getParentFile();
         if (dir == null) return;
         env.put("LAGFX_LOG_LEVEL", "trace");
-        if (gpuExec) env.put("LAGFX_ARM64_EXEC", "1");
+        StringBuilder note = new StringBuilder();
+        if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
-        if (dd != null) {
-            try { java.nio.file.Files.createDirectories(dd.toPath()); env.put("LAGFX_ARM64_DUMP", "1"); env.put("LAGFX_ARM64_DUMP_DIR", dd.getPath()); } catch (java.io.IOException | RuntimeException e) { /* no dump */ }
+        if (dd == null) note.append("GPU data dump off");
+        else {
+            File runDir = new File(dd, "run-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date()));   // one folder per run: no mixing, no name clashes
+            try {
+                java.nio.file.Files.createDirectories(runDir.toPath());
+                env.put("LAGFX_ARM64_DUMP", "1");
+                env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
+                note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");
+            } catch (java.io.IOException | RuntimeException e) {
+                note.append("GPU data dump REQUESTED BUT NOT POSSIBLE: cannot create ").append(runDir.getPath()).append(" (").append(e.getClass().getSimpleName()).append(")");
+            }
         }
-        env.put("LAGFX_LOG_FILE", new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt").getPath());
+        lastGpuNote = note.toString();
     }
+
+    /** What lagfxEnv decided about the GPU switches, written at the top of the run log so a missing dump can be explained. */
+    static volatile String lastGpuNote = "";
 
     /** The newest lagfx log on disk (g7_lagfx_*.txt), or null. */
     public static File newestLagfxLog(File filesDir) {
@@ -288,6 +301,7 @@ public final class G7CloneBoot {
         final Thread reader = new Thread(() -> {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 run.put("g7-cboot-start: " + System.currentTimeMillis() + "\n", true);
+                run.put("g7-gpu-options: " + lastGpuNote + "\n", true);
                 String line;
                 while ((line = r.readLine()) != null) {
                     line = G7ExecLauncher.mask(line, ecid);

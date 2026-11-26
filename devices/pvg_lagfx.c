@@ -208,6 +208,7 @@ void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value) {
    still pending; retiring a stamp raises the interrupt through cb_raise_interrupt. */
 void hv_pvg_lagfx_poll(HvPvgLagfx *g) {
     if (!g || g->closing || !g->dev) return;
+    lagfx_device_diag_tick(g->dev);   /* statistics must not depend on guest MMIO (idle guest = none) */
     if (lagfx_device_pending_completions(g->dev) != 0) lagfx_device_poll_completions(g->dev);
 }
 #endif /* HV_WITH_LAGFX */

@@ -56,6 +56,10 @@ public class G7ExecActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (b != null) {   // the system file picker can outlive this Activity (rotation, process death): the ZIP waiting to be saved is found again by its (validated) name
+            String pz = b.getString("pendingExport");
+            if (pz != null) pendingExport = G7ExecLauncher.logFile(getFilesDir(), pz);
+        }
         if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 7001);   // only so the foreground notice of a run is visible; the run works without it
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -644,6 +648,11 @@ public class G7ExecActivity extends Activity {
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
     private void shareLog() { shareFile(G7ExecLauncher.newestLogFile(getFilesDir()), "G7 로그 공유"); }
 
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (pendingExport != null) out.putString("pendingExport", pendingExport.getName());
+    }
+
     private File dumpRoot() { File xd = getExternalFilesDir(null); return new File(xd != null ? xd : getFilesDir(), "g7_gpudump"); }
 
     /** Lists the dump runs (newest first, the newest preselected) and builds the ZIP of the chosen one: its dump files plus the VM log and the lagfx log of that run. Only after the run has ended; nothing is deleted. */
@@ -661,11 +670,14 @@ public class G7ExecActivity extends Activity {
     }
 
     private void buildExport(final G7ExecDumpExport.DumpRun dr, final boolean save) {
+        // the dialog may have stayed open while a boot started: a run in progress is still writing its logs and dump, so re-check right now, not only when the dialog opened
+        if (G7CloneBoot.hasLive() || G7CloneProgress.current().running) { status.setText("복제본 부팅이 실행 중입니다. 실행이 끝난 뒤에 내보낼 수 있습니다."); return; }
         status.setText("ZIP을 만드는 중… (" + dr.id + ")");
         final String ver = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ", SDK " + android.os.Build.VERSION.SDK_INT;
         new Thread(() -> {
             String msg; File zip = null;
             try {
+                if (G7CloneBoot.hasLive()) throw new IOException("a boot started while the export was being prepared");
                 G7ExecDumpExport.Result r = G7ExecDumpExport.export(getFilesDir(), dr, getPackageName() + " " + BuildConfig.G7_BUILD_KIND, G7ExecLauncher.HENGE_SHA, G7ExecLauncher.LAGFX_SHA, ver);
                 zip = r.zip; msg = "내보내기 ZIP 완료: " + r.message;
             } catch (IOException | RuntimeException e) { msg = "내보내기 실패: " + e.getClass().getSimpleName() + " " + e.getMessage(); }

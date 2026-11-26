@@ -45,6 +45,8 @@ public final class G7CloneBoot {
      *  log, and at trace level (the guest's GPU commands). Not an HV_ name, so the runner's scrub does not touch it. The folder comes from the --shm path, which is always in the app's files folder. */
     /** Experimental GPU switches chosen on the start dialog (read when the runner is started; default off). gpuExec = LAGFX_ARM64_EXEC=1 (really execute the guest's Render/Blit commands on Vulkan); gpuDumpDir != null =
      *  LAGFX_ARM64_DUMP=1 plus LAGFX_ARM64_DUMP_DIR (the library saves the guest's pipeline/shader data there, size-capped, new files only). */
+    /** Name of the VM log (g7_cboot_*) of the run being started; written to run-info.txt so the export needs no time matching. */
+    static volatile String vmLogName = "";
     static volatile boolean gpuExec = false;
     static volatile File gpuDumpDir = null;
 
@@ -68,7 +70,7 @@ public final class G7CloneBoot {
                 env.put("LAGFX_ARM64_DUMP", "1");
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
                 try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
-                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\ngpu_exec=" + gpuExec + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
+                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
                     java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
                 } catch (java.io.IOException | RuntimeException e) { note.append("(run-info.txt not written: ").append(e.getClass().getSimpleName()).append(") "); }
                 note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");
@@ -280,6 +282,7 @@ public final class G7CloneBoot {
             String bad = G7Clone.validate(cdir, pdir, ecid);
             if (bad != null) return new Start(false, "이 복제본으로 부팅하지 않았습니다: " + bad, null);
             File log = new File(filesDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + LOG_SUFFIX);
+            vmLogName = log.getName();
             OutputStream logOut;
             try { logOut = Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE); }
             catch (IOException e) { return new Start(false, "로그 파일을 열지 못해 시작하지 않았습니다.", null); }

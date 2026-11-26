@@ -26,14 +26,21 @@ public class G7ExecDumpExportTest {
             java.io.InputStream in = z.getInputStream(z.getEntry("export-info.txt")); info = new String(in.readAllBytes(), "UTF-8");
         }
         check("zip: dump files, both logs of THIS run (not the other run's), manifest", n.equals(new TreeSet<>(Arrays.asList("dump/sub/a.bin", "dump/x.spv", "export-info.txt", String.format("logs/g7_cboot_%013d.txt", ms - 800), String.format("logs/g7_lagfx_%013d.txt", ms + 120)))));
-        check("manifest names run id and both commits", info.contains("run_id=" + id) && info.contains("henge_commit=henge-sha") && info.contains("libapplegfx_vulkan_commit=lagfx-sha"));
+        check("manifest names run id and both commits", info.contains("run_id=" + id) && info.contains("exporter_henge_commit=henge-sha") && info.contains("exporter_libapplegfx_vulkan_commit=lagfx-sha") && info.contains("run_henge_commit=UNKNOWN") && info.contains("run_libapplegfx_vulkan_commit=UNKNOWN"));   // no run-info: the run's builds are UNKNOWN, never the exporter's
         check("originals untouched", new File(run, "x.spv").length() == 1 && new File(fd, String.format("g7_lagfx_%013d.txt", ms + 120)).isFile());
         G7ExecDumpExport.Result r2 = G7ExecDumpExport.export(fd, rs.get(0), "v", "h", "l", "d");
         check("a second export never replaces the first", !r2.zip.equals(r.zip) && r.zip.isFile() && r2.zip.getName().endsWith("-2.zip") && G7ExecLauncher.logFile(fd, r2.zip.getName()) != null);
         // a newer APK's run-info.txt names the log exactly
-        Files.write(new File(run, G7ExecDumpExport.INFO).toPath(), ("lagfx_log=" + String.format("g7_lagfx_%013d.txt", ms + 900000) + "\n").getBytes());
+        Files.write(new File(fd, String.format("g7_cboot_%013d.txt", ms - 90000)).toPath(), "C2".getBytes());   // the VM log run-info names (older than the time window would pick)
+        Files.write(new File(run, G7ExecDumpExport.INFO).toPath(), ("lagfx_log=" + String.format("g7_lagfx_%013d.txt", ms + 900000) + "\nvm_log=" + String.format("g7_cboot_%013d.txt", ms - 90000) + "\nhenge_commit=RUNHENGE\nlagfx_commit=RUNLAGFX\n").getBytes());
         G7ExecDumpExport.Result r3 = G7ExecDumpExport.export(fd, G7ExecDumpExport.listRuns(root).get(0), "v", "h", "l", "d");
-        try (ZipFile z = new ZipFile(r3.zip)) { check("run-info.txt wins over time matching", z.getEntry(String.format("logs/g7_lagfx_%013d.txt", ms + 900000)) != null && z.getEntry(String.format("logs/g7_lagfx_%013d.txt", ms + 120)) == null); }
+        String info3;
+        try (ZipFile z = new ZipFile(r3.zip)) {
+            check("run-info.txt wins over time matching", z.getEntry(String.format("logs/g7_lagfx_%013d.txt", ms + 900000)) != null && z.getEntry(String.format("logs/g7_lagfx_%013d.txt", ms + 120)) == null);
+            check("the VM log named by run-info.txt is the one exported", z.getEntry(String.format("logs/g7_cboot_%013d.txt", ms - 90000)) != null && z.getEntry(String.format("logs/g7_cboot_%013d.txt", ms - 800)) == null);
+            info3 = new String(z.getInputStream(z.getEntry("export-info.txt")).readAllBytes(), "UTF-8");
+        }
+        check("manifest: the run's builds come from run-info.txt, the exporter's are separate", info3.contains("run_henge_commit=RUNHENGE") && info3.contains("run_libapplegfx_vulkan_commit=RUNLAGFX") && info3.contains("exporter_henge_commit=h") && info3.contains("exporter_libapplegfx_vulkan_commit=l"));
         System.out.println(failed == 0 ? "G7DUMPEXPORT OK" : "G7DUMPEXPORT FAILED " + failed);
         System.exit(failed == 0 ? 0 : 1);
     }

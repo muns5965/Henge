@@ -102,7 +102,10 @@ final class G7ExecDumpExport {
         if (named != null) lagfx = G7ExecLauncher.logFile(filesDir, named);
         how = lagfx != null ? "run-info.txt" : "시간 일치(옛 APK의 덤프 또는 run-info 없음)";
         if (lagfx == null) lagfx = matchLog(filesDir, "g7_lagfx_", run.ms, LOG_MATCH_MS, LOG_MATCH_MS);
-        cboot = matchLog(filesDir, "g7_cboot_", run.ms, CBOOT_BEFORE_MS, 2_000);   // the VM log is opened just before the runner starts
+        String vmNamed = info(run.dir, "vm_log");
+        if (vmNamed != null) cboot = G7ExecLauncher.logFile(filesDir, vmNamed);
+        String vmHow = cboot != null ? "run-info.txt" : "time";
+        if (cboot == null) cboot = matchLog(filesDir, "g7_cboot_", run.ms, CBOOT_BEFORE_MS, 2_000);   // older runs: the VM log is opened just before the runner starts
         File zip = null;
         for (int n = 1; n <= 99 && zip == null; n++) {
             File c = new File(filesDir, "g7_export_" + run.id + (n == 1 ? "" : "-" + n) + ".zip");
@@ -115,14 +118,17 @@ final class G7ExecDumpExport {
         m.append("Henge GPU dump export\n");
         m.append("run_id=").append(run.id).append('\n');
         m.append("run_started_local_ms=").append(run.ms).append('\n');
-        m.append("henge_commit=").append(hengeSha).append('\n');
-        m.append("libapplegfx_vulkan_commit=").append(lagfxSha).append('\n');
+        String runHenge = info(run.dir, "henge_commit"), runLagfx = info(run.dir, "lagfx_commit");
+        m.append("run_henge_commit=").append(runHenge == null ? "UNKNOWN" : runHenge).append("   (the build that PRODUCED this run, from run-info.txt)\n");
+        m.append("run_libapplegfx_vulkan_commit=").append(runLagfx == null ? "UNKNOWN" : runLagfx).append('\n');
+        m.append("exporter_henge_commit=").append(hengeSha).append("   (the build that made this ZIP; may differ from the run's)\n");
+        m.append("exporter_libapplegfx_vulkan_commit=").append(lagfxSha).append('\n');
         m.append("app_version=").append(appVersion).append('\n');
         m.append("device=").append(device).append('\n');
         m.append("exported_at_ms=").append(System.currentTimeMillis()).append('\n');
         m.append("dump_files=").append(files.size()).append(" dump_bytes=").append(run.bytes).append('\n');
         m.append("lagfx_log=").append(lagfx == null ? "NONE FOUND" : lagfx.getName()).append(" (matched by ").append(how).append(")\n");
-        m.append("vm_log=").append(cboot == null ? "NONE FOUND" : cboot.getName()).append(" (matched by time: g7_cboot_ log closest to the run folder, up to 2 min before it)\n");
+        m.append("vm_log=").append(cboot == null ? "NONE FOUND" : cboot.getName()).append(" (matched by ").append(vmHow).append(cboot != null && "time".equals(vmHow) ? ": g7_cboot_ log closest to the run folder, up to 2 min before it" : "").append(")\n");
         m.append("note=originals are not deleted or changed; the app keeps its own copies\n");
         try (ZipOutputStream z = new ZipOutputStream(Files.newOutputStream(zip.toPath(), StandardOpenOption.CREATE_NEW))) {
             put(z, "export-info.txt", m.toString().getBytes(StandardCharsets.UTF_8));

@@ -17,12 +17,13 @@ def apk(name, files):
 good = elf(183, b"G7RUN RESULT g7-result: ")
 cb = elf(183, b"ui_runner_vm_clone")
 CB = "lib/arm64-v8a/libg7cloneboot.so"
+PR = "lib/arm64-v8a/libg7pipelinerepro.so"; pr = elf(183, b"pipeline-repro")
 apk("general", {"classes.dex": b"dex\nMainActivity G7ProbeLauncher", "lib/arm64-v8a/libg7probe.so": elf(183)})
 apk("general_lib", {"classes.dex": b"dex", "lib/arm64-v8a/libg7runner.so": good})
 apk("general_cls", {"classes.dex": b"dex G7ExecLauncher"})
 OFF = b" G7-BUILD-KIND:EXEC-OFF"; ON = b" G7-BUILD-KIND:START-ON"
-apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
-apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
+apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr})
+apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr})
 apk("exec_with_on", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
 apk("exec_nomarker", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good, CB: cb})
 apk("start_with_off", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb})

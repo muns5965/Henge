@@ -27,6 +27,7 @@ case $M in
     [ "$has_lib" = 1 ] || bad "the execution APK does not contain libg7runner.so"
     [ "$has_cls" != 0 ] || bad "the execution APK does not contain the launcher/activity"
     [ "$has_cb" = 1 ] || bad "the execution APK does not contain libg7cloneboot.so"
+    echo "$L" | grep -q "lib/arm64-v8a/libg7pipelinerepro.so" || bad "the execution APK does not contain libg7pipelinerepro.so"
     if [ "$has_cb" = 1 ]; then
       unzip -q -o "$APK" lib/arm64-v8a/libg7cloneboot.so -d "$D"
       "$READELF" -h "$D/lib/arm64-v8a/libg7cloneboot.so" 2>/dev/null | grep -q "AArch64" || bad "libg7cloneboot.so is not AArch64"

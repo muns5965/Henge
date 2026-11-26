@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 18c73153f0ef8a52d9d0097a3eb4c6507976722e   # research/android-pfn-shift: + i1 constants / any-all fix, undef fail-closed
+  LAGFX_SHA: 779802ad6def91efc93482e3e96f5c43fdb20aab   # research/g7-integ: gather budget, stage-link, tile gather, display counters, texture counters, pipeline repro
 
 jobs:
   apk:
@@ -97,6 +97,14 @@ jobs:
           cp build-lagfx-clone/ui_runner_vm_clone android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so
           "$T/llvm-readelf" -d android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so | grep NEEDED
           echo "- lagfx clone runner: linked with libapplegfx-vulkan $LAGFX_SHA (static, LAGFX_NO_PROCESS), NEEDED listed above, lagfx static check passed, NOT run" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the no-VM GPU pipeline repro tool (examples/pipeline-repro.c; link only, NOT run)
+        run: |
+          T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          D=android/app/src/g7exec/jniLibs/arm64-v8a
+          mkdir -p "$D"
+          "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -pie -DLAGFX_NO_PROCESS -I"$LAGFX_DIR/include" "$LAGFX_DIR/examples/pipeline-repro.c" "$LAGFX_A" -L"$VULKAN_LIBDIR" -lvulkan -llog -lm -o "$D/libg7pipelinerepro.so"
+          "$T/llvm-readelf" -d "$D/libg7pipelinerepro.so" | grep NEEDED
+          echo "- pipeline repro tool (libg7pipelinerepro.so): libapplegfx-vulkan $LAGFX_SHA, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"

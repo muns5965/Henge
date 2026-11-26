@@ -147,6 +147,8 @@ public class G7ExecActivity extends Activity {
         });
         cbDump = new Button(this); cbDump.setText("GPU 덤프 + 로그 ZIP 내보내기(최신 실행 기본, 이전 실행 선택 가능)"); root.addView(cbDump);
         cbDump.setOnClickListener(v -> chooseDumpExport());
+        Button pipeRepro = new Button(this); pipeRepro.setText("GPU 파이프라인 재현 시험(VM 부팅 없음)"); root.addView(pipeRepro);
+        pipeRepro.setOnClickListener(v -> choosePipeRepro());
         cbCopy = new Button(this); cbCopy.setText("복제본 부팅 로그 끝부분 복사"); root.addView(cbCopy);
         add(root, "아래 상자는 '복제본 부팅'의 상태·로그입니다(복원 로그와 다름). 반복되는 USB 진단 줄은 화면에서만 묶어 보이며 로그 파일에는 모두 남습니다.", 12);
         cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE); cbMon.setTextIsSelectable(true);
@@ -694,6 +696,33 @@ public class G7ExecActivity extends Activity {
     }
 
     private File dumpRoot() { File xd = getExternalFilesDir(null); return new File(xd != null ? xd : getFilesDir(), "g7_gpudump"); }
+
+    /** GPU pipeline reproduction without a VM (G7PipeRepro): picks a pipefail_* bundle saved by a GPU-dump run, rebuilds that pipeline on this phone's Vulkan device, shows and saves the report. No clone, ROM or disk is touched. */
+    private void choosePipeRepro() {
+        if (G7CloneBoot.hasLive()) { status.setText("복제본 부팅이 실행 중입니다. 끝난 뒤에 재현 시험을 하세요(GPU를 함께 쓰면 결과를 해석하기 어렵습니다)."); return; }
+        if (!G7PipeRepro.isPackaged(nativeDirRef)) { status.setText("이 APK에는 재현 실행 파일(" + G7PipeRepro.LIB_NAME + ")이 없습니다."); return; }
+        final List<File> bundles = G7PipeRepro.listBundles(dumpRoot());
+        if (bundles.isEmpty()) { status.setText("재현할 번들이 없습니다. 부팅 대화상자에서 '셰이더·파이프라인 저장'을 켜고 실행하면, 파이프라인 생성이 실패한 경우에만 " + dumpRoot() + "/run-*/pipefail_* 폴더가 생깁니다."); return; }
+        final String[] names = new String[bundles.size()];
+        for (int i = 0; i < names.length; i++) names[i] = bundles.get(i).getParentFile().getName() + " / " + bundles.get(i).getName();
+        final int[] pick = { 0 };
+        final android.widget.CheckBox mx = new android.widget.CheckBox(this); mx.setText("변형 시험(Matrix) 포함: 진단 전용, 각 변형은 원본에서 따로 시작, 정상 실행에는 적용되지 않음");
+        new android.app.AlertDialog.Builder(this).setTitle("재현할 실패 번들").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(mx)
+            .setNegativeButton("취소", null).setPositiveButton("재현 시작", (d, w) -> {
+                final File b = bundles.get(pick[0]); final boolean matrix = mx.isChecked();
+                status.setText("재현 중: " + b.getName() + (matrix ? " (Matrix 포함)" : "") + " …(최대 3분)");
+                new Thread(() -> {
+                    final G7PipeRepro.Result r = G7PipeRepro.run(nativeDirRef, b, matrix, getFilesDir());
+                    runOnUiThread(() -> {
+                        status.setText("재현 종료(코드 " + r.exitCode + ")" + (r.file != null ? ", 저장: " + r.file.getName() : ""));
+                        android.widget.TextView tv = new android.widget.TextView(this); tv.setText(r.text); tv.setTextIsSelectable(true); tv.setTextSize(11); tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+                        ScrollView sv = new ScrollView(this); sv.addView(tv);
+                        new android.app.AlertDialog.Builder(this).setTitle("GPU 파이프라인 재현 결과").setView(sv).setPositiveButton("닫기", null)
+                            .setNeutralButton("복사", (dd, ww) -> { android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE); if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("pipelinerepro", r.text)); }).show();
+                    });
+                }, "g7-pipe-repro").start();
+            }).show();
+    }
 
     /** Lists the dump runs (newest first, the newest preselected) and builds the ZIP of the chosen one: its dump files plus the VM log and the lagfx log of that run. Only after the run has ended; nothing is deleted. */
     private void chooseDumpExport() {

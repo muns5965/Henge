@@ -24,6 +24,7 @@ void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value);
 void hv_pvg_lagfx_poll(HvPvgLagfx *g);
 void hv_pvg_lagfx_root_ptrs(HvPvgLagfx *g, uint32_t *wp, uint32_t *rp);
 /* Where the library's Display ops (1/2/8) go: raw command words and byte length, 4-byte aligned. Set once, before the guest runs. */
+void hv_pvg_lagfx_set_surface_hook(HvPvgLagfx *g, const uint8_t *(*hook)(void *opaque, uint32_t mapping), void *opaque);
 void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, const uint32_t *cmd, uint32_t len), void *opaque);
 
 #endif

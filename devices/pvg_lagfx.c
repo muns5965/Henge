@@ -17,6 +17,8 @@ struct HvPvgLagfx {
     char *error;
     void (*display_hook)(void *opaque, const uint32_t *cmd, uint32_t len);
     void *display_opaque;
+    const uint8_t *(*surface_hook)(void *opaque, uint32_t mapping);
+    void *surface_opaque;
     volatile int closing;
 };
 
@@ -118,6 +120,25 @@ static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cm
     g->display_hook(g->display_opaque, aligned, len);
 }
 
+/* The library asks for a surface descriptor (mapping id -> the 0x400-byte slot the guest's mapper table points at) when it builds a render target that
+   lives in a guest display surface. The slot is copied; nothing is kept and the library is not re-entered. */
+static bool cb_get_surface_desc(void *opaque, uint32_t mapping_id, uint8_t *out, size_t cap, size_t *len_out) {
+    HvPvgLagfx *g = opaque;
+    if (!g || !out || !g->surface_hook) return false;
+    const uint8_t *d = g->surface_hook(g->surface_opaque, mapping_id);
+    if (!d) return false;
+    size_t n = cap < 0x400 ? cap : 0x400;
+    memcpy(out, d, n);
+    if (len_out) *len_out = n;
+    return true;
+}
+
+void hv_pvg_lagfx_set_surface_hook(HvPvgLagfx *g, const uint8_t *(*hook)(void *opaque, uint32_t mapping), void *opaque) {
+    if (!g) return;
+    g->surface_hook = hook;
+    g->surface_opaque = opaque;
+}
+
 void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, const uint32_t *cmd, uint32_t len), void *opaque) {
     if (!g) return;
     g->display_hook = hook;
@@ -140,6 +161,7 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
     d.shell.write_memory = cb_write_memory;
     d.shell.raise_interrupt = cb_raise_interrupt;
     d.shell.display_command = cb_display_command;
+    d.shell.get_surface_desc = cb_get_surface_desc;
     /* This machine's guest is the ARM64 vmapple one: cumulative root-ring pointer, Apple's Device Info table, 0x25/0x20 as Apple's pvg_metal.m reads them. */
     d.protocol_mode = LAGFX_PROTO_ARM64_VMAPPLE;
     d.mmio_region_size = 0x10000;   /* the gfx window the machine registered */

@@ -168,8 +168,8 @@ public final class G7Storage {
     public static boolean setPatternMarker(File priv, boolean on) {
         Path p = new File(priv, "pvg_test_pattern").toPath();
         try {
-            if (on) { if (!exists(p)) Files.createFile(p); }
-            else if (exists(p) && regular(p)) Files.delete(p);
+            if (exists(p) && !regular(p)) return false;
+            Files.write(p, new byte[] { (byte) (on ? '1' : '0') });
             return true;
         } catch (IOException e) { return false; }
     }

@@ -208,14 +208,16 @@ int main(int argc, char **argv) {
     hv_usb_probe_enable_getenv(usb_mode >= 3);
     /* Mode 4 = mode 3 plus the fixed auto-boot sequence (host/usb_host.c autoboot_fix); the only write this binary can make to the recovery environment. */
     hv_usb_probe_enable_autoboot_fix(usb_mode >= 4);
-    /* Diagnostic, default OFF: the display test pattern (devices/pvg_lite.c) is switched on only if the plain file <ecid-dir>/pvg_test_pattern exists (read-only access() check; this
+    /* Diagnostic, default OFF: the display test pattern (devices/pvg_lite.c) is switched on only if the plain file <ecid-dir>/pvg_test_pattern starts with '1' (read-only check; this
        runner scrubs every HV_* variable and takes no new option, so a marker file is the switch). Nothing is written by this runner. */
     {
         char marker[PATH_MAX + 32];
         snprintf(marker, sizeof marker, "%s/pvg_test_pattern", ecid_dir);
-        int tp = access(marker, F_OK) == 0;
+        int tp = 0;
+        FILE *mf = fopen(marker, "r");   /* ON only if the file exists and its first byte is '1' */
+        if (mf) { int c = fgetc(mf); tp = (c == '1'); fclose(mf); }
         hv_pvg_lite_set_test_pattern(tp);
-        printf("ui_runner_vm_clone display test pattern: %s\n", tp ? "ON (marker file pvg_test_pattern present; the guest's swapped surface is overwritten by a diagnostic picture)" : "off");
+        printf("ui_runner_vm_clone display test pattern: %s\n", tp ? "ON (marker file pvg_test_pattern says 1; the guest's swapped surface is overwritten by a diagnostic picture)" : "off");
     }
     char why[160], line[400];
     if (clone_boot_config_ok(&cfg, ecid, 1, why, sizeof why) != 0) {

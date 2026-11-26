@@ -18,6 +18,11 @@ void hv_pvg_lite_poll(HvPvgLite *p);
 /* The newest frame, BGRA, width * 4 bytes per row, if drawing has produced one. Returns 0 if so. */
 int hv_pvg_lite_frame(HvPvgLite *p, const uint8_t **pixels, uint32_t *width, uint32_t *height);
 
+/* Diagnostic, default OFF: while on, every display_swap() whose surface is 'BGRA' and at least 320x200 gets a colour-bar picture with a per-swap
+   counter written into its guest memory (see devices/pvg_lite.c). Set by the clone runner only when its marker file exists. Not thread-safe to flip
+   while the machine runs: call before hv_vm_create. */
+void hv_pvg_lite_set_test_pattern(int on);
+
 /* Between the device and its Metal side (pvg_metal.m). */
 typedef struct HvPvgMetal HvPvgMetal;
 HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite);

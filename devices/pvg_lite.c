@@ -531,6 +531,53 @@ int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, ui
     return rc;
 }
 
+/* [2026-11-26 diagnostic, default OFF] The display-path test pattern: when hv_pvg_lite_set_test_pattern(1) was called (the clone runner does so only
+   if the marker file <ecid-dir>/pvg_test_pattern exists), every display_swap() whose mapping decodes to a 'BGRA' surface of at least 320x200 gets a
+   recognisable picture written INTO the surface's guest pages: 8 colour bars over the top 80% and, below, a 16-cell binary counter of the swap number
+   (white = 1, grey = 0) that changes on every swap. It proves guest swap -> display_swap -> surface -> hv_pvg_lite_live_surface_bgra -> frame shown,
+   independent of any GPU rendering. Never runs with the flag off. Called with the device lock held (display_swap's own context). */
+static int g_test_pattern;
+void hv_pvg_lite_set_test_pattern(int on) { g_test_pattern = on != 0; }
+
+static int surface_write(HvPvgLite *p, const uint32_t *pages, uint64_t npages, uint64_t off, const void *from, uint64_t n) {
+    const uint8_t *s = from;
+    while (n) {
+        uint64_t pg = off >> 14, o = off & 0x3fff, c = 0x4000 - o;
+        if (c > n) c = n;
+        if (pg >= npages || !(pages[pg] & 1)) return -1;
+        uint8_t *q = hv_phys_ptr(p->m, ((uint64_t)(pages[pg] & ~1u) << 12) + o, c);
+        if (!q) return -1;
+        memcpy(q, s, c);
+        s += c, off += c, n -= c;
+    }
+    return 0;
+}
+
+static void test_pattern_write(HvPvgLite *p, uint64_t mapping) {
+    uint32_t fourcc, first;
+    uint64_t sw, sh, row, npages;
+    const uint32_t *pages;
+    if (decode_surface(p, mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "pattern") != 0) return;
+    if (fourcc != HV_FOURCC_BGRA || sw < 320 || sh < 200) return;
+    static const uint32_t bars[8] = { 0xffffffffu, 0xffffff00u, 0xff00ffffu, 0xff00ff00u, 0xffff00ffu, 0xffff0000u, 0xff0000ffu, 0xff303030u }; /* BGRA as a little-endian word: A R G B */
+    static uint32_t bar_row[8192], cnt_row[8192];
+    for (uint64_t x = 0; x < sw; x++) bar_row[x] = bars[x * 8 / sw];
+    uint32_t n = (uint32_t)p->swaps;
+    for (uint64_t x = 0; x < sw; x++) {
+        uint32_t bit = (uint32_t)(x * 16 / sw), on = (n >> (15 - bit)) & 1;
+        uint64_t cell0 = (uint64_t)bit * sw / 16;
+        cnt_row[x] = x - cell0 < 2 ? 0xff000000u : on ? 0xffffffffu : 0xff404040u; /* a 2-pixel black gap opens each cell */
+    }
+    uint64_t split = sh * 8 / 10;
+    for (uint64_t y = 0; y < sh; y++)
+        if (surface_write(p, pages, npages, first + y * row, y < split ? (const void *)bar_row : (const void *)cnt_row, sw * 4)) return;
+    static int logged;
+    if (logged < 3) {
+        logged++;
+        fprintf(stderr, "hengevm: display: test pattern written to mapping %llu %llux%llu\n", (unsigned long long)mapping, (unsigned long long)sw, (unsigned long long)sh);
+    }
+}
+
 static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;
@@ -583,6 +630,7 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     }
     p->swaps++;
     p->last_mapping = mapping;
+    if (g_test_pattern) test_pattern_write(p, mapping);
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);

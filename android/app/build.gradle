@@ -69,6 +69,7 @@ android {
             java.srcDirs = ['src/g7exec/java']
             manifest.srcFile 'src/g7exec/AndroidManifest.xml'
             jniLibs.srcDirs = ['src/g7exec/jniLibs']
+            assets.srcDirs = ['src/g7exec/assets']
         }
     }
 

@@ -1,0 +1,41 @@
+# /tmp/redfiles layout: flat directory, copy ALL files to the device dir named by LAGFX_PIPELINE_MATRIX_DIR (or the bundle dir).
+# name = <fs hash>.<m8|m8c|red.NAME>.fs.spv ; hash = sha16 of the bundle fs.spv. Variants whose output equals the input or another variant of the same hash are omitted (deduped).
+# spirv-opt -O/-Os/--legalize-hlsl outputs are ~9.5 MB each and omitted except ce5c...red.O; Os/hlsl/strip/etc. not shipped when unchanged or oversized.
+5c40b57040e8bc042ce924ae4eef7d35939c86b3a33a3dbda44649f4c00333d5  05e8e53f8e9cad84.m8.fs.spv
+d62c9dcad7962e95af9bdfe0c2f334432c39645d6c64780db8d07b58fac3bab3  05e8e53f8e9cad84.m8c.fs.spv
+d0dc3c166c8b79ffd4b518c3ebf190b3c2940ca2c314a560ee957d8804e40e24  05e8e53f8e9cad84.red.asm.fs.spv
+796b169fab0890af15d92dae29af5a7f3c488f1761685b35f5beb7a063622ff7  05e8e53f8e9cad84.red.inline.fs.spv
+ca6b67a746b215bfbc0687a367001c89e8f72716fa012d5ae6d438986f4e96a0  05e8e53f8e9cad84.red.local-single-block.fs.spv
+3646c7007d135b300d55b3c9e7c74b2926818372ef7245f1eedac5508c82cba5  05e8e53f8e9cad84.red.locals.fs.spv
+004a8e3188661a7efea0b601a60e8b268f6490ba2a2b13341ee3a6059a91c6ca  05e8e53f8e9cad84.red.scalar.fs.spv
+277e9f75f970a096b20a5d7114a89d8731e2b6a2a4de4801d6f4aa3cccb76e5b  05e8e53f8e9cad84.red.ssa.fs.spv
+8b7e32e38302362ae106dc605425d38250f3df962bed80019dd7893d32064ce1  05e8e53f8e9cad84.red.u2.fs.spv
+93248ee41aa97efe4cb9bf9f48f46232c7a5eed988caf11a808d666a7dd82a6a  05e8e53f8e9cad84.red.u3.fs.spv
+9659c2a379be814fceaf332a8b347c76cd80f2fdb6459ccc84c30057f67954ef  05e8e53f8e9cad84.red.u5.fs.spv
+65e8f5f5b230cadaa68003c08eba380a36699f7b593bdf8b93d0d22e6c7bd398  05e8e53f8e9cad84.red.unify.fs.spv
+5c40b57040e8bc042ce924ae4eef7d35939c86b3a33a3dbda44649f4c00333d5  6a6414ac78d724c1.m8.fs.spv
+d62c9dcad7962e95af9bdfe0c2f334432c39645d6c64780db8d07b58fac3bab3  6a6414ac78d724c1.m8c.fs.spv
+0480efeb065a77e101c67576e73d639af9f030ca0b8cf77cc2b785e497263e7e  6a6414ac78d724c1.red.asm.fs.spv
+32c85ede1d0f46e151d64d22c72881b54b56849e12ec37fdce784c254a7b9212  6a6414ac78d724c1.red.inline.fs.spv
+1adf74a86a2a3cd55843a2ff271de6dc1f5c5a31b91a6311ec7e741855e5e3a2  6a6414ac78d724c1.red.local-single-block.fs.spv
+8d7a855ce3be804732e2dd4f173ae24ee97b7fb950efa37e925470dc917d3262  6a6414ac78d724c1.red.locals.fs.spv
+89671933c624007f2f734ceb7c0fba9160627d994dfbe23470efd34fc542b99c  6a6414ac78d724c1.red.scalar.fs.spv
+71b3a52691f2df95163b0c5a6b92cf3a60b3a775732f8a4ecf1a456ba3666a92  6a6414ac78d724c1.red.ssa.fs.spv
+6ce8903b37d1a5f5cdff1aa0e5b0713052b04fbb21e46e7343a6da519b57a1da  6a6414ac78d724c1.red.u2.fs.spv
+5552765b6e784df74073f75b64c0039a7d85f4b5b4d409175071df4704e9d574  6a6414ac78d724c1.red.u3.fs.spv
+092fbf772b5a441ad21f3be1c723411f5474540297301c2ce429d9d571616e01  6a6414ac78d724c1.red.u5.fs.spv
+b49dbe9f064f64622e58080a73338d22f0fb56f3390c4d95e26b7a6755fa254e  6a6414ac78d724c1.red.unify.fs.spv
+5c40b57040e8bc042ce924ae4eef7d35939c86b3a33a3dbda44649f4c00333d5  ce5c70c189b74076.m8.fs.spv
+d62c9dcad7962e95af9bdfe0c2f334432c39645d6c64780db8d07b58fac3bab3  ce5c70c189b74076.m8c.fs.spv
+223ac25e772251f64427ad150286eb5749cb7728c81e6f0d06e1d73a63dfb938  ce5c70c189b74076.red.O.fs.spv
+cc032497e57569deb20834cc1ce529beedb88aec4af3ec4ceaae00f0268598b5  ce5c70c189b74076.red.asm.fs.spv
+39438acb501cb5a7f97c5e8be11f530c171bb7b64d3e301dc04afccecc3102ad  ce5c70c189b74076.red.inline.fs.spv
+fade4ed76a132699c451e34d9dc081725bad2c480f66fee29ba7f3781543d7f1  ce5c70c189b74076.red.local-single-block.fs.spv
+15d5d0d6aa726160b95bb5c99fb29a5e83f4bcb021780b4ad28e4cef9ed51202  ce5c70c189b74076.red.locals.fs.spv
+281de25fa713950c5ca2258d3082bf0ee94144228d00590247f0b9cc12637aa8  ce5c70c189b74076.red.scalar.fs.spv
+c9f9f9d603a23d2ead9cb1a5198cb4ca407aa0e2f593cc1ab76c6bbd735e430c  ce5c70c189b74076.red.ssa.fs.spv
+200e4270a27c7d573af65b5d44b721603f9c50cd076d525f60317f730be90dba  ce5c70c189b74076.red.u2.fs.spv
+5243ec05937f26e52c5d83e092111e9d3f0ec8c5deaee2a1683b16f700c061cb  ce5c70c189b74076.red.u3.fs.spv
+f5c31adeb7ea878f39f9ba3aeffd16b5f025b42c63d6b55e84457ef384092bfa  ce5c70c189b74076.red.u5.fs.spv
+df1e862c4d0fa91067ae061e8b9b0f0a59229b33562500b2098ce15ceaa69709  ce5c70c189b74076.red.unify.fs.spv
+# total: 37 files, 25328959 bytes

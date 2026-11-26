@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 42151bdd111d3a8340511551ad6245d1b02d9586   # research/g7-integ2: X04 sample options, constexpr sampler decode fix, -13 pipeline matrix (LAGFX_PIPELINE_MATRIX), X11 integer ops
+  LAGFX_SHA: f48681018a62dfd6d993bf2b92942cb99de6e35f   # research/g7-integ2: vertex-descriptor real-PSO tests, A2Xghfc reduction ladder (pipeline-repro --reduce), X04, constexpr sampler decode, -13 matrix
 
 jobs:
   apk:

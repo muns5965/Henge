@@ -84,9 +84,9 @@ grep -q 'START_LOCK' "$I" || bad "the isolation must hold the start lock"
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }
 [ "$(grep -c 'Files::delete' "$S")" = 1 ] || bad "the storage class has exactly one delete primitive (Files::delete)"
-[ "$(grep -c 'G7Isolation.gate(' "$S")" = 2 ] || bad "both deletions must pass the isolation's gate"
-[ "$(grep -c 'synchronized (G7ExecLauncher.START_LOCK)' "$S")" = 2 ] || bad "both deletions must hold the start lock"
-x=$(grep -nE '\.delete\(|Files\.delete|Files::delete|deleteRecursively|G7Storage\.delete'  $L $A | grep -v 'G7Storage\.delete\(Archives\|Current\)' ); [ -z "$x" ] || { bad "something other than the storage class deletes:"; echo "$x"; }
+[ "$(grep -c 'G7Isolation.gate(' "$S")" = 3 ] || bad "all three deletions must pass the isolation's gate"
+[ "$(grep -c 'synchronized (G7ExecLauncher.START_LOCK)' "$S")" = 3 ] || bad "all three deletions must hold the start lock"
+x=$(grep -nE '\.delete\(|Files\.delete|Files::delete|deleteRecursively|G7Storage\.delete'  $L $A | grep -v 'G7Storage\.delete\(Archives\|Current\|Clone\)' ); [ -z "$x" ] || { bad "something other than the storage class deletes:"; echo "$x"; }
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

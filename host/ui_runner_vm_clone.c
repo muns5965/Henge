@@ -352,6 +352,8 @@ int main(int argc, char **argv) {
     hv_shm_set_state(g_shm, HV_SHM_STOPPING);
     hv_runner_set_ready(g_run, 0);
     hv_runner_close_display(g_run);
+    hv_vm_save_last_frame();   /* the newest PVG surface, as a file next to the GPU dump (a worker thread writes it; nothing happens without LAGFX_ARM64_DUMP_DIR) */
+    hv_vm_frames_flush();
     if (!atomic_load(&g_exited)) hv_vm_stop();
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);

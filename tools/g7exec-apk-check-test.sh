@@ -16,6 +16,8 @@ def apk(name, files):
         for k, v in files.items(): z.writestr(k, v)
 good = elf(183, b"G7RUN RESULT g7-result: ")
 cb = elf(183, b"ui_runner_vm_clone")
+cb_old = elf(183, b"ui_runner_vm_clone")   # a runner without the frame-file writer
+cb = elf(183, b"ui_runner_vm_clone g7_frame_%s_%ux%u.png")
 CB = "lib/arm64-v8a/libg7cloneboot.so"
 PR = "lib/arm64-v8a/libg7pipelinerepro.so"; pr = elf(183, b"pipeline-repro")
 apk("general", {"classes.dex": b"dex\nMainActivity G7ProbeLauncher", "lib/arm64-v8a/libg7probe.so": elf(183)})
@@ -32,6 +34,7 @@ apk("general_cb", {"classes.dex": b"dex", CB: cb})
 apk("exec_nocb", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good})
 apk("exec_cb_x86", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: elf(62, b"ui_runner_vm_clone")})
 apk("exec_cb_wrong", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: elf(183, b"hello")})
+apk("exec_cb_noframes", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb_old, PR: pr})
 apk("general_marker", {"classes.dex": b"dex" + ON})
 apk("start_nolib", {"classes.dex": b"dex G7ExecLauncher" + ON})
 apk("exec_nolib", {"classes.dex": b"dex G7ExecLauncher" + OFF})
@@ -57,6 +60,7 @@ t bad general general_cb
 t bad exec exec_nocb
 t bad exec exec_cb_x86
 t bad exec exec_cb_wrong
+t bad exec exec_cb_noframes
 t bad exec exec_nolib
 t bad exec exec_x86
 t bad exec exec_notrunner

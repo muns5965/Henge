@@ -129,6 +129,9 @@ final class G7ExecDumpExport {
         m.append("dump_files=").append(files.size()).append(" dump_bytes=").append(run.bytes).append('\n');
         m.append("lagfx_log=").append(lagfx == null ? "NONE FOUND" : lagfx.getName()).append(" (matched by ").append(how).append(")\n");
         m.append("vm_log=").append(cboot == null ? "NONE FOUND" : cboot.getName()).append(" (matched by ").append(vmHow).append(cboot != null && "time".equals(vmHow) ? ": g7_cboot_ log closest to the run folder, up to 2 min before it" : "").append(")\n");
+        StringBuilder fr = new StringBuilder(); int nfr = 0;
+        for (File f : files) if (f.getName().startsWith("g7_frame_") && f.getName().endsWith(".png")) { nfr++; fr.append(' ').append(f.getName()).append('(').append(f.length()).append(" B)"); }
+        m.append("frame_files=").append(nfr).append(nfr == 0 ? " (none: the dump folder was off, or no frame was seen)" : " (boot_args_* = the framebuffer XNU's boot_args points at; pvg_surface_* = the guest's PVG surface, n = time series, _last_ = newest at stop):" + fr).append('\n');
         m.append("note=originals are not deleted or changed; the app keeps its own copies\n");
         try (ZipOutputStream z = new ZipOutputStream(Files.newOutputStream(zip.toPath(), StandardOpenOption.CREATE_NEW))) {
             put(z, "export-info.txt", m.toString().getBytes(StandardCharsets.UTF_8));

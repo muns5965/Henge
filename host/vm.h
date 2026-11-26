@@ -195,4 +195,10 @@ typedef struct { uint32_t orig_width, orig_height, orig_stride; } HvScreenCaptur
    own behavior -- this only combines and scales their existing results. */
 int hv_vm_capture_screen(uint8_t *bgra, int width, int height, int *source, HvScreenCaptureInfo *info);
 
+/* DIAGNOSTIC frame files (only when LAGFX_ARM64_DUMP_DIR is set; see host/vm.c): hv_vm_save_last_frame saves the newest PVG surface the display pump read as g7_frame_pvg_surface_last_*.png
+   (call it after hv_runner_close_display, before the machine is stopped; it only copies the pixels, a worker thread writes the file). hv_vm_frames_flush waits (at most ~10 s) until every file
+   that was started is written, so the process may exit. Both do nothing when there is nothing to save. */
+void hv_vm_save_last_frame(void);
+void hv_vm_frames_flush(void);
+
 #endif

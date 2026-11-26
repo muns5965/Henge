@@ -168,19 +168,23 @@ public final class G7CloneBoot {
     /** One picture the runner printed (a downsampled copy of what the machine shows, at most 96x64, RGB) and its pixel-statistics class. The class is an ESTIMATE, not a decision about what is on the screen. */
     public static final class Frame {
         public final int w, h; public final byte[] rgb; public final String cls; public final int nonblackPct, colors;
+        /** The size of the picture the runner copied from (before it made the small copy): the machine's own width x height. */
+        public int srcW, srcH;
         Frame(int w, int h, byte[] rgb, String cls, int pct, int colors) { this.w = w; this.h = h; this.rgb = rgb; this.cls = cls; this.nonblackPct = pct; this.colors = colors; }
     }
-    private static final java.util.regex.Pattern FRAME = java.util.regex.Pattern.compile("^ui_runner_vm_clone FRAME src=\\d+x\\d+ out=(\\d{1,3})x(\\d{1,3}) class=([a-z-]{1,40}) nonblack_pct=(\\d{1,3}) colors=(\\d{1,5}) estimate=pixel-statistics-only data=([0-9a-f]+)$");
+    private static final java.util.regex.Pattern FRAME = java.util.regex.Pattern.compile("^ui_runner_vm_clone FRAME src=(\\d{1,5})x(\\d{1,5}) out=(\\d{1,3})x(\\d{1,3}) class=([a-z-]{1,40}) nonblack_pct=(\\d{1,3}) colors=(\\d{1,5}) estimate=pixel-statistics-only data=([0-9a-f]+)$");
     /** The frame in a runner output line, or null (not a frame line, or a malformed one). */
     static Frame parseFrame(String line) {
         java.util.regex.Matcher m = FRAME.matcher(line);
         if (!m.matches()) return null;
-        int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
-        String hex = m.group(6);
+        int w = Integer.parseInt(m.group(3)), h = Integer.parseInt(m.group(4));
+        String hex = m.group(8);
         if (w < 1 || w > 96 || h < 1 || h > 64 || hex.length() != w * h * 6) return null;
         byte[] rgb = new byte[w * h * 3];
         for (int i = 0; i < rgb.length; i++) rgb[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
-        return new Frame(w, h, rgb, m.group(3), Integer.parseInt(m.group(4)), Integer.parseInt(m.group(5)));
+        Frame fr = new Frame(w, h, rgb, m.group(5), Integer.parseInt(m.group(6)), Integer.parseInt(m.group(7)));
+        fr.srcW = Integer.parseInt(m.group(1)); fr.srcH = Integer.parseInt(m.group(2));
+        return fr;
     }
     private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) disk_flush=(ok|FAILED|not-attempted) macos_boot=not-determined.*$");
 
@@ -328,7 +332,7 @@ public final class G7CloneBoot {
                     if (line.startsWith("ui_runner_vm_clone FRAME ")) {   // the picture is kept in memory for the screen, never written; the log gets a short line without the pixels
                         Frame f = parseFrame(line);
                         run.frameAnsweredMs = System.currentTimeMillis();
-                        if (f != null) { run.frameNote = "마지막 응답: 화면 있음(" + f.cls + ")"; run.frame = f; run.put("g7-frame: " + f.w + "x" + f.h + " class=" + f.cls + " nonblack_pct=" + f.nonblackPct + " colors=" + f.colors + " (estimate from pixel statistics only)\n", false); }
+                        if (f != null) { run.frameNote = "마지막 응답: 화면 있음(" + f.cls + ")"; run.frame = f; run.put("g7-frame: src=" + f.srcW + "x" + f.srcH + " out=" + f.w + "x" + f.h + " class=" + f.cls + " nonblack_pct=" + f.nonblackPct + " colors=" + f.colors + " (estimate from pixel statistics only)\n", false); }
                         else { String rest = line.substring("ui_runner_vm_clone FRAME ".length()); run.frameNote = "러너 응답: 아직 보낼 화면이 없습니다(" + (rest.length() > 120 ? rest.substring(0, 120) : rest) + "). 게스트가 화면을 아직 내지 않았거나 프레임이 0개일 수 있습니다."; run.put("g7-frame: " + run.frameNote + "\n", false); }
                         continue;
                     }

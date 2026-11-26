@@ -32,6 +32,7 @@ case $M in
       unzip -q -o "$APK" lib/arm64-v8a/libg7cloneboot.so -d "$D"
       "$READELF" -h "$D/lib/arm64-v8a/libg7cloneboot.so" 2>/dev/null | grep -q "AArch64" || bad "libg7cloneboot.so is not AArch64"
       grep -a -q "ui_runner_vm_clone" "$D/lib/arm64-v8a/libg7cloneboot.so" || bad "libg7cloneboot.so is not the clone-boot runner"
+      grep -a -q "g7_frame_%s_%ux%u.png" "$D/lib/arm64-v8a/libg7cloneboot.so" || bad "libg7cloneboot.so lacks the frame-file writer (boot_args / PVG surface PNGs; host/vm.c)"
     fi
     if [ "$has_lib" = 1 ]; then
       unzip -q -o "$APK" lib/arm64-v8a/libg7runner.so -d "$D"

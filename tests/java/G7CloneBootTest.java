@@ -103,7 +103,8 @@ public class G7CloneBootTest {
         check("log exists with the g7_cboot_ name, has exit line and stage summary, ECID masked", s.run.logName().matches("g7_cboot_[0-9]{13}\\.txt") && lt.contains("g7-cboot-exit: 0") && !lt.contains(hex) && lt.contains("g7-stage:"));
         check("finished run frees the gate", s.run.finished() && !G7ExecLauncher.hasLiveRun());
         G7CloneBoot.Frame fr = s.run.frame();
-        check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: 4x2 class=mostly-black-small-content"));
+        check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: src=1920x1080 out=4x2 class=mostly-black-small-content"));
+        check("the parsed frame keeps the machine's own size (src) apart from the small copy", fr != null && fr.srcW == 1920 && fr.srcH == 1080);
         check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("디스크 flush: 성공") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
         for (int um = 1; um <= 3; um++) {
             Fake uf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);

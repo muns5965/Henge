@@ -56,8 +56,12 @@ int hv_vm_ncpus(void) { return ncpus; }
    decode_surface() refuses anything over 8192x8192 either way. */
 static uint8_t *pvg_live_buf;
 static size_t pvg_live_cap;
+static void frame_boot_args_first(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride);
+static void frame_pvg_series(const char *kind, const uint8_t *px, uint32_t w, uint32_t h);
+static uint32_t pvg_last_w, pvg_last_h;
 
 /* The guest's own boot framebuffer (boot_args Video), found by scanning RAM. Split out of hv_vm_boot_display() so the PVG-surface branch can fall back to it. 0 on success, -1 if there is none. */
+static unsigned h0(const uint8_t *p, int i) { uint16_t v; memcpy(&v, p + 2 * i, 2); return v; }   /* a 16-bit header field of boot_args (revision, version) */
 static int boot_args_display(HvBootDisplay *d) {
     static uint64_t found; /* RAM offset of boot_args */
     uint8_t *ram = board.ram;
@@ -90,13 +94,16 @@ static int boot_args_display(HvBootDisplay *d) {
         const uint64_t *q = (const uint64_t *)(ram + found);
         {   /* once per boot_args found: the kernel's runtime virtual base, so a kernel address in the pc samples can be turned into a file address (slide = virtBase - the kernel file's __TEXT vmaddr) */
             static uint64_t logged;
-            if (logged != found) { logged = found; fprintf(stderr, "hengevm: boot_args at ram+%#llx: virtBase=%#llx physBase=%#llx (kernel slide = virtBase minus the kernel file's __TEXT address; the file is not here)\n", (unsigned long long)found, (unsigned long long)q[1], (unsigned long long)q[2]); }
+            if (logged != found) { logged = found; fprintf(stderr, "hengevm: boot_args at ram+%#llx: virtBase=%#llx physBase=%#llx (kernel slide = virtBase minus the kernel file's __TEXT address; the file is not here)\n", (unsigned long long)found, (unsigned long long)q[1], (unsigned long long)q[2]);
+                fprintf(stderr, "hengevm: boot_args video (log only; raw words, 8-byte slots 5..10 of boot_args): revision=%u version=%u baseAddr=%#llx display=%#llx rowBytes=%llu width=%llu height=%llu depth=%#llx (depth low byte = bits per pixel; width*4=%llu; baseAddr-RAM base=%#llx)\n",
+                        (unsigned)h0(ram + found, 0), (unsigned)h0(ram + found, 1), (unsigned long long)q[5], (unsigned long long)q[6], (unsigned long long)q[7], (unsigned long long)q[8], (unsigned long long)q[9], (unsigned long long)q[10], (unsigned long long)q[8] * 4ull, (unsigned long long)(q[5] - VMAPPLE_MEM)); }
         }
         uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
         if (q[1] >> 40 == 0xfffffe && w >= 320 && w <= 8192 && hh >= 200 && hh <= 8192 && base >= VMAPPLE_MEM &&
             base - VMAPPLE_MEM + row * hh <= size) {
             d->pixels = ram + (base - VMAPPLE_MEM);
             d->width = (uint32_t)w, d->height = (uint32_t)hh, d->stride = (uint32_t)row, d->source = HV_SCREEN_BOOT_ARGS;
+            frame_boot_args_first(d->pixels, d->width, d->height, d->stride);   /* file only, bounded, written by a worker thread */
             return 0;
         }
     }
@@ -114,11 +121,9 @@ static int bgra_all_black(const uint8_t *px, uint32_t w, uint32_t h) {
 
 /* DIAGNOSTIC (log only, no effect on what is shown): why the PVG surface counts as black or not. Once at the first surface and then about every 30 s of calls (the pump asks ~10x/s), it
    logs the surface size, how many pixels have a non-zero colour byte, the first such pixel and its value, and the largest colour byte. "boot-display-fallback-v2" also tells which build is running. */
-static void save_frame_png(const uint8_t *bgra, uint32_t w, uint32_t h);
 static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
     static unsigned calls;
     if (calls++ % 300) return;
-    save_frame_png(px, w, h);
     size_t n = (size_t)w * h, nz = 0, first = (size_t)-1;
     uint32_t firstv = 0, maxc = 0;
     const uint32_t *p = (const uint32_t *)(const void *)px;
@@ -133,9 +138,19 @@ static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
             w, h, nz, first == (size_t)-1 ? (ssize_t)-1 : (ssize_t)first, w ? (first == (size_t)-1 ? 0 : first % w) : 0, w ? (first == (size_t)-1 ? 0 : first / w) : 0, firstv, maxc);
 }
 
-/* DIAGNOSTIC (file only, no effect on what is shown): the full-resolution frame the shell reads, as an uncompressed PNG, next to the GPU dump (the folder the start dialog
-   passes in LAGFX_ARM64_DUMP_DIR; nothing is written when it is not set). Called from display_diag (~every 30 s); a frame identical to the last saved one is skipped and
-   at most 6 files are written (6 MB each at 1920x1080). Stored deflate blocks, so no compression library is needed. */
+/* DIAGNOSTIC (files only, no effect on what is shown): full-resolution frames as uncompressed PNGs next to the GPU dump (the folder the start dialog passes in LAGFX_ARM64_DUMP_DIR;
+   nothing is written when it is not set). Two kinds, named so they cannot be mixed up:
+     g7_frame_boot_args_first_<W>x<H>.png        the boot_args framebuffer (what XNU's boot_args points at), saved the first time it is found: as early as the engine can see it
+     g7_frame_pvg_surface_<n>_t<S>s_<W>x<H>.png  the guest's PVG surface (hv_pvg_lite_live_surface_bgra), n = 0 first frame, 1..3 the first frame seen at or after +10 s, +30 s, +60 s after the first
+                                                  one, and ..._last_... = the newest one when the runner stops (hv_vm_save_last_frame). (g7_frame_pvg_* for a real GPU frame, which Android never has.)
+   BOUNDS: at most FRAME_MAX_FILES files and FRAME_MAX_BYTES of PNG in a run, no frame over FRAME_MAX_PX pixels, at most FRAME_MAX_INFLIGHT writers at a time.
+   THREADS: the caller (the runner's frame pump, never a vCPU or the GPU thread) only copies the pixels (a memcpy, a few ms, a handful of times per run); the PNG encoding and the file write run on a
+   short-lived worker thread. Stored deflate blocks, so no compression library is needed; written as .part and renamed, so a killed process never leaves a half file under the final name. */
+/* FRAME-FILES-BEGIN (tools/g7-frames-test.sh compiles exactly this region on its own) */
+#define FRAME_MAX_FILES 6
+#define FRAME_MAX_PX (4u << 20)
+#define FRAME_MAX_BYTES (80u << 20)
+#define FRAME_MAX_INFLIGHT 2
 static uint32_t png_crc_table[256];
 static void png_crc_init(void) {
     if (png_crc_table[1]) return;
@@ -149,46 +164,114 @@ static int png_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n)
     uint8_t t[4]; png_be32(t, c);
     return fwrite(h, 1, 8, f) == 8 && (n == 0 || fwrite(data, 1, n, f) == n) && fwrite(t, 1, 4, f) == 4;
 }
-static void save_frame_png(const uint8_t *bgra, uint32_t w, uint32_t h) {
-    static unsigned saved; static uint64_t last_hash;
-    const char *dir = getenv("LAGFX_ARM64_DUMP_DIR");
-    if (!dir || !*dir || saved >= 6 || !w || !h || w > 8192 || h > 8192) return;
-    uint64_t hash = 1469598103934665603ull;
-    for (size_t i = 0; i < (size_t)w * h; i += 7) { hash ^= ((const uint32_t *)(const void *)bgra)[i]; hash *= 1099511628211ull; }
-    if (hash == last_hash) return;
-    size_t raw_n = (size_t)h * (1 + (size_t)w * 3);
-    uint8_t *raw = malloc(raw_n);
-    if (!raw) return;
-    for (uint32_t y = 0; y < h; y++) {
-        uint8_t *o = raw + (size_t)y * (1 + (size_t)w * 3);
-        const uint8_t *in = bgra + (size_t)y * w * 4;
-        *o++ = 0;
-        for (uint32_t x = 0; x < w; x++, in += 4) *o++ = in[2], *o++ = in[1], *o++ = in[0];
-    }
-    char path[512]; snprintf(path, sizeof path, "%s/g7_frame_%u.png", dir, saved);
-    FILE *f = fopen(path, "wb");
-    if (!f) { free(raw); return; }
+/* Writes bgra (w x h, tightly packed) as an RGB PNG with stored deflate blocks, streaming: no second copy of the picture is made. 1 ok. */
+static int png_write_stored(FILE *f, const uint8_t *bgra, uint32_t w, uint32_t h) {
+    const size_t rowlen = 1 + (size_t)w * 3, raw_n = (size_t)h * rowlen, nblk = (raw_n + 65534) / 65535, zn = 2 + raw_n + nblk * 5 + 4;
+    uint8_t *blk = malloc(65535);
+    if (!blk) return 0;
     png_crc_init();
     static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 13, 10, 26, 10 };
     uint8_t ihdr[13]; png_be32(ihdr, w); png_be32(ihdr + 4, h); ihdr[8] = 8, ihdr[9] = 2, ihdr[10] = 0, ihdr[11] = 0, ihdr[12] = 0;
-    uint32_t a = 1, b = 0;
-    for (size_t i = 0; i < raw_n; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
-    size_t nblk = (raw_n + 65534) / 65535, zn = 2 + raw_n + nblk * 5 + 4;
-    uint8_t *z = malloc(zn);
-    int ok = z != NULL;
-    if (ok) {
-        size_t o = 0; z[o++] = 0x78; z[o++] = 0x01;
-        for (size_t off = 0; off < raw_n; off += 65535) {
-            size_t n = raw_n - off < 65535 ? raw_n - off : 65535;
-            z[o++] = off + n >= raw_n ? 1 : 0; z[o++] = (uint8_t)n; z[o++] = (uint8_t)(n >> 8); z[o++] = (uint8_t)~n; z[o++] = (uint8_t)(~n >> 8);
-            memcpy(z + o, raw + off, n); o += n;
+    int ok = fwrite(sig, 1, 8, f) == 8 && png_chunk(f, "IHDR", ihdr, 13);
+    uint8_t hd[8]; png_be32(hd, (uint32_t)zn); memcpy(hd + 4, "IDAT", 4);
+    uint32_t crc = png_crc(0, hd + 4, 4), a = 1, b = 0;
+    ok = ok && fwrite(hd, 1, 8, f) == 8;
+#define EMIT(p, n) do { if (ok) { ok = fwrite((p), 1, (n), f) == (n); crc = png_crc(crc, (p), (n)); } } while (0)
+    { static const uint8_t zh[2] = { 0x78, 0x01 }; EMIT(zh, 2); }
+    size_t y = 0, c = 0, x = 0; int ch = 0;   /* the cursor into the raw scanlines: row, column in the raw row (0 = filter byte), pixel, colour channel */
+    for (size_t off = 0; off < raw_n && ok; off += 65535) {
+        size_t n = raw_n - off < 65535 ? raw_n - off : 65535;
+        uint8_t bh[5] = { off + n >= raw_n ? 1 : 0, (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)~n, (uint8_t)(~n >> 8) };
+        EMIT(bh, 5);
+        for (size_t i = 0; i < n; i++) {
+            uint8_t v;
+            if (c == 0) { v = 0; c = 1; x = 0; ch = 0; }
+            else { v = bgra[(y * w + x) * 4 + (size_t)(2 - ch)]; if (++ch == 3) { ch = 0; x++; } if (++c == rowlen) { c = 0; y++; } }
+            blk[i] = v; a = (a + v) % 65521u; b = (b + a) % 65521u;
         }
-        png_be32(z + o, (b << 16) | a); o += 4;
-        ok = fwrite(sig, 1, 8, f) == 8 && png_chunk(f, "IHDR", ihdr, 13) && png_chunk(f, "IDAT", z, (uint32_t)o) && png_chunk(f, "IEND", NULL, 0);
+        EMIT(blk, n);
     }
-    fclose(f); free(z); free(raw);
-    if (ok) { saved++; last_hash = hash; fprintf(stderr, "hengevm: display: saved full frame %ux%u to %s\n", w, h, path); }
-    else remove(path);
+    uint8_t ad[4]; png_be32(ad, (b << 16) | a); EMIT(ad, 4);
+#undef EMIT
+    uint8_t t[4]; png_be32(t, crc);
+    ok = ok && fwrite(t, 1, 4, f) == 4 && png_chunk(f, "IEND", NULL, 0);
+    free(blk);
+    return ok;
+}
+
+typedef struct { char path[640], label[96]; uint8_t *bgra; uint32_t w, h; size_t est; } FrameJob;
+static _Atomic int frame_inflight;
+static _Atomic unsigned frame_files;
+static _Atomic uint64_t frame_bytes;
+static void *frame_worker(void *arg) {
+    FrameJob *j = arg;
+    char part[sizeof j->path + 8]; snprintf(part, sizeof part, "%s.part", j->path);
+    FILE *f = fopen(part, "wb");
+    int ok = 0;
+    if (f) { ok = png_write_stored(f, j->bgra, j->w, j->h); ok = (fclose(f) == 0) && ok; }
+    if (ok) ok = rename(part, j->path) == 0;
+    if (!ok) remove(part);
+    fprintf(stderr, "hengevm: display: frame file %s src=%ux%u %s %s\n", j->label, j->w, j->h, ok ? "saved" : "FAILED", j->path);
+    free(j->bgra); free(j);
+    atomic_fetch_sub(&frame_inflight, 1);
+    return NULL;
+}
+/* Starts one save. Returns 1 started, 0 not now (the writers are busy: the caller may try again), -1 never (no folder, or a bound reached: counted as spent by the caller). stride in bytes. */
+static int frame_save_async(const char *tag, const char *label, const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
+    const char *dir = getenv("LAGFX_ARM64_DUMP_DIR");
+    if (!dir || !*dir || !px || !w || !h || (uint64_t)w * h > FRAME_MAX_PX || stride < w * 4u) return -1;
+    size_t est = (size_t)h * (1 + (size_t)w * 3) + 200;
+    if (atomic_load(&frame_files) >= FRAME_MAX_FILES || atomic_load(&frame_bytes) + est > FRAME_MAX_BYTES) { fprintf(stderr, "hengevm: display: frame file %s src=%ux%u NOT saved (bound: %u files / %u MiB per run)\n", label, w, h, FRAME_MAX_FILES, FRAME_MAX_BYTES >> 20); return -1; }
+    if (atomic_load(&frame_inflight) >= FRAME_MAX_INFLIGHT) return 0;
+    FrameJob *j = calloc(1, sizeof *j);
+    uint8_t *copy = malloc((size_t)w * h * 4);
+    if (!j || !copy) { free(j); free(copy); return 0; }
+    for (uint32_t y = 0; y < h; y++) memcpy(copy + (size_t)y * w * 4, px + (size_t)y * stride, (size_t)w * 4);
+    j->bgra = copy; j->w = w; j->h = h; j->est = est;
+    snprintf(j->label, sizeof j->label, "%s", label);
+    snprintf(j->path, sizeof j->path, "%s/g7_frame_%s_%ux%u.png", dir, tag, w, h);
+    atomic_fetch_add(&frame_inflight, 1);
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&th, &at, frame_worker, j);
+    pthread_attr_destroy(&at);
+    if (rc != 0) { atomic_fetch_sub(&frame_inflight, 1); free(copy); free(j); return 0; }
+    atomic_fetch_add(&frame_files, 1); atomic_fetch_add(&frame_bytes, est);
+    return 1;
+}
+/* Waits (at most about 10 s) until every started save has finished: a process that exits first would lose the file being written. */
+void hv_vm_frames_flush(void) {
+    for (int i = 0; i < 1000 && atomic_load(&frame_inflight) > 0; i++) usleep(10000);
+}
+
+/* FRAME-FILES-END */
+static double frame_mono(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
+/* The boot_args framebuffer, once: the first time it is found (the logo may not be drawn yet; the PVG series below is the later evidence). */
+static void frame_boot_args_first(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
+    static int done;
+    if (done) return;
+    int r = frame_save_async("boot_args_first", "boot_args(first)", px, w, h, stride);
+    if (r != 0) done = 1;   /* 0 = writers busy: try again at the next call */
+}
+/* The PVG surface time series: first frame, then the first frame at or after +10 s, +30 s, +60 s. */
+static double pvg_t0; static unsigned pvg_next;
+static const double pvg_at[4] = { 0, 10, 30, 60 };
+static void frame_pvg_series(const char *kind, const uint8_t *px, uint32_t w, uint32_t h) {
+    double t = frame_mono();
+    if (pvg_t0 == 0) pvg_t0 = t;
+    if (pvg_next >= 4 || t - pvg_t0 < pvg_at[pvg_next]) return;
+    char tag[96], label[96]; unsigned n = pvg_next;
+    snprintf(tag, sizeof tag, "%s_%u_t%us", kind, n, (unsigned)(t - pvg_t0));
+    snprintf(label, sizeof label, "%s(%u, +%.1fs)", kind, n, t - pvg_t0);
+    int r = frame_save_async(tag, label, px, w, h, w * 4u);
+    if (r != 0) pvg_next++;
+}
+/* The newest PVG surface the pump read, saved as "..._last_..." (the runner calls it after it closed the display, before it stops the machine). Nothing if no PVG surface was ever read or no folder is set. */
+void hv_vm_save_last_frame(void) {
+    if (!pvg_t0 || !pvg_live_buf || !pvg_last_w || !pvg_last_h) return;
+    char tag[96], label[96]; double t = frame_mono() - pvg_t0;
+    snprintf(tag, sizeof tag, "pvg_surface_last_t%us", (unsigned)t);
+    snprintf(label, sizeof label, "pvg_surface(last, +%.1fs)", t);
+    (void)frame_save_async(tag, label, pvg_live_buf, pvg_last_w, pvg_last_h, pvg_last_w * 4u);
 }
 
 int hv_vm_boot_display(HvBootDisplay *d) {
@@ -198,6 +281,7 @@ int hv_vm_boot_display(HvBootDisplay *d) {
     const uint8_t *frame;
     uint32_t fw, fh;
     if (hv_pvg_lite_frame(pvg, &frame, &fw, &fh) == 0) {
+        frame_pvg_series("pvg", frame, fw, fh);
         d->pixels = (uint8_t *)frame;
         d->width = fw, d->height = fh, d->stride = fw * 4, d->source = HV_SCREEN_PVG;
         return 0;
@@ -227,6 +311,8 @@ int hv_vm_boot_display(HvBootDisplay *d) {
         }
         if (rc == 0) {
             display_diag(pvg_live_buf, sw, sh);
+            pvg_last_w = sw; pvg_last_h = sh;
+            frame_pvg_series("pvg_surface", pvg_live_buf, sw, sh);
             if (!bgra_all_black(pvg_live_buf, sw, sh)) {
                 d->pixels = pvg_live_buf;
                 d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;

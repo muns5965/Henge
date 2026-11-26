@@ -95,6 +95,13 @@ grep -q 'note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF")' $XJ/G7CloneBoot.jav
 grep -q 'getBoolean(KEY_REPLAY, false)' $A && grep -q 'putBoolean(KEY_REPLAY, cdc.isChecked())' $A || bad "the Render Replay checkbox must be restored (default false) and saved"
 [ "$(grep -c 'env.put("LAGFX_ARM64_DUMP_DATA"' $XJ/G7CloneBoot.java)" = 1 ] && grep -q 'if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1")' $XJ/G7CloneBoot.java || bad "LAGFX_ARM64_DUMP_DATA must be set in exactly one place, only for captureData && gpuExec"
 grep -q 'render_replay=REQUESTED BUT NOT ACTIVE' $XJ/G7CloneBoot.java || bad "g7-gpu-options must say when Render Replay was requested but is not active"
+# frame files: the engine writes them (host/vm.c, bounded, worker thread); the runner only asks for the last one and a flush, and writes nothing itself; the log line carries the source size
+grep -q 'g7-frame: src=" + f.srcW + "x" + f.srcH' $XJ/G7CloneBoot.java || bad "the g7-frame log line must carry src=WxH"
+grep -q 'FRAME-FILES-BEGIN' host/vm.c && grep -q 'FRAME-FILES-END' host/vm.c || bad "host/vm.c lost the FRAME-FILES region that tools/g7-frames-test.sh compiles"
+grep -q 'g7_frame_%s_%ux%u.png' host/vm.c && grep -q 'boot_args_first' host/vm.c && grep -q 'frame_pvg_series("pvg_surface"' host/vm.c || bad "host/vm.c: boot_args and PVG-surface frame files must have distinct names"
+grep -q 'define FRAME_MAX_FILES' host/vm.c && grep -q 'define FRAME_MAX_BYTES' host/vm.c && grep -q 'define FRAME_MAX_PX' host/vm.c || bad "host/vm.c: the frame files must stay bounded (count, bytes, pixels)"
+grep -q 'hv_vm_save_last_frame();' host/ui_runner_vm_clone.c && grep -q 'hv_vm_frames_flush();' host/ui_runner_vm_clone.c || bad "the clone runner must save the last frame and flush before it stops the machine"
+x=$(grep -nE 'fopen\([^)]*"[wa]|png_|fwrite|rename\(' host/ui_runner_vm_clone.c | grep -v '^[0-9]*:[[:space:]]*/[*]'); [ -z "$x" ] || { bad "the clone runner writes a file itself:"; echo "$x"; }
 # the storage class: the ONLY place that deletes (the person's confirmation is on the screen). One delete primitive (Files::delete, no recursion, no tree walk), no copy/move/rewrite, under the start lock and the isolation's gate
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }

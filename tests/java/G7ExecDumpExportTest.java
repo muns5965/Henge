@@ -30,6 +30,14 @@ public class G7ExecDumpExportTest {
         check("originals untouched", new File(run, "x.spv").length() == 1 && new File(fd, String.format("g7_lagfx_%013d.txt", ms + 120)).isFile());
         G7ExecDumpExport.Result r2 = G7ExecDumpExport.export(fd, rs.get(0), "v", "h", "l", "d");
         check("a second export never replaces the first", !r2.zip.equals(r.zip) && r.zip.isFile() && r2.zip.getName().endsWith("-2.zip") && G7ExecLauncher.logFile(fd, r2.zip.getName()) != null);
+        check("manifest without frame files says so", info.contains("frame_files=0"));
+        Files.write(new File(run, "g7_frame_boot_args_first_1280x800.png").toPath(), new byte[] {9, 9}); Files.write(new File(run, "g7_frame_pvg_surface_1_t10s_1920x1080.png").toPath(), new byte[] {8});
+        G7ExecDumpExport.Result rf = G7ExecDumpExport.export(fd, G7ExecDumpExport.listRuns(root).get(0), "v", "h", "l", "d");
+        try (ZipFile z = new ZipFile(rf.zip)) {
+            String inf = new String(z.getInputStream(z.getEntry("export-info.txt")).readAllBytes(), "UTF-8");
+            check("frame PNGs of the run are in the ZIP under dump/ and the manifest lists them with their labels", z.getEntry("dump/g7_frame_boot_args_first_1280x800.png") != null && z.getEntry("dump/g7_frame_pvg_surface_1_t10s_1920x1080.png") != null && inf.contains("frame_files=2") && inf.contains("g7_frame_boot_args_first_1280x800.png(2 B)"));
+        }
+        Files.delete(new File(run, "g7_frame_boot_args_first_1280x800.png").toPath()); Files.delete(new File(run, "g7_frame_pvg_surface_1_t10s_1920x1080.png").toPath());
         // a newer APK's run-info.txt names the log exactly
         Files.write(new File(fd, String.format("g7_cboot_%013d.txt", ms - 90000)).toPath(), "C2".getBytes());   // the VM log run-info names (older than the time window would pick)
         Files.write(new File(run, G7ExecDumpExport.INFO).toPath(), ("lagfx_log=" + String.format("g7_lagfx_%013d.txt", ms + 900000) + "\nvm_log=" + String.format("g7_cboot_%013d.txt", ms - 90000) + "\nhenge_commit=RUNHENGE\nlagfx_commit=RUNLAGFX\n").getBytes());

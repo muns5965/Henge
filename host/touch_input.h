@@ -76,6 +76,9 @@ void hv_touch_init(HvTouch *t, const HvInputSink *sink);
 /* The part of the view that shows the display (x, y, width, height in view pixels) and the guest display's size. Call whenever either changes. */
 void hv_touch_set_view(HvTouch *t, float x, float y, float w, float h);
 void hv_touch_set_display(HvTouch *t, int w, int h);
+/* The size of the picture that was actually shown (the guest display's real size: the pointer feedback of hv_touch_pointer is in these pixels). Same as hv_touch_set_display
+   but says whether anything changed (1) or not / refused (0), and re-converts a target that is already set from the view point that set it. Cheap: call it per frame. */
+int hv_touch_follow_display(HvTouch *t, int w, int h);
 /* The guest pointer, as hv_vm_pointer reported it: known = 1 with x, y, or known = 0 when it returned -1. Call before each tick. */
 void hv_touch_pointer(HvTouch *t, int known, int x, int y);
 /* One touch event (Android MotionEvent: action, pointer id, position in view pixels, time in ms). */

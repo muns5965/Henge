@@ -15,6 +15,17 @@ void hv_touch_init(HvTouch *t, const HvInputSink *sink) {
 void hv_touch_set_view(HvTouch *t, float x, float y, float w, float h) { t->vx = x; t->vy = y; t->vw = w > 1 ? w : 1; t->vh = h > 1 ? h : 1; }
 void hv_touch_set_display(HvTouch *t, int w, int h) { if (w > 0 && h > 0) { t->dw = w; t->dh = h; } }
 
+int hv_touch_follow_display(HvTouch *t, int w, int h) {
+    if (w <= 0 || h <= 0 || (t->dw == w && t->dh == h)) return 0;
+    t->dw = w; t->dh = h;
+    if (t->has_target) {   /* the same finger position, in the new pixels (tgt_seq is not a new target: it is not bumped) */
+        double fx = (t->tgt_src_x - t->vx) / t->vw, fy = (t->tgt_src_y - t->vy) / t->vh;
+        fx = fx < 0 ? 0 : fx > 1 ? 1 : fx; fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+        t->tx = fx * (t->dw - 1); t->ty = fy * (t->dh - 1);
+    }
+    return 1;
+}
+
 void hv_touch_pointer(HvTouch *t, int known, int x, int y) {
     if (known) {
         if (!t->known || x != t->last_fb_x || y != t->last_fb_y) t->fb_changed = 1;

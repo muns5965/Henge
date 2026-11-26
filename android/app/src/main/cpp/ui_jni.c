@@ -240,6 +240,14 @@ static jint impl_nativeRender(void) {
     int r = want ? hv_dispbuf_pull(b, fetch_shm, &ss) : hv_dispbuf_pull(b, fetch_synthetic, src);
     if (r == HV_DISP_CLOSED) { result = -1; goto out; }
     if (r != HV_DISP_NEW) goto out;
+    if (want) {   /* the guest pointer (shared file, +0xe00 of the display page) is in the pixels of the picture the guest shows (1920x1080 by default), not in the synthetic screen's FRAME_W x FRAME_H: the touch target must be converted to those */
+        uint32_t fw, fh;
+        if (hv_dispbuf_size(b, &fw, &fh) == 0 && fw > 0 && fh > 0 && fw <= 16384 && fh <= 16384) {
+            pthread_mutex_lock(&g_mu);
+            hv_touch_follow_display(&g_touch, (int)fw, (int)fh);
+            pthread_mutex_unlock(&g_mu);
+        }
+    }
 
     pthread_mutex_lock(&g_win_mu);
     if (g_win) {

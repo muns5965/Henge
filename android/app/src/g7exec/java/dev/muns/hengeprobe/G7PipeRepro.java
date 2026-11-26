@@ -52,7 +52,7 @@ final class G7PipeRepro {
         List<String> cmd = new ArrayList<>();
         cmd.add(new File(nativeLibDir, LIB_NAME).getPath());
         cmd.add(bundle.getPath());
-        if (matrix) cmd.add("--matrix");
+        if (matrix) { cmd.add("--matrix"); cmd.add("--m13"); }   // --m13: the -13 matrix rows M0..M10 (library 42151bd) after the old a..j variants
         StringBuilder head = new StringBuilder();
         head.append("g7-pipelinerepro: bundle=").append(bundle.getName()).append(" run=").append(bundle.getParentFile() == null ? "?" : bundle.getParentFile().getName())
             .append(" matrix=").append(matrix).append(" henge=").append(G7ExecLauncher.HENGE_SHA).append(" lagfx=").append(G7ExecLauncher.LAGFX_SHA).append("\n");

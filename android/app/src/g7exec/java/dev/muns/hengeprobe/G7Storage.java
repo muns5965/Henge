@@ -164,6 +164,16 @@ public final class G7Storage {
         }
     }
 
+    /** Diagnostic switch for the display-path test pattern: an empty marker file next to vm_ecid.txt (the runner only checks that it exists). Created or removed here, nowhere else. */
+    public static boolean setPatternMarker(File priv, boolean on) {
+        Path p = new File(priv, "pvg_test_pattern").toPath();
+        try {
+            if (on) { if (!exists(p)) Files.createFile(p); }
+            else if (exists(p) && regular(p)) Files.delete(p);
+            return true;
+        } catch (IOException e) { return false; }
+    }
+
     private static final java.util.regex.Pattern CLONE_NAME = java.util.regex.Pattern.compile("clone-[0-9]{3,}");
 
     /** One folder under vm/clones/ for the delete list: its name and the space it really occupies. Looks only. */

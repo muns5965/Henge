@@ -406,7 +406,9 @@ public class G7ExecActivity extends Activity {
         final String[] lm = {"실행 시간 15분(기존 시험용)", "실행 시간 30분", "실행 시간 1시간", "시간 제한 없음(중지 버튼으로 끝냄)"};
         for (int i = 0; i < lm.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(lm[i]); rb.setId(2000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); lim.addView(rb); }
         lim.check(2000);   // the old default, 15 minutes
-        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(ok);
+        final CheckBox pat = new CheckBox(this); pat.setText("진단: 화면 경로 시험 패턴(게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인)");
+        pat.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(ok);
         final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // nine options and the clone list do not fit a phone's height
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(sv)
                 .setNegativeButton("취소", null)
@@ -414,6 +416,7 @@ public class G7ExecActivity extends Activity {
                     int mode = Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000));
                     int limIdx = Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, lim.getCheckedRadioButtonId() - 2000));
                     final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
+                    G7Storage.setPatternMarker(privDir, pat.isChecked());
                     G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode, seconds);
                     status.setText(st.message);
                     if (st.started) {

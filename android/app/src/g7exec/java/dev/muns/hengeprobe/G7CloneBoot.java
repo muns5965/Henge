@@ -54,14 +54,16 @@ public final class G7CloneBoot {
         File dir = new File(cmd.get(i + 1)).getParentFile();
         if (dir == null) return;
         env.put("LAGFX_LOG_LEVEL", "trace");
+        env.put("LAGFX_LOG_FILE", new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt").getPath());
         StringBuilder note = new StringBuilder();
         if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");
         else {
-            File runDir = new File(dd, "run-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date()));   // one folder per run: no mixing, no name clashes
+            File runDir = new File(dd, "run-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS", java.util.Locale.US).format(new java.util.Date()));   // one folder per run: no mixing, no name clashes
             try {
-                java.nio.file.Files.createDirectories(runDir.toPath());
+                java.nio.file.Files.createDirectories(runDir.getParentFile().toPath());
+                java.nio.file.Files.createDirectory(runDir.toPath());   // must be NEW: an existing folder is an error, never reused
                 env.put("LAGFX_ARM64_DUMP", "1");
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
                 note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");

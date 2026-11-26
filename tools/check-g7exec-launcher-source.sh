@@ -80,6 +80,9 @@ x=$(grep -nE '\.delete\(|renameTo|Files\.delete|REPLACE_EXISTING|Files\.copy|Fil
 [ "$(grep -c 'Files\.move(' "$I")" = 1 ] || bad "the isolation class has exactly one Files.move"
 grep -q 'ATOMIC_MOVE' "$I" || bad "the isolation move must be ATOMIC_MOVE"
 grep -q 'START_LOCK' "$I" || bad "the isolation must hold the start lock"
+# the lagfx run must keep writing its own log file (g7_lagfx_*.txt): lagfxEnv has to set LAGFX_LOG_FILE and LAGFX_LOG_LEVEL
+grep -q 'env.put("LAGFX_LOG_FILE"' $XJ/G7CloneBoot.java || bad "G7CloneBoot.lagfxEnv no longer sets LAGFX_LOG_FILE"
+grep -q 'env.put("LAGFX_LOG_LEVEL"' $XJ/G7CloneBoot.java || bad "G7CloneBoot.lagfxEnv no longer sets LAGFX_LOG_LEVEL"
 # the storage class: the ONLY place that deletes (the person's confirmation is on the screen). One delete primitive (Files::delete, no recursion, no tree walk), no copy/move/rewrite, under the start lock and the isolation's gate
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }

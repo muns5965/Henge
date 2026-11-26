@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 0784ae979e0c9ccd5311bae7a0a06bdf35f94df2   # research/android-pfn-shift: + structural colour-array parser, blend pixel tests (on top of 4261294)
+  LAGFX_SHA: 7fd410243885f7a725e5e65a01f04b9f60e221a3   # research/android-pfn-shift: + multiple colour attachments (on top of 0784ae9)
 
 jobs:
   apk:

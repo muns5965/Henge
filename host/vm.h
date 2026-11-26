@@ -171,6 +171,9 @@ int hv_vm_pointer(int *x, int *y);
    is called; the loop polls the fd, drains, and asks hv_vm_pointer. Nothing is sent to the GPU and no VBL is needed. Not opened = the doorbell only counts. */
 int hv_vm_cursor_wake_open(void);
 void hv_vm_cursor_wake_drain(void);
+/* Log-only: the counters of the doorbell (devices/pvg_lite.h HvPvgCursorStats): writes to +0x1220, how many of them found different page words than the one before,
+   wake-up bytes written, and the words at the last one (x = y = -1: the page said "no pointer"). Returns 1 once a doorbell found the page, else 0 (all zero before the machine exists). */
+int hv_vm_cursor_stats(uint64_t *doorbells, uint64_t *changed, uint64_t *wakes, int *last_x, int *last_y, int *last_flag);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
 int hv_vm_snapshot(uint8_t *bgra, int width, int height);
 

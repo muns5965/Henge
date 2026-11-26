@@ -104,3 +104,4 @@ void hv_vm_mouse_wheel(int dy) { (void)dy; atomic_fetch_add(&g_inputs, 1); }
 void hv_vm_mouse_hwheel(int dx) { (void)dx; atomic_fetch_add(&g_inputs, 1); }
 int hv_vm_cursor_wake_open(void) { return -1; }
 void hv_vm_cursor_wake_drain(void) {}
+int hv_vm_cursor_stats(uint64_t *a, uint64_t *b, uint64_t *c, int *x, int *y, int *f) { (void)a; (void)b; (void)c; (void)x; (void)y; (void)f; return 0; }

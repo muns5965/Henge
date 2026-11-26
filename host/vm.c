@@ -48,6 +48,18 @@ static void vm_cursor_listener(void *ctx, int shown, int x, int y) {
     if (write(fd, &b, 1) == 1) atomic_fetch_add_explicit(&cursor_wakes, 1, memory_order_relaxed);
     else atomic_store(&cursor_wake_pending, 0);   /* full or failed: the next doorbell tries again */
 }
+int hv_vm_cursor_stats(uint64_t *doorbells, uint64_t *changed, uint64_t *wakes, int *last_x, int *last_y, int *last_flag) {
+    HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
+    HvPvgCursorStats s;
+    hv_pvg_lite_cursor_stats(pvg, &s);
+    if (doorbells) *doorbells = s.doorbells;
+    if (changed) *changed = s.changed;
+    if (wakes) *wakes = atomic_load_explicit(&cursor_wakes, memory_order_relaxed);
+    if (last_x) *last_x = s.last_x;
+    if (last_y) *last_y = s.last_y;
+    if (last_flag) *last_flag = s.last_flag;
+    return pvg && s.seen ? 1 : 0;
+}
 int hv_vm_cursor_wake_open(void) {
     if (atomic_load(&cursor_wake_rd) >= 0) return atomic_load(&cursor_wake_rd);
     int fds[2];

@@ -106,6 +106,12 @@ static void status_line(const char *tag) {
            ok ? (unsigned long long)st.cmds_pushed : 0ull, ok ? (unsigned long long)st.cmds_popped : 0ull,
            ok ? (unsigned long long)st.cmds_dropped : 0ull, (unsigned long long)wc, (unsigned long long)wr, (unsigned long long)hv_net_tx_frames, (unsigned long long)hv_net_rx_frames,
            ok ? st.recovered : 0u, ok ? "" : " (stats lock not taken)");
+    {   /* log only: the pointer-moved doorbell (+0x1220) and the words the display page held at the last one (x/y = -1: "no pointer"). A separate line: the line above keeps its shape. */
+        uint64_t db = 0, chg = 0, wk = 0; int lx = -1, ly = -1, lf = 0;
+        int seen = hv_vm_cursor_stats(&db, &chg, &wk, &lx, &ly, &lf);
+        printf("ui_runner_vm_clone %s cursor: doorbells %llu changed %llu | wakes %llu loops %lu pipe %s | last page words %s x=%d y=%d flag=%d\n", tag,
+               (unsigned long long)db, (unsigned long long)chg, (unsigned long long)wk, cursor_wake_loops, cursor_wake_fd >= 0 ? "open" : "none", seen ? "seen" : "none-yet", lx, ly, lf);
+    }
     fflush(stdout);
 }
 

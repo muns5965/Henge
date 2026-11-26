@@ -126,6 +126,7 @@ static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t r
     return (uint32_t)v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
 }
 
+static int display_events_on(void);
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
 
 /* Diagnostic only: a doorbell was rung on `ch` (0: root ring). Two relaxed stores; no lock, no effect on the device. */
@@ -634,6 +635,7 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
+    if (display_events_on()) __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], 1u, __ATOMIC_RELEASE);   /* the display cause bit: the ISR reads +0x1014 first */
     if (p->log) fprintf(stderr, "hengevm: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
     /* [2026-11-21, explicitly approved, read-only diagnostic] HV_PVG_TALLY only: one bounded line per swap
        connecting it to the command tally tally_exec()/tally_buffer() have accumulated so far (execs/bad, and
@@ -1106,12 +1108,44 @@ static void do_mapper(HvPvgLite *p) {
     hv_gicv3_pend(p->gic, p->iosfc_irq);
 }
 
+
+/* [2026-11-26, EXPERIMENT, default OFF: HV_PVG_DISPLAY_EVENTS=1] Display event delivery as the public pvg-vulkan reference documents it (protocol facts only, no code):
+   the shared page has a pending word at +0x100 the device ORs bits into and an enable word at +0x104 the guest owns (bit0 VBL, bit1 transaction/present complete,
+   bit2 online, bit3 offline: never signalled); the guest's display ISR is entered through the display cause bit (1 << display index) of MMIO +0x1014, which reads
+   and clears. This device never set +0x1014 (always read 0), and never signalled VBL, which the reference says paces WindowServer's frame production. With the
+   flag on: a ~60 Hz VBL tick (only while the guest's enable word has bit0, and only that bit, as the reference requires) plus the cause bit on VBL and on swaps.
+   Always on (flag or not, bounded): a line each time the guest's enable word changes, so the next log shows what the guest armed. Unverified on this guest. */
+static int display_events_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("HV_PVG_DISPLAY_EVENTS"); v = e && *e && *e != '0'; }
+    return v;
+}
+static void display_events_tick(HvPvgLite *p) {
+    uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
+    if (!d) return;
+    static uint32_t last_en = 0xffffffffu; static unsigned logged;
+    uint32_t en = __atomic_load_n((uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE);
+    if (en != last_en && logged < 32) { fprintf(stderr, "hengevm: pvg-lite: display enable word +104 = %x (events %s)\n", (unsigned)en, display_events_on() ? "on" : "off"); logged++; }
+    last_en = en;
+    if (!display_events_on() || !(en & 1u)) return;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    static uint64_t last_ns; static uint64_t nvbl;
+    if (now - last_ns < 16666667ull) return;
+    last_ns = now;
+    __atomic_fetch_or((uint32_t *)(d + 0x100), 1u, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], 1u, __ATOMIC_RELEASE);
+    hv_gicv3_pend(p->gic, p->gfx_irq);
+    if (++nvbl == 1 || nvbl % 600 == 0) fprintf(stderr, "hengevm: pvg-lite: display VBL events sent: %llu\n", (unsigned long long)nvbl);
+}
+
 /* Device work no doorbell took care of: a channel that had to wait for another one's work. */
 void hv_pvg_lite_poll(HvPvgLite *p) {
     if (!p) return;
 #ifdef HV_WITH_LAGFX
     if (p->lagfx) hv_pvg_lagfx_poll(p->lagfx);
 #endif
+    display_events_tick(p);
     uint32_t chans = p->chan_pending;
     if (chans) {
         p->chan_pending = 0;
@@ -1131,6 +1165,10 @@ static uint64_t gfx_read(void *opaque, uint64_t off, unsigned size) {
         break;
     case 0x1018:
         v = __atomic_exchange_n(&p->status, 0, __ATOMIC_ACQ_REL);
+        break;
+    case 0x1014:
+        if (display_events_on()) { v = __atomic_exchange_n(&p->regs[(0x1014 - 0x1000) / 4], 0, __ATOMIC_ACQ_REL); break; }
+        v = p->regs[(off - 0x1000) / 4];
         break;
     case 0x122c: v = 1; break;
     default:

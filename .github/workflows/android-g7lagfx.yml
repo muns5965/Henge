@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 41bdb6dece40d7268dc561d9971ea7650ad4715d   # research/android-pfn-shift: + blend enable = key 2 (on top of 7fd4102)
+  LAGFX_SHA: e284cc29c7744bef5ecf76462447a021d7cfe203   # research/android-pfn-shift: + blend enable = key 2 (on top of 7fd4102)
 
 jobs:
   apk:

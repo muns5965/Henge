@@ -43,12 +43,22 @@ public final class G7CloneBoot {
     static final String LAGFX_LOG_PREFIX = "g7_lagfx_";
     /** Two LAGFX_ variables for the lagfx build of the runner (libapplegfx-vulkan reads them; the normal runner ignores them, and the runner removes only HV_* ones): the log goes to its own file next to the run
      *  log, and at trace level (the guest's GPU commands). Not an HV_ name, so the runner's scrub does not touch it. The folder comes from the --shm path, which is always in the app's files folder. */
+    /** Experimental GPU switches chosen on the start dialog (read when the runner is started; default off). gpuExec = LAGFX_ARM64_EXEC=1 (really execute the guest's Render/Blit commands on Vulkan); gpuDumpDir != null =
+     *  LAGFX_ARM64_DUMP=1 plus LAGFX_ARM64_DUMP_DIR (the library saves the guest's pipeline/shader data there, size-capped, new files only). */
+    static volatile boolean gpuExec = false;
+    static volatile File gpuDumpDir = null;
+
     static void lagfxEnv(java.util.Map<String, String> env, List<String> cmd) {
         int i = cmd.indexOf("--shm");
         if (i < 0 || i + 1 >= cmd.size()) return;
         File dir = new File(cmd.get(i + 1)).getParentFile();
         if (dir == null) return;
         env.put("LAGFX_LOG_LEVEL", "trace");
+        if (gpuExec) env.put("LAGFX_ARM64_EXEC", "1");
+        File dd = gpuDumpDir;
+        if (dd != null) {
+            try { java.nio.file.Files.createDirectories(dd.toPath()); env.put("LAGFX_ARM64_DUMP", "1"); env.put("LAGFX_ARM64_DUMP_DIR", dd.getPath()); } catch (java.io.IOException | RuntimeException e) { /* no dump */ }
+        }
         env.put("LAGFX_LOG_FILE", new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt").getPath());
     }
 

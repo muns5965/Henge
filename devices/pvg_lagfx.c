@@ -245,6 +245,12 @@ uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off) {
     return v;
 }
 
+void hv_pvg_lagfx_signal_display(HvPvgLagfx *g, uint32_t bits) {
+    if (!g_enter(g)) return;
+    lagfx_device_signal_display(g->dev, bits);
+    g_leave(g);
+}
+
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value) {
     if (!g_enter(g)) return;
     lagfx_mmio_write(g->dev, off, (uint32_t)value);

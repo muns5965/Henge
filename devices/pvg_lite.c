@@ -127,6 +127,7 @@ static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t r
 }
 
 static int display_events_on(void);
+static void display_cause(HvPvgLite *p, uint32_t bits);
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
 
 /* Diagnostic only: a doorbell was rung on `ch` (0: root ring). Two relaxed stores; no lock, no effect on the device. */
@@ -635,7 +636,7 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
-    if (display_events_on()) __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], 1u, __ATOMIC_RELEASE);   /* the display cause bit: the ISR reads +0x1014 first */
+    if (display_events_on()) display_cause(p, 1u);   /* the display cause bit: the ISR reads +0x1014 first */
     if (p->log) fprintf(stderr, "hengevm: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
     /* [2026-11-21, explicitly approved, read-only diagnostic] HV_PVG_TALLY only: one bounded line per swap
        connecting it to the command tally tally_exec()/tally_buffer() have accumulated so far (execs/bad, and
@@ -1120,6 +1121,13 @@ static int display_events_on(void) {
     if (v < 0) { const char *e = getenv("HV_PVG_DISPLAY_EVENTS"); v = e && *e && *e != '0'; }
     return v;
 }
+/* The display cause bit: with the library owning the MMIO window (HV_WITH_LAGFX and a device) +0x1014 is read from the library, so the bit goes there; otherwise into this device's own register. */
+static void display_cause(HvPvgLite *p, uint32_t bits) {
+#ifdef HV_WITH_LAGFX
+    if (p->lagfx) { hv_pvg_lagfx_signal_display(p->lagfx, bits); return; }
+#endif
+    __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], bits, __ATOMIC_RELEASE);
+}
 static void display_events_tick(HvPvgLite *p) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;
@@ -1134,7 +1142,7 @@ static void display_events_tick(HvPvgLite *p) {
     if (now - last_ns < 16666667ull) return;
     last_ns = now;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 1u, __ATOMIC_RELEASE);
-    __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], 1u, __ATOMIC_RELEASE);
+    display_cause(p, 1u);
     hv_gicv3_pend(p->gic, p->gfx_irq);
     if (++nvbl == 1 || nvbl % 600 == 0) fprintf(stderr, "hengevm: pvg-lite: display VBL events sent: %llu\n", (unsigned long long)nvbl);
 }

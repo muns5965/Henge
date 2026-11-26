@@ -19,6 +19,7 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
 void hv_pvg_lagfx_destroy(HvPvgLagfx *g);
 /* The gfx window (offset from its base). Same shape as the handlers in pvg_lite.c. */
 uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off);
+void hv_pvg_lagfx_signal_display(HvPvgLagfx *g, uint32_t bits);   /* display cause bits of MMIO +0x1014 (the library owns that window) */
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value);
 /* Root ring pointers as the library holds them. Diagnostics only: reads nothing from the guest and runs no ring. */
 void hv_pvg_lagfx_poll(HvPvgLagfx *g);

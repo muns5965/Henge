@@ -54,7 +54,8 @@ public final class G7CloneBoot {
         File dir = new File(cmd.get(i + 1)).getParentFile();
         if (dir == null) return;
         env.put("LAGFX_LOG_LEVEL", "trace");
-        env.put("LAGFX_LOG_FILE", new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt").getPath());
+        final File lagfxLog = new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt");
+        env.put("LAGFX_LOG_FILE", lagfxLog.getPath());
         StringBuilder note = new StringBuilder();
         if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
@@ -66,6 +67,10 @@ public final class G7CloneBoot {
                 java.nio.file.Files.createDirectory(runDir.toPath());   // must be NEW: an existing folder is an error, never reused
                 env.put("LAGFX_ARM64_DUMP", "1");
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
+                try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
+                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\ngpu_exec=" + gpuExec + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
+                    java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
+                } catch (java.io.IOException | RuntimeException e) { note.append("(run-info.txt not written: ").append(e.getClass().getSimpleName()).append(") "); }
                 note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");
             } catch (java.io.IOException | RuntimeException e) {
                 note.append("GPU data dump REQUESTED BUT NOT POSSIBLE: cannot create ").append(runDir.getPath()).append(" (").append(e.getClass().getSimpleName()).append(")");

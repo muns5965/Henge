@@ -32,7 +32,9 @@ public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
     private android.widget.ProgressBar cloneBar;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, delClone, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, delClone, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy, cbDump;
+    private File pendingExport;   // the ZIP the user is about to save with the system file picker
+    private static final int REQ_SAVE_ZIP = 77;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
@@ -139,6 +141,8 @@ public class G7ExecActivity extends Activity {
             if (f == null) { status.setText("공유할 lagfx 로그 파일이 없습니다(g7_lagfx_*.txt 없음: lagfx 빌드로 복제본 부팅을 한 번 실행해야 생깁니다)."); return; }
             try { shareFile(f, "lagfx 로그 공유"); } catch (RuntimeException e) { status.setText("lagfx 로그 공유 실패: " + e.getClass().getSimpleName() + " " + e.getMessage()); }
         });
+        cbDump = new Button(this); cbDump.setText("GPU 덤프 + 로그 ZIP 내보내기(최신 실행 기본, 이전 실행 선택 가능)"); root.addView(cbDump);
+        cbDump.setOnClickListener(v -> chooseDumpExport());
         cbCopy = new Button(this); cbCopy.setText("복제본 부팅 로그 끝부분 복사"); root.addView(cbCopy);
         add(root, "아래 상자는 '복제본 부팅'의 상태·로그입니다(복원 로그와 다름). 반복되는 USB 진단 줄은 화면에서만 묶어 보이며 로그 파일에는 모두 남습니다.", 12);
         cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE); cbMon.setTextIsSelectable(true);
@@ -639,6 +643,68 @@ public class G7ExecActivity extends Activity {
 
     /** Sends the whole newest run log (read-only, through G7LogProvider and the share sheet). */
     private void shareLog() { shareFile(G7ExecLauncher.newestLogFile(getFilesDir()), "G7 로그 공유"); }
+
+    private File dumpRoot() { File xd = getExternalFilesDir(null); return new File(xd != null ? xd : getFilesDir(), "g7_gpudump"); }
+
+    /** Lists the dump runs (newest first, the newest preselected) and builds the ZIP of the chosen one: its dump files plus the VM log and the lagfx log of that run. Only after the run has ended; nothing is deleted. */
+    private void chooseDumpExport() {
+        if (G7CloneBoot.hasLive()) { status.setText("복제본 부팅이 실행 중입니다. 실행이 끝난 뒤에 내보낼 수 있습니다(로그와 덤프가 아직 쓰이는 중)."); return; }
+        final List<G7ExecDumpExport.DumpRun> runs = G7ExecDumpExport.listRuns(dumpRoot());
+        if (runs.isEmpty()) { status.setText("내보낼 덤프 실행이 없습니다(" + dumpRoot() + " 에 run-* 폴더 없음). '게스트 셰이더·파이프라인 데이터 저장'을 켜고 부팅한 뒤 다시 시도하세요."); return; }
+        final String[] names = new String[runs.size()];
+        for (int i = 0; i < names.length; i++) names[i] = (i == 0 ? "[최신] " : "") + runs.get(i).label();
+        final int[] pick = {0};
+        new AlertDialog.Builder(this).setTitle("내보낼 실행 선택").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w)
+                .setNegativeButton("취소", null)
+                .setNeutralButton("파일로 저장", (d, w) -> buildExport(runs.get(pick[0]), true))
+                .setPositiveButton("공유", (d, w) -> buildExport(runs.get(pick[0]), false)).show();
+    }
+
+    private void buildExport(final G7ExecDumpExport.DumpRun dr, final boolean save) {
+        status.setText("ZIP을 만드는 중… (" + dr.id + ")");
+        final String ver = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ", SDK " + android.os.Build.VERSION.SDK_INT;
+        new Thread(() -> {
+            String msg; File zip = null;
+            try {
+                G7ExecDumpExport.Result r = G7ExecDumpExport.export(getFilesDir(), dr, getPackageName() + " " + BuildConfig.G7_BUILD_KIND, G7ExecLauncher.HENGE_SHA, G7ExecLauncher.LAGFX_SHA, ver);
+                zip = r.zip; msg = "내보내기 ZIP 완료: " + r.message;
+            } catch (IOException | RuntimeException e) { msg = "내보내기 실패: " + e.getClass().getSimpleName() + " " + e.getMessage(); }
+            final String m = msg; final File z = zip;
+            runOnUiThread(() -> {
+                status.setText(m);
+                if (z == null) return;
+                if (!save) { try { shareZip(z); } catch (RuntimeException e) { status.setText(m + " / 공유 실패: " + e.getClass().getSimpleName()); } return; }
+                pendingExport = z;
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, z.getName());
+                try { startActivityForResult(i, REQ_SAVE_ZIP); } catch (RuntimeException e) { status.setText(m + " / 저장 창을 열 수 없습니다: " + e.getClass().getSimpleName()); }
+            });
+        }, "g7-dump-export").start();
+    }
+
+    private void shareZip(File z) {
+        Uri u = Uri.parse("content://" + G7LogProvider.AUTHORITY + "/" + z.getName());
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("application/zip");
+        i.putExtra(Intent.EXTRA_STREAM, u);
+        i.setClipData(ClipData.newRawUri("g7 export", u));
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivity(Intent.createChooser(i, "GPU 덤프 ZIP 공유"));
+    }
+
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_SAVE_ZIP) return;
+        final File z = pendingExport; pendingExport = null;
+        if (res != RESULT_OK || data == null || data.getData() == null || z == null) { status.setText("저장을 취소했습니다(ZIP은 앱 안에 그대로 있습니다: " + (z == null ? "-" : z.getName()) + ")."); return; }
+        final Uri dest = data.getData();
+        new Thread(() -> {
+            String msg;
+            try { G7ExecDumpExport.copyTo(z, getContentResolver().openOutputStream(dest)); msg = "저장 완료: " + z.getName(); }
+            catch (IOException | RuntimeException e) { msg = "저장 실패: " + e.getClass().getSimpleName() + " " + e.getMessage(); }
+            final String m = msg; runOnUiThread(() -> status.setText(m));
+        }, "g7-dump-save").start();
+    }
 
     private void shareFile(File f, String title) {
         if (f == null) { status.setText("공유할 로그가 없습니다."); return; }

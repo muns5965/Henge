@@ -40,7 +40,7 @@ public final class G7LogProvider extends ContentProvider {
         return c;
     }
 
-    @Override public String getType(Uri uri) { return "text/plain"; }
+    @Override public String getType(Uri uri) { String n = uri.getLastPathSegment(); return n != null && n.endsWith(".zip") ? "application/zip" : "text/plain"; }
     @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException("read only"); }
     @Override public int delete(Uri uri, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("read only"); }
     @Override public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("read only"); }

@@ -46,6 +46,8 @@ public final class G7ExecLauncher {
     /** One log file PER RUN (never appended to, never overwritten: CREATE_NEW), at most MAX_LOG_BYTES of (filtered, see DiagFilter) output plus a closing block of a few KiB. Runs are only possible while no
      *  install file exists, so the total stays small. When the limit is reached the streamed output stops, but the last g7-result line, the tail and the exit code are still written. */
     static final int MAX_LOG_BYTES = 4 * 1024 * 1024;
+    /** The commits this APK was built from (CI sets them; a local build says unknown): written into the dump run info and the export manifest. */
+    static final String HENGE_SHA = BuildConfig.G7_HENGE_SHA, LAGFX_SHA = BuildConfig.G7_LAGFX_SHA;
     static final int TAIL_BYTES = 6000;
     static final String LOG_PREFIX = "g7_run_";
     static final String LOG_SUFFIX = ".txt";
@@ -357,7 +359,7 @@ public final class G7ExecLauncher {
 
     /** The only files the log provider may hand out: run logs of this app, by plain name. Returns null for anything else. */
     static File logFile(File filesDir, String name) {
-        if (name == null || !(name.matches("g7_run_[0-9]{13}\\.txt") || name.matches("g7_net_[0-9]{13}\\.txt") || name.matches("g7_cboot_[0-9]{13}\\.txt") || name.matches("g7_lagfx_[0-9]{13}\\.txt"))) return null;   // run logs, network-probe logs, clone-boot logs and the lagfx log
+        if (name == null || !(name.matches("g7_run_[0-9]{13}\\.txt") || name.matches("g7_net_[0-9]{13}\\.txt") || name.matches("g7_cboot_[0-9]{13}\\.txt") || name.matches("g7_lagfx_[0-9]{13}\\.txt") || name.matches("g7_export_[0-9]{8}-[0-9]{6}-[0-9]{3}(-[0-9]{1,2})?\\.zip"))) return null;   // run logs, network-probe logs, clone-boot logs and the lagfx log
         File f = new File(filesDir, name);
         return f.isFile() ? f : null;
     }

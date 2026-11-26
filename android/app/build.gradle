@@ -28,6 +28,9 @@ android {
         // so an update over the installed app is accepted whichever workflow finishes first. (The run number is per workflow and cannot be compared across them.) A CI build without it fails instead of falling back.
         // Local builds keep 1.
         versionCode hengeVersionCode()
+        // build identity for the dump export (CI sets both; a local build says unknown): which Henge commit and which libapplegfx-vulkan commit produced the logs and dumps
+        buildConfigField 'String', 'G7_HENGE_SHA', '"' + (System.getenv('G7_HENGE_SHA') ?: 'unknown') + '"'
+        buildConfigField 'String', 'G7_LAGFX_SHA', '"' + (System.getenv('G7_LAGFX_SHA') ?: 'unknown') + '"'
         versionName '0.2+' + (System.getenv('GITHUB_SHA') ?: 'local').take(7)
         ndk {
             abiFilters 'arm64-v8a'

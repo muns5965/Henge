@@ -1129,6 +1129,7 @@ static int display_events_on(void) {
 int hv_pvg_lite_display_events_applied(void) { return display_events_on(); }
 /* Counters (only counted while the flag is on): VBL ticks sent, cause-bit signals (VBL + swap), guest reads of +0x1014 and how many of them returned a nonzero cause. */
 static uint64_t c_vbl, c_cause, c_isr_reads, c_isr_nonzero;
+static uint64_t c_vbl_b0, c_vbl_b3;   /* ticks sent per armed enable bit */
 /* The display cause bit: with the library owning the MMIO window (HV_WITH_LAGFX and a device) +0x1014 is read from the library, so the bit goes there; otherwise into this device's own register. */
 static void display_cause(HvPvgLite *p, uint32_t bits) {
     __atomic_fetch_add(&c_cause, 1, __ATOMIC_RELAXED);
@@ -1150,17 +1151,23 @@ static void display_events_tick(HvPvgLite *p) {
     }
     if (en != last_en && logged < 32) { fprintf(stderr, "hengevm: pvg-lite: display enable word +104 = %x (events %s)\n", (unsigned)en, display_events_on() ? "on" : "off"); logged++; }
     last_en = en;
-    if (!display_events_on() || !(en & 1u)) return;
+    /* [2026-11-27, EXPERIMENT, unverified] The first experiment gated the tick on enable bit0 only; this guest armed 0xc (bits 2 and 3) for the whole run and never bit0, so that gate
+       could never open (vbl_sent stayed 0). Which armed bit paces the display is not established from our own data, so a tick is now sent for each armed bit among {bit0, bit3}
+       (the guest asked for it; nothing is forced for bits it did not arm). Bit2 (online) is the library's one-shot. Counters per bit are logged. */
+    const uint32_t tick_bits = en & 9u;
+    if (!display_events_on() || !tick_bits) return;
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     static uint64_t last_ns; static uint64_t nvbl;
     if (now - last_ns < 16666667ull) return;
     last_ns = now;
-    __atomic_fetch_or((uint32_t *)(d + 0x100), 1u, __ATOMIC_RELEASE);
+    __atomic_fetch_or((uint32_t *)(d + 0x100), tick_bits, __ATOMIC_RELEASE);
     display_cause(p, 1u);
     hv_gicv3_pend(p->gic, p->gfx_irq);
     __atomic_fetch_add(&c_vbl, 1, __ATOMIC_RELAXED);
-    if (++nvbl == 1 || nvbl % 600 == 0) fprintf(stderr, "hengevm: pvg-lite: display VBL events sent: %llu\n", (unsigned long long)nvbl);
+    if (tick_bits & 1u) __atomic_fetch_add(&c_vbl_b0, 1, __ATOMIC_RELAXED);
+    if (tick_bits & 8u) __atomic_fetch_add(&c_vbl_b3, 1, __ATOMIC_RELAXED);
+    if (++nvbl == 1 || nvbl % 600 == 0) fprintf(stderr, "hengevm: pvg-lite: display ticks sent: %llu (armed bits %x; bit0 %llu bit3 %llu)\n", (unsigned long long)nvbl, (unsigned)tick_bits, (unsigned long long)c_vbl_b0, (unsigned long long)c_vbl_b3);
 }
 
 /* Device work no doorbell took care of: a channel that had to wait for another one's work. */

@@ -53,6 +53,7 @@ final class G7PipeRepro {
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
         int r0 = -9, built = 0, fail = 0, bad = 0;
         long end = System.currentTimeMillis() + 840_000L;
+        try {
         for (String id : ids) {
             if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
             int[] ec = new int[1];
@@ -65,7 +66,12 @@ final class G7PipeRepro {
             if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : 1;
         }
         o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
-        buf.write(o.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (RuntimeException | InterruptedException | IOException e) {
+            o.append("ladder: ABORTED: ").append(e).append(" (the rows above were completed)\n");
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+        } finally {
+            buf.write(o.toString().getBytes(StandardCharsets.UTF_8));   // whatever was collected so far is always handed to the result window
+        }
         return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;
     }
 
@@ -127,8 +133,9 @@ final class G7PipeRepro {
             if (ec[0] == -2) note += "\n[시간 제한 180초: 강제 종료]\n";
             if (buf.size() >= MAX_OUT) note += "\n[출력이 " + MAX_OUT + " 바이트에서 잘렸을 수 있습니다]\n";
             code = ec[0];
-        } catch (IOException | InterruptedException e) {
-            return new Result(false, -1, head + "실행하지 못했습니다: " + e, null);
+        } catch (IOException | InterruptedException | RuntimeException e) {
+            if (buf.size() == 0) return new Result(false, -1, head + "실행하지 못했습니다: " + e, null);
+            note += "\n[중단: " + e + "; 그때까지의 출력은 위에 있습니다]\n"; code = -3;   // partial output stays visible and copyable
         }
         return finish(head, code, buf, note, logDir);
     }

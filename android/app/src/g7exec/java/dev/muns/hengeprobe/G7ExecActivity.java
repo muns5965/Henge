@@ -740,7 +740,10 @@ public class G7ExecActivity extends Activity {
                 final File b = bundles.get(pick[0]); final boolean matrix = mx.isChecked(); final boolean reduce = rd.isChecked();
                 status.setText("재현 중: " + b.getName() + (matrix ? " (Matrix 포함)" : "") + (reduce ? " (Reduce 포함)" : "") + " …(최대 " + (reduce ? "15" : "3") + "분)");
                 new Thread(() -> {
-                    final G7PipeRepro.Result r = G7PipeRepro.run(nativeDirRef, b, matrix, reduce, getAssets(), getFilesDir());
+                    G7PipeRepro.Result rr;
+                    try { rr = G7PipeRepro.run(nativeDirRef, b, matrix, reduce, getAssets(), getFilesDir()); }
+                    catch (Throwable t) { rr = new G7PipeRepro.Result(false, -4, "재현 실행 중 오류: " + t + "\n(앱은 계속 실행 중입니다. 이 문구를 복사해 알려 주세요.)", null); }
+                    final G7PipeRepro.Result r = rr;
                     runOnUiThread(() -> {
                         status.setText("재현 종료(코드 " + r.exitCode + ")" + (r.file != null ? ", 저장: " + r.file.getName() : ""));
                         android.widget.TextView tv = new android.widget.TextView(this); tv.setText(r.text); tv.setTextIsSelectable(true); tv.setTextSize(11); tv.setTypeface(android.graphics.Typeface.MONOSPACE);

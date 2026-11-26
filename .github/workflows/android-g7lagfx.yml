@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 994ae8badbfe50e49f0063ee5c621c0096019663   # branch research/android-pfn-shift: ARM64 vmapple protocol mode (root/child ring, 0x25/0x20, Device Info, Display ops 1/2/8 -> shell callback), 16 KiB ring pages, LAGFX_NO_PROCESS
+  LAGFX_SHA: 15e4efd75de72dcff2ee4fc84a93076acacd199e   # branch research/android-pfn-shift: + ARM64 0x43/0x45 task read and segment walk (decode only), raw buffer dump, ring robustness
 
 jobs:
   apk:

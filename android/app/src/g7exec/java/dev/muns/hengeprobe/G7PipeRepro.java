@@ -49,7 +49,7 @@ final class G7PipeRepro {
         String exe = new File(nativeLibDir, LIB_NAME).getPath();
         List<String> ids = new ArrayList<>();
         String listOut = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000);
-        for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + 20).trim()); }
+        for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
         int r0 = -9, built = 0, fail = 0, bad = 0;
         long end = System.currentTimeMillis() + 840_000L;
@@ -63,7 +63,7 @@ final class G7PipeRepro {
             if (rowLine == null) { o.append("pipeline-reduce: row=").append(id).append(" result=").append(ec[0] == -2 ? "TIMEOUT" : "CRASH").append(" exit=").append(ec[0]).append(" (no row line; process ended)\n"); bad++; continue; }
             o.append(rowLine).append("\n");
             if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
-            if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : 1;
+            if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL") ? 1 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
         }
         o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
         } catch (RuntimeException | InterruptedException | IOException e) {
@@ -72,7 +72,7 @@ final class G7PipeRepro {
         } finally {
             buf.write(o.toString().getBytes(StandardCharsets.UTF_8));   // whatever was collected so far is always handed to the result window
         }
-        return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;
+        return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;   // 0 reproduced (R0 FAIL), 1 not reproduced (R0 BUILT), 2 undecided
     }
 
     private static String runOne(List<String> c, File redDir, int timeoutS, int[] exitOut, int maxBytes) throws IOException, InterruptedException {
@@ -99,7 +99,7 @@ final class G7PipeRepro {
             for (String nm : names) {
                 File out = new File(dir, nm);
                 try (InputStream in = am.open("red/" + nm)) {
-                    if (out.isFile() && out.length() == in.available()) { n++; continue; }
+                    // always rewritten: a same-size file from an older APK must never be reused
                     try (java.io.FileOutputStream fo = new java.io.FileOutputStream(out)) { byte[] t = new byte[65536]; int k; while ((k = in.read(t)) > 0) fo.write(t, 0, k); }
                     n++;
                 } catch (Exception e) { bad++; }
@@ -122,7 +122,7 @@ final class G7PipeRepro {
         if (matrix) { cmd.add("--matrix"); cmd.add("--m13"); }   // --m13: the -13 matrix rows M0..M10 (library 42151bd) after the old a..j variants
         StringBuilder head = new StringBuilder();
         head.append("g7-pipelinerepro: bundle=").append(bundle.getName()).append(" run=").append(bundle.getParentFile() == null ? "?" : bundle.getParentFile().getName())
-            .append(" matrix=").append(matrix).append(" reduce=").append(reduce).append(redNote.isEmpty() ? "" : " " + redNote).append(" henge=").append(G7ExecLauncher.HENGE_SHA).append(" lagfx=").append(G7ExecLauncher.LAGFX_SHA).append("\n");
+            .append(" matrix=").append(matrix).append(" reduce=").append(reduce).append(reduce && matrix ? "(matrix NOT run in ladder mode)" : "").append(redNote.isEmpty() ? "" : " " + redNote).append(" henge=").append(G7ExecLauncher.HENGE_SHA).append(" lagfx=").append(G7ExecLauncher.LAGFX_SHA).append("\n");
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         int code = -1; String note = "";
         try {
@@ -141,7 +141,7 @@ final class G7PipeRepro {
     }
 
     private static Result finish(StringBuilder head, int code, ByteArrayOutputStream buf, String note, File logDir) {
-        String verdict = code == 0 ? "재현됨(기록된 실패가 같은 결과로 다시 발생)" : code == 1 ? "재현되지 않음(생성 성공 또는 다른 결과)" : code == 2 ? "재현 도구 오류(사용법·번들·Vulkan)" : code == -2 ? "시간 초과" : "비정상 종료(코드 " + code + ", 신호 종료는 128 이상일 수 있음)";
+        String verdict = code == 0 ? "재현됨(기록된 실패가 같은 결과로 다시 발생)" : code == 1 ? "재현되지 않음(생성 성공 또는 다른 결과)" : code == 2 ? "재현 도구 오류(사용법·번들·Vulkan)" : code == -2 ? "시간 초과" : code == -3 ? "중단(예외): 그때까지의 결과만 표시" : code == -4 ? "실행 오류" : "비정상 종료(코드 " + code + ", 신호 종료는 128 이상일 수 있음)";
         String text = head + "g7-pipelinerepro: exit=" + code + " -> " + verdict + "\n" + new String(buf.toByteArray(), StandardCharsets.UTF_8) + note;
         File f = null;
         try {

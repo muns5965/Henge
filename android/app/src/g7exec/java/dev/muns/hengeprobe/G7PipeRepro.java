@@ -43,6 +43,47 @@ final class G7PipeRepro {
         return out;
     }
 
+    /** The ladder without fork (the library has no process creation in this build): list the rows once, then one process per row (--only id) so a compiler crash or hang
+     *  costs one row, not the run. Adaptive rows (ddmin/greedy) depend on earlier results and are therefore NOT generated here. Returns 0 when R0 reproduced the failure. */
+    static int runLadder(File nativeLibDir, File bundle, File redDir, boolean matrix, ByteArrayOutputStream buf) throws IOException, InterruptedException {
+        String exe = new File(nativeLibDir, LIB_NAME).getPath();
+        List<String> ids = new ArrayList<>();
+        String listOut = runOne(exe, bundle, redDir, new String[] { "--reduce", "--list-rows" }, 60, null);
+        for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + 20).trim()); }
+        StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
+        int r0 = -9, built = 0, fail = 0, bad = 0;
+        long end = System.currentTimeMillis() + 840_000L;
+        for (String id : ids) {
+            if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
+            int[] ec = new int[1];
+            String out = runOne(exe, bundle, redDir, new String[] { "--reduce", "--only", id }, 40, ec);
+            String rowLine = null;
+            for (String ln : out.split("\n")) if (ln.contains("pipeline-reduce: row=" + id + " ")) { rowLine = ln.substring(ln.indexOf("pipeline-reduce:")); break; }
+            if (rowLine == null) { o.append("pipeline-reduce: row=").append(id).append(" result=").append(ec[0] == -2 ? "TIMEOUT" : "CRASH").append(" exit=").append(ec[0]).append(" (no row line; process ended)\n"); bad++; continue; }
+            o.append(rowLine).append("\n");
+            if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
+            if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : 1;
+        }
+        o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
+        buf.write(o.toString().getBytes(StandardCharsets.UTF_8));
+        return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;
+    }
+
+    private static String runOne(String exe, File bundle, File redDir, String[] extra, int timeoutS, int[] exitOut) throws IOException, InterruptedException {
+        List<String> c = new ArrayList<>(); c.add(exe); c.add(bundle.getPath()); for (String e : extra) c.add(e);
+        ProcessBuilder pb = new ProcessBuilder(c).redirectErrorStream(true);
+        if (redDir != null) pb.environment().put("LAGFX_PIPELINE_MATRIX_DIR", redDir.getPath());
+        Process p = pb.start();
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        Thread rd = new Thread(() -> { try (InputStream in = p.getInputStream()) { byte[] t = new byte[8192]; int n; while ((n = in.read(t)) > 0) if (b.size() < 4_000_000) b.write(t, 0, n); } catch (IOException ignored) {} });
+        rd.start();
+        int ec;
+        if (!p.waitFor(timeoutS, TimeUnit.SECONDS)) { p.destroyForcibly(); ec = -2; } else ec = p.exitValue();
+        rd.join(2000);
+        if (exitOut != null) exitOut[0] = ec;
+        return new String(b.toByteArray(), StandardCharsets.UTF_8);
+    }
+
     /** Copies assets/red/* (ladder input files) into dir once per size; returns a one-line note. Never touches anything else. */
     static String stageRedAssets(android.content.res.AssetManager am, File dir) {
         int n = 0, bad = 0;
@@ -80,6 +121,7 @@ final class G7PipeRepro {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         int code = -1; String note = "";
         try {
+            if (reduce) { code = runLadder(nativeLibDir, bundle, redDir, matrix, buf); return finish(head, code, buf, note, logDir); }
             ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
             if (redDir != null) pb.environment().put("LAGFX_PIPELINE_MATRIX_DIR", redDir.getPath());   // the offline spirv-opt / M8 files the ladder reads
             Process p = pb.start();
@@ -93,6 +135,10 @@ final class G7PipeRepro {
         } catch (IOException | InterruptedException e) {
             return new Result(false, -1, head + "실행하지 못했습니다: " + e, null);
         }
+        return finish(head, code, buf, note, logDir);
+    }
+
+    private static Result finish(StringBuilder head, int code, ByteArrayOutputStream buf, String note, File logDir) {
         String verdict = code == 0 ? "재현됨(기록된 실패가 같은 결과로 다시 발생)" : code == 1 ? "재현되지 않음(생성 성공 또는 다른 결과)" : code == 2 ? "재현 도구 오류(사용법·번들·Vulkan)" : code == -2 ? "시간 초과" : "비정상 종료(코드 " + code + ", 신호 종료는 128 이상일 수 있음)";
         String text = head + "g7-pipelinerepro: exit=" + code + " -> " + verdict + "\n" + new String(buf.toByteArray(), StandardCharsets.UTF_8) + note;
         File f = null;

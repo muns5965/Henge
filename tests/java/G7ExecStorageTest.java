@@ -168,6 +168,27 @@ public class G7ExecStorageTest {
         st = G7ExecLauncher.startWith(c -> { throw new IOException("must not be started"); }, (e, p) -> romFile, true, lib, ext, pv, files, true, "0".repeat(64), () -> G7Storage.MIN_FREE_BYTES);
         check("start: enough space -> it goes on past the space check (here it stops at the stand-in spawner)", !st.started && !st.message.contains("저장공간이 부족"));
 
+        // ---- delete ONE clone: only that folder; the install pair and the other clones stay; live boot/copy/run block it
+        File vcl = vm(); put(vcl, "macos_disk.img", 500); put(vcl, "g7_state.txt", 3);
+        File cl = new File(vcl, "clones"); File c1 = new File(cl, "clone-001"), c2 = new File(cl, "clone-002"); c1.mkdirs(); c2.mkdirs();
+        for (File c : new File[] {c1, c2}) { put(c, "macos_disk.img", 900); put(c, "macos_aux.img", 40); put(c, "macos_aux.initial", 4); put(c, "g7_state.txt", 3); put(c, "clone_state.txt", 5); }
+        List<G7Storage.Item> cli = G7Storage.listClones(vcl, SZ);
+        check("clones: list shows both with real size", cli.size() == 2 && cli.get(1).name.equals("clone-002") && cli.get(1).allocated == 900 + 40 + 4 + 3 + 5);
+
+        String c1snap = snap(c1);
+        check("clones: a live boot/copy blocks it", !G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> true, vcl, "clone-002", () -> 0).ok && c2.exists());
+        check("clones: a live install run blocks it", !G7Storage.deleteCloneWith(OK, true, () -> true, () -> false, vcl, "clone-002", () -> 0).ok && c2.exists());
+        check("clones: bad names are refused (path tricks)", !G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> false, vcl, "../vm", () -> 0).ok && !G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> false, vcl, "clone-002/..", () -> 0).ok && c2.exists());
+        List<String> ordc = new ArrayList<>();
+        r = G7Storage.deleteCloneWith(p -> { ordc.add(p.getFileName().toString()); Files.delete(p); }, true, NOT_LIVE, () -> false, vcl, "clone-002", () -> 0);
+        check("clones: deleted, marker first, folder gone", r.ok && !c2.exists() && ordc.get(0).equals("clone_state.txt") && ordc.get(ordc.size() - 1).equals("clone-002"));
+        check("clones: clone-001 and the install pair untouched", snap(c1).equals(c1snap) && new File(vcl, "macos_disk.img").length() == 500 && new File(vcl, "g7_state.txt").exists());
+        File c3 = new File(cl, "clone-003"); c3.mkdirs(); put(c3, "macos_disk.img", 5); new File(c3, "sub").mkdirs();
+        check("clones: a sub-folder inside stops it with nothing deleted", !G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> false, vcl, "clone-003", () -> 0).ok && new File(c3, "macos_disk.img").exists());
+        File c4 = new File(cl, "clone-004"); c4.mkdirs(); put(c4, "clone_state.txt", 1); put(c4, "macos_disk.img", 5);
+        r = G7Storage.deleteCloneWith(p -> { if (p.getFileName().toString().equals("macos_disk.img")) throw new IOException("x"); Files.delete(p); }, true, NOT_LIVE, () -> false, vcl, "clone-004", () -> 0);
+        check("clones: an error in the middle leaves a folder without marker (no longer a clone) and says so", !r.ok && !new File(c4, "clone_state.txt").exists() && new File(c4, "macos_disk.img").exists() && G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> false, vcl, "clone-004", () -> 0).ok);
+
         System.out.println(fails == 0 ? "G7EXEC STORAGE OK (0 failed)" : "G7EXEC STORAGE FAILED " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

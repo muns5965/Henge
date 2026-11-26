@@ -32,7 +32,7 @@ public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
     private android.widget.ProgressBar cloneBar;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, delClone, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy;
     private TextView cbMon; private ScrollView cbScroll;
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
@@ -123,6 +123,8 @@ public class G7ExecActivity extends Activity {
             confirmDeleteArchives(names);
         });
         delCur.setOnClickListener(v -> confirmDeleteCurrent());
+        delClone = new Button(this); delClone.setText("복제본 하나 삭제(vm/clones/, 설치 쌍은 그대로)"); root.addView(delClone);
+        delClone.setOnClickListener(v -> confirmDeleteClone());
         cloneBtn = new Button(this); cloneBtn.setText("설치 쌍 희소 복제본 만들기(원본은 읽기만)"); root.addView(cloneBtn);
         cloneBtn.setOnClickListener(v -> confirmClone());
         cloneFromBtn = new Button(this); cloneFromBtn.setText("기존 복제본에서 복제본 만들기(그 복제본은 읽기만)"); root.addView(cloneFromBtn);
@@ -276,7 +278,7 @@ public class G7ExecActivity extends Activity {
         }
     }
 
-    private void setDeleteButtons(boolean on) { delSel.setEnabled(on); delAll.setEnabled(on); delCur.setEnabled(on); }
+    private void setDeleteButtons(boolean on) { delSel.setEnabled(on); delAll.setEnabled(on); delCur.setEnabled(on); delClone.setEnabled(on); }
 
     private void confirmDeleteArchives(final List<String> names) {
         long total = 0;
@@ -494,6 +496,26 @@ public class G7ExecActivity extends Activity {
             final String msg = m;
             runOnUiThread(() -> { refreshStorage(); showSummary(); setDeleteButtons(true); cloneBtn.setEnabled(true); cloneFromBtn.setEnabled(true); cancel.setEnabled(false); status.setText(msg); });
         }, "g7-clone").start();
+    }
+
+    /** Pick ONE clone folder (name and the space it frees), confirm, delete. The install pair and the other clones are not touched; a live boot or copy blocks it (checked again inside G7Storage). */
+    private void confirmDeleteClone() {
+        final List<G7Storage.Item> items = G7Storage.listClones(privDir, SIZER);
+        if (items.isEmpty()) { status.setText("삭제할 복제본이 없습니다."); return; }
+        final String[] names = new String[items.size()];
+        for (int i = 0; i < names.length; i++) names[i] = items.get(i).name + " · 확보 " + G7Storage.fmt(items.get(i).allocated);
+        new AlertDialog.Builder(this).setTitle("삭제할 복제본 고르기")
+                .setItems(names, (d, which) -> {
+                    final G7Storage.Item it = items.get(which);
+                    new AlertDialog.Builder(this).setTitle(it.name + " 영구 삭제")
+                            .setMessage(it.name + "을(를) 영구 삭제하고 약 " + G7Storage.fmt(it.allocated) + "을(를) 확보합니다. 되돌릴 수 없습니다. 설치 쌍과 다른 복제본은 지우지 않습니다."
+                                    + (it.name.equals("clone-001") ? "\n\n주의: clone-001은 새 복제본을 만드는 기준(원본)으로 쓰던 복제본입니다. 지우면 다시 설치 쌍에서 복제해야 합니다." : "")
+                                    + "\n복제본 부팅이나 복제가 진행 중이면 삭제되지 않습니다.")
+                            .setNegativeButton("취소", null)
+                            .setPositiveButton("삭제", (dd, ww) -> runDelete(() -> G7Storage.deleteClone(privDir, it.name, runnerSt(),
+                                    () -> G7CloneBoot.hasLive() || G7CloneProgress.current().running).message)).show();
+                })
+                .setNegativeButton("취소", null).show();
     }
 
     private void confirmDeleteCurrent() {

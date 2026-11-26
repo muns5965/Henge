@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -162,6 +163,61 @@ public final class G7Storage {
             return r == null ? new Result(true, "실패한 설치 쌍을 삭제했습니다. 새 복원을 시작할 수 있습니다.") : new Result(false, r);
         }
     }
+
+    private static final java.util.regex.Pattern CLONE_NAME = java.util.regex.Pattern.compile("clone-[0-9]{3,}");
+
+    /** One folder under vm/clones/ for the delete list: its name and the space it really occupies. Looks only. */
+    public static List<Item> listClones(File priv, Sizer sizer) {
+        List<Item> out = new ArrayList<>();
+        File[] k = new File(priv, "clones").listFiles();
+        if (k == null) return out;
+        Arrays.sort(k);
+        for (File d : k) {
+            if (!CLONE_NAME.matcher(d.getName()).matches() || !Files.isDirectory(d.toPath(), LinkOption.NOFOLLOW_LINKS)) continue;
+            long alloc = 0; File[] in = d.listFiles();
+            if (in != null) for (File f : in) { try { alloc += sizer.allocated(f); } catch (IOException | RuntimeException e) { /* shown as less than it is */ } }
+            out.add(new Item(d.getName(), d.lastModified(), alloc, "clone", true, ""));
+        }
+        return out;
+    }
+
+    /**
+     * Deletes ONE clone folder vm/clones/clone-NNN (after the person confirmed). The install pair in vm/ and every other clone are never touched. Refused while any install run, clone boot or clone copy is live
+     * (a boot or a copy may be reading or writing exactly this folder). The marker clone_state.txt goes FIRST: from that moment the folder is no clone (it cannot be booted or picked as a source), so an interruption leaves
+     * a harmless leftover that can be deleted again. Only regular files directly inside the folder are removed; anything else (a sub-folder, a link) stops the deletion with the rest untouched.
+     */
+    public static Result deleteClone(File priv, String name, IntSupplier runnerStatus, BooleanSupplier otherLive) {
+        return deleteCloneWith(REAL, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, otherLive, priv, name, runnerStatus);
+    }
+
+    static Result deleteCloneWith(Deleter del, boolean enabled, BooleanSupplier live, BooleanSupplier otherLive, File priv, String name, IntSupplier runnerStatus) {
+        synchronized (G7ExecLauncher.START_LOCK) {
+            String g = G7Isolation.gate(enabled, live, runnerStatus);
+            if (g != null) return new Result(false, g.replace("격리하지", "삭제하지").replace("아무것도 옮기지", "아무것도 지우지"));
+            if (otherLive != null && otherLive.getAsBoolean()) return new Result(false, "복제본 부팅 또는 복제가 진행 중이라 삭제하지 않았습니다. 아무것도 지우지 않았습니다.");
+            if (name == null || !CLONE_NAME.matcher(name).matches()) return new Result(false, "올바른 복제본 이름이 아닙니다. 아무것도 지우지 않았습니다.");
+            File clones = new File(priv, "clones"), d = new File(clones, name);
+            if (!Files.isDirectory(clones.toPath(), LinkOption.NOFOLLOW_LINKS)) return new Result(false, "복제본 폴더가 없습니다.");
+            if (!exists(d.toPath())) return new Result(false, name + "은(는) 이미 없습니다.");
+            if (!Files.isDirectory(d.toPath(), LinkOption.NOFOLLOW_LINKS)) return new Result(false, name + "이(가) 폴더가 아니어서 삭제하지 않았습니다. 아무것도 지우지 않았습니다.");
+            File[] in = d.listFiles();
+            if (in == null) return new Result(false, name + " 안을 읽지 못해 삭제하지 않았습니다. 아무것도 지우지 않았습니다.");
+            for (File f : in) if (!regular(f.toPath())) return new Result(false, name + " 안의 " + f.getName() + "이(가) 일반 파일이 아니어서(폴더·링크 등) 삭제하지 않았습니다. 아무것도 지우지 않았습니다.");
+            List<File> order = new ArrayList<>(Arrays.asList(in));
+            order.sort((a, b) -> Integer.compare(rank(a.getName()), rank(b.getName())));
+            int n = 0;
+            for (File f : order) {
+                try { del.remove(f.toPath()); n++; }
+                catch (IOException e) { return new Result(false, f.getName() + "을(를) 지우지 못해 멈췄습니다(" + n + "개 삭제됨). 이 폴더는 이미 복제본으로 쓸 수 없고, 다시 삭제하면 이어서 지웁니다."); }
+            }
+            try { del.remove(d.toPath()); }
+            catch (IOException e) { return new Result(false, "파일은 지웠지만 빈 폴더를 지우지 못했습니다(다시 삭제하면 정리됩니다)."); }
+            return new Result(true, name + "을(를) 삭제했습니다(파일 " + n + "개). 설치 쌍과 다른 복제본은 그대로입니다.");
+        }
+    }
+
+    /** Marker first (no longer a clone), then the big files, then the rest. */
+    private static int rank(String n) { return n.equals("clone_state.txt") ? 0 : n.startsWith("macos_disk") ? 1 : n.startsWith("macos_") ? 2 : 3; }
 
     /** Deletes the pair's files in DELETE_ORDER (those that exist) and, for an archive folder, the empty folder. Null when everything is gone; else what happened. Never touches an entry outside DELETE_ORDER. */
     private static String deleteMembers(Deleter del, File dir, boolean removeDir) {

@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 82258ff94f510949a8173545e7f7da2af0add139   # research/android-pfn-shift: per-feature capability bits + declared 8/16-bit storage caps, PointCoord builtin, stricter dump checks (on top of 99f921a)
+  LAGFX_SHA: 35e43cbddd39e200ec95cbb46ac331582cd8f1ab   # research/android-pfn-shift: fail-closed capability analysis, shufflevec undef warning, pair-specific dump harness, RGhA write-back test (on top of 82258ff)
 
 jobs:
   apk:

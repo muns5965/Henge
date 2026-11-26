@@ -145,6 +145,14 @@ void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, con
     g->display_opaque = opaque;
 }
 
+/* The runner returns from main() without destroying the PVG device, so the library's teardown statistics (g7-gpu-final) were never printed. An exit
+   handler prints them: statistics only, nothing is freed or torn down (the device may still be in use by a vCPU thread at that moment). */
+static HvPvgLagfx *volatile s_exit_g;
+static void pvg_lagfx_at_exit(void) {
+    HvPvgLagfx *g = s_exit_g;
+    if (g && !g->closing && g->dev) lagfx_device_diag_final(g->dev);
+}
+
 HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const char **why) {
     static char reason[160];
     HvPvgLagfx *g = calloc(1, sizeof *g);
@@ -181,12 +189,18 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
         free(g);
         return NULL;
     }
+    {
+        static int registered;
+        s_exit_g = g;
+        if (!registered) { registered = 1; atexit(pvg_lagfx_at_exit); }
+    }
     return g;
 }
 
 void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     if (!g) return;
     g->closing = 1; /* the tick may still call poll: it stops here, before the device goes away */
+    if (s_exit_g == g) s_exit_g = NULL;
     lagfx_device_free(g->dev);
     free(g);
 }

@@ -21,6 +21,8 @@ int hv_pvg_metal_frame(HvPvgMetal *m, const uint8_t **pixels, uint32_t *width, u
     return -1;
 }
 void hv_pvg_metal_unmap(HvPvgMetal *m, uint32_t mapping) { (void)m; (void)mapping; }
+/* Never reached from the device while create() returns NULL (the device only calls a backend that exists). The pointer-moved doorbell (+0x1220) is handled by
+   the device itself (devices/pvg_lite.c cursor_doorbell: counted, page words read, listener called), which is what the Android runner uses; see hv_vm_cursor_wake_open. */
 void hv_pvg_metal_cursor_moved(HvPvgMetal *m) { (void)m; }
 void hv_pvg_metal_set_layer(HvPvgMetal *m, void *layer) { (void)m; (void)layer; }
 uint64_t hv_pvg_metal_gpu_frames(HvPvgMetal *m) {

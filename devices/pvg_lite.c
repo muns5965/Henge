@@ -66,6 +66,9 @@ struct HvPvgLite {
     uint64_t io_regs[0x40 / 8];
     uint32_t root_rp, status, chan_pending;
     int root_pending, iosfc_pending;
+    uint64_t cursor_db, cursor_changed, cursor_no_page, cursor_hidden, cursor_calls;   /* log-only counters of the +0x1220 doorbell (hv_pvg_lite_cursor_stats) */
+    uint32_t cursor_last_word, cursor_last_flag; int cursor_seen;
+    HvPvgCursorListener cursor_fn; void *cursor_ctx;
     uint64_t display_pa;
     uint64_t swaps;
     uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
@@ -966,6 +969,55 @@ uint8_t *hv_pvg_lite_display_page(HvPvgLite *p) {
     return p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
 }
 
+int hv_pvg_lite_cursor(HvPvgLite *p, int *x, int *y, int *flag) {
+    const uint8_t *d = p ? hv_pvg_lite_display_page(p) : NULL;
+    if (!d) return -1;
+    uint32_t at = __atomic_load_n((const uint32_t *)(d + 0xe00), __ATOMIC_ACQUIRE);
+    if (flag) *flag = d[0xe04];
+    if (at == 0xffffffffu) return 0;
+    if (x) *x = (int)(at & 0xffff);
+    if (y) *y = (int)(at >> 16);
+    return 1;
+}
+
+void hv_pvg_lite_set_cursor_listener(HvPvgLite *p, HvPvgCursorListener fn, void *ctx) {
+    if (!p) return;
+    p->cursor_ctx = ctx;
+    __atomic_store_n(&p->cursor_fn, fn, __ATOMIC_RELEASE);
+}
+
+void hv_pvg_lite_cursor_stats(HvPvgLite *p, HvPvgCursorStats *o) {
+    memset(o, 0, sizeof *o);
+    if (!p) return;
+    o->doorbells = __atomic_load_n(&p->cursor_db, __ATOMIC_RELAXED);
+    o->changed = __atomic_load_n(&p->cursor_changed, __ATOMIC_RELAXED);
+    o->no_page = __atomic_load_n(&p->cursor_no_page, __ATOMIC_RELAXED);
+    o->hidden = __atomic_load_n(&p->cursor_hidden, __ATOMIC_RELAXED);
+    o->listener_calls = __atomic_load_n(&p->cursor_calls, __ATOMIC_RELAXED);
+    uint32_t w = __atomic_load_n(&p->cursor_last_word, __ATOMIC_RELAXED);
+    o->seen = __atomic_load_n(&p->cursor_seen, __ATOMIC_RELAXED);
+    o->last_flag = (int)__atomic_load_n(&p->cursor_last_flag, __ATOMIC_RELAXED);
+    o->last_x = w == 0xffffffffu ? -1 : (int)(w & 0xffff);
+    o->last_y = w == 0xffffffffu ? -1 : (int)(w >> 16);
+}
+
+/* The +0x1220 doorbell, for every backend (including none) and for the library's window. Counts, reads the page words, calls the listener. */
+static void cursor_doorbell(HvPvgLite *p) {
+    __atomic_fetch_add(&p->cursor_db, 1, __ATOMIC_RELAXED);
+    int x = 0, y = 0, flag = 0;
+    int rc = hv_pvg_lite_cursor(p, &x, &y, &flag);
+    if (rc < 0) { __atomic_fetch_add(&p->cursor_no_page, 1, __ATOMIC_RELAXED); return; }
+    if (rc == 0) __atomic_fetch_add(&p->cursor_hidden, 1, __ATOMIC_RELAXED);
+    uint32_t word = rc ? (uint32_t)y << 16 | (uint32_t)x : 0xffffffffu;
+    if (!__atomic_load_n(&p->cursor_seen, __ATOMIC_RELAXED) || word != __atomic_load_n(&p->cursor_last_word, __ATOMIC_RELAXED) || (uint32_t)flag != __atomic_load_n(&p->cursor_last_flag, __ATOMIC_RELAXED))
+        __atomic_fetch_add(&p->cursor_changed, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->cursor_last_word, word, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->cursor_last_flag, (uint32_t)flag, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->cursor_seen, 1, __ATOMIC_RELAXED);
+    HvPvgCursorListener fn = __atomic_load_n(&p->cursor_fn, __ATOMIC_ACQUIRE);
+    if (fn) { __atomic_fetch_add(&p->cursor_calls, 1, __ATOMIC_RELAXED); fn(p->cursor_ctx, rc == 1, rc == 1 ? x : -1, rc == 1 ? y : -1); }
+}
+
 void hv_pvg_lite_command(HvPvgLite *p, const uint32_t *cmd, uint32_t len) {
     uint32_t op = cmd[0] & 0xffff, skip = (cmd[0] >> 16) * 8;
     uint32_t n = len > 12 + skip ? len - 12 - skip : 0;
@@ -1225,7 +1277,8 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     } else if (p->log && off != 0x1020) {
         fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
     }
-    if (off == 0x1220 && p->metal && p->be->cursor_moved) p->be->cursor_moved(p->metal); /* the display's doorbell: the pointer moved */
+    if (off == 0x1220) cursor_doorbell(p);   /* the display's doorbell: the pointer moved (device level: counted and passed on whatever the backend is) */
+    if (off == 0x1220 && p->metal && p->be->cursor_moved) p->be->cursor_moved(p->metal);
 }
 
 static uint64_t iosfc_read(void *opaque, uint64_t off, unsigned size) {
@@ -1277,6 +1330,7 @@ static void gfx_write_lagfx(void *opaque, uint64_t off, uint64_t v, unsigned siz
     if (off == 0x1008) note_doorbell(p, 0); else if (off == 0x1020 && v < MAX_CHANNELS) note_doorbell(p, (uint32_t)v);   /* diagnostic only */
     /* Diagnostic mirror of the register window (hv_pvg_lite_chan_diag reads the shared-page PFN from it). Nothing else on the lagfx path reads p->regs. */
     if (off >= 0x1000 && off < 0x2000) __atomic_store_n(&p->regs[(off - 0x1000) / 4], (uint32_t)v, __ATOMIC_RELAXED);
+    if (off == 0x1220) cursor_doorbell(p);   /* the library does not implement it (it logs "unhandled MMIO write"); the write is still forwarded, unchanged */
     hv_pvg_lagfx_write(p->lagfx, off, v);
 }
 #endif

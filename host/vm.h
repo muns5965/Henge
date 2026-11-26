@@ -166,6 +166,11 @@ void hv_vm_mouse_wheel(int dy);
 void hv_vm_mouse_hwheel(int dx);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int hv_vm_pointer(int *x, int *y);
+/* The display doorbell +0x1220 ("the pointer moved", devices/pvg_lite.c) as a wake-up for a runner's loop: hv_vm_cursor_wake_open returns the read end of a
+   non-blocking pipe (-1 if it cannot be made; call once, before the machine runs). A doorbell then writes ONE byte, and no more until hv_vm_cursor_wake_drain
+   is called; the loop polls the fd, drains, and asks hv_vm_pointer. Nothing is sent to the GPU and no VBL is needed. Not opened = the doorbell only counts. */
+int hv_vm_cursor_wake_open(void);
+void hv_vm_cursor_wake_drain(void);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
 int hv_vm_snapshot(uint8_t *bgra, int width, int height);
 

@@ -102,3 +102,5 @@ void hv_vm_mouse_move(int dx, int dy) { (void)dx; (void)dy; atomic_fetch_add(&g_
 void hv_vm_mouse_button(int button, int down) { (void)button; (void)down; atomic_fetch_add(&g_inputs, 1); }
 void hv_vm_mouse_wheel(int dy) { (void)dy; atomic_fetch_add(&g_inputs, 1); }
 void hv_vm_mouse_hwheel(int dx) { (void)dx; atomic_fetch_add(&g_inputs, 1); }
+int hv_vm_cursor_wake_open(void) { return -1; }
+void hv_vm_cursor_wake_drain(void) {}

@@ -84,6 +84,8 @@ static int clone_boot_config_ok(const HvVmConfig *c, uint64_t ecid, int clone_ve
 
 static HvShm *g_shm;
 static HvRunner *g_run;
+static int cursor_wake_fd = -1;           /* read end of the pointer-moved doorbell pipe (hv_vm_cursor_wake_open), -1 = none */
+static unsigned long cursor_wake_loops;   /* loop passes that the doorbell woke (log only) */
 
 static void status_line(const char *tag) {
     HvRunnerStats r;
@@ -259,6 +261,7 @@ int main(int argc, char **argv) {
     hv_stage_hook = stage_cb;   /* from here the start-up stages report their memory */
     char err[256] = "";
     double t0 = now();
+    cursor_wake_fd = hv_vm_cursor_wake_open();   /* before the machine: the doorbell listener reads the fd */
     if (hv_vm_create(&cfg, err, sizeof err) != 0) {
         printf("ui_runner_vm_clone RESULT: FAILED, the machine could not be made: %s\n", err);
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
@@ -314,9 +317,13 @@ int main(int argc, char **argv) {
             why_stop = reason_txt; stop_kind = "guest-initiated"; break;
         }
         if (seconds && now() - tstart >= (double)seconds) { why_stop = "time limit"; stop_kind = "time-limit"; break; }
-        struct pollfd p = {0, POLLIN, 0};
-        int r = poll(&p, 1, 10);
+        /* fd 0 is the app's command line; the second fd (when the pipe could be made) is the pointer-moved doorbell: the loop wakes at once and the pump below asks for the pointer. */
+        struct pollfd pf[2] = {{0, POLLIN, 0}, {cursor_wake_fd, POLLIN, 0}};
+        struct pollfd p;
+        int r = poll(pf, cursor_wake_fd >= 0 ? 2 : 1, 10);
+        p = pf[0];
         if (r < 0 && errno != EINTR) { why_stop = "input error"; stop_kind = "input-error"; break; }
+        if (r > 0 && cursor_wake_fd >= 0 && (pf[1].revents & POLLIN)) { hv_vm_cursor_wake_drain(); cursor_wake_loops++; r = (p.revents & (POLLIN | POLLHUP | POLLERR)) ? r : 0; }   /* the pointer is asked for at work: just below, before anything else */
         if (r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR))) {
             char c;
             ssize_t n = read(0, &c, 1);

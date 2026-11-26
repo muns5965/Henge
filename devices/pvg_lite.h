@@ -77,6 +77,22 @@ void hv_pvg_lite_barrier_stats(HvPvgLite *p, uint64_t out[4]);
 size_t hv_pvg_lite_chan_diag(HvPvgLite *p, char *out, size_t cap);
 /* The display's shared state page, or NULL before the guest named it. */
 uint8_t *hv_pvg_lite_display_page(HvPvgLite *p);
+
+/* The guest's pointer, as the display's shared page holds it (the same words devices/pvg_metal.m's drawCursor and host/vm.c's hv_vm_pointer read):
+   +0xe00 one word, low 16 bits X, high 16 bits Y, 0xffffffff = no pointer; +0xe04 the shown flag (pvg_metal.m reads it as a byte and draws when
+   that byte or the op-5 "show" state is set). Returns 1 with *x, *y, *flag, 0 when the page says "no pointer" (flag still filled), -1 when the page
+   is not named yet. Reads only. */
+int hv_pvg_lite_cursor(HvPvgLite *p, int *x, int *y, int *flag);
+/* A write to the display doorbell +0x1220 ("the pointer moved") is handled by the DEVICE, whatever backend there is: it is counted, the page is read, and the
+   listener (if any) is called on the vCPU thread that wrote the doorbell. No GPU command, no VBL and no backend is involved, so it works where the backend
+   is the stub (host/pvg_metal_stub.c: create returns NULL) and where the library owns the MMIO window (it logs the write as unhandled). The listener must be
+   short and must not take a lock a vCPU can be holding; it gets what the page said at that moment. Set it before the guest runs; NULL removes it. */
+typedef void (*HvPvgCursorListener)(void *ctx, int shown, int x, int y);
+void hv_pvg_lite_set_cursor_listener(HvPvgLite *p, HvPvgCursorListener fn, void *ctx);
+/* Log-only counters (never change behaviour). doorbells: writes to +0x1220. changed: doorbells after which the page's pointer words differed from the
+   previous doorbell's. no_page: doorbells before the guest named the page. hidden: doorbells that found 0xffffffff. last_*: the words seen at the last doorbell. */
+typedef struct { uint64_t doorbells, changed, no_page, hidden, listener_calls; int last_x, last_y, last_flag, seen; } HvPvgCursorStats;
+void hv_pvg_lite_cursor_stats(HvPvgLite *p, HvPvgCursorStats *out);
 void hv_pvg_lite_command(HvPvgLite *p, const uint32_t *command, uint32_t length);
 /* Valid channels are 1 .. 15; anything else is ignored (no stamp, no status bit, no interrupt). */
 void hv_pvg_lite_complete(HvPvgLite *p, uint32_t channel, uint32_t stamp);

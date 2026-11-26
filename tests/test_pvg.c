@@ -500,6 +500,50 @@ static void s_barrier(void) {
     EXPECT(nsubs == 3 && subs[1].ch == 3 && subs[2].ch == 5, "barrier D: stamp 2 (after the wrap) satisfies it");
 }
 
+/* The pointer-moved doorbell (+0x1220) is the device's own: counted and passed on with NO backend (HV_PVG_NO_METAL = what the Android stub gives: create fails) and without any GPU command. */
+static int cl_calls, cl_shown, cl_x, cl_y;
+static void cl_fn(void *ctx, int shown, int x, int y) { (void)ctx; cl_calls++; cl_shown = shown; cl_x = x; cl_y = y; }
+static void s_cursor(void) {
+    hv_pvg_lite_set_mode(1920, 1080);
+    dev_new(1);
+    HvPvgCursorStats st;
+    hv_pvg_lite_cursor_stats(dev, &st);
+    EXPECT(st.doorbells == 0 && !st.seen, "cursor: counters start at zero");
+    hv_pvg_lite_set_cursor_listener(dev, cl_fn, NULL);
+    int x = 0, y = 0, f = 0;
+    EXPECT(hv_pvg_lite_cursor(dev, &x, &y, &f) == -1, "cursor: -1 before the page is named");
+    W(0x1220, 1);
+    hv_pvg_lite_cursor_stats(dev, &st);
+    EXPECT(st.doorbells == 1 && st.no_page == 1 && cl_calls == 0 && created == 0, "cursor: a doorbell before the page is counted, calls nobody, makes no backend");
+    chan_setup(4, 1);
+    uint32_t dpn = alloc_page();
+    uint32_t a1[2] = {0, dpn};
+    chan_cmd(4, 1, 41, a1, 8);
+    ring_bell(4);
+    uint8_t *d = hv_pvg_lite_display_page(dev);
+    EXPECT(d != NULL, "cursor: page named (op 1, no GPU work)");
+    if (!d) return;
+    *(uint32_t *)(d + 0xe00) = 0xffffffffu;
+    W(0x1220, 1);
+    EXPECT(hv_pvg_lite_cursor(dev, &x, &y, &f) == 0, "cursor: 0xffffffff is 'no pointer'");
+    EXPECT(cl_calls == 1 && cl_shown == 0 && cl_x == -1 && cl_y == -1, "cursor: listener told hidden");
+    *(uint32_t *)(d + 0xe00) = (uint32_t)(300 << 16 | 1500);
+    d[0xe04] = 1;
+    W(0x1220, 1);
+    EXPECT(hv_pvg_lite_cursor(dev, &x, &y, &f) == 1 && x == 1500 && y == 300 && f == 1, "cursor: low 16 bits X, high 16 bits Y, flag byte (%d,%d,%d)", x, y, f);
+    EXPECT(cl_calls == 2 && cl_shown == 1 && cl_x == 1500 && cl_y == 300, "cursor: listener gets the position of that doorbell");
+    W(0x1220, 1);
+    hv_pvg_lite_cursor_stats(dev, &st);
+    EXPECT(st.doorbells == 4 && st.changed == 2 && st.hidden == 1 && st.no_page == 1 && st.listener_calls == 3 && st.last_x == 1500 && st.last_y == 300 && st.last_flag == 1,
+           "cursor: counters: doorbells 4, changed 2 (hidden, then moved; a repeat is not a change), hidden 1 (%llu %llu %llu)", (unsigned long long)st.doorbells, (unsigned long long)st.changed, (unsigned long long)st.hidden);
+    hv_pvg_lite_set_cursor_listener(dev, NULL, NULL);
+    W(0x1220, 1);
+    EXPECT(cl_calls == 3, "cursor: no listener, no call");
+    W(0x1224, 1);
+    hv_pvg_lite_cursor_stats(dev, &st);
+    EXPECT(st.doorbells == 5, "cursor: only +0x1220 counts");
+}
+
 static void s_display(void) {
     hv_pvg_lite_set_mode(800, 600);
     hv_pvg_lite_set_size_mm(0, 0);
@@ -956,6 +1000,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "wrap")) s_wrap(), s_root_wrap(), s_channel_wrap();
     if (all || !strcmp(sc, "barrier")) s_barrier();
     if (all || !strcmp(sc, "display")) s_display();
+    if (all || !strcmp(sc, "cursor")) s_cursor();
     if (all || !strcmp(sc, "mapper")) s_mapper(), s_task(), s_len_checks();
     if (all || !strcmp(sc, "fuzz")) s_fuzz(argc > 2 ? atoi(argv[2]) : 400);
     if (all || !strcmp(sc, "ring")) s_ring();

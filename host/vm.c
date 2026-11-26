@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "audio_mac.h"
 #include "dispatch.h"
@@ -35,6 +36,34 @@ static os_unfair_lock display_lock = OS_UNFAIR_LOCK_INIT;
 static CFTypeRef display_layer;
 static int display_layer_set;
 static _Atomic(HvPvgLite *) display_pvg; /* published only when the board is ready */
+/* The pointer-moved doorbell as a wake-up (hv_vm_cursor_wake_open). The listener runs on the vCPU that wrote the doorbell: one atomic exchange and, at most once per
+   drain, a one-byte write to a non-blocking pipe. Nothing else. */
+static _Atomic int cursor_wake_fd = -1, cursor_wake_rd = -1, cursor_wake_pending;
+static _Atomic uint64_t cursor_wakes;
+static void vm_cursor_listener(void *ctx, int shown, int x, int y) {
+    (void)ctx; (void)shown; (void)x; (void)y;
+    int fd = atomic_load_explicit(&cursor_wake_fd, memory_order_relaxed);
+    if (fd < 0 || atomic_exchange(&cursor_wake_pending, 1)) return;
+    char b = 1;
+    if (write(fd, &b, 1) == 1) atomic_fetch_add_explicit(&cursor_wakes, 1, memory_order_relaxed);
+    else atomic_store(&cursor_wake_pending, 0);   /* full or failed: the next doorbell tries again */
+}
+int hv_vm_cursor_wake_open(void) {
+    if (atomic_load(&cursor_wake_rd) >= 0) return atomic_load(&cursor_wake_rd);
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    for (int i = 0; i < 2; i++) { fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL, 0) | O_NONBLOCK); fcntl(fds[i], F_SETFD, FD_CLOEXEC); }
+    atomic_store(&cursor_wake_rd, fds[0]);
+    atomic_store(&cursor_wake_fd, fds[1]);
+    return fds[0];
+}
+void hv_vm_cursor_wake_drain(void) {
+    int rd = atomic_load(&cursor_wake_rd);
+    if (rd < 0) return;
+    atomic_store(&cursor_wake_pending, 0);   /* first, so a doorbell after this point writes again; the caller asks the pointer after the drain */
+    char buf[64];
+    while (read(rd, buf, sizeof buf) > 0) {}
+}
 static HvDisk disk, aux;
 static int net_on;
 static void (*extra_poll)(void);
@@ -557,6 +586,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     // never overwrite a monitor change made while the board was being built.
     os_unfair_lock_lock(&display_lock);
     if (display_layer_set && board.pvg) hv_pvg_lite_set_layer(board.pvg, (void *)display_layer);
+    if (board.pvg) hv_pvg_lite_set_cursor_listener(board.pvg, vm_cursor_listener, NULL);
     atomic_store_explicit(&display_pvg, board.pvg, memory_order_release);
     os_unfair_lock_unlock(&display_lock);
     return 0;

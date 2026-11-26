@@ -27,7 +27,7 @@ public final class G7CloneBoot {
     static final String LIB_NAME = "libg7cloneboot.so";
     static final int RUN_SECONDS = 900;
     /** The run times a person may choose (seconds; 0 = no limit, the run then ends by the stop button, a guest end, a fatal engine error or the app closing). Anything else is refused. The stop, quiesce and flush path is the same for all of them. */
-    public static final int[] RUN_SECONDS_CHOICES = {900, 1800, 3600, 0};
+    public static final int[] RUN_SECONDS_CHOICES = {180, 900, 1800, 3600, 0};
     static boolean validSeconds(int seconds) { for (int c : RUN_SECONDS_CHOICES) if (c == seconds) return true; return false; }
     static final String LOG_PREFIX = "g7_cboot_", LOG_SUFFIX = ".txt";
     static final int MAX_LOG_BYTES = 2 * 1024 * 1024;

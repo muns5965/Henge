@@ -404,38 +404,40 @@ public class G7ExecActivity extends Activity {
         final String[] names = new String[clones.size()];
         for (int i = 0; i < names.length; i++) names[i] = G7CloneHistory.label(getFilesDir(), privDir, clones.get(i));
         final int[] pick = {0};
-        final CheckBox ok = new CheckBox(this); ok.setText("선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의합니다(원본은 쓰지 않음).");
-        ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final android.widget.RadioGroup usb = new android.widget.RadioGroup(this);
-        String[] um = {"A. USB 없음(현재까지의 복제본 부팅)", "B. USB 장치 포트만", "C. USB 포트 + 초기 열거(기존 일반 VM과 같은 조건)", "D. C + 복구 환경변수 5개 읽기 전용 조회(getenv)", "E. D + auto-boot를 true로 저장(clone-001 전용, 값을 바꿈)"};
-        for (int i = 0; i < um.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(um[i]); rb.setId(1000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); usb.addView(rb); }
-        usb.check(1000);
-        final android.widget.RadioGroup lim = new android.widget.RadioGroup(this);
-        final String[] lm = {"실행 시간 15분(기존 시험용)", "실행 시간 30분", "실행 시간 1시간", "시간 제한 없음(중지 버튼으로 끝냄)"};
-        for (int i = 0; i < lm.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(lm[i]); rb.setId(2000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); lim.addView(rb); }
-        lim.check(2000);   // the old default, 15 minutes
-        final CheckBox pat = new CheckBox(this); pat.setText("진단: 화면 경로 시험 패턴(게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인)");
-        pat.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final CheckBox gx = new CheckBox(this); gx.setText("실험: GPU 명령 실제 실행(Render/Blit을 Vulkan으로 실행. 끄면 해석만 함)");
-        gx.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final android.widget.RadioGroup gw = new android.widget.RadioGroup(this);
-        final TextView gwt = new TextView(this); gwt.setText("실험: 렌더링한 화면 표면을 게스트 메모리로 되쓰기(LAGFX_ARM64_MAPPED_WRITEBACK, GPU 실행을 켰을 때만 의미 있음)"); gwt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final String[] gwl = { "끔(되쓰기는 flag 4·동기화 때만)", "즉시: 그린 exec마다 되쓰기 (=1)", "지연: 디스플레이 명령 직전에 한 번 (=swap, 실험)" };
-        for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); gw.addView(rb); }
+        final int pad = (int) (8 * getResources().getDisplayMetrics().density);
+        final String[] um = {"A. USB 없음", "B. USB 포트만", "C. 포트 + 초기 열거", "D. C + getenv 조회", "E. D + auto-boot 저장"};
+        final String[] lm = {"3분", "15분", "30분", "1시간", "제한 없음"};
+        final android.widget.Spinner cloneSp = new android.widget.Spinner(this); cloneSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names));
+        cloneSp.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int i, long id) { pick[0] = i; }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) { }
+        });
+        final android.widget.Spinner usbSp = new android.widget.Spinner(this); usbSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, um));
+        final android.widget.Spinner limSp = new android.widget.Spinner(this); limSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, lm));
+        limSp.setSelection(0);   // 3 minutes: the length the GPU tests use (index into G7CloneBoot.RUN_SECONDS_CHOICES)
+        final android.widget.RadioGroup gw = new android.widget.RadioGroup(this); gw.setOrientation(android.widget.RadioGroup.HORIZONTAL);
+        final String[] gwl = {"끔", "즉시", "지연"};
+        for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); gw.addView(rb); }
         gw.check(3001);   // the default the earlier checkbox had: immediate
-        final CheckBox de = new CheckBox(this); de.setText("실험: 디스플레이 이벤트 전달(VBL ~60Hz + 디스플레이 원인 비트, HV_PVG_DISPLAY_EVENTS. 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험)");
-        de.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final CheckBox cdc = new CheckBox(this); cdc.setText("진단: Render Replay 캡처(draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장, 최대 256 draw·128 MiB. 위 셰이더 데이터 저장과 GPU 실행을 켜야 함. 메모리 여유 적음 주의)");
-        cdc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final CheckBox gd = new CheckBox(this); gd.setText("진단: 게스트 셰이더·파이프라인 데이터 저장(앱 외부 저장 폴더 g7_gpudump, 크기 제한)");
-        gd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(gx); box.addView(gwt); box.addView(gw); box.addView(de); box.addView(gd); box.addView(cdc); box.addView(ok);
-        final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // nine options and the clone list do not fit a phone's height
-        new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(sv)
+        final CheckBox gx = shortBox("GPU 실제 실행");
+        final CheckBox pat = shortBox("화면 시험 패턴");
+        final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
+        final CheckBox gd = shortBox("셰이더·파이프라인 저장");
+        final CheckBox cdc = shortBox("Render Replay 캡처");
+        final CheckBox ok = shortBox("복제본 디스크·AUX 쓰기 동의(원본은 쓰지 않음)");
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(pad * 2, pad, pad * 2, pad);
+        box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
+        box.addView(sectionLabel("GPU")); box.addView(gx);
+        box.addView(labelRow("화면 되쓰기", gw));
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(cdc);
+        box.addView(sectionLabel("동의")); box.addView(ok);
+        final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // the dialog's own buttons stay at the bottom; only the options scroll
+        final AlertDialog dlg = new AlertDialog.Builder(this).setTitle("복제본 부팅").setView(sv)
                 .setNegativeButton("취소", null)
-                .setPositiveButton("부팅", (d, w) -> {
-                    int mode = Math.max(0, Math.min(4, usb.getCheckedRadioButtonId() - 1000));
-                    int limIdx = Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, lim.getCheckedRadioButtonId() - 2000));
+                .setNeutralButton("도움말", null)
+                .setPositiveButton("부팅 시작", (d, w) -> {
+                    int mode = Math.max(0, Math.min(4, usbSp.getSelectedItemPosition()));
+                    int limIdx = Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, limSp.getSelectedItemPosition()));
                     final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
                     G7Storage.setPatternMarker(privDir, pat.isChecked());
                     G7CloneBoot.gpuExec = gx.isChecked();
@@ -450,7 +452,33 @@ public class G7ExecActivity extends Activity {
                         restartPolicy.reset(); restartGen++; restartClone = clones.get(pick[0]); restartUsb = mode == G7CloneBoot.USB_AUTOBOOT_FIX ? G7CloneBoot.USB_PORT_GETENV : mode; restartSeconds = seconds; restartPending = false;
                         cbtn.setEnabled(false); cbStop.setEnabled(true); startRunService(); cbootPoll();
                     }
-                }).show();
+                }).create();
+        wireHelp(dlg);
+        dlg.show();
+    }
+
+    private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
+    private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }
+    private LinearLayout labelRow(String label, View field) {
+        LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView t = new TextView(this); t.setText(label); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        r.addView(t, new LinearLayout.LayoutParams((int) (92 * getResources().getDisplayMetrics().density), LinearLayout.LayoutParams.WRAP_CONTENT));
+        r.addView(field, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        return r;
+    }
+    /** The long descriptions that used to sit under every option; the button does not close the boot dialog. */
+    private static final String HELP_TEXT =
+            "USB 모드: A 없음(기존 복제본 부팅) / B USB 장치 포트만 / C 포트 + 초기 열거(일반 VM과 같은 조건) / D C + 복구 환경변수 5개 읽기 전용 조회(getenv) / E D + auto-boot를 true로 저장(clone-001 전용, 값을 바꿈)\n\n"
+            + "실행 시간: 3분(GPU 시험용), 15분, 30분, 1시간, 제한 없음(중지 버튼으로 끝냄)\n\n"
+            + "GPU 실제 실행: Render/Blit 명령을 Vulkan으로 실행(LAGFX_ARM64_EXEC). 끄면 해석만 함.\n\n"
+            + "화면 되쓰기(GPU 실행을 켰을 때만 의미 있음, LAGFX_ARM64_MAPPED_WRITEBACK): 끔 = flag 4·동기화 때만 / 즉시 = 그린 exec마다 되쓰기(=1) / 지연 = 디스플레이 명령 직전에 한 번(=swap, 실험)\n\n"
+            + "화면 시험 패턴: 게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인.\n\n"
+            + "디스플레이 이벤트(VBL): VBL ~60Hz와 디스플레이 원인 비트를 전달(HV_PVG_DISPLAY_EVENTS). 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험.\n\n"
+            + "셰이더·파이프라인 저장: 게스트 셰이더·파이프라인 데이터를 앱 외부 저장 폴더 g7_gpudump에 크기 제한으로 저장.\n\n"
+            + "Render Replay 캡처: draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장(최대 256 draw·128 MiB). 셰이더 저장과 GPU 실행을 함께 켜야 하며 메모리 여유가 적으니 주의.\n\n"
+            + "동의: 선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의(원본은 쓰지 않음).";
+    private void wireHelp(AlertDialog dlg) {
+        dlg.setOnShowListener(x -> dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("옵션 설명").setMessage(HELP_TEXT).setPositiveButton("닫기", null).show()));
     }
 
     /** Starts the foreground service for a run that just started and writes the outcome of the request into that run's log. */

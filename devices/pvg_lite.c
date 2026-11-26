@@ -150,7 +150,11 @@ size_t hv_pvg_lite_chan_diag(HvPvgLite *p, char *out, size_t cap) {
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 #define CHD_APPEND(...) do { if (len + 1 < cap) { int k_ = snprintf(out + len, cap - len, __VA_ARGS__); if (k_ > 0) len = len + (size_t)k_ < cap ? len + (size_t)k_ : cap - 1; } } while (0)
     uint64_t n0 = __atomic_load_n(&p->db_count[0], __ATOMIC_RELAXED), t0 = __atomic_load_n(&p->db_last_ns[0], __ATOMIC_RELAXED);
-    CHD_APPEND("gfx-ch: root wp=%x rp=%x db=%llu age_ms=%llu", __atomic_load_n(&p->regs[(0x1008 - 0x1000) / 4], __ATOMIC_RELAXED), __atomic_load_n(&p->root_rp, __ATOMIC_RELAXED),
+    uint32_t rwp = __atomic_load_n(&p->regs[(0x1008 - 0x1000) / 4], __ATOMIC_RELAXED), rrp = __atomic_load_n(&p->root_rp, __ATOMIC_RELAXED);
+#ifdef HV_WITH_LAGFX
+    if (p->lagfx) hv_pvg_lagfx_root_ptrs(p->lagfx, &rwp, &rrp);   /* the library owns the root ring here */
+#endif
+    CHD_APPEND("gfx-ch: root wp=%x rp=%x db=%llu age_ms=%llu", rwp, rrp,
                (unsigned long long)n0, (unsigned long long)(t0 && now > t0 ? (now - t0) / 1000000 : 0));
     uint64_t root = (uint64_t)__atomic_load_n(&p->regs[(0x101c - 0x1000) / 4], __ATOMIC_RELAXED) << 14;
     for (uint32_t ch = 1; ch < MAX_CHANNELS; ch++) {
@@ -1149,6 +1153,8 @@ static void gfx_write_lagfx(void *opaque, uint64_t off, uint64_t v, unsigned siz
     HvPvgLite *p = opaque;
     (void)size;
     if (off == 0x1008) note_doorbell(p, 0); else if (off == 0x1020 && v < MAX_CHANNELS) note_doorbell(p, (uint32_t)v);   /* diagnostic only */
+    /* Diagnostic mirror of the register window (hv_pvg_lite_chan_diag reads the shared-page PFN from it). Nothing else on the lagfx path reads p->regs. */
+    if (off >= 0x1000 && off < 0x2000) __atomic_store_n(&p->regs[(off - 0x1000) / 4], (uint32_t)v, __ATOMIC_RELAXED);
     hv_pvg_lagfx_write(p->lagfx, off, v);
 }
 #endif

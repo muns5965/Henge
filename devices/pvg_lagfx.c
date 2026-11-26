@@ -167,6 +167,13 @@ void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     free(g);
 }
 
+void hv_pvg_lagfx_root_ptrs(HvPvgLagfx *g, uint32_t *wp, uint32_t *rp) {
+    uint32_t w = 0, r = 0;
+    if (g) lagfx_diag_root_ptrs(g->dev, &w, &r);
+    if (wp) *wp = w;
+    if (rp) *rp = r;
+}
+
 uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off) { return g ? lagfx_mmio_read(g->dev, off) : 0; }
 
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value) {

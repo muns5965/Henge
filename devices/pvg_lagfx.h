@@ -20,6 +20,8 @@ void hv_pvg_lagfx_destroy(HvPvgLagfx *g);
 /* The gfx window (offset from its base). Same shape as the handlers in pvg_lite.c. */
 uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off);
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value);
+/* Root ring pointers as the library holds them. Diagnostics only: reads nothing from the guest and runs no ring. */
+void hv_pvg_lagfx_root_ptrs(HvPvgLagfx *g, uint32_t *wp, uint32_t *rp);
 /* Where the library's Display ops (1/2/8) go: raw command words and byte length, 4-byte aligned. Set once, before the guest runs. */
 void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, const uint32_t *cmd, uint32_t len), void *opaque);
 

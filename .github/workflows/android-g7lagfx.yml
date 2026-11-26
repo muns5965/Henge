@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: b8e13d2a518c8f7c5c46da5ad31ac3b5c901cc81   # branch research/android-pfn-shift: + ARM64 0x43/0x45 task read and segment walk (decode only), raw buffer dump, ring robustness
+  LAGFX_SHA: ec221d7f40b52e31ac8048677410dac4e82a577a   # research/android-pfn-shift: ARM64 exec (render/blit/mirror/completion queue/pipeline resolver/caps gate), decode, dump
 
 jobs:
   apk:

@@ -59,7 +59,7 @@ public final class G7CloneBoot {
         final File lagfxLog = new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt");
         env.put("LAGFX_LOG_FILE", lagfxLog.getPath());
         StringBuilder note = new StringBuilder();
-        if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); } else note.append("GPU execution off; ");
+        if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1; experiment LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written back to the guest after each exec); "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");
         else {

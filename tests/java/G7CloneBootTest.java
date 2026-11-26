@@ -49,6 +49,9 @@ public class G7CloneBootTest {
           check("lagfx env: trace level and a log file next to the run logs", "trace".equals(env.get("LAGFX_LOG_LEVEL")) && env.get("LAGFX_LOG_FILE") != null && env.get("LAGFX_LOG_FILE").startsWith(files.getPath() + "/g7_lagfx_") && new File(env.get("LAGFX_LOG_FILE")).getName().matches("g7_lagfx_[0-9]{13}\\.txt"));
           java.util.Map<String, String> e2 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e2, java.util.Arrays.asList("/x/libg7cloneboot.so", "--rom", "/r"));
           check("lagfx env: no --shm, nothing set", e2.isEmpty());
+          check("g7-gpu-options names the GPU-exec state, default OFF", !G7CloneBoot.gpuExec && G7CloneBoot.lastGpuNote.startsWith("gpu_exec=OFF") && !env.containsKey("LAGFX_ARM64_EXEC"));
+          G7CloneBoot.gpuExec = true; java.util.Map<String, String> e3 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e3, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+          check("g7-gpu-options names the GPU-exec state when ON", G7CloneBoot.lastGpuNote.startsWith("gpu_exec=ON") && "1".equals(e3.get("LAGFX_ARM64_EXEC"))); G7CloneBoot.gpuExec = false;
           check("lagfx env: no HV_ variable (the runner removes those)", env.keySet().stream().noneMatch(k -> k.startsWith("HV_"))); }
         check("switch off: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, false, () -> false, lib, ext, priv, files, clone, true, none).started && spawned == 0);
         check("no consent: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, false, none).started && spawned == 0);

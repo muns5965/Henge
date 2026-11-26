@@ -421,7 +421,12 @@ public class G7ExecActivity extends Activity {
         final String[] gwl = {"끔", "즉시", "지연"};
         for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); gw.addView(rb); }
         gw.check(3001);   // the default the earlier checkbox had: immediate
-        final CheckBox gx = shortBox("GPU 실제 실행");
+        final android.content.SharedPreferences opts = getSharedPreferences(OPTS_PREFS, MODE_PRIVATE);
+        final boolean gxWas = opts.getBoolean(KEY_GPU_EXEC, false);   // the last value used for a start; the default (nothing saved yet) is OFF
+        final CheckBox gx = shortBox("GPU 실제 실행"); gx.setChecked(gxWas);
+        final TextView gxState = new TextView(this); gxState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        final Runnable gxShow = () -> { boolean on = gx.isChecked(); gxState.setText(on ? "현재: 켜짐 (Render/Blit를 Vulkan으로 실제 실행)" + (gxWas ? " - 지난 실행에서 켠 값을 불러옴" : "") : "현재: 꺼짐 (해석만 함, 기본값)"); gxState.setTextColor(on ? 0xFFB00020 : 0xFF555555); };
+        gx.setOnCheckedChangeListener((b, c) -> gxShow.run()); gxShow.run();
         final CheckBox pat = shortBox("화면 시험 패턴");
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
@@ -429,7 +434,7 @@ public class G7ExecActivity extends Activity {
         final CheckBox ok = shortBox("복제본 디스크·AUX 쓰기 동의(원본은 쓰지 않음)");
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(pad * 2, pad, pad * 2, pad);
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
-        box.addView(sectionLabel("GPU")); box.addView(gx);
+        box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
         box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(cdc);
         box.addView(sectionLabel("동의")); box.addView(ok);
@@ -443,6 +448,7 @@ public class G7ExecActivity extends Activity {
                     final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
                     G7Storage.setPatternMarker(privDir, pat.isChecked());
                     G7CloneBoot.gpuExec = gx.isChecked();
+                    opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();
                     G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
@@ -458,6 +464,9 @@ public class G7ExecActivity extends Activity {
         wireHelp(dlg);
         dlg.show();
     }
+
+    /** Boot-dialog options that are remembered between starts (SharedPreferences, private to the app). Every default is OFF. */
+    static final String OPTS_PREFS = "g7exec_boot_options", KEY_GPU_EXEC = "gpu_exec", KEY_REPLAY = "render_replay";
 
     private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
     private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }

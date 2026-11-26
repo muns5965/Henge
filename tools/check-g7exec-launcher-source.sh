@@ -87,6 +87,10 @@ grep -q 'START_LOCK' "$I" || bad "the isolation must hold the start lock"
 # the lagfx run must keep writing its own log file (g7_lagfx_*.txt): lagfxEnv has to set LAGFX_LOG_FILE and LAGFX_LOG_LEVEL
 grep -q 'env.put("LAGFX_LOG_FILE"' $XJ/G7CloneBoot.java || bad "G7CloneBoot.lagfxEnv no longer sets LAGFX_LOG_FILE"
 grep -q 'env.put("LAGFX_LOG_LEVEL"' $XJ/G7CloneBoot.java || bad "G7CloneBoot.lagfxEnv no longer sets LAGFX_LOG_LEVEL"
+# the GPU-exec checkbox is remembered (SharedPreferences, default OFF) and its state is on the dialog and in the g7-gpu-options line
+grep -q 'getBoolean(KEY_GPU_EXEC, false)' $A || bad "the GPU-exec checkbox must be restored from SharedPreferences with default false"
+grep -q 'putBoolean(KEY_GPU_EXEC, gx.isChecked())' $A || bad "the GPU-exec checkbox must be saved when a start is requested"
+grep -q 'note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF")' $XJ/G7CloneBoot.java || bad "g7-gpu-options must state gpu_exec=ON/OFF"
 # the storage class: the ONLY place that deletes (the person's confirmation is on the screen). One delete primitive (Files::delete, no recursion, no tree walk), no copy/move/rewrite, under the start lock and the isolation's gate
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }

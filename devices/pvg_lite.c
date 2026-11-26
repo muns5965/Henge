@@ -1182,6 +1182,7 @@ int hv_pvg_lite_display_events_applied(void) { return display_events_on(); }
 /* Counters (only counted while the flag is on): VBL ticks sent, cause-bit signals (VBL + swap), guest reads of +0x1014 and how many of them returned a nonzero cause. */
 static uint64_t c_vbl, c_cause, c_isr_reads, c_isr_nonzero;
 static uint64_t c_vbl_b0, c_vbl_b3;   /* ticks sent per armed enable bit */
+static uint64_t c_vbl_unread;   /* ticks sent while the same event bit was still set in +0x100 (the guest had not cleared the previous one): log only */
 /* The display cause bit: with the library owning the MMIO window (HV_WITH_LAGFX and a device) +0x1014 is read from the library, so the bit goes there; otherwise into this device's own register. */
 static void display_cause(HvPvgLite *p, uint32_t bits) {
     __atomic_fetch_add(&c_cause, 1, __ATOMIC_RELAXED);
@@ -1198,8 +1199,9 @@ static void display_events_tick(HvPvgLite *p) {
     if (display_events_on()) {   /* a bounded stats line every ~5 s while the experiment is on */
         struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
         static uint64_t last_stat; uint64_t n0 = (uint64_t)t0.tv_sec * 1000000000ull + (uint64_t)t0.tv_nsec;
-        if (n0 - last_stat >= 5000000000ull) { last_stat = n0; fprintf(stderr, "hengevm: pvg-lite: display events: enable=%x vbl_sent=%llu cause_signals=%llu guest_cause_reads=%llu (nonzero %llu)\n", (unsigned)en,
-            (unsigned long long)c_vbl, (unsigned long long)c_cause, (unsigned long long)c_isr_reads, (unsigned long long)c_isr_nonzero); }
+        if (n0 - last_stat >= 5000000000ull) { last_stat = n0; fprintf(stderr, "hengevm: pvg-lite: display events: enable=%x vbl_sent=%llu cause_signals=%llu guest_cause_reads=%llu (nonzero %llu) ticks_with_event_still_set=%llu page+0=%x page+100=%x\n", (unsigned)en,
+            (unsigned long long)c_vbl, (unsigned long long)c_cause, (unsigned long long)c_isr_reads, (unsigned long long)c_isr_nonzero, (unsigned long long)c_vbl_unread,
+            (unsigned)__atomic_load_n((uint32_t *)(d + 0x0), __ATOMIC_ACQUIRE), (unsigned)__atomic_load_n((uint32_t *)(d + 0x100), __ATOMIC_ACQUIRE)); }
     }
     if (en != last_en && logged < 32) { fprintf(stderr, "hengevm: pvg-lite: display enable word +104 = %x (events %s)\n", (unsigned)en, display_events_on() ? "on" : "off"); logged++; }
     last_en = en;
@@ -1213,7 +1215,8 @@ static void display_events_tick(HvPvgLite *p) {
     static uint64_t last_ns; static uint64_t nvbl;
     if (now - last_ns < 16666667ull) return;
     last_ns = now;
-    __atomic_fetch_or((uint32_t *)(d + 0x100), tick_bits, __ATOMIC_RELEASE);
+    uint32_t before = __atomic_fetch_or((uint32_t *)(d + 0x100), tick_bits, __ATOMIC_RELEASE);
+    if (before & tick_bits) __atomic_fetch_add(&c_vbl_unread, 1, __ATOMIC_RELAXED);
     display_cause(p, 1u);
     hv_gicv3_pend(p->gic, p->gfx_irq);
     __atomic_fetch_add(&c_vbl, 1, __ATOMIC_RELAXED);

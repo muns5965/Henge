@@ -91,6 +91,10 @@ grep -q 'env.put("LAGFX_LOG_LEVEL"' $XJ/G7CloneBoot.java || bad "G7CloneBoot.lag
 grep -q 'getBoolean(KEY_GPU_EXEC, false)' $A || bad "the GPU-exec checkbox must be restored from SharedPreferences with default false"
 grep -q 'putBoolean(KEY_GPU_EXEC, gx.isChecked())' $A || bad "the GPU-exec checkbox must be saved when a start is requested"
 grep -q 'note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF")' $XJ/G7CloneBoot.java || bad "g7-gpu-options must state gpu_exec=ON/OFF"
+# Render Replay capture: remembered, default OFF, passed only as LAGFX_ARM64_DUMP_DATA=1 and only with gpu exec and the dump folder
+grep -q 'getBoolean(KEY_REPLAY, false)' $A && grep -q 'putBoolean(KEY_REPLAY, cdc.isChecked())' $A || bad "the Render Replay checkbox must be restored (default false) and saved"
+[ "$(grep -c 'env.put("LAGFX_ARM64_DUMP_DATA"' $XJ/G7CloneBoot.java)" = 1 ] && grep -q 'if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1")' $XJ/G7CloneBoot.java || bad "LAGFX_ARM64_DUMP_DATA must be set in exactly one place, only for captureData && gpuExec"
+grep -q 'render_replay=REQUESTED BUT NOT ACTIVE' $XJ/G7CloneBoot.java || bad "g7-gpu-options must say when Render Replay was requested but is not active"
 # the storage class: the ONLY place that deletes (the person's confirmation is on the screen). One delete primitive (Files::delete, no recursion, no tree walk), no copy/move/rewrite, under the start lock and the isolation's gate
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }

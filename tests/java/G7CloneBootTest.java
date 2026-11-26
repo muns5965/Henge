@@ -52,6 +52,14 @@ public class G7CloneBootTest {
           check("g7-gpu-options names the GPU-exec state, default OFF", !G7CloneBoot.gpuExec && G7CloneBoot.lastGpuNote.startsWith("gpu_exec=OFF") && !env.containsKey("LAGFX_ARM64_EXEC"));
           G7CloneBoot.gpuExec = true; java.util.Map<String, String> e3 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e3, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
           check("g7-gpu-options names the GPU-exec state when ON", G7CloneBoot.lastGpuNote.startsWith("gpu_exec=ON") && "1".equals(e3.get("LAGFX_ARM64_EXEC"))); G7CloneBoot.gpuExec = false;
+          { File dd = Files.createTempDirectory("dd").toFile(); G7CloneBoot.captureData = true;
+            java.util.Map<String, String> e4 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e4, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+            check("render replay requested without gpu exec/dump: no env, the log says it is not active", !e4.containsKey("LAGFX_ARM64_DUMP_DATA") && G7CloneBoot.lastGpuNote.contains("render_replay=REQUESTED BUT NOT ACTIVE"));
+            G7CloneBoot.gpuExec = true; G7CloneBoot.gpuDumpDir = dd; java.util.Map<String, String> e5 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e5, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+            check("render replay + gpu exec + dump: LAGFX_ARM64_DUMP_DATA=1 and the log says ON", "1".equals(e5.get("LAGFX_ARM64_DUMP_DATA")) && "1".equals(e5.get("LAGFX_ARM64_EXEC")) && G7CloneBoot.lastGpuNote.contains("render_replay=ON"));
+            G7CloneBoot.captureData = false; java.util.Map<String, String> e6 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e6, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+            check("render replay off (default): no LAGFX_ARM64_DUMP_DATA, the log says OFF", !e6.containsKey("LAGFX_ARM64_DUMP_DATA") && G7CloneBoot.lastGpuNote.contains("render_replay=OFF"));
+            G7CloneBoot.gpuExec = false; G7CloneBoot.gpuDumpDir = null; }
           check("lagfx env: no HV_ variable (the runner removes those)", env.keySet().stream().noneMatch(k -> k.startsWith("HV_"))); }
         check("switch off: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, false, () -> false, lib, ext, priv, files, clone, true, none).started && spawned == 0);
         check("no consent: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, false, none).started && spawned == 0);

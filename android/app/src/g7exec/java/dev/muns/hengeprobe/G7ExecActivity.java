@@ -430,13 +430,22 @@ public class G7ExecActivity extends Activity {
         final CheckBox pat = shortBox("화면 시험 패턴");
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
-        final CheckBox cdc = shortBox("Render Replay 캡처");
+        final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
+        final CheckBox cdc = shortBox("Render Replay 캡처 (LAGFX_ARM64_DUMP_DATA=1)"); cdc.setChecked(cdcWas);
+        final TextView cdcState = new TextView(this); cdcState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         final CheckBox ok = shortBox("복제본 디스크·AUX 쓰기 동의(원본은 쓰지 않음)");
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(pad * 2, pad, pad * 2, pad);
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(cdc);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(cdc); box.addView(cdcState);
+        final Runnable cdcShow = () -> {
+            boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
+            cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
+                    : "현재: 켜짐으로 선택했지만 적용되지 않음 - GPU 실제 실행과 셰이더·파이프라인 저장도 켜야 합니다");
+            cdcState.setTextColor(active ? 0xFFB00020 : want ? 0xFF9A6700 : 0xFF555555);
+        };
+        cdc.setOnCheckedChangeListener((b, c) -> cdcShow.run()); gx.setOnCheckedChangeListener((b, c) -> { gxShow.run(); cdcShow.run(); }); gd.setOnCheckedChangeListener((b, c) -> cdcShow.run()); cdcShow.run();
         box.addView(sectionLabel("동의")); box.addView(ok);
         final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // the dialog's own buttons stay at the bottom; only the options scroll
         final AlertDialog dlg = new AlertDialog.Builder(this).setTitle("복제본 부팅").setView(sv)
@@ -451,6 +460,7 @@ public class G7ExecActivity extends Activity {
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();
+                    opts.edit().putBoolean(KEY_REPLAY, cdc.isChecked()).apply();
                     G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
                     File xd = getExternalFilesDir(null);
                     G7CloneBoot.gpuDumpDir = gd.isChecked() ? new File(xd != null ? xd : getFilesDir(), "g7_gpudump") : null;
@@ -486,7 +496,7 @@ public class G7ExecActivity extends Activity {
             + "화면 시험 패턴: 게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인.\n\n"
             + "디스플레이 이벤트(VBL): VBL ~60Hz와 디스플레이 원인 비트를 전달(HV_PVG_DISPLAY_EVENTS). 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험.\n\n"
             + "셰이더·파이프라인 저장: 게스트 셰이더·파이프라인 데이터를 앱 외부 저장 폴더 g7_gpudump에 크기 제한으로 저장.\n\n"
-            + "Render Replay 캡처: draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장(최대 256 draw·128 MiB). 셰이더 저장과 GPU 실행을 함께 켜야 하며 메모리 여유가 적으니 주의.\n\n"
+            + "Render Replay 캡처(LAGFX_ARM64_DUMP_DATA=1, 기본 꺼짐, 마지막 선택을 기억): draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장(최대 256 draw·128 MiB). 셰이더 저장과 GPU 실행을 함께 켜야 하며 메모리 여유가 적으니 주의.\n\n"
             + "동의: 선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의(원본은 쓰지 않음).";
     private void wireHelp(AlertDialog dlg) {
         dlg.setOnShowListener(x -> dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("옵션 설명").setMessage(HELP_TEXT).setPositiveButton("닫기", null).show()));

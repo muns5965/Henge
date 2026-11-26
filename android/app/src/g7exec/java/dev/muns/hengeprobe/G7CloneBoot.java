@@ -76,7 +76,7 @@ public final class G7CloneBoot {
                 java.nio.file.Files.createDirectory(runDir.toPath());   // must be NEW: an existing folder is an error, never reused
                 env.put("LAGFX_ARM64_DUMP", "1");
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
-                if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1"); note.append("Render Replay capture ON (LAGFX_ARM64_DUMP_DATA=1, library caps: 256 draws / 128 MiB); "); }
+                if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1"); note.append("render_replay=ON (LAGFX_ARM64_DUMP_DATA=1, library caps: 256 draws / 128 MiB); "); }
                 try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
                     String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
                     java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
@@ -86,6 +86,7 @@ public final class G7CloneBoot {
                 note.append("GPU data dump REQUESTED BUT NOT POSSIBLE: cannot create ").append(runDir.getPath()).append(" (").append(e.getClass().getSimpleName()).append(")");
             }
         }
+        if (!env.containsKey("LAGFX_ARM64_DUMP_DATA")) note.append(captureData ? "; render_replay=REQUESTED BUT NOT ACTIVE (needs gpu_exec=ON and the shader/pipeline dump folder)" : "; render_replay=OFF");
         lastGpuNote = note.toString();
     }
 

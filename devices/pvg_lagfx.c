@@ -1,7 +1,9 @@
 #ifdef HV_WITH_LAGFX
 #include "pvg_lagfx.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +22,19 @@ struct HvPvgLagfx {
     const uint8_t *(*surface_hook)(void *opaque, uint32_t mapping);
     void *surface_opaque;
     volatile int closing;
+    atomic_int inflight;   /* threads currently inside a library call made through this glue (MMIO from a vCPU, the tick, the exit handler) */
 };
+
+/* Teardown guard. A vCPU thread can be inside lagfx_mmio_write() (and the library inside one of this file's callbacks) while another thread destroys the
+   device. enter() refuses once closing is set; destroy() sets closing, then waits (bounded) for the threads already inside. If they do not leave in time the
+   device and the glue are LEAKED, never freed under them. */
+static bool g_enter(HvPvgLagfx *g) {
+    if (!g || g->closing || !g->dev) return false;
+    atomic_fetch_add(&g->inflight, 1);
+    if (g->closing) { atomic_fetch_sub(&g->inflight, 1); return false; }   /* destroy started between the check and the increment */
+    return true;
+}
+static void g_leave(HvPvgLagfx *g) { atomic_fetch_sub(&g->inflight, 1); }
 
 /* Guest memory is reached with the address the library computed, unchanged. (An earlier version added the RAM base to any address below it; the
    rings turned out to be 16 KiB-page numbers, so that read the wrong memory.) A failed lookup is logged a few times, with the first bytes at "address +
@@ -105,6 +119,7 @@ static bool cb_unmap_memory(void *opaque, lagfx_task_t *task, uint64_t virtual_o
 static void cb_raise_interrupt(void *opaque, uint32_t vector) {
     HvPvgLagfx *g = opaque;
     (void)vector;   /* this machine has one gfx interrupt line */
+    if (!g || g->closing) return;   /* the guest is going away */
     hv_gicv3_pend(g->gic, g->gfx_irq);
 }
 
@@ -114,7 +129,7 @@ static void cb_raise_interrupt(void *opaque, uint32_t vector) {
 static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cmd, uint32_t len) {
     HvPvgLagfx *g = opaque;
     (void)chan_id;
-    if (!g->display_hook || !cmd || len < 12 || len > 4096) return;
+    if (!g || g->closing || !g->display_hook || !cmd || len < 12 || len > 4096) return;
     uint32_t aligned[1024];           /* the ring bytes carry no alignment promise */
     memcpy(aligned, cmd, len);
     g->display_hook(g->display_opaque, aligned, len);
@@ -124,7 +139,7 @@ static void cb_display_command(void *opaque, uint32_t chan_id, const uint8_t *cm
    lives in a guest display surface. The slot is copied; nothing is kept and the library is not re-entered. */
 static bool cb_get_surface_desc(void *opaque, uint32_t mapping_id, uint8_t *out, size_t cap, size_t *len_out) {
     HvPvgLagfx *g = opaque;
-    if (!g || !out || !g->surface_hook) return false;
+    if (!g || g->closing || !out || !g->surface_hook) return false;
     const uint8_t *d = g->surface_hook(g->surface_opaque, mapping_id);
     if (!d) return false;
     size_t n = cap < 0x400 ? cap : 0x400;
@@ -150,7 +165,7 @@ void hv_pvg_lagfx_set_display_hook(HvPvgLagfx *g, void (*hook)(void *opaque, con
 static HvPvgLagfx *volatile s_exit_g;
 static void pvg_lagfx_at_exit(void) {
     HvPvgLagfx *g = s_exit_g;
-    if (g && !g->closing && g->dev) lagfx_device_diag_final(g->dev);
+    if (g_enter(g)) { lagfx_device_diag_final(g->dev); g_leave(g); }
 }
 
 HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const char **why) {
@@ -199,30 +214,48 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
 
 void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     if (!g) return;
-    g->closing = 1; /* the tick may still call poll: it stops here, before the device goes away */
+    g->closing = 1;   /* from here no new MMIO / tick / exit-handler call reaches the library */
     if (s_exit_g == g) s_exit_g = NULL;
+    for (int ms = 0; ms < 3000 && atomic_load(&g->inflight) > 0; ms++) {   /* threads already inside finish (the library's own waits are bounded) */
+        struct timespec ts = { 0, 1000000 };
+        nanosleep(&ts, NULL);
+    }
+    if (atomic_load(&g->inflight) > 0) {
+        fprintf(stderr, "hengevm: lagfx: %d call(s) still inside the library after 3 s; device and glue are leaked, not freed\n", atomic_load(&g->inflight));
+        return;
+    }
+    g->display_hook = NULL, g->surface_hook = NULL;   /* a late callback finds no hook */
     lagfx_device_free(g->dev);
+    g->dev = NULL;
     free(g);
 }
 
 void hv_pvg_lagfx_root_ptrs(HvPvgLagfx *g, uint32_t *wp, uint32_t *rp) {
     uint32_t w = 0, r = 0;
-    if (g) lagfx_diag_root_ptrs(g->dev, &w, &r);
+    if (g_enter(g)) { lagfx_diag_root_ptrs(g->dev, &w, &r); g_leave(g); }
     if (wp) *wp = w;
     if (rp) *rp = r;
 }
 
-uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off) { return g ? lagfx_mmio_read(g->dev, off) : 0; }
+uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off) {
+    if (!g_enter(g)) return 0;
+    uint64_t v = lagfx_mmio_read(g->dev, off);
+    g_leave(g);
+    return v;
+}
 
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value) {
-    if (g) lagfx_mmio_write(g->dev, off, (uint32_t)value);
+    if (!g_enter(g)) return;
+    lagfx_mmio_write(g->dev, off, (uint32_t)value);
+    g_leave(g);
 }
 
 /* Called from the CPU 0 tick (which keeps running while the guest sleeps in WFI, at most 10 ms apart). Does nothing unless GPU work is
    still pending; retiring a stamp raises the interrupt through cb_raise_interrupt. */
 void hv_pvg_lagfx_poll(HvPvgLagfx *g) {
-    if (!g || g->closing || !g->dev) return;
+    if (!g_enter(g)) return;
     lagfx_device_diag_tick(g->dev);   /* statistics must not depend on guest MMIO (idle guest = none) */
     if (lagfx_device_pending_completions(g->dev) != 0) lagfx_device_poll_completions(g->dev);
+    g_leave(g);
 }
 #endif /* HV_WITH_LAGFX */

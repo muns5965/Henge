@@ -48,7 +48,7 @@ final class G7PipeRepro {
     static int runLadder(File nativeLibDir, File bundle, File redDir, boolean matrix, ByteArrayOutputStream buf) throws IOException, InterruptedException {
         String exe = new File(nativeLibDir, LIB_NAME).getPath();
         List<String> ids = new ArrayList<>();
-        String listOut = runOne(exe, bundle, redDir, new String[] { "--reduce", "--list-rows" }, 60, null);
+        String listOut = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000);
         for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + 20).trim()); }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
         int r0 = -9, built = 0, fail = 0, bad = 0;
@@ -56,7 +56,7 @@ final class G7PipeRepro {
         for (String id : ids) {
             if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
             int[] ec = new int[1];
-            String out = runOne(exe, bundle, redDir, new String[] { "--reduce", "--only", id }, 40, ec);
+            String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, 40, ec, 4_000_000);
             String rowLine = null;
             for (String ln : out.split("\n")) if (ln.contains("pipeline-reduce: row=" + id + " ")) { rowLine = ln.substring(ln.indexOf("pipeline-reduce:")); break; }
             if (rowLine == null) { o.append("pipeline-reduce: row=").append(id).append(" result=").append(ec[0] == -2 ? "TIMEOUT" : "CRASH").append(" exit=").append(ec[0]).append(" (no row line; process ended)\n"); bad++; continue; }
@@ -69,13 +69,12 @@ final class G7PipeRepro {
         return r0 == 1 ? 0 : r0 == 0 ? 1 : 2;
     }
 
-    private static String runOne(String exe, File bundle, File redDir, String[] extra, int timeoutS, int[] exitOut) throws IOException, InterruptedException {
-        List<String> c = new ArrayList<>(); c.add(exe); c.add(bundle.getPath()); for (String e : extra) c.add(e);
+    private static String runOne(List<String> c, File redDir, int timeoutS, int[] exitOut, int maxBytes) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(c).redirectErrorStream(true);
         if (redDir != null) pb.environment().put("LAGFX_PIPELINE_MATRIX_DIR", redDir.getPath());
         Process p = pb.start();
         ByteArrayOutputStream b = new ByteArrayOutputStream();
-        Thread rd = new Thread(() -> { try (InputStream in = p.getInputStream()) { byte[] t = new byte[8192]; int n; while ((n = in.read(t)) > 0) if (b.size() < 4_000_000) b.write(t, 0, n); } catch (IOException ignored) {} });
+        Thread rd = new Thread(() -> { try (InputStream in = p.getInputStream()) { byte[] t = new byte[8192]; int n; while ((n = in.read(t)) > 0) if (b.size() < maxBytes) b.write(t, 0, Math.min(n, maxBytes - b.size())); } catch (IOException ignored) {} });
         rd.start();
         int ec;
         if (!p.waitFor(timeoutS, TimeUnit.SECONDS)) { p.destroyForcibly(); ec = -2; } else ec = p.exitValue();
@@ -122,16 +121,12 @@ final class G7PipeRepro {
         int code = -1; String note = "";
         try {
             if (reduce) { code = runLadder(nativeLibDir, bundle, redDir, matrix, buf); return finish(head, code, buf, note, logDir); }
-            ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
-            if (redDir != null) pb.environment().put("LAGFX_PIPELINE_MATRIX_DIR", redDir.getPath());   // the offline spirv-opt / M8 files the ladder reads
-            Process p = pb.start();
-            try (InputStream in = p.getInputStream()) {
-                byte[] tmp = new byte[8192]; int n; boolean cut = false;
-                while ((n = in.read(tmp)) > 0) { if (buf.size() < MAX_OUT) buf.write(tmp, 0, Math.min(n, MAX_OUT - buf.size())); else cut = true; }
-                if (cut) note = "\n[출력이 " + MAX_OUT + " 바이트에서 잘렸습니다]\n";
-            }
-            if (!p.waitFor(reduce ? 900 : TIMEOUT_S, TimeUnit.SECONDS)) { p.destroyForcibly(); note += "\n[시간 제한 " + (reduce ? 900 : TIMEOUT_S) + "초: 강제 종료]\n"; code = -2; }
-            else code = p.exitValue();
+            int[] ec = new int[1];
+            String outText = runOne(cmd, redDir, 180, ec, MAX_OUT);
+            buf.write(outText.getBytes(StandardCharsets.UTF_8));
+            if (ec[0] == -2) note += "\n[시간 제한 180초: 강제 종료]\n";
+            if (buf.size() >= MAX_OUT) note += "\n[출력이 " + MAX_OUT + " 바이트에서 잘렸을 수 있습니다]\n";
+            code = ec[0];
         } catch (IOException | InterruptedException e) {
             return new Result(false, -1, head + "실행하지 못했습니다: " + e, null);
         }

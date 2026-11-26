@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 779802ad6def91efc93482e3e96f5c43fdb20aab   # research/g7-integ: gather budget, stage-link, tile gather, display counters, texture counters, pipeline repro
+  LAGFX_SHA: 69862fe151c49fa57050d2d9efcd8d02c35b138a   # research/g7-integ2: vertex-desc fix, linear texture, PSO function refs (root tag1/2), draw diag, display counters
 
 jobs:
   apk:

@@ -49,6 +49,9 @@ public class G7ExecActivity extends Activity {
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
+    protected void onDestroy() { if (cloneDlg != null) { try { cloneDlg.dismiss(); } catch (RuntimeException ignored) { } cloneDlg = null; } super.onDestroy(); }
+
+    @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -221,6 +224,9 @@ public class G7ExecActivity extends Activity {
         if (!note.isEmpty()) status.setText(status.getText() + "\n\n" + note);
         G7ExecLauncher.Run live = G7ExecLauncher.current();
         if (live != null && !live.finished()) { start.setEnabled(false); cancel.setEnabled(true); poll(); }
+        if (G7CloneProgress.current().running) {   // a clone is running (Activity recreated): same popup, same locks against a second clone
+            setDeleteButtons(false); cloneBtn.setEnabled(false); cloneFromBtn.setEnabled(false); cancel.setEnabled(true); showCloneProgress();
+        }
         G7CloneBoot.Run cLive = G7CloneBoot.current();
         if (cLive != null && !cLive.finished()) { cbtn.setEnabled(false); cbStop.setEnabled(true); cbootPoll(); }
         G7NetProbe.Run netLive = G7NetProbe.current();
@@ -310,13 +316,41 @@ public class G7ExecActivity extends Activity {
                 .setPositiveButton("복제", (d, w) -> { cloneCancel = false; runClone(); }).show();
     }
 
-    /** Shows the running clone (also after the Activity was recreated: the state is in G7CloneProgress); polls every 500 ms until it ends. */
+    private AlertDialog cloneDlg;
+    private android.widget.TextView cloneDlgText;
+    private android.widget.ProgressBar cloneDlgBar;
+
+    /** Shows the running clone in a popup (also after the Activity was recreated: the state is in G7CloneProgress); polls every 500 ms until it ends, then shows the result with a close button. Used by both clone paths. */
     private void showCloneProgress() {
         final G7CloneProgress pg = G7CloneProgress.current();
         cloneBar.setVisibility(View.VISIBLE);
         cloneBar.setProgress(pg.percent());
-        status.setText(pg.render(System.currentTimeMillis()));
-        if (pg.running) log.postDelayed(this::showCloneProgress, 500);
+        final String text = pg.render(System.currentTimeMillis());
+        status.setText(text);
+        if (cloneDlg == null || !cloneDlg.isShowing()) {
+            if (!pg.running && pg.ok != null && cloneDlg == null) return;   // finished earlier and already acknowledged: no popup
+            cloneDlgText = new android.widget.TextView(this); cloneDlgText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); cloneDlgText.setPadding(0, 0, 0, 16);
+            cloneDlgBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); cloneDlgBar.setMax(100);
+            LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(48, 24, 48, 0);
+            box.addView(cloneDlgText); box.addView(cloneDlgBar);
+            cloneDlg = new AlertDialog.Builder(this).setTitle("복제 진행").setView(box).setCancelable(false)
+                    .setNegativeButton("취소", null).create();
+            cloneDlg.show();
+            // the cancel button must not dismiss the popup: the copy stops by itself and the result is shown here
+            cloneDlg.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+                if (G7CloneProgress.current().running) { cloneCancel = true; ((Button) v).setEnabled(false); cloneDlgText.append("\n취소를 요청했습니다. 진행 중인 복사를 안전하게 멈추는 중입니다."); }
+            });
+        }
+        cloneDlgBar.setProgress(pg.percent());
+        if (pg.running) {
+            cloneDlgText.setText(text);
+            log.postDelayed(this::showCloneProgress, 500);
+        } else {
+            cloneDlgText.setText((pg.ok != null && pg.ok ? "복제가 끝났습니다.\n" : "복제가 끝나지 않았습니다.\n") + pg.message + "\n\n" + text);
+            Button b = cloneDlg.getButton(AlertDialog.BUTTON_NEGATIVE);
+            b.setText("닫기"); b.setEnabled(true);
+            b.setOnClickListener(v -> { cloneDlg.dismiss(); cloneDlg = null; });
+        }
     }
 
     private void confirmCloneFrom() {

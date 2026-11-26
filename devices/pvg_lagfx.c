@@ -17,6 +17,7 @@ struct HvPvgLagfx {
     char *error;
     void (*display_hook)(void *opaque, const uint32_t *cmd, uint32_t len);
     void *display_opaque;
+    volatile int closing;
 };
 
 /* Guest memory is reached with the address the library computed, unchanged. (An earlier version added the RAM base to any address below it; the
@@ -163,6 +164,7 @@ HvPvgLagfx *hv_pvg_lagfx_create(HvMachine *m, HvGic *gic, int gfx_irq, const cha
 
 void hv_pvg_lagfx_destroy(HvPvgLagfx *g) {
     if (!g) return;
+    g->closing = 1; /* the tick may still call poll: it stops here, before the device goes away */
     lagfx_device_free(g->dev);
     free(g);
 }
@@ -178,5 +180,12 @@ uint64_t hv_pvg_lagfx_read(HvPvgLagfx *g, uint64_t off) { return g ? lagfx_mmio_
 
 void hv_pvg_lagfx_write(HvPvgLagfx *g, uint64_t off, uint64_t value) {
     if (g) lagfx_mmio_write(g->dev, off, (uint32_t)value);
+}
+
+/* Called from the CPU 0 tick (which keeps running while the guest sleeps in WFI, at most 10 ms apart). Does nothing unless GPU work is
+   still pending; retiring a stamp raises the interrupt through cb_raise_interrupt. */
+void hv_pvg_lagfx_poll(HvPvgLagfx *g) {
+    if (!g || g->closing || !g->dev) return;
+    if (lagfx_device_pending_completions(g->dev) != 0) lagfx_device_poll_completions(g->dev);
 }
 #endif /* HV_WITH_LAGFX */

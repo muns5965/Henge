@@ -1109,6 +1109,9 @@ static void do_mapper(HvPvgLite *p) {
 /* Device work no doorbell took care of: a channel that had to wait for another one's work. */
 void hv_pvg_lite_poll(HvPvgLite *p) {
     if (!p) return;
+#ifdef HV_WITH_LAGFX
+    if (p->lagfx) hv_pvg_lagfx_poll(p->lagfx);
+#endif
     uint32_t chans = p->chan_pending;
     if (chans) {
         p->chan_pending = 0;

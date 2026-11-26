@@ -51,6 +51,8 @@ public final class G7CloneBoot {
     /** Experiment switch, independent of gpuExec (only meaningful with it): LAGFX_ARM64_MAPPED_WRITEBACK. 0 = not set, 1 = "1" (write back after every exec that drew), 2 = "swap" (owed surfaces are paid before a display command). */
     static volatile int gpuWritebackMode = 0;
     static volatile boolean captureData = false;   // LAGFX_ARM64_DUMP_DATA=1 (Render Replay capture: buffers/textures/attachments of up to 256 draws, 128 MiB total; needs the dump + GPU execution)
+    /** Per-draw diagnostics of the library (G7_DRAW_DIAG; not an HV_ name, so the runner's scrub leaves it alone). Default ON: the library's own default is on, the dialog always sends an explicit 1 or 0. Independent of captureData (Render Replay). */
+    static volatile boolean drawDiag = true;
     static volatile boolean displayEvents = false;   // HV_PVG_DISPLAY_EVENTS: VBL + display cause bit (experiment)
     static volatile File gpuDumpDir = null;
 
@@ -65,7 +67,8 @@ public final class G7CloneBoot {
         StringBuilder note = new StringBuilder();
         note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF") + " (start dialog checkbox: GPU 실제 실행); ");   // first item on purpose: the state of the one switch that changes what the library does
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG");   // never inherit these from the parent environment: the start dialog alone decides
+        env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");

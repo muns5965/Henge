@@ -102,6 +102,12 @@ grep -q 'g7_frame_%s_%ux%u.png' host/vm.c && grep -q 'boot_args_first' host/vm.c
 grep -q 'define FRAME_MAX_FILES' host/vm.c && grep -q 'define FRAME_MAX_BYTES' host/vm.c && grep -q 'define FRAME_MAX_PX' host/vm.c || bad "host/vm.c: the frame files must stay bounded (count, bytes, pixels)"
 grep -q 'hv_vm_save_last_frame();' host/ui_runner_vm_clone.c && grep -q 'hv_vm_frames_flush();' host/ui_runner_vm_clone.c || bad "the clone runner must save the last frame and flush before it stops the machine"
 x=$(grep -nE 'fopen\([^)]*"[wa]|png_|fwrite|rename\(' host/ui_runner_vm_clone.c | grep -v '^[0-9]*:[[:space:]]*/[*]'); [ -z "$x" ] || { bad "the clone runner writes a file itself:"; echo "$x"; }
+# per-draw diagnostics: default ON, remembered, always an explicit G7_DRAW_DIAG value (not an HV_ name), logged. The write consent is never remembered or pre-ticked.
+grep -q 'getBoolean(KEY_DRAW_DIAG, true)' $A && grep -q 'putBoolean(KEY_DRAW_DIAG, dd.isChecked())' $A || bad "the draw-diag checkbox must be restored (default true) and saved"
+grep -q 'env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0")' $XJ/G7CloneBoot.java && grep -q 'draw_diag=' $XJ/G7CloneBoot.java || bad "lagfxEnv must pass an explicit G7_DRAW_DIAG=1/0 and log draw_diag=ON/OFF"
+grep -q 'static volatile boolean drawDiag = true' $XJ/G7CloneBoot.java || bad "drawDiag must default to true"
+x=$(grep -nE 'KEY_[A-Z_]+' $A | grep -iE 'consent|agree|ok\b|동의|write' | grep -v '^[0-9]*:.*//'); [ -z "$x" ] || { bad "a consent key is stored in preferences:"; echo "$x"; }
+grep -q 'final CheckBox ok = shortBox(' $A && ! grep -qE 'ok\.setChecked|opts\.edit\(\)\.putBoolean\([^)]*ok\.isChecked' $A || bad "the clone write consent (ok) must stay unticked at every dialog open and never be saved"
 # the storage class: the ONLY place that deletes (the person's confirmation is on the screen). One delete primitive (Files::delete, no recursion, no tree walk), no copy/move/rewrite, under the start lock and the isolation's gate
 S=$XJ/G7Storage.java
 x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REPLACE_EXISTING|Files\.copy|Files\.move|FileOutputStream|FileWriter|RandomAccessFile|deleteOnExit|\.truncate' "$S"); [ -z "$x" ] || { bad "the storage class uses a delete, tree walk, move, copy or rewrite other than its one primitive:"; echo "$x"; }

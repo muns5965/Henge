@@ -60,6 +60,9 @@ public class G7CloneBootTest {
             G7CloneBoot.captureData = false; java.util.Map<String, String> e6 = new java.util.HashMap<>(); G7CloneBoot.lagfxEnv(e6, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
             check("render replay off (default): no LAGFX_ARM64_DUMP_DATA, the log says OFF", !e6.containsKey("LAGFX_ARM64_DUMP_DATA") && G7CloneBoot.lastGpuNote.contains("render_replay=OFF"));
             G7CloneBoot.gpuExec = false; G7CloneBoot.gpuDumpDir = null; }
+          check("draw diag defaults to ON: explicit G7_DRAW_DIAG=1, logged, and not an HV_ name", G7CloneBoot.drawDiag && "1".equals(env.get("G7_DRAW_DIAG")) && G7CloneBoot.lastGpuNote.contains("draw_diag=ON"));
+          { G7CloneBoot.drawDiag = false; java.util.Map<String, String> e7 = new java.util.HashMap<>(); e7.put("G7_DRAW_DIAG", "1"); G7CloneBoot.captureData = false; G7CloneBoot.lagfxEnv(e7, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
+            check("draw diag OFF: explicit G7_DRAW_DIAG=0 (an inherited value is replaced), logged, independent of render replay", "0".equals(e7.get("G7_DRAW_DIAG")) && G7CloneBoot.lastGpuNote.contains("draw_diag=OFF") && !e7.containsKey("LAGFX_ARM64_DUMP_DATA")); G7CloneBoot.drawDiag = true; }
           check("lagfx env: no HV_ variable (the runner removes those)", env.keySet().stream().noneMatch(k -> k.startsWith("HV_"))); }
         check("switch off: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, false, () -> false, lib, ext, priv, files, clone, true, none).started && spawned == 0);
         check("no consent: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, false, none).started && spawned == 0);

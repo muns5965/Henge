@@ -433,12 +433,16 @@ public class G7ExecActivity extends Activity {
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
         final CheckBox cdc = shortBox("Render Replay 캡처 (LAGFX_ARM64_DUMP_DATA=1)"); cdc.setChecked(cdcWas);
         final TextView cdcState = new TextView(this); cdcState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        final CheckBox dd = shortBox("그리기별 진단 (G7_DRAW_DIAG)"); dd.setChecked(opts.getBoolean(KEY_DRAW_DIAG, true));   // default ON, independent of Render Replay
+        final TextView ddState = new TextView(this); ddState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        final Runnable ddShow = () -> ddState.setText(dd.isChecked() ? "현재: 켜짐 (draw별 요약 로그, 용량 제한, 기본값)" : "현재: 꺼짐 (G7_DRAW_DIAG=0)");
+        dd.setOnCheckedChangeListener((b, c) -> ddShow.run()); ddShow.run();
         final CheckBox ok = shortBox("복제본 디스크·AUX 쓰기 동의(원본은 쓰지 않음)");
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(pad * 2, pad, pad * 2, pad);
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -460,6 +464,8 @@ public class G7ExecActivity extends Activity {
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();
+                    G7CloneBoot.drawDiag = dd.isChecked();
+                    opts.edit().putBoolean(KEY_DRAW_DIAG, dd.isChecked()).apply();
                     opts.edit().putBoolean(KEY_REPLAY, cdc.isChecked()).apply();
                     G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
                     File xd = getExternalFilesDir(null);
@@ -476,7 +482,7 @@ public class G7ExecActivity extends Activity {
     }
 
     /** Boot-dialog options that are remembered between starts (SharedPreferences, private to the app). Every default is OFF. */
-    static final String OPTS_PREFS = "g7exec_boot_options", KEY_GPU_EXEC = "gpu_exec", KEY_REPLAY = "render_replay";
+    static final String OPTS_PREFS = "g7exec_boot_options", KEY_GPU_EXEC = "gpu_exec", KEY_REPLAY = "render_replay", KEY_DRAW_DIAG = "draw_diag";   // the write consent is NOT here: it is ticked by hand for every run
 
     private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
     private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }
@@ -496,6 +502,7 @@ public class G7ExecActivity extends Activity {
             + "화면 시험 패턴: 게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인.\n\n"
             + "디스플레이 이벤트(VBL): VBL ~60Hz와 디스플레이 원인 비트를 전달(HV_PVG_DISPLAY_EVENTS). 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험.\n\n"
             + "셰이더·파이프라인 저장: 게스트 셰이더·파이프라인 데이터를 앱 외부 저장 폴더 g7_gpudump에 크기 제한으로 저장.\n\n"
+            + "그리기별 진단(G7_DRAW_DIAG, 기본 켜짐, 마지막 선택을 기억): 라이브러리가 draw별 요약을 로그에 남김(용량 제한). 켬=1, 끔=0을 항상 명시해 전달. Render Replay 캡처와 별개.\n\n"
             + "Render Replay 캡처(LAGFX_ARM64_DUMP_DATA=1, 기본 꺼짐, 마지막 선택을 기억): draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장(최대 256 draw·128 MiB). 셰이더 저장과 GPU 실행을 함께 켜야 하며 메모리 여유가 적으니 주의.\n\n"
             + "동의: 선택한 복제본의 디스크·AUX에 부팅 중 쓰기가 일어나는 것에 동의(원본은 쓰지 않음).";
     private void wireHelp(AlertDialog dlg) {

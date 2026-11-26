@@ -50,6 +50,7 @@ public final class G7CloneBoot {
     static volatile boolean gpuExec = false;
     /** Experiment switch, independent of gpuExec (only meaningful with it): LAGFX_ARM64_MAPPED_WRITEBACK. 0 = not set, 1 = "1" (write back after every exec that drew), 2 = "swap" (owed surfaces are paid before a display command). */
     static volatile int gpuWritebackMode = 0;
+    static volatile boolean captureData = false;   // LAGFX_ARM64_DUMP_DATA=1 (Render Replay capture: buffers/textures/attachments of up to 256 draws, 128 MiB total; needs the dump + GPU execution)
     static volatile boolean displayEvents = false;   // HV_PVG_DISPLAY_EVENTS: VBL + display cause bit (experiment)
     static volatile File gpuDumpDir = null;
 
@@ -62,7 +63,7 @@ public final class G7CloneBoot {
         final File lagfxLog = new File(dir, LAGFX_LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + ".txt");
         env.put("LAGFX_LOG_FILE", lagfxLog.getPath());
         StringBuilder note = new StringBuilder();
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA");   // never inherit these from the parent environment: the start dialog alone decides
         if (displayEvents) { env.put("HV_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (HV_PVG_DISPLAY_EVENTS=1); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");
@@ -73,6 +74,7 @@ public final class G7CloneBoot {
                 java.nio.file.Files.createDirectory(runDir.toPath());   // must be NEW: an existing folder is an error, never reused
                 env.put("LAGFX_ARM64_DUMP", "1");
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
+                if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1"); note.append("Render Replay capture ON (LAGFX_ARM64_DUMP_DATA=1, library caps: 256 draws / 128 MiB); "); }
                 try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
                     String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
                     java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);

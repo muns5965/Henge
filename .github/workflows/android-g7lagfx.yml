@@ -27,7 +27,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: d3405c4e467ffd27ba60734af89393a6573e6822   # research/android-pfn-shift: + fbfetch binding-range fix, 48 bindings, desc_unbound causes
+  LAGFX_SHA: dd016af9ad857d6f84edac9f829b8343ef6fcf78   # research/android-pfn-shift: + tile 64-lane, linear textures, capture, replay, input-attachment usage
 
 jobs:
   apk:

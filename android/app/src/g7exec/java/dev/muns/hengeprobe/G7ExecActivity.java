@@ -425,9 +425,11 @@ public class G7ExecActivity extends Activity {
         gw.check(3001);   // the default the earlier checkbox had: immediate
         final CheckBox de = new CheckBox(this); de.setText("실험: 디스플레이 이벤트 전달(VBL ~60Hz + 디스플레이 원인 비트, HV_PVG_DISPLAY_EVENTS. 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험)");
         de.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        final CheckBox cdc = new CheckBox(this); cdc.setText("진단: Render Replay 캡처(draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장, 최대 256 draw·128 MiB. 위 셰이더 데이터 저장과 GPU 실행을 켜야 함. 메모리 여유 적음 주의)");
+        cdc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         final CheckBox gd = new CheckBox(this); gd.setText("진단: 게스트 셰이더·파이프라인 데이터 저장(앱 외부 저장 폴더 g7_gpudump, 크기 제한)");
         gd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(gx); box.addView(gwt); box.addView(gw); box.addView(de); box.addView(gd); box.addView(ok);
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(usb); box.addView(lim); box.addView(pat); box.addView(gx); box.addView(gwt); box.addView(gw); box.addView(de); box.addView(gd); box.addView(cdc); box.addView(ok);
         final android.widget.ScrollView sv = new android.widget.ScrollView(this); sv.addView(box);   // nine options and the clone list do not fit a phone's height
         new AlertDialog.Builder(this).setTitle("복제본 부팅").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(sv)
                 .setNegativeButton("취소", null)
@@ -438,6 +440,7 @@ public class G7ExecActivity extends Activity {
                     G7Storage.setPatternMarker(privDir, pat.isChecked());
                     G7CloneBoot.gpuExec = gx.isChecked();
                     G7CloneBoot.displayEvents = de.isChecked();
+                    G7CloneBoot.captureData = cdc.isChecked();
                     G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
                     File xd = getExternalFilesDir(null);
                     G7CloneBoot.gpuDumpDir = gd.isChecked() ? new File(xd != null ? xd : getFilesDir(), "g7_gpudump") : null;

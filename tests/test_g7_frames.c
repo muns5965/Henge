@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 2; i++) { snprintf(path, sizeof path, "%s/g7_frame_%s.png", dir, k[i].tag); FILE *f = fopen(path, "rb"); check(k[i].tag, f != NULL); if (f) fclose(f); snprintf(path, sizeof path, "%s/g7_frame_%s.png.part", dir, k[i].tag); check("no .part file is left", access(path, F_OK) != 0); }
     int n = 2, last = 0;
     for (int i = 0; i < 10; i++) { char t[32]; snprintf(t, sizeof t, "f%d", i); int q = frame_save_async(t, t, px, 8, 4, 32); if (q == 0) { hv_vm_frames_flush(); q = frame_save_async(t, t, px, 8, 4, 32); } if (q == 1) n++; if (q == -1) last = 1; hv_vm_frames_flush(); }
-    check("the file count is bounded (6) and the 7th is refused for good", n == FRAME_MAX_FILES && last == 1 && atomic_load(&frame_files) == FRAME_MAX_FILES);
+    check("the file count is bounded (FRAME_MAX_FILES) and the next one is refused for good", n == FRAME_MAX_FILES && last == 1 && atomic_load(&frame_files) == FRAME_MAX_FILES);
     check("the byte budget is not over its bound", atomic_load(&frame_bytes) <= FRAME_MAX_BYTES);
     printf(fails ? "G7FRAMES FAILED\n" : "G7FRAMES OK\n");
     return fails != 0;

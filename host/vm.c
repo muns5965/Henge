@@ -1,5 +1,6 @@
 #include "vm.h"
 #include "pvg_lite.h"
+#include "g7_fbprobe.h"
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -100,6 +101,7 @@ static size_t pvg_live_cap;
 static void frame_boot_args_first(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride);
 static void frame_pvg_series(const char *kind, const uint8_t *px, uint32_t w, uint32_t h);
 static uint32_t pvg_last_w, pvg_last_h;
+static void g7_fbp_src(unsigned id, const char *word, uint32_t w, uint32_t h);
 
 /* The guest's own boot framebuffer (boot_args Video), found by scanning RAM. Split out of hv_vm_boot_display() so the PVG-surface branch can fall back to it. 0 on success, -1 if there is none. */
 static unsigned h0(const uint8_t *p, int i) { uint16_t v; memcpy(&v, p + 2 * i, 2); return v; }   /* a 16-bit header field of boot_args (revision, version) */
@@ -144,6 +146,7 @@ static int boot_args_display(HvBootDisplay *d) {
             base - VMAPPLE_MEM + row * hh <= size) {
             d->pixels = ram + (base - VMAPPLE_MEM);
             d->width = (uint32_t)w, d->height = (uint32_t)hh, d->stride = (uint32_t)row, d->source = HV_SCREEN_BOOT_ARGS;
+            g7_fbp_src(5, "boot_args_used", d->width, d->height);
             frame_boot_args_first(d->pixels, d->width, d->height, d->stride);   /* file only, bounded, written by a worker thread */
             return 0;
         }
@@ -188,7 +191,7 @@ static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
    THREADS: the caller (the runner's frame pump, never a vCPU or the GPU thread) only copies the pixels (a memcpy, a few ms, a handful of times per run); the PNG encoding and the file write run on a
    short-lived worker thread. Stored deflate blocks, so no compression library is needed; written as .part and renamed, so a killed process never leaves a half file under the final name. */
 /* FRAME-FILES-BEGIN (tools/g7-frames-test.sh compiles exactly this region on its own) */
-#define FRAME_MAX_FILES 6
+#define FRAME_MAX_FILES 8   /* 6 before the boot-fb probe added two (first change, ~10 s) */
 #define FRAME_MAX_PX (4u << 20)
 #define FRAME_MAX_BYTES (80u << 20)
 #define FRAME_MAX_INFLIGHT 2
@@ -315,13 +318,65 @@ void hv_vm_save_last_frame(void) {
     (void)frame_save_async(tag, label, pvg_live_buf, pvg_last_w, pvg_last_h, pvg_last_w * 4u);
 }
 
+
+/* DIAGNOSTIC (log lines "g7-boot-fb:" + at most two PNGs, no effect on what the guest or the display sees): where the boot framebuffer lives and whether anything is drawn into it.
+   Line formats and caps: host/g7_fbprobe.h. It has its OWN relaxed scan of guest RAM (header + virtBase/physBase/memSize only, no Video checks) so that boot_args whose Video fields are zero or odd are still
+   reported (the display path's boot_args_display() would skip them silently). Only reads guest RAM, from the display pump thread, at most once per 2 s (the scan: the first GiB at 16 KiB steps, as the display scan). */
+static HvFbpState fbp;
+static int fbp_png_first_pending, fbp_png_10s_pending;
+static void g7_fbp_say(const char *line) { fprintf(stderr, "%s\n", line); }
+static void g7_fbp_src(unsigned id, const char *word, uint32_t w, uint32_t h) {
+    char line[160];
+    if (hv_fbp_src(&fbp, frame_mono(), id, word, w, h, line, sizeof line)) g7_fbp_say(line);
+}
+static void g7_boot_fb_tick(void) {
+    static uint64_t found; static int have; static double last_scan; static uint64_t vid[6]; static int bl;
+    uint8_t *ram = board.ram; uint64_t size = board.ram_size;
+    if (!ram) return;
+    double now = frame_mono();
+    if (!have) {
+        if (last_scan != 0 && now - last_scan < HV_FBP_PERIOD_S) return;
+        last_scan = now;
+        uint64_t limit = size < (1ull << 30) ? size : 1ull << 30;
+        for (uint64_t off = 0; off + 0x1000 <= limit && !have; off += 0x4000) {
+            const uint64_t *q = (const uint64_t *)(ram + off); const uint16_t *h = (const uint16_t *)(ram + off);
+            if (h[0] < 2 || h[0] > 3 || h[1] < 1 || h[1] > 3) continue;
+            if (q[1] >> 40 != 0xfffffe || q[2] < VMAPPLE_MEM || q[2] >= VMAPPLE_MEM + size || q[3] == 0 || q[3] > size) continue;
+            found = off; have = 1;
+        }
+        if (!have) {
+            if (fbp.scan_lines < HV_FBP_MAX_SCAN_LINES) { fbp.scan_lines++; if (fbp.t0 == 0) fbp.t0 = now; fprintf(stderr, "g7-boot-fb: scan none t=%.1fs\n", now - fbp.t0); }
+            return;
+        }
+    }
+    const uint64_t *q = (const uint64_t *)(ram + found);
+    if (bl < 4 && (bl == 0 || memcmp(vid, q + 5, sizeof vid) != 0)) {   /* once, and again if the Video words change (at most 4 lines) */
+        char line[512]; memcpy(vid, q + 5, sizeof vid); bl++;
+        hv_fbp_boot_args_line(line, sizeof line, found, (const uint16_t *)(ram + found), q, VMAPPLE_MEM, size);
+        g7_fbp_say(line);
+    }
+    uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
+    if (strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") != 0 || row > 0xffffffffu) return;
+    const uint8_t *px = ram + (base - VMAPPLE_MEM);
+    char line[256]; int chg = 0, t10 = 0;
+    if (hv_fbp_tick(&fbp, now, px, (uint32_t)w, (uint32_t)hh, (uint32_t)row, line, sizeof line, &chg, &t10)) {
+        g7_fbp_say(line);
+        if (chg) fbp_png_first_pending = 1;
+        if (t10) fbp_png_10s_pending = 1;
+    }
+    if (fbp_png_first_pending && frame_save_async("boot_fb_first_change", "boot_fb(first change)", px, (uint32_t)w, (uint32_t)hh, (uint32_t)row) != 0) fbp_png_first_pending = 0;
+    if (fbp_png_10s_pending && frame_save_async("boot_fb_t10s", "boot_fb(~10s)", px, (uint32_t)w, (uint32_t)hh, (uint32_t)row) != 0) fbp_png_10s_pending = 0;
+}
+
 int hv_vm_boot_display(HvBootDisplay *d) {
     /* What the guest's GPU has drawn, once it has drawn anything. */
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);
     if (!pvg) return -1;
+    g7_boot_fb_tick();   /* log only */
     const uint8_t *frame;
     uint32_t fw, fh;
     if (hv_pvg_lite_frame(pvg, &frame, &fw, &fh) == 0) {
+        g7_fbp_src(0, "pvg_frame", fw, fh);
         frame_pvg_series("pvg", frame, fw, fh);
         d->pixels = (uint8_t *)frame;
         d->width = fw, d->height = fh, d->stride = fw * 4, d->source = HV_SCREEN_PVG;
@@ -350,15 +405,19 @@ int hv_vm_boot_display(HvBootDisplay *d) {
                 rc = hv_pvg_lite_live_surface_bgra(pvg, pvg_live_buf, pvg_live_cap, &sw, &sh, NULL);
             }
         }
+        if (rc != 0) g7_fbp_src(4, "pvg_surface_none", 0, 0);
         if (rc == 0) {
+            g7_fbp_src(1, "pvg_surface_read", sw, sh);
             display_diag(pvg_live_buf, sw, sh);
             pvg_last_w = sw; pvg_last_h = sh;
             frame_pvg_series("pvg_surface", pvg_live_buf, sw, sh);
             if (!bgra_all_black(pvg_live_buf, sw, sh)) {
+                g7_fbp_src(2, "pvg_surface_nonblack", sw, sh);
                 d->pixels = pvg_live_buf;
                 d->width = sw, d->height = sh, d->stride = sw * 4, d->source = HV_SCREEN_PVG_SURFACE;
                 return 0;
             }
+            g7_fbp_src(3, "pvg_surface_black", sw, sh);
             surf_black = 1, surf_w = sw, surf_h = sh;
         }
     }

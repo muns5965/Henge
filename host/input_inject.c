@@ -30,9 +30,16 @@ void hv_inject_init(HvInject *j, const HvInputSink *sink, void (*log)(void *, co
     memset(j, 0, sizeof *j);
     if (sink) j->sink = *sink;
     j->log = log; j->log_ctx = log_ctx; j->dw = 1920; j->dh = 1080;
+    j->key_ok = j->mouse_ok = 1;
     hv_touch_init(&j->touch, sink);
     hv_touch_set_display(&j->touch, j->dw, j->dh);
     hv_touch_set_view(&j->touch, 0, 0, (float)(j->dw - 1), (float)(j->dh - 1));   /* view pixels = guest pixels: x maps to x */
+}
+
+void hv_inject_set_paths(HvInject *j, int key_ok, const char *key_why, int mouse_ok, const char *mouse_why) {
+    j->key_ok = key_ok ? 1 : 0; j->mouse_ok = mouse_ok ? 1 : 0;
+    snprintf(j->key_why, sizeof j->key_why, "%s", key_why ? key_why : "no keyboard device");
+    snprintf(j->mouse_why, sizeof j->mouse_why, "%s", mouse_why ? mouse_why : "no mouse device");
 }
 
 static void set_display(HvInject *j, int w, int h) {
@@ -69,6 +76,12 @@ int hv_inject_command(HvInject *j, const char *line, int64_t now_ms, char *msg, 
         set_display(j, dw, dh);
         if (msg && cap) snprintf(msg, cap, "display %dx%d", dw, dh);
         return 0;
+    }
+    if ((!strcmp(w, "key") && !j->key_ok) || ((!strcmp(w, "click") || !strcmp(w, "dclick")) && !j->mouse_ok)) {
+        const char *why = !strcmp(w, "key") ? j->key_why : j->mouse_why;
+        if (msg && cap) snprintf(msg, cap, "%s; input cannot reach the guest", why);
+        j->rejected_no_path++;
+        return -2;
     }
     if (!strcmp(w, "key")) {
         if (n < 2) REFUSE("key needs a name");

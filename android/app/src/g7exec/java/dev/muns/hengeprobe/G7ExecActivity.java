@@ -1056,9 +1056,10 @@ public class G7ExecActivity extends Activity {
     private void injTick() {
         G7CloneBoot.Run r = G7CloneBoot.current();
         if (r != null && injOut != null) { String t = r.injectTail(); if (!t.isEmpty() && !t.equals(injShown)) { injShown = t; injOut.setText(t); } }
+        if (r != null && r.injectRejected != null && !r.injectRejected.equals(injRejShown)) { injRejShown = r.injectRejected; injNote("입력 거부됨(게스트에 전달되지 않음): " + injRejShown); }
         cbImage.postDelayed(this::injTick, 500);
     }
-    private String injShown = "";
+    private String injShown = "", injRejShown = "";
 
     private void injAt(boolean dbl) {
         int x = injX.getProgress(), y = injY.getProgress();
@@ -1075,7 +1076,7 @@ public class G7ExecActivity extends Activity {
         r.injectNote("app: button '" + label + "' pressed");
         if (dw > 0 && dh > 0) { String w = r.sendInject(G7InputMap.display(dw, dh)); if (w != null) { injNote("입력 보내기 실패: " + w); return; } }
         String why = r.sendInject(cmd);
-        injNote(why == null ? "러너에 보냈습니다: " + cmd + " (아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
+        injNote(why == null ? "러너 입력에 썼습니다(전달 확인 아님): " + cmd + " (거부되면 REJECTED가 표시됩니다. 아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
     }
 
     /** Input feedback goes to the page's status line and also to the fixed dock (the page may be scrolled far away from the status line). */

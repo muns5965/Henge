@@ -297,6 +297,8 @@ public final class G7CloneBoot {
         /** TEMPORARY guest-input test (research/g7-input): the last lines of the injection trail, newest last. Both the app's own steps ("app: ...") and the runner's INJECT lines. */
         private final java.util.ArrayDeque<String> injectLog = new java.util.ArrayDeque<>();
         public synchronized void injectNote(String s) { injectLog.addLast(s); while (injectLog.size() > 80) injectLog.removeFirst(); }
+        /** The runner's last "INJECT-CMD ... -> REJECTED: ..." answer (null = none yet): the input could not reach the guest. */
+        public volatile String injectRejected;
         public synchronized String injectTail() { StringBuilder b = new StringBuilder(); for (String l : injectLog) b.append(l).append('\n'); return b.toString(); }
         /** Sends one injection command (only the lines G7InputMap.allowed accepts) to the runner's stdin. Returns null when it was written, else why not. The runner's own answer comes back as an INJECT-CMD line. */
         public String sendInject(String line) {
@@ -304,7 +306,7 @@ public final class G7CloneBoot {
             if (finished) { injectNote("app: refused, the run has ended: " + line); return "실행이 끝났습니다"; }
             try { OutputStream o = proc.getOutputStream(); o.write((line + "\n").getBytes(StandardCharsets.US_ASCII)); o.flush(); }
             catch (IOException e) { injectNote("app: write to the runner failed: " + e.getMessage()); return "러너에 쓰지 못했습니다"; }
-            injectNote("app: sent to the runner's input: '" + line + "' (the runner answers with INJECT-CMD, then INJECT lines)");
+            injectNote("app: sent to the runner's input: '" + line + "' (written to its stdin only, NOT a delivery claim; the runner answers with INJECT-CMD queued/REJECTED/refused, then INJECT lines)");
             return null;
         }
         public void requestFrame() {
@@ -448,7 +450,8 @@ public final class G7CloneBoot {
                         continue;
                     }
                     if (line.startsWith("ui_runner_vm_clone VERDICT:")) run.verdictLine = line;
-                    if (line.startsWith("ui_runner_vm_clone INJECT")) run.injectNote(line.substring("ui_runner_vm_clone ".length()));
+                    if (line.startsWith("ui_runner_vm_clone INJECT") || line.startsWith("ui_runner_vm_clone g7-input:")) run.injectNote(line.substring("ui_runner_vm_clone ".length()));
+                    if (line.startsWith("ui_runner_vm_clone INJECT-CMD") && line.contains("-> REJECTED")) run.injectRejected = line.substring("ui_runner_vm_clone ".length());
                     run.mon.feed(line, System.currentTimeMillis());
                     run.put(line + "\n", false);
                     if (s != null) run.put("g7-stage: " + s.name().toLowerCase() + " first seen at " + (System.currentTimeMillis() - run.t0) / 1000 + "s (estimate)\n", true);

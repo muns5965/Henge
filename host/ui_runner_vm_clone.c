@@ -109,6 +109,17 @@ static void inj_log(void *ctx, const char *line) {
     printf(" | guest consumption: unknown\n");
     fflush(stdout);
 }
+static int g_input_line_done;
+/* Once per run, at the first inject command (the counters mean something then): which guest input devices exist and what the guest has taken so far. usb_present is the virtio USB DEVICE port (DFU/probe,
+   board.vusb); the keyboard that hv_vm_key feeds is the xhci HID controller (board.usb), a different device that exists in every usb mode. */
+static void input_path_line(void) {
+    HvVmapple *b = hv_vm_board();
+    int usb_present = b && b->vusb ? 1 : 0, kbd = b && b->usb ? 1 : 0, mouse = b && b->mouse ? 1 : 0;
+    unsigned long long kd = b && b->usb ? __atomic_load_n(&b->usb->delivered, __ATOMIC_RELAXED) : 0, md = b && b->mouse ? __atomic_load_n(&b->mouse->delivered, __ATOMIC_RELAXED) : 0;
+    printf("ui_runner_vm_clone g7-input: usb_present=%d (virtio usb device port: DFU/probe only, not the keyboard) hid_keyboard_xhci=%d virtio_mouse=%d can_deliver_keys=%d can_deliver_clicks=%d | "
+           "guest USB driver has taken kbd reports into its buffers: %llu, mouse events: %llu (so far; whether the guest acted on them: unknown)\n", usb_present, kbd, mouse, kbd, mouse, kd, md);
+    fflush(stdout);
+}
 static G7Nv g_nv;   /* NVRAM observer state (host/g7_nvram.h) */
 static int cursor_wake_fd = -1;           /* read end of the pointer-moved doorbell pipe (hv_vm_cursor_wake_open), -1 = none */
 static unsigned long cursor_wake_loops;   /* loop passes that the doorbell woke (log only) */
@@ -380,7 +391,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     hv_runner_set_ready(g_run, 1);
-    { HvInputSink isk = {hv_vm_key, hv_vm_mouse_move, hv_vm_mouse_button, hv_vm_mouse_wheel, hv_vm_mouse_hwheel}; hv_inject_init(&g_inj, &isk, inj_log, NULL); g_inj_on = 1; }
+    { HvInputSink isk = {hv_vm_key, hv_vm_mouse_move, hv_vm_mouse_button, hv_vm_mouse_wheel, hv_vm_mouse_hwheel}; hv_inject_init(&g_inj, &isk, inj_log, NULL); g_inj_on = 1;
+      hv_inject_set_paths(&g_inj, bd && bd->usb, "no virtual xhci HID keyboard device (board.usb is NULL)", bd && bd->mouse, "no virtual mouse device (board.mouse is NULL)"); }
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit", *stop_kind = "requested-quit";
@@ -431,7 +443,9 @@ int main(int argc, char **argv) {
                 else if (!strncmp(inl, "inject ", 7)) {
                     char im[120] = "";
                     int ir = g_inj_on ? hv_inject_command(&g_inj, inl + 7, (int64_t)(now() * 1000), im, sizeof im) : -1;
-                    printf("ui_runner_vm_clone INJECT-CMD: '%s' -> %s%s%s\n", inl + 7, ir == 0 ? "accepted" : "refused", im[0] ? ": " : "", g_inj_on ? im : "machine not running"); fflush(stdout);
+                    if (!g_input_line_done) { g_input_line_done = 1; input_path_line(); }
+                    /* REJECTED = the device the command needs does not exist: nothing was queued or sent, no counter moved. "queued" = accepted by the injector only; it says nothing about the guest. */
+                    printf("ui_runner_vm_clone INJECT-CMD: '%s' -> %s%s%s\n", inl + 7, ir == 0 ? "queued (accepted by the injector; guest delivery is reported by the INJECT lines)" : ir == -2 ? "REJECTED" : "refused", im[0] || !g_inj_on ? ": " : "", g_inj_on ? im : "machine not running"); fflush(stdout);
                 }
                 else ignored++;
             } else if (ll + 1 < sizeof inl) inl[ll++] = c;

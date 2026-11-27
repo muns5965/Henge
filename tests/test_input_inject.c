@@ -54,6 +54,20 @@ int main(void) {
     /* display size change */
     fresh(&j); gw = 1280; gh = 720; EXPECT(hv_inject_command(&j, "display 1280 720", T, m, sizeof m) == 0 && hv_inject_command(&j, "click 1279 719", T, m, sizeof m) == 0, "display 1280x720 then a click at its corner"); run(&j, 1, 3000);
     EXPECT(count("B0v(1278,719)") + count("B0v(1279,719)") == 1, "corner click lands within 1 px of the corner (%s)", ev);
+    /* no input device: key / click / dclick are REJECTED (-2), nothing is queued, nothing reaches the sink; with the device present the same commands are accepted as before */
+    fresh(&j); hv_inject_set_paths(&j, 0, "no virtual xhci HID keyboard device", 0, "no virtual mouse device");
+    { int r1 = hv_inject_command(&j, "key enter", T, m, sizeof m); int bad_msg = !strstr(m, "no virtual xhci HID keyboard device") || !strstr(m, "input cannot reach the guest");
+      int r2 = hv_inject_command(&j, "click 100 100", T, m, sizeof m); int r3 = hv_inject_command(&j, "dclick", T, m, sizeof m);
+      run(&j, 1, 500);
+      EXPECT(r1 == -2 && r2 == -2 && r3 == -2 && !bad_msg, "no device: key/click/dclick answer REJECTED (-2) with the reason (%s)", m);
+      EXPECT(nev == 0 && ev[0] == 0 && !hv_inject_busy(&j) && j.keys_down == 0 && j.btn_down == 0 && j.jobs_done == 0 && j.rejected_no_path == 3 && lg[0] == 0, "no device: no event reached the sink, nothing queued, delivered-type counters unchanged (rejected_no_path=3): %s", ev);
+      EXPECT(hv_inject_command(&j, "display 1280 720", T, m, sizeof m) == 0 && hv_inject_command(&j, "abort", T, m, sizeof m) == 0, "display/abort are not input and still work"); }
+    fresh(&j); hv_inject_set_paths(&j, 1, "x", 0, "no virtual mouse device");
+    EXPECT(hv_inject_command(&j, "key enter", T, m, sizeof m) == 0 && hv_inject_command(&j, "click", T, m, sizeof m) == -2, "keyboard present / mouse missing: key accepted, click REJECTED");
+    run(&j, 1, 200); EXPECT(count("K28v") == 1 && count("B0") == 0, "only the key reached the sink");
+    fresh(&j); hv_inject_set_paths(&j, 1, NULL, 1, NULL);
+    EXPECT(hv_inject_command(&j, "key enter", T, m, sizeof m) == 0 && hv_inject_command(&j, "click 960 397", T, m, sizeof m) == 0 && j.rejected_no_path == 0, "devices present: accepted as before");
+    run(&j, 1, 3000); EXPECT(count("K28v") == 1 && count("B0v") == 1, "devices present: both reached the sink");
     printf("%s test_input_inject\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

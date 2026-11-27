@@ -34,10 +34,14 @@ typedef struct HvInject {
     HvInjectJob cur; int active, phase, clicks_done; int64_t phase_ms, start_ms; int held_btn; int held_key[HV_INJECT_STEPS]; int dw, dh;
     /* counters (what this module itself called, NOT what the guest did) */
     uint64_t jobs_done, keys_down, keys_up, btn_down, btn_up, refused;
+    /* input paths: set by the runner from the machine it really built (default both 1). A path that is 0 makes key / click / dclick answer -2 (REJECTED) and nothing is queued or counted as sent. */
+    int key_ok, mouse_ok; char key_why[96], mouse_why[96]; uint64_t rejected_no_path;
 } HvInject;
 
 void hv_inject_init(HvInject *j, const HvInputSink *sink, void (*log)(void *, const char *), void *log_ctx);
-/* 0 queued / applied; -1 refused (msg says why). line without the word "inject". */
+/* Which guest-facing devices exist. why_* is the text for the REJECTED answer when the device is missing. */
+void hv_inject_set_paths(HvInject *j, int key_ok, const char *key_why, int mouse_ok, const char *mouse_why);
+/* 0 queued / applied; -1 refused (msg says why); -2 REJECTED: the device the command needs does not exist, nothing queued (msg says why). line without the word "inject". */
 int hv_inject_command(HvInject *j, const char *line, int64_t now_ms, char *msg, size_t cap);
 /* The guest's pointer as hv_vm_pointer says it (known 0/1), then one step of the current job. Call every loop pass (<= 20 ms). */
 void hv_inject_tick(HvInject *j, int known, int px, int py, int64_t now_ms);

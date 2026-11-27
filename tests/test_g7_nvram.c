@@ -10,6 +10,17 @@
 #include <unistd.h>
 #include "../core/machine.h"
 #include "../host/disk.h"
+/* integ7b T4 fault injection: the pre-seed's disk operations go through these (the shipped build uses hv_disk_write / hv_disk_flush / statvfs directly) */
+static int t_wcount, t_fail_at = -1, t_fail_mode, t_persist, t_flush_fail, t_free_low;   /* mode 0: the write fails, 1: a SHORT write (half the bytes land, then it fails) */
+static int t_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
+    int n = ++t_wcount;
+    if (t_fail_at >= 0 && (n == t_fail_at || (t_persist && n > t_fail_at))) { if (t_fail_mode == 1 && len > 1) (void)hv_disk_write(d, off, buf, len / 2); return -1; }
+    return hv_disk_write(d, off, buf, len);
+}
+static int t_flush(HvDisk *d) { return t_flush_fail ? -1 : hv_disk_flush(d); }
+#define G7NV_DISK_WRITE(d, off, buf, len) t_write((d), (off), (buf), (len))
+#define G7NV_DISK_FLUSH(d) t_flush((d))
+#define G7NV_FREE_BYTES(path) (t_free_low ? 0ull : 1ull << 40)
 #include "../host/g7_nvram.h"
 
 int hv_knob[HV_K_COUNT];
@@ -163,6 +174,71 @@ int main(void) {
     plg = tmpfile(); r = g7nv_preseed(&d, (G7NvSeed[]){{"auto-boot", "true", 4}}, 1, plg); txt = slurp(plg);
     CHECK(r.store_found && r.seeded == 0 && r.failed == 1 && fsum(aux) == before && strstr(txt, "NOT written"), "bytes after the used area not erased: refuses, file unchanged"); free(txt); fclose(plg);
     hv_disk_close(&d);
+
+    /* ---- integ7b T4: the guards (backup first, marker, failures, clone only) with fault injection ---- */
+    {
+        char cdir[300], bk[400]; snprintf(cdir, sizeof cdir, "%s/clones/clone-001", dir);
+        { char c2[400]; snprintf(c2, sizeof c2, "mkdir -p %s", cdir); if (system(c2)) {} }
+        G7NvGuard good = {.target_ok = 1, .clone_real = cdir};
+        G7NvSeed ab[1] = {{"auto-boot", "true", 4}};
+        char *t; FILE *gl; G7NvGuardResult gr; unsigned long b4;
+#define FRESH() do { hv_disk_close(&d); mkfile(aux, hidden + vis); hv_disk_open(&d, aux, hidden, 0); build_store(part, 7, 1); hv_disk_write(&d, 0x30000, part, G7NV_PART); t_wcount = 0; t_fail_at = -1; t_fail_mode = 0; t_persist = 0; t_flush_fail = 0; t_free_low = 0; \
+    { char c3[500]; snprintf(c3, sizeof c3, "rm -f %s/clones/*.img", dir); if (system(c3)) {} } } while (0)
+        /* (d) not the verified clone: refuse, nothing written, no backup */
+        FRESH(); b4 = fsum(aux); gl = tmpfile();
+        gr = g7nv_preseed_guarded(&d, ab, 1, gl, &(G7NvGuard){.target_ok = 0, .clone_real = cdir}); t = slurp(gl);
+        CHECK(gr.refused && !gr.backed_up && fsum(aux) == b4 && strstr(t, "not the verified disposable clone"), "S1 refuses a target that is not the verified clone: nothing written, no backup"); free(t); fclose(gl);
+        gl = tmpfile(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &(G7NvGuard){.target_ok = 1, .clone_real = "/data/vm"}); t = slurp(gl);
+        CHECK(gr.refused && fsum(aux) == b4, "S1 refuses a path that is not .../clones/clone-NNN (the installed pair's folder)"); free(t); fclose(gl);
+        /* (a) the backup comes first, is a sibling with a clear name, logged with path and size, and equals the image before the write */
+        FRESH(); b4 = fsum(aux); gl = tmpfile();
+        gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        snprintf(bk, sizeof bk, "%s/clones/clone-001.aux-preseed-backup.img", dir);
+        CHECK(gr.backed_up && gr.seed.seeded == 1 && !gr.possibly_modified && strcmp(gr.backup, bk) == 0 && fsum(bk) != 0 && strstr(t, "backup of the aux image written and verified") && strstr(t, bk) && strstr(t, "4194304 bytes"), "backup made (sibling of the clone folder, named, size logged), then the seed written: %s", t);
+        { uint64_t sz = 0; struct stat st; if (stat(bk, &st) == 0) sz = (uint64_t)st.st_size; CHECK(sz == vis, "the backup is the whole guest-visible aux (%llu bytes)", (unsigned long long)sz); }
+        { HvDisk bd; unsigned long before_hash = b4; (void)before_hash; hv_disk_open(&bd, bk, 0, 1); uint8_t *x = malloc(G7NV_PART), *y = malloc(G7NV_PART); build_store(x, 7, 1); hv_disk_read(&bd, 0x30000, y, G7NV_PART); CHECK(!memcmp(x, y, G7NV_PART), "the backup holds the store as it was BEFORE the seed (no auto-boot=true in it)"); hv_disk_close(&bd); free(x); free(y); }
+        free(t); fclose(gl);
+        /* second run: the first backup is not overwritten */
+        gl = tmpfile(); t_wcount = 0; FRESH(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        CHECK(gr.backed_up == 1, "a fresh run after FRESH() (backups removed) works"); free(t); fclose(gl);
+        gl = tmpfile(); hv_disk_close(&d); mkfile(aux, hidden + vis); hv_disk_open(&d, aux, hidden, 0); build_store(part, 7, 1); hv_disk_write(&d, 0x30000, part, G7NV_PART);
+        gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        { char b2[400]; snprintf(b2, sizeof b2, "%s/clones/clone-001.aux-preseed-backup-2.img", dir); CHECK(gr.backed_up && strcmp(gr.backup, b2) == 0 && access(bk, F_OK) == 0, "an existing backup is never overwritten: the next one is numbered (-2)"); }
+        free(t); fclose(gl);
+        /* (a) backup fails: free space low / unwritable folder -> nothing written */
+        FRESH(); t_free_low = 1; b4 = fsum(aux); gl = tmpfile(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        CHECK(gr.refused && !gr.backed_up && fsum(aux) == b4 && strstr(t, "not enough free space") && strstr(t, "NOTHING WRITTEN"), "not enough free space: refused, aux unchanged"); free(t); fclose(gl);
+        FRESH(); b4 = fsum(aux); gl = tmpfile();
+        gr = g7nv_preseed_guarded(&d, ab, 1, gl, &(G7NvGuard){.target_ok = 1, .clone_real = "/nonexistent-dir-xyz/clones/clone-001"}); t = slurp(gl);
+        CHECK(gr.refused && !gr.backed_up && fsum(aux) == b4 && strstr(t, "cannot create the backup"), "backup cannot be created (folder missing): refused, aux unchanged"); free(t); fclose(gl);
+        /* (c) a failing write: restored from the backup, verified; aux equals the original store */
+        for (int mode = 0; mode <= 1; mode++) {
+            FRESH(); b4 = fsum(aux); t_fail_at = 1; t_fail_mode = mode; gl = tmpfile();
+            gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+            CHECK(gr.seed.io_fail && gr.restored && !gr.possibly_modified && fsum(aux) == b4 && strstr(t, "put back from") && strstr(t, "verified"), "%s write on the first entry: the store region is put back and verified, aux identical to before", mode ? "SHORT" : "failing"); free(t); fclose(gl);
+        }
+        /* the failure is in marking the old copy deleted (second write): the new entry is rolled back as well */
+        FRESH(); b4 = fsum(aux); t_fail_at = 2; gl = tmpfile(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        CHECK(gr.seed.io_fail && gr.restored && fsum(aux) == b4, "failure while marking the old copy: whole region restored (no half state)"); free(t); fclose(gl);
+        /* flush failure after good writes */
+        FRESH(); b4 = fsum(aux); t_flush_fail = 1; gl = tmpfile(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        CHECK(gr.seed.io_fail && strstr(t, "flush FAILED") && (gr.restored || gr.possibly_modified), "fsync failure is reported, never silent (restored=%d, possibly_modified=%d)", gr.restored, gr.possibly_modified); free(t); fclose(gl);
+        /* the restore fails too (every write from the 1st fails): possibly modified, loud, backup path named */
+        FRESH(); t_fail_at = 1; t_persist = 1; t_fail_mode = 1; gl = tmpfile(); gr = g7nv_preseed_guarded(&d, ab, 1, gl, &good); t = slurp(gl);
+        CHECK(gr.possibly_modified && !gr.restored && strstr(t, "POSSIBLY MODIFIED") && strstr(t, "Restore from ") && strstr(t, gr.backup) && strstr(t, "will not be started"), "restore fails too: the log says POSSIBLY MODIFIED and names the backup to restore from; the runner refuses to boot"); free(t); fclose(gl);
+        /* (b) the marker file */
+        { char mp[400], buf[512], why[300]; snprintf(mp, sizeof mp, "%s/nvram_preseed", dir);
+          unlink(mp); CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == 0, "marker absent = off (0)");
+          { FILE *f = fopen(mp, "w"); fputs("1\n", f); fclose(f); } CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == 1 && !strncmp(buf, "1", 1), "good marker read");
+          { FILE *f = fopen(mp, "w"); for (int i = 0; i < 600; i++) fputc('a', f); fclose(f); } CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == -1 && strstr(why, "longer than"), "a marker longer than the buffer is refused, not cut (%s)", why);
+          { FILE *f = fopen(mp, "wb"); fwrite("auto-boot=tr\0ue", 1, 15, f); fclose(f); } CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == -1 && strstr(why, "NUL"), "a NUL in the marker is refused (%s)", why);
+          { FILE *f = fopen(mp, "wb"); fwrite("auto-boot=\x01x", 1, 12, f); fclose(f); } CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == -1, "a control byte is refused");
+          unlink(mp); mkdir(mp, 0700); CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == -1 && strstr(why, "unreadable"), "a marker that is a directory is unreadable: refused (%s)", why); rmdir(mp);
+          { char tg[400]; snprintf(tg, sizeof tg, "%s/real", dir); FILE *f = fopen(tg, "w"); fputs("1", f); fclose(f); if (symlink(tg, mp) == 0) CHECK(g7nv_read_marker(mp, buf, sizeof buf, why, sizeof why) == -1, "a marker that is a symlink is refused (no following)"); unlink(mp); }
+          char sp[512], er[96] = "", src[64]; (void)src; G7NvSeed it[G7NV_SEED_MAX];
+          CHECK(g7nv_parse_spec("auto-boot=tr\x01ue", it, G7NV_SEED_MAX, er, sizeof er) < 0, "bad content in the spec text is rejected by the parser (no write)"); (void)sp;
+        }
+    }
     char cmd[300]; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {}
     printf(g_fail ? "FAILED %d\n" : "ALL PASS\n", g_fail);
     return g_fail ? 1 : 0;

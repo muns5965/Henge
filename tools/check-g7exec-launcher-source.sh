@@ -134,8 +134,8 @@ grep -q 'final CheckBox nvp = shortBox(' "$A" && ! grep -qE 'nvp\.setChecked|opt
 [ "$(grep -c 'G7Storage.setPreseedMarker(privDir, nvp.isChecked())' "$A")" = 1 ] || bad "the pre-seed marker must be written exactly once per start from the checkbox state"
 grep -q '"auto-boot=true' $XJ/G7Storage.java && ! grep -q 'boot-volume=' $XJ/G7Storage.java || bad "the app side may write auto-boot=true only; boot-volume is never written from the app"
 R=host/ui_runner_vm_clone.c; N=host/g7_nvram.h
-[ "$(grep -c 'g7nv_preseed(' $R)" = 1 ] && grep -q 'g7nv_spec_source(getenv("G7_NVRAM_PRESEED"), getenv("HENGE_NVRAM_PRESEED")' $R || bad "the runner must request the pre-seed only through g7nv_spec_source (env or marker file), exactly one call"
-l1=$(grep -n 'g7nv_preseed(ad' $R | head -1 | cut -d: -f1); l2=$(grep -n 'hv_disk_set_trace(hv_vm_aux_disk()' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_start(1, on_exit_cb)' $R | head -1 | cut -d: -f1)
+[ "$(grep -c 'g7nv_preseed_guarded(' $R)" = 1 ] && grep -q 'g7nv_spec_source(getenv("G7_NVRAM_PRESEED"), getenv("HENGE_NVRAM_PRESEED")' $R || bad "the runner must request the pre-seed only through g7nv_spec_source (env or marker file), exactly one call"
+l1=$(grep -n 'g7nv_preseed_guarded(ad' $R | head -1 | cut -d: -f1); l2=$(grep -n 'hv_disk_set_trace(hv_vm_aux_disk()' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_start(1, on_exit_cb)' $R | head -1 | cut -d: -f1)
 { [ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l3" ]; } || bad "$R: pre-seed, then the observer, then hv_vm_start"
 grep -q 'if (!src) return NULL;' $N || bad "$N: with nothing requested the pre-seed must stay off"
 grep -q 'NO valid v3' $N && grep -q 'NOTHING WRITTEN' $N || bad "$N: no store found must write nothing and say so"
@@ -175,6 +175,11 @@ grep -q 'return "1".equals(new String(Files.readAllBytes(p), StandardCharsets.US
 ! grep -qE 'jex.*(KEY_|opts\.)' "$A" || bad "the exact-stats checkbox must not be remembered"
 grep -q 'jit_exact=' "$CB" && grep -q 'g7-engine-diag:' "$CB" || bad "jit_exact and the engine diagnostics must be written to the run log header and run-info.txt"
 grep -q 'run_jit_exact=' $XJ/G7ExecDumpExport.java || bad "the export manifest must record the run's exact-stats state"
+
+# integ7b T4: the runner pre-seeds only through the guarded entry (backup first, clone only, restore or refuse to boot) and reads its marker whole or not at all
+grep -q 'g7nv_preseed_guarded(ad, items, ni, stdout, &gd)' host/ui_runner_vm_clone.c && ! grep -qE '[^_]g7nv_preseed\(' host/ui_runner_vm_clone.c || bad "the clone runner must call g7nv_preseed_guarded, never g7nv_preseed directly"
+grep -q 'g7nv_read_marker(mp, ftxt' host/ui_runner_vm_clone.c && grep -q 'if (gr.possibly_modified)' host/ui_runner_vm_clone.c || bad "the runner must read the marker with g7nv_read_marker and refuse to start when the aux is possibly modified"
+! grep -qE 'define G7NV_DISK_(WRITE|FLUSH)|define G7NV_FREE_BYTES' host/ui_runner_vm_clone.c android -r || bad "the fault-injection macros must not be defined by shipped code"
 
 # integ7b T9: the live preview is the runner's FULL-RESOLUTION picture file (G7FrameFile), drawn with bilinear filtering from one reused bitmap; the hex FRAME line is a low-resolution diagnostic only
 ! grep -q 'setFilterBitmap(false)' "$A" || bad "the live preview must not use setFilterBitmap(false) (no unsmoothed upscaling of a tiny copy)"

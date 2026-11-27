@@ -23,7 +23,23 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 #include "disk.h"
+
+/* integ7b T4: the disk operations the pre-seed uses, as macros only so a host test can inject faults (short write, failing write/flush, no free space). The shipped build never defines them. */
+#ifndef G7NV_DISK_WRITE
+#define G7NV_DISK_WRITE(d, off, buf, len) hv_disk_write((d), (off), (buf), (len))
+#endif
+#ifndef G7NV_DISK_FLUSH
+#define G7NV_DISK_FLUSH(d) hv_disk_flush((d))
+#endif
+#ifndef G7NV_FREE_BYTES
+static inline uint64_t g7nv_free_bytes_default(const char *path) { char dir[1024]; snprintf(dir, sizeof dir, "%s", path); char *sl = strrchr(dir, '/'); if (sl) *sl = 0; else strcpy(dir, "."); struct statvfs v; return statvfs(dir, &v) == 0 ? (uint64_t)v.f_bavail * v.f_frsize : 0; }
+#define G7NV_FREE_BYTES(path) g7nv_free_bytes_default(path)
+#endif
 
 #define G7NV_LINE_CAP 200          /* all "g7-nvram:" lines but the summary and the pre-seed lines */
 #define G7NV_OP_LINES 100          /* of those, at most this many for plain aux ops (write/flush/first reads); the rest is for NVRAM entries */
@@ -292,7 +308,7 @@ static inline int g7nv_walk(const uint8_t *part, size_t plen, uint32_t *size, G7
 }
 
 /* Result of g7nv_preseed. */
-typedef struct { int store_found, seeded, already, failed; uint64_t store_off, scanned; uint32_t generation; } G7NvSeedResult;
+typedef struct { int store_found, seeded, already, failed, io_fail; uint64_t store_off, scanned; uint32_t generation; } G7NvSeedResult;   /* io_fail: a write or the final flush failed (the aux may be half changed: see g7nv_preseed_guarded) */
 
 /* Finds the newest valid store in the aux disk (4 KiB steps over the whole disk, read-only) and appends the items. Writes nothing when no valid store is found, when there is no room, or when the
    bytes after the used area are not erased (0xFF). Logs "g7-nvram: preseed ..." lines to out. The caller installs the S0 observer AFTER this (so seeding is not logged as guest traffic). */
@@ -341,14 +357,14 @@ static inline G7NvSeedResult g7nv_preseed(HvDisk *d, const G7NvSeed *items, int 
         if (!ent) { r.failed++; continue; }
         ent[0] = 0xAA; ent[1] = 0x55; ent[2] = 0x7F; ent[3] = 0; g7nv_put32(ent + 4, 0); g7nv_put32(ent + 8, (uint32_t)nsz); g7nv_put32(ent + 12, (uint32_t)it->vlen);
         memcpy(ent + 16, guid, 16); g7nv_put32(ent + 32, g7nv_crc32(it->val, it->vlen)); memcpy(ent + 36, it->name, nsz - 1); memcpy(ent + 36 + nsz, it->val, it->vlen);
-        int wr = hv_disk_write(d, best_off + end, ent, total);
+        int wr = G7NV_DISK_WRITE(d, best_off + end, ent, total);
         free(ent);
-        if (wr != 0) { fprintf(out, "g7-nvram: preseed %s FAILED to write\n", it->name); r.failed++; continue; }
+        if (wr != 0) { fprintf(out, "g7-nvram: preseed %s FAILED to write (rc %d)\n", it->name, wr); r.failed++; r.io_fail = 1; break; }   /* integ7b: stop at the first failed write: nothing more is written after an I/O error */
         /* the old copies are marked deleted only AFTER the new one is on disk */
         int inval = 0;
         for (int e = 0; e < ne; e++) if (ents[e].state == 0x7F && !memcmp(ents[e].guid, guid, 16) && !strcmp(ents[e].name, it->name)) {
             uint8_t st = 0x7C;
-            if (hv_disk_write(d, best_off + ents[e].pos + 2, &st, 1) == 0) { inval++; ents[e].state = 0x7C; }
+            if (G7NV_DISK_WRITE(d, best_off + ents[e].pos + 2, &st, 1) == 0) { inval++; ents[e].state = 0x7C; } else { r.io_fail = 1; fprintf(out, "g7-nvram: preseed %s: marking the older copy deleted FAILED\n", it->name); }
         }
         char gt[40];
         fprintf(out, "g7-nvram: preseed %s=%.*s written (guid=%s, %zu bytes entry at aux_off=0x%llx, %d older copy/copies marked deleted) [N: value encoding the guest expects is not verified]\n", it->name,
@@ -357,10 +373,109 @@ static inline G7NvSeedResult g7nv_preseed(HvDisk *d, const G7NvSeed *items, int 
         /* re-read the store so the next item starts after this entry */
         if (hv_disk_read(d, best_off, part, pl) != 0 || !g7nv_walk(part, (size_t)pl, &sz, ents, 512, &ne, &end)) { fprintf(out, "g7-nvram: preseed stopped: could not re-read the store\n"); r.failed += nitems - v - 1; break; }
     }
-    (void)hv_disk_flush(d);
+    if (r.seeded || r.io_fail) { int fr = G7NV_DISK_FLUSH(d); if (fr != 0) { r.io_fail = 1; fprintf(out, "g7-nvram: preseed flush FAILED (rc %d): the writes may not be on disk\n", fr); } }
     fprintf(out, "g7-nvram: preseed result seeded=%d already=%d failed=%d (host-side writes only; whether the guest honours them is shown by the S0 lines of this run)\n", r.seeded, r.already, r.failed);
     fflush(out);
     free(part); free(chunk); free(ents);
+    return r;
+}
+
+/* ---- integ7b T4: the guards around S1 (fail closed) ----
+   (a) before the first write the guest-visible aux image is copied to a sibling backup file (never overwritten: O_EXCL, a numbered name when taken), checked for free space first, read back and compared;
+       a backup that cannot be made, verified, or does not fit means NOTHING is written.
+   (b) the marker file is read whole or not at all: unreadable, too long (would be cut), with a NUL / non-printable byte = refused with the reason; absent = off.
+   (c) a failed or short write or a failed flush: the store region is put back from the backup and verified; if that cannot be done the result says possibly_modified, the log says loudly "restore from <backup>",
+       and the runner does not start the machine.
+   (d) only the verified disposable clone: the caller says so (target_ok, from hv_clone_open), the backup name must sit beside a clones/clone-NNN folder; otherwise nothing is written. */
+typedef struct {
+    int target_ok;              /* the aux disk is the verified clone's (caller: hv_clone_open succeeded); 0 = refuse */
+    const char *clone_real;     /* the clone folder's real path: <vm>/clones/clone-NNN */
+} G7NvGuard;
+typedef struct { G7NvSeedResult seed; int refused, backed_up, restored, possibly_modified; char backup[1100]; uint64_t backup_bytes; } G7NvGuardResult;
+
+/* 1: ok (buf holds the text, NUL ended). 0: absent. -1: refused, why says what. */
+static inline int g7nv_read_marker(const char *path, char *buf, size_t cap, char *why, size_t wl) {
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) { if (errno == ENOENT) return 0; snprintf(why, wl, "marker unreadable: open: %s", strerror(errno)); return -1; }
+    size_t n = 0; ssize_t k;
+    while (n < cap - 1 && (k = read(fd, buf + n, cap - 1 - n)) != 0) { if (k < 0) { if (errno == EINTR) continue; snprintf(why, wl, "marker unreadable: read: %s", strerror(errno)); close(fd); return -1; } n += (size_t)k; }
+    char extra; ssize_t more = read(fd, &extra, 1);
+    close(fd);
+    if (more < 0) { snprintf(why, wl, "marker unreadable: read: %s", strerror(errno)); return -1; }
+    if (more > 0) { snprintf(why, wl, "marker longer than %zu bytes (would be cut: partial content is not used)", cap - 1); return -1; }
+    buf[n] = 0;
+    for (size_t i = 0; i < n; i++) { unsigned char c = (unsigned char)buf[i]; if (c == 0 || (c < 0x20 && c != '\n' && c != '\r' && c != '\t') || c >= 0x7f) { snprintf(why, wl, "marker has a NUL or non-printable byte at %zu", i); return -1; } }
+    return 1;
+}
+
+static inline int g7nv_make_backup(HvDisk *d, const char *clone_real, char *bpath, size_t bcap, uint64_t *bytes, char *why, size_t wl) {
+    const char *base = strrchr(clone_real, '/'); base = base ? base + 1 : clone_real;
+    char dirp[1024]; size_t dl = base - clone_real; if (dl == 0 || dl >= sizeof dirp) { snprintf(why, wl, "clone path unusable"); return -1; }
+    snprintf(dirp, sizeof dirp, "%.*s", (int)(dl - 1), clone_real);
+    uint64_t need = d->size + (1u << 20);
+    char probe[1100]; snprintf(probe, sizeof probe, "%s/x", dirp);
+    uint64_t freeb = G7NV_FREE_BYTES(probe);
+    if (freeb < need) { snprintf(why, wl, "not enough free space for the backup (need %llu bytes, free %llu)", (unsigned long long)need, (unsigned long long)freeb); return -1; }
+    int fd = -1;
+    for (int i = 0; i < 20 && fd < 0; i++) {
+        if (i == 0) snprintf(bpath, bcap, "%s/%s.aux-preseed-backup.img", dirp, base); else snprintf(bpath, bcap, "%s/%s.aux-preseed-backup-%d.img", dirp, base, i + 1);
+        fd = open(bpath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0 && errno != EEXIST) { snprintf(why, wl, "cannot create the backup %s: %s", bpath, strerror(errno)); return -1; }
+    }
+    if (fd < 0) { snprintf(why, wl, "20 backups already exist beside the clone; delete old ones"); return -1; }
+    uint8_t *buf = malloc(1u << 20);
+    if (!buf) { close(fd); unlink(bpath); snprintf(why, wl, "out of memory"); return -1; }
+    int bad = 0;
+    for (uint64_t o = 0; o < d->size && !bad; o += (1u << 20)) {
+        size_t n = d->size - o < (1u << 20) ? (size_t)(d->size - o) : (1u << 20);
+        if (hv_disk_read(d, o, buf, n) != 0) { snprintf(why, wl, "cannot read the aux image at %llu", (unsigned long long)o); bad = 1; break; }
+        size_t w = 0; while (w < n) { ssize_t k = write(fd, buf + w, n - w); if (k < 0) { if (errno == EINTR) continue; snprintf(why, wl, "backup write failed at %llu: %s", (unsigned long long)(o + w), strerror(errno)); bad = 1; break; } if (k == 0) { snprintf(why, wl, "backup write made no progress"); bad = 1; break; } w += (size_t)k; }
+    }
+    if (!bad && fsync(fd) != 0) { snprintf(why, wl, "backup fsync failed: %s", strerror(errno)); bad = 1; }
+    if (close(fd) != 0 && !bad) { snprintf(why, wl, "backup close failed: %s", strerror(errno)); bad = 1; }
+    if (!bad) {   /* read it back and compare with the disk */
+        int rf = open(bpath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); uint8_t *b2 = malloc(1u << 20);
+        if (rf < 0 || !b2) { snprintf(why, wl, "cannot reopen the backup to verify it"); bad = 1; }
+        for (uint64_t o = 0; !bad && o < d->size; o += (1u << 20)) {
+            size_t n = d->size - o < (1u << 20) ? (size_t)(d->size - o) : (1u << 20);
+            if (hv_disk_read(d, o, buf, n) != 0 || pread(rf, b2, n, (off_t)o) != (ssize_t)n || memcmp(buf, b2, n) != 0) { snprintf(why, wl, "the backup does not match the aux image at %llu", (unsigned long long)o); bad = 1; }
+        }
+        if (rf >= 0) close(rf);
+        free(b2);
+    }
+    free(buf);
+    if (bad) { unlink(bpath); bpath[0] = 0; return -1; }
+    *bytes = d->size;
+    return 0;
+}
+
+/* Puts [off, off+len) of the aux image back from the backup file and verifies it. 0 on success. */
+static inline int g7nv_restore_region(HvDisk *d, const char *bpath, uint64_t off, uint64_t len) {
+    int rf = open(bpath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); if (rf < 0) return -1;
+    uint8_t *a = malloc(len), *b = malloc(len); int rc = -1;
+    if (a && b && pread(rf, a, len, (off_t)off) == (ssize_t)len && G7NV_DISK_WRITE(d, off, a, len) == 0 && G7NV_DISK_FLUSH(d) == 0 && hv_disk_read(d, off, b, len) == 0 && !memcmp(a, b, len)) rc = 0;
+    free(a); free(b); close(rf);
+    return rc;
+}
+
+static inline G7NvGuardResult g7nv_preseed_guarded(HvDisk *d, const G7NvSeed *items, int nitems, FILE *out, const G7NvGuard *g) {
+    G7NvGuardResult r; memset(&r, 0, sizeof r);
+    char why[1300] = "";
+    if (!g || !g->target_ok || !g->clone_real || !strstr(g->clone_real, "/clones/clone-")) { fprintf(out, "g7-nvram: preseed REFUSED: the target is not the verified disposable clone; nothing written\n"); r.refused = 1; r.seed.failed = nitems; fflush(out); return r; }
+    if (!d || d->readonly || d->size < G7NV_PART) { fprintf(out, "g7-nvram: preseed REFUSED: the aux disk is not writable here or too small; nothing written\n"); r.refused = 1; r.seed.failed = nitems; fflush(out); return r; }
+    if (g7nv_make_backup(d, g->clone_real, r.backup, sizeof r.backup, &r.backup_bytes, why, sizeof why) != 0) {
+        fprintf(out, "g7-nvram: preseed REFUSED: no safe backup of the aux image before writing (%s); NOTHING WRITTEN\n", why); r.refused = 1; r.seed.failed = nitems; fflush(out); return r;
+    }
+    r.backed_up = 1;
+    fprintf(out, "g7-nvram: preseed backup of the aux image written and verified: %s (%llu bytes); restore with: cp over the clone's macos_aux.img only if the clone is to be reset (the first 16 KiB hidden metadata is not part of this copy)\n", r.backup, (unsigned long long)r.backup_bytes);
+    r.seed = g7nv_preseed(d, items, nitems, out);
+    if (r.seed.io_fail) {
+        uint64_t off = r.seed.store_found ? r.seed.store_off : 0, len = r.seed.store_found ? G7NV_PART : 0;
+        if (len && off + len > d->size) len = d->size - off;
+        if (len && g7nv_restore_region(d, r.backup, off, len) == 0) { r.restored = 1; fprintf(out, "g7-nvram: preseed I/O error: the NVRAM store region (aux_off=0x%llx, %llu bytes) was put back from %s and verified; the aux image is as before the pre-seed\n", (unsigned long long)off, (unsigned long long)len, r.backup); }
+        else { r.possibly_modified = 1; fprintf(out, "g7-nvram: !!! PRESEED I/O ERROR AND THE RESTORE FAILED: the aux image is POSSIBLY MODIFIED. Restore from %s (the machine will not be started) !!!\n", r.backup); }
+    }
+    fflush(out);
     return r;
 }
 

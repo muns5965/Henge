@@ -340,14 +340,14 @@ int main(int argc, char **argv) {
         const char *lg = getenv("G7_NVRAM_LOG");
         g7nv_init(&g_nv, stdout, !(lg && lg[0] == '0'));
         char ftxt[512] = "", spec[512] = "", mp[PATH_MAX + 32];
-        int have_file = 0;
+        int have_file = 0, marker_bad = 0; char mwhy[300] = "";
         snprintf(mp, sizeof mp, "%s/nvram_preseed", ecid_dir);
-        FILE *mf = fopen(mp, "r");
-        if (mf) { size_t nr = fread(ftxt, 1, sizeof ftxt - 1, mf); ftxt[nr] = 0; fclose(mf); have_file = 1; }
+        /* integ7b T4: the marker is read whole or not at all (unreadable, longer than the buffer, NUL / non-printable bytes: refused with the reason, nothing written); absent = off */
+        { int mr = g7nv_read_marker(mp, ftxt, sizeof ftxt, mwhy, sizeof mwhy); if (mr == 1) have_file = 1; else if (mr < 0) { marker_bad = 1; ftxt[0] = 0; printf("g7-nvram: preseed marker REFUSED: %s; nothing written from it\n", mwhy); } }
         const char *src = g7nv_spec_source(getenv("G7_NVRAM_PRESEED"), getenv("HENGE_NVRAM_PRESEED"), have_file ? ftxt : NULL, spec, sizeof spec);
         G7NvSeed items[G7NV_SEED_MAX]; char perr[96] = ""; int ni = src ? g7nv_parse_spec(spec, items, G7NV_SEED_MAX, perr, sizeof perr) : 0;
         printf("g7-nvram: log %s (cap %d lines + 1 summary; default ON, G7_NVRAM_LOG=0 turns it off) | preseed %s\n", g_nv.on ? "ON" : "OFF", G7NV_LINE_CAP,
-               !src ? "OFF (default, nothing requested)" : ni < 0 ? "REFUSED (bad request, nothing written)" : ni == 0 ? "OFF (request says off)" : "REQUESTED");
+               marker_bad && !src ? "REFUSED (marker file unusable, nothing written)" : !src ? "OFF (default, nothing requested)" : ni < 0 ? "REFUSED (bad request, nothing written)" : ni == 0 ? "OFF (request says off)" : "REQUESTED");
         if (src && ni < 0) printf("g7-nvram: preseed request from %s refused: %s\n", src, perr);
         if (src && ni > 0) {
             printf("g7-nvram: preseed requested via %s: %d item(s):", src, ni);
@@ -355,7 +355,16 @@ int main(int argc, char **argv) {
             printf("\n"); fflush(stdout);
             HvDisk *ad = hv_vm_aux_disk();
             if (!ad || ad->readonly) printf("g7-nvram: preseed skipped: the aux disk is not writable here; nothing written\n");
-            else (void)g7nv_preseed(ad, items, ni, stdout);
+            else {
+                G7NvGuard gd = {.target_ok = 1 /* hv_clone_open verified this clone above; the aux disk is its own file */, .clone_real = cl.real};
+                G7NvGuardResult gr = g7nv_preseed_guarded(ad, items, ni, stdout, &gd);
+                if (gr.possibly_modified) {   /* fail closed: a half-changed aux is never booted */
+                    fflush(stdout);
+                    printf("ui_runner_vm_clone RESULT: FAILED, the NVRAM pre-seed failed and the aux image may be modified; restore from %s; not started\n", gr.backup);
+                    hv_shm_set_state(g_shm, HV_SHM_STOPPED);
+                    return 1;
+                }
+            }
         }
         fflush(stdout);
         if (g_nv.on && hv_vm_aux_disk()) hv_disk_set_trace(hv_vm_aux_disk(), g7nv_trace, &g_nv);

@@ -159,6 +159,7 @@ public class G7ExecActivity extends Activity {
         cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 러너 응답이 아래(이미지 자리)에 표시됩니다. 화면이 아직 없으면 그 이유가 나옵니다."); } });
         cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
         cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(cbImageNote);
+        buildInputTest(root);
         add(root, "[AUX 비교] 복원 전(macos_aux.initial)과 복원 후(macos_aux.img)의 AUX를 읽기 전용으로 비교하고, 복제본들의 AUX가 원본과 같은지도 봅니다. 아무것도 쓰거나 바꾸지 않습니다.", 13);
         auxBtn = new Button(this); auxBtn.setText("AUX 비교 실행(읽기 전용)"); root.addView(auxBtn);
         auxOut = new TextView(this); auxOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); auxOut.setTextIsSelectable(true); root.addView(auxOut);
@@ -827,6 +828,89 @@ public class G7ExecActivity extends Activity {
         i.setClipData(ClipData.newRawUri("g7 log", u));
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         startActivity(Intent.createChooser(i, title));
+    }
+
+    // ---- TEMPORARY guest input test (research/g7-input). Normal virtual-device events only (virtual USB keyboard, virtual mouse), sent as text lines to the running clone-boot runner's input
+    // (host/input_inject.h); nothing writes guest memory and nothing skips a step of the Startup Disk flow. The runner's INJECT lines say how far each event got; "delivered" there means a
+    // report/event was written into a buffer the guest's driver posted, NOT that a guest application acted on it. ----
+    private TextView injOut, injCoord; private android.widget.SeekBar injX, injY; private TextView injXY; private CheckBox injPreviewClick;
+
+    private void injButton(LinearLayout row, String label, final String cmd, final boolean sizeFirst) {
+        Button b = new Button(this); b.setText(label); b.setAllCaps(false);
+        b.setOnClickListener(v -> injSend(label, cmd, sizeFirst));
+        row.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+    }
+
+    private LinearLayout injRow(LinearLayout root) { LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); root.addView(row); return row; }
+
+    private void buildInputTest(LinearLayout root) {
+        add(root, "[임시] 게스트 입력 시험: 가상 USB 키보드/가상 마우스의 정상 이벤트만 보냅니다(게스트 메모리에 쓰지 않고, 시동 디스크 절차를 건너뛰지 않습니다). 아래 로그의 'delivered'는 게스트 드라이버가 올려둔 버퍼에 보고서가 쓰였다는 뜻일 뿐, 게스트 앱이 처리했다는 뜻이 아닙니다.", 12);
+        String[][] keys = {{"Enter", "enter"}, {"Tab", "tab"}, {"Shift+Tab", "shift+tab"}, {"Space", "space"}, {"Esc", "esc"}, {"Up", "up"}, {"Down", "down"}, {"Left", "left"}, {"Right", "right"}};
+        LinearLayout row = null;
+        for (int i = 0; i < keys.length; i++) { if (i % 3 == 0) row = injRow(root); injButton(row, keys[i][0], G7InputMap.key(keys[i][1]), false); }
+        row = injRow(root);
+        injButton(row, "클릭(현재 위치)", "inject click", false); injButton(row, "더블클릭(현재 위치)", "inject dclick", false); injButton(row, "입력 중단", "inject abort", false);
+        row = injRow(root);
+        injXY = new TextView(this); injXY.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(injXY);
+        android.widget.SeekBar.OnSeekBarChangeListener sl = new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar sb, int p, boolean user) { injXY.setText("X " + injX.getProgress() + "  Y " + injY.getProgress() + "  (게스트 1920x1080)"); }
+            public void onStartTrackingTouch(android.widget.SeekBar sb) { sb.getParent().requestDisallowInterceptTouchEvent(true); }
+            public void onStopTrackingTouch(android.widget.SeekBar sb) { }
+        };
+        injX = new android.widget.SeekBar(this); injX.setMax(G7InputMap.GUEST_W - 1); injX.setProgress(G7InputMap.RESTART_X); injX.setOnSeekBarChangeListener(sl); root.addView(injX);
+        injY = new android.widget.SeekBar(this); injY.setMax(G7InputMap.GUEST_H - 1); injY.setProgress(G7InputMap.RESTART_Y); injY.setOnSeekBarChangeListener(sl); root.addView(injY);
+        sl.onProgressChanged(injX, 0, false);
+        row = injRow(root);
+        Button cb = new Button(this); cb.setText("클릭 X,Y"); cb.setAllCaps(false); cb.setOnClickListener(v -> injAt(false)); row.addView(cb, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button db = new Button(this); db.setText("더블클릭 X,Y"); db.setAllCaps(false); db.setOnClickListener(v -> injAt(true)); row.addView(db, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        add(root, "프리셋은 이 화면 하나에만 맞습니다: macOS 15.6.1 'Choose Startup Disk' 창, PVG 표면 1920x1080(g7_frame_pvg_surface_last_t143s). Macintosh HD 아이콘 중심 960,397 / Restart 버튼 중심 1190,550. Restart는 HD를 선택하기 전에는 회색입니다. 다른 창·버전·해상도에서는 위치가 달라집니다.", 11);
+        row = injRow(root);
+        Button hd = new Button(this); hd.setText("Macintosh HD 클릭 (960,397)"); hd.setAllCaps(false); hd.setOnClickListener(v -> injSend("Macintosh HD", G7InputMap.click(G7InputMap.HD_X, G7InputMap.HD_Y), true)); row.addView(hd, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button rs = new Button(this); rs.setText("Restart 클릭 (1190,550)"); rs.setAllCaps(false); rs.setOnClickListener(v -> injSend("Restart", G7InputMap.click(G7InputMap.RESTART_X, G7InputMap.RESTART_Y), true)); row.addView(rs, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        injPreviewClick = new CheckBox(this); injPreviewClick.setText("위 미리보기 이미지를 탭하면 그 게스트 위치를 클릭(끄면 좌표만 표시)"); root.addView(injPreviewClick);
+        injCoord = new TextView(this); injCoord.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); injCoord.setText("미리보기 터치: 아직 없음"); root.addView(injCoord);
+        cbImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        cbImage.setOnTouchListener((v, e) -> {
+            v.getParent().requestDisallowInterceptTouchEvent(true);
+            int act = e.getActionMasked();
+            if (act != android.view.MotionEvent.ACTION_DOWN && act != android.view.MotionEvent.ACTION_UP && act != android.view.MotionEvent.ACTION_MOVE) return true;
+            android.graphics.drawable.Drawable d = cbImage.getDrawable();
+            G7CloneBoot.Run r = G7CloneBoot.current();
+            G7CloneBoot.Frame f = r == null ? null : r.frame();
+            int gw = f != null && f.srcW > 0 ? f.srcW : G7InputMap.GUEST_W, gh = f != null && f.srcH > 0 ? f.srcH : G7InputMap.GUEST_H;
+            int[] g = d == null ? null : G7InputMap.previewToGuest(e.getX(), e.getY(), v.getWidth(), v.getHeight(), d.getIntrinsicWidth(), d.getIntrinsicHeight(), gw, gh);
+            injCoord.setText(String.format(java.util.Locale.US, "미리보기 터치 (%.0f,%.0f) 뷰 %dx%d -> 게스트 %s (그림 %dx%d)", e.getX(), e.getY(), v.getWidth(), v.getHeight(), g == null ? "없음(여백)" : g[0] + "," + g[1], gw, gh));
+            if (act == android.view.MotionEvent.ACTION_UP && g != null && injPreviewClick.isChecked()) injSend("미리보기 탭", G7InputMap.click(g[0], g[1]), true);
+            return true;
+        });
+        injOut = new TextView(this); injOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10); injOut.setTypeface(android.graphics.Typeface.MONOSPACE); injOut.setTextIsSelectable(true); injOut.setText("입력 로그: 없음");
+        ScrollView sv = new ScrollView(this); sv.addView(injOut);
+        sv.setOnTouchListener((v, e) -> { v.getParent().requestDisallowInterceptTouchEvent(true); return false; });
+        root.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 240)));
+        injTick();
+    }
+
+    private void injTick() {
+        G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r != null && injOut != null) { String t = r.injectTail(); if (!t.isEmpty() && !t.equals(injShown)) { injShown = t; injOut.setText(t); } }
+        cbImage.postDelayed(this::injTick, 500);
+    }
+    private String injShown = "";
+
+    private void injAt(boolean dbl) {
+        int x = injX.getProgress(), y = injY.getProgress();
+        if (x < 0 || y < 0 || x >= G7InputMap.GUEST_W || y >= G7InputMap.GUEST_H) { status.setText("범위 밖입니다(0-1919, 0-1079)."); return; }
+        injSend(dbl ? "더블클릭 " + x + "," + y : "클릭 " + x + "," + y, dbl ? G7InputMap.dclick(x, y) : G7InputMap.click(x, y), true);
+    }
+
+    /** One button press: the app's own step goes into the trail first, then the runner's lines follow. sizeFirst: tell the runner the picture size the coordinates are in (1920x1080, the size the presets were measured at). */
+    private void injSend(String label, String cmd, boolean sizeFirst) {
+        G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r == null || r.finished()) { status.setText("실행 중인 복제본 부팅이 없습니다."); return; }
+        r.injectNote("app: button '" + label + "' pressed");
+        if (sizeFirst) { String w = r.sendInject(G7InputMap.display(G7InputMap.GUEST_W, G7InputMap.GUEST_H)); if (w != null) { status.setText("입력 보내기 실패: " + w); return; } }
+        String why = r.sendInject(cmd);
+        status.setText(why == null ? "러너에 보냈습니다: " + cmd + " (아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
     }
 
     private void add(LinearLayout root, String s, int sp) {

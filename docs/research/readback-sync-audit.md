@@ -131,3 +131,64 @@ NOT CHECKED:
 4. Swap mode: either complete the stamp only after the owed surfaces are paid, or at least pay owed surfaces before any exec with flag 1 on the same mapping instead of letting ms_pull (:473) discard them; and do not forward the display command when the swap copy is pending (or count that as a "stale frame" failure).
 5. If a failed ms_finish_down (descriptor unreadable, :513-516) must not lose the frame in immediate mode, set ms->owed = true so the next display/sync pays it.
 6. Optional hardening: prefer a HOST_CACHED coherent type for staging readback buffers in make_buf (readbacks from uncached WC memory are slow, not wrong), and fall back to non-coherent + vkInvalidateMappedMemoryRanges.
+
+## Addendum 2026-11-27
+Read-only follow-up on 345f14e (no edits, no runs). Tags: [V] read in the code, [I] inferred. Paths are under src/. The earlier sections are unchanged.
+
+### A1. Fence coverage: which fence guards which host read of staging
+Common facts:
+- Every submit creates a FRESH binary VkFence (`submit_fence`, protocol/arm64_resources.c:163-174: vkCreateFence + vkQueueSubmit on graphics_queue, no semaphores, no timeline) [V]. No fence is reused across frames and no fence is shared between an exec and a swap copy [V].
+- Fence handles are held in `x->fence` (exec) or `m->sw_fence` (swap copy) and are only destroyed after the wait succeeded (`exec_free` :1155-1159; `swap_done` :1301-1304) [V].
+
+Per host read of staging:
+
+| Host read (function, file:line) | Fence waited | Does that submission contain this frame's image->buffer copy? |
+|---|---|---|
+| `exec_finish` -> `ms_finish_down` (:1173-1182, :511-527) after `lagfx_a64_res_end` wait at :1222 | `x->fence` created at :1216 | Yes, if `ms_record_down` returned true at :1211/:1212 (it records into `x->cb`, the same cb that is submitted) [V]. If it returned false (host_valid false, :479) the fence covers no copy and the read depends on the stale `down_pending` (audit case B) [V] |
+| same, after a PENDING exec: `lagfx_a64_res_poll` (:1236-1255) -> `fence_wait` (:1197-1201) | the same `x->fence` held in `m->pending` | Yes, same cb [V]. `m->pending` is single-slot (res_begin refuses while pending, :801-802) so a later fence cannot be mistaken for it [V] |
+| `lagfx_a64_res_sync_to_guest` (:1261-1285) | `submit_wait` (:176-189) on a fresh fence over its own cb; on timeout the cb is nulled and `ok` is false so nothing is written (:1281) | Yes: copies are recorded at :1272 (`ms_record_down(m, cb, ...)`) in that cb [V] |
+| `lagfx_a64_res_display_swap` -> `swap_poll` -> `swap_done` (:1318-1350, :1303-1316, :1291-1301) | `sw_fence` created at :1341 | Yes: `ms_record_down` at :1337 in `sw_cb`; the surfaces to pay are saved in `m->sw_sel` at submit [V] |
+| `lagfx_a64_res_readback` (:1488-1505) | `submit_wait` (:1500) | Yes, copy at :1498 in the same cb [V]. On timeout the staging buffer is leaked (comment at :1505), not read [V] |
+| capture snapshots (`lagfx_a64_res_snap_*`, :1089-1150, read through `exec_hook(x, true)` at :1189) | the exec's `x->fence` | Yes, copies are recorded in `x->cb` [V] |
+
+Swap-mode fence-timeout path [V]:
+- `display_swap` first polls an exec still in flight with the bounded wait (:1322). If still pending/sw_fence set, it only counts `swap_deferred` and returns (:1327) and nothing is read.
+- On a timed-out swap fence, `sw_fence` stays parked; the next `res_poll` takes the `m->sw_fence` branch (:1237-1239) -> `swap_poll` -> `swap_done`. Staging is read only inside `swap_done`, after `fence_wait == OK` (:1308-1309). While parked, `res_begin` returns NULL (:803) so nothing can overwrite staging [V].
+- So I found no case where a wait is on an earlier/unrelated fence, and no case of a read before its own fence signalled. Verdict: fence coverage is correct [V]. The test seam `lagfx_vk_test_inject_fence_result` (vulkan/command.c:437-444) can force a result but is not set in production [V].
+- One residual: after a swap copy the data is a snapshot of the image at DISPLAY time, not at exec end. That is a frame-identity question, see A4.
+
+NEW vs the audit: the table itself, and the explicit statement that no fence reuse/timeline/semaphore exists. The "fence is not a host barrier" point (section 3) applies to every row: no row adds a HOST barrier.
+
+### A2. Memory types: HOST_CACHED vs HOST_COHERENT
+- Allocation for ALL staging in this chain is `make_buf` (:129-146) via `mem_type(vk, rq.memoryTypeBits, HOST_VISIBLE|HOST_COHERENT)` (:135); the test is `(flags & want) == want` (:123-128) [V]. Callers: ms stage (:561), snapshot buffers (`snap_alloc` :1089-1098), readback (:1492), `lin_*` buffers [V for :561/:1089/:1492].
+- A type that is HOST_CACHED but NOT HOST_COHERENT can therefore never be selected: COHERENT is required in the mask [V]. HOST_CACHED may or may not be set on the type that is selected (first match in index order) [V]; that only affects speed.
+- State clearly: HOST_CACHED does NOT imply HOST_COHERENT (they are separate memory property bits; a cached-only type needs vkInvalidateMappedMemoryRanges before host reads of device writes and vkFlushMappedMemoryRanges after host writes). The code correctly never uses such a type, so the absence of vkInvalidateMappedMemoryRanges is consistent [V: grep finds no Invalidate/Flush in protocol/arm64_resources.c; the ones in vulkan/pipeline.c:119-293 and vulkan/cursor.c:135 are other paths].
+- Failure mode if no coherent type exists: `mt == UINT32_MAX` -> allocation skipped, `make_buf` returns false -> the mirror surface is not created (counted `mapped_unsupported`, :562-564) [V]. There is no non-coherent fallback.
+- Image memory is DEVICE_LOCAL with fallback to any type (`create_image`, :393-394), but images are never host-mapped [V].
+- Other staging allocator with the same policy but NOT in this chain: translate/blit_encoder.c:~76-83 (`blit_find_memory_type` VISIBLE|COHERENT) [V].
+- Coherent covers host-side visibility only; the device->host availability barrier is still missing (audit 1.3 / 3) [I, spec reading].
+NEW vs audit: explicit statement that CACHED != COHERENT, and the list of all allocation sites. The substance (coherent-only, no invalidate) was already in 1.5.
+
+### A3. Layout restoration and the next frame's loadOp
+- After the copy the image is in GENERAL: `target_end` (:1444-1455) transitions COLOR_ATTACHMENT_OPTIMAL (or RENDERING_LOCAL_READ 1000232000 when `have_local_read`) -> GENERAL, then `vkCmdCopyImageToBuffer(... GENERAL ...)` (translate/blit_encoder.c:445-447). The copy does not change the layout, so there is nothing to restore [V].
+- Next pass: `lagfx_a64_res_target_begin` (:1425-1442) barrier with oldLayout GENERAL -> new COLOR_ATTACHMENT_OPTIMAL (or 1000232000), srcStage TRANSFER|ALL_COMMANDS, srcAccess TRANSFER_WRITE|TRANSFER_READ|SHADER_WRITE|COLOR_ATTACHMENT_WRITE, dstStage COLOR_ATTACHMENT_OUTPUT, dstAccess COLOR_ATTACHMENT_READ|WRITE [V]. The rendering attachment's `imageLayout` is the same value (arm64_exec_run.c:809) [V]. There is no render pass object, so no initialLayout/finalLayout: dynamic rendering takes the layout from the attachment info [V].
+- oldLayout is GENERAL, never UNDEFINED (UNDEFINED is only used once at creation, :403-410, followed by a zero clear). A layout transition therefore cannot discard the previous frame [V].
+- loadOp per pass: `begin_pass` (arm64_exec_run.c:831-839) maps the guest's Metal action 2 -> CLEAR, 1 -> LOAD, 0 -> DONT_CARE; storeOp is always STORE [V]. Only the guest's DONT_CARE (or CLEAR) can drop the previous contents. The default attachment info is DONT_CARE (:809) but is overwritten for each used slot [V].
+- Not-previously-checked path (NEW): tile suspend/resume. `tile_suspend` (arm64_exec_run.c:1187-1193) ends the rendering and calls `target_end` (layout back to GENERAL); `tile_resume` (:1196-1219) calls `target_begin` and re-begins with loadOp = LOAD (:1203) so the contents survive; depth is LOAD too (:1208) [V]. On a failed resume the begun targets are ended again (:1216-1217) and the pass continues with `rendering=false`; the layout is consistent (GENERAL) [V].
+- Depth/stencil stays GENERAL (:1457-1484), loadOp from the guest, default LOAD (arm64_exec_run.c:868) [V].
+- Can a wrong transition or loadOp discard the previous frame? Transition: no [V]. loadOp: only if the guest asks for CLEAR/DONT_CARE; that matches Metal semantics but with a partially covered render area Vulkan leaves undefined contents for DONT_CARE (audit case I) [I]. Separate path that DOES drop the frame: `ms_pull` (:460-474) uploads guest pixels over the image when flag 1 is set and the surface is not host_valid, and clears `owed` (audit case E) [V].
+NEW vs audit: tile suspend/resume path and the explicit barrier flags of target_begin; the rest restates 1.6.
+
+### A4. Separate verdicts
+1. GPU completion: CORRECT for every host read (A1): each read is after `vkWaitForFences` success/`vkGetFenceStatus == SUCCESS` on the fence of the submission that contains the copy. Timeouts/pending/swap-deferred keep staging untouched and defer the stamp (exec) [V]. Residual risk only when the copy was never recorded (audit B, C).
+2. Host visibility: NOT PROVEN by the code; spec-level gap [I]. No HOST stage/HOST_READ barrier; the fence is not a host memory barrier (spec "Fences"); coherent memory (A2) covers visibility but not availability. Real impact depends on the driver.
+3. Correctness of the guest write: partially verified. The write uses the same layout as the read (`lagfx_guest_surface_xfer`, vulkan/surface_writeback.c:61-105), absent pages are skipped and counted, and a remap check (`id_*`, :515-519) drops the write [V]. But wbverify only proves write_memory/read_memory consistency (audit section 0 and H), so format/stride/alpha and the guest's real view are unverified [V for the limit of the check; I for the rest].
+4. Frame identity with the swap target:
+   - Immediate mode: the copy is taken at the end of THE exec that rendered, and the write precedes the stamp: identity holds per exec [V].
+   - Swap mode: the copy is taken when the display op arrives, from the image's state at that time: it holds the LAST completed exec's result for every owed surface, not necessarily the frame the display op names. `display_swap` pays all owed surfaces (:1335-1337) regardless of which mapping the swap names (`lagfx_a64_res_display_note` at :1353-1362 is diagnostic only) [V]. If another exec has been submitted but is pending, the swap is deferred and the shell shows the previous frame (case F) [V]. A flag-1 exec between render and swap replaces the frame (case E) [V]. So identity is NOT guaranteed in swap mode [V, by reading; not exercised].
+
+### A5. Status of this addendum
+- VERIFIED by reading: A1 table, A2 allocation policy and absence of invalidate, A3 layouts/barriers/loadOps, A4 ordering.
+- INFERRED: the host-visibility verdict (spec text I could not fetch verbatim, see section 3 of the audit), and the practical behaviour of drivers.
+- NOT CHECKED: runtime behaviour, validation layers, thread interleaving of display ops vs exec drain, which memory type a given device returns first.
+- Newly found vs the audit: A1 table with the "no fence reuse" finding; A2 site list + CACHED/COHERENT statement; A3 tile suspend/resume; A4 swap-mode frame-identity (display_swap pays all owed surfaces, independent of the swapped mapping). Everything else restates sections 1-4.

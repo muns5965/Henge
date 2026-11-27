@@ -309,8 +309,15 @@ static void frame_pvg_series(const char *kind, const uint8_t *px, uint32_t w, ui
     int r = frame_save_async(tag, label, px, w, h, w * 4u);
     if (r != 0) pvg_next++;
 }
+static HvFbpState fbp;
+static int fbp_png_first_pending, fbp_png_10s_pending, fbp_caps_said, fbp_final_done;
+static const uint8_t *fbp_last_px; static uint32_t fbp_last_w, fbp_last_h, fbp_last_row;   /* the last valid boot framebuffer (a pointer into guest RAM, never freed) */
 /* The newest PVG surface the pump read, saved as "..._last_..." (the runner calls it after it closed the display, before it stops the machine). Nothing if no PVG surface was ever read or no folder is set. */
 void hv_vm_save_last_frame(void) {
+    if (!fbp_final_done && fbp_last_px) {   /* g7-boot-fb kind=final: the state at VM stop (read-only) */
+        char line[1024]; fbp_final_done = 1;
+        if (hv_fbp_final(&fbp, frame_mono(), fbp_last_px, fbp_last_w, fbp_last_h, fbp_last_row, line, sizeof line)) fprintf(stderr, "%s\n", line);
+    }
     if (!pvg_t0 || !pvg_live_buf || !pvg_last_w || !pvg_last_h) return;
     char tag[96], label[96]; double t = frame_mono() - pvg_t0;
     snprintf(tag, sizeof tag, "pvg_surface_last_t%us", (unsigned)t);
@@ -322,8 +329,6 @@ void hv_vm_save_last_frame(void) {
 /* DIAGNOSTIC (log lines "g7-boot-fb:" + at most two PNGs, no effect on what the guest or the display sees): where the boot framebuffer lives and whether anything is drawn into it.
    Line formats and caps: host/g7_fbprobe.h. It has its OWN relaxed scan of guest RAM (header + virtBase/physBase/memSize only, no Video checks) so that boot_args whose Video fields are zero or odd are still
    reported (the display path's boot_args_display() would skip them silently). Only reads guest RAM, from the display pump thread, at most once per 2 s (the scan: the first GiB at 16 KiB steps, as the display scan). */
-static HvFbpState fbp;
-static int fbp_png_first_pending, fbp_png_10s_pending;
 static void g7_fbp_say(const char *line) { fprintf(stderr, "%s\n", line); }
 static void g7_fbp_src(unsigned id, const char *word, uint32_t w, uint32_t h) {
     char line[160];
@@ -358,8 +363,15 @@ static void g7_boot_fb_tick(void) {
     uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
     if (strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") != 0 || row > 0xffffffffu) return;
     const uint8_t *px = ram + (base - VMAPPLE_MEM);
-    char line[256]; int chg = 0, t10 = 0;
+    char line[1024]; int chg = 0, t10 = 0;
+    fbp_last_px = px; fbp_last_w = (uint32_t)w; fbp_last_h = (uint32_t)hh; fbp_last_row = (uint32_t)row;
     if (hv_fbp_tick(&fbp, now, px, (uint32_t)w, (uint32_t)hh, (uint32_t)row, line, sizeof line, &chg, &t10)) {
+        if (!fbp_caps_said) {   /* the PNG bounds are stated in the first line */
+            fbp_caps_said = 1;
+            const char *dir = getenv("LAGFX_ARM64_DUMP_DIR");
+            size_t n = strlen(line);
+            snprintf(line + n, sizeof line - n, " png: dump_dir=%s boot_fb_pngs=2(first change, ~10s) caps: max_files=%u(all frame kinds) max_bytes=%uMiB max_px=%u", dir && *dir ? "set" : "NOT set (no PNG)", FRAME_MAX_FILES, FRAME_MAX_BYTES >> 20, FRAME_MAX_PX);
+        }
         g7_fbp_say(line);
         if (chg) fbp_png_first_pending = 1;
         if (t10) fbp_png_10s_pending = 1;

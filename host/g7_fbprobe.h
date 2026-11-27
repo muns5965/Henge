@@ -5,73 +5,110 @@
      g7-boot-fb: boot_args at ram+<off> rev=<u> ver=<u> virtBase=<hex> physBase=<hex> memSize=<hex> topOfKernelData=<hex> v_baseAddr=<hex> v_display=<hex> v_rowBytes=<n> v_width=<n> v_height=<n> v_depth=<hex> valid=<0|1> why=<word> ram_base=<hex> ram_size=<hex>
          once per boot_args found (valid=0 when the Video values would not be used as a framebuffer; why= says which check failed). Raw 8-byte slots 4..10 of boot_args; the field order is the one host/vm.c already assumes (INFER: XNU arm64 boot_args).
      g7-boot-fb: scan none t=<s>s    (at most 5 times, ~2 s apart: no boot_args-shaped page found yet in the first 1 GiB of guest RAM)
-     g7-boot-fb: t=<s>s fb=<W>x<H> stride=<n> nonempty=<ppm>ppm(<k>/<n> samples) hash=<hex16> changed=<0|1|first> nchanges=<n>
-         every ~2 s, at most 30 lines. nonempty = share of SAMPLED pixels whose colour bytes (alpha ignored) are not zero, in parts per million. The hash is FNV-1a over the same sample set, so a change
-         confined to unsampled pixels is NOT seen (INFER: a logo or a progress bar is large enough to hit the grid). t = seconds since the first probe call (the display pump starting, INFER: close to VM start).
+     g7-boot-fb: kind=first|periodic|change|slow|final t=<s>s fb=<W>x<H> rowBytes=<n> width*4=<n> rgb_nonzero=<ppm>ppm alpha_nonmax=<ppm>ppm luma8=<8 counts> bbox_rgb=<x0,y0,x1,y1|none> samples=<n> hash=<hex16> changed=<0|1|first> nchanges=<n> (...)
+         Observed every ~2 s for the whole boot (never stops). Lines: first = immediately, periodic <= 30, then change <= 60 (hash differs) and slow <= 30 (every 60 s), plus one final at VM stop. All numbers come from a SAMPLED grid (<= 256x256),
+         so a change confined to unsampled pixels is NOT seen. rgb_nonzero = any of bytes 0..2 != 0; alpha_nonmax = byte 3 != 255 (INFER: BGRA or RGBA, not told apart). t = seconds since the first probe call (INFER: close to VM start).
      g7-boot-fb: src t=<s>s <word> [<W>x<H>]   the first time each display source is seen (pvg_frame, pvg_surface_read, pvg_surface_nonblack, pvg_surface_black, pvg_surface_none, boot_args_used), at most 8 lines.
    Nothing here allocates, locks or sleeps. */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
-#define HV_FBP_MAX_LINES 30
+#define HV_FBP_MAX_LINES 30          /* periodic lines (kind=first/periodic); observation itself never stops */
+#define HV_FBP_MAX_CHANGE_LINES 60   /* extra lines after the periodic cap, one per hash change */
+#define HV_FBP_MAX_SLOW_LINES 30     /* extra lines after the periodic cap, one per 60 s */
+#define HV_FBP_SLOW_PERIOD_S 60.0
 #define HV_FBP_MAX_SCAN_LINES 5
 #define HV_FBP_MAX_SRC_LINES 8
 #define HV_FBP_PERIOD_S 2.0
 #define HV_FBP_SAMPLE_GRID 256   /* about 256 x 256 = 65536 sampled pixels at most */
 
 typedef struct {
-    uint64_t samples, nonempty, hash;
+    uint64_t samples, rgb_nonzero, alpha_nonmax, hash;
+    uint64_t luma[8];                 /* (R+G+B)/3 >> 5 per sampled pixel; symmetric in R/B so BGRA and RGBA give the same histogram */
+    int bbox_valid; uint32_t x0, y0, x1, y1;   /* bounding box of sampled pixels with RGB != 0 (pixel coordinates of the sample points) */
 } HvFbpSummary;
 
-/* Samples a grid of at most HV_FBP_SAMPLE_GRID x HV_FBP_SAMPLE_GRID pixels (BGRA, stride in bytes). Returns 0, or -1 for an unusable region. */
+/* Samples a grid of at most HV_FBP_SAMPLE_GRID x HV_FBP_SAMPLE_GRID pixels (4 bytes each, stride in bytes). INFER: byte 3 is alpha, bytes 0..2 are colour (BGRA or RGBA; not told apart). Returns 0, or -1 for an unusable region. */
 static inline int hv_fbp_summarize(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride, HvFbpSummary *o) {
     if (!o) return -1;
-    o->samples = o->nonempty = 0; o->hash = 1469598103934665603ull;
+    memset(o, 0, sizeof *o); o->hash = 1469598103934665603ull;
     if (!px || !w || !h || stride < (uint64_t)w * 4) return -1;
     uint32_t sx = (w + HV_FBP_SAMPLE_GRID - 1) / HV_FBP_SAMPLE_GRID, sy = (h + HV_FBP_SAMPLE_GRID - 1) / HV_FBP_SAMPLE_GRID;
     for (uint32_t y = 0; y < h; y += sy) {
         const uint8_t *row = px + (size_t)y * stride;
         for (uint32_t x = 0; x < w; x += sx) {
-            uint32_t v = (uint32_t)row[(size_t)x * 4] | (uint32_t)row[(size_t)x * 4 + 1] << 8 | (uint32_t)row[(size_t)x * 4 + 2] << 16 | (uint32_t)row[(size_t)x * 4 + 3] << 24;
+            const uint8_t *q = row + (size_t)x * 4;
+            uint32_t v = (uint32_t)q[0] | (uint32_t)q[1] << 8 | (uint32_t)q[2] << 16 | (uint32_t)q[3] << 24;
             o->samples++;
-            if (v & 0x00ffffffu) o->nonempty++;
+            if (v & 0x00ffffffu) {
+                o->rgb_nonzero++;
+                if (!o->bbox_valid) { o->bbox_valid = 1; o->x0 = o->x1 = x; o->y0 = o->y1 = y; }
+                else { if (x < o->x0) o->x0 = x; if (x > o->x1) o->x1 = x; if (y < o->y0) o->y0 = y; if (y > o->y1) o->y1 = y; }
+            }
+            if (q[3] != 0xff) o->alpha_nonmax++;
+            o->luma[((uint32_t)q[0] + q[1] + q[2]) / 3u >> 5]++;
             o->hash = (o->hash ^ v) * 1099511628211ull;
         }
     }
     return 0;
 }
 
-static inline uint64_t hv_fbp_ppm(const HvFbpSummary *s) { return s->samples ? s->nonempty * 1000000ull / s->samples : 0; }
+static inline uint64_t hv_fbp_ppm_of(uint64_t k, uint64_t n) { return n ? k * 1000000ull / n : 0; }
 
 typedef struct {
-    int have_prev, lines, scan_lines, src_lines, nchanges;
+    int have_prev, lines, scan_lines, src_lines, nchanges, change_lines, slow_lines;
     uint64_t prev_hash;
-    double t0, last_tick;     /* t0: first call; last_tick: last emitted probe line */
-    unsigned src_seen;        /* bit per source word */
+    double t0, last_tick, last_emit;   /* t0: first call; last_tick: last observation; last_emit: last emitted line */
+    unsigned src_seen;                 /* bit per source word */
+    int first_done;
 } HvFbpState;
 
-/* One probe step. now = monotonic seconds. Returns 0 nothing to log, else 1 and *line holds one text line (no newline); *changed_first = 1 the first time the hash differs from the previous one
-   (the caller may then save one PNG); *at_10s = 1 the first emitted line at or after t=10 s. Rate and count caps live here. */
+static inline int hv_fbp_format(HvFbpState *st, const char *kind, double now, const HvFbpSummary *s, uint32_t w, uint32_t h, uint32_t stride, const char *chg, char *line, size_t cap) {
+    char bb[64];
+    if (s->bbox_valid) snprintf(bb, sizeof bb, "%u,%u,%u,%u", s->x0, s->y0, s->x1, s->y1); else snprintf(bb, sizeof bb, "none");
+    return snprintf(line, cap, "g7-boot-fb: kind=%s t=%.1fs fb=%ux%u rowBytes=%u width*4=%u rgb_nonzero=%lluppm alpha_nonmax=%lluppm luma8=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu bbox_rgb=%s samples=%llu hash=%016llx changed=%s nchanges=%d "
+                    "(sampled grid <=256x256, not every pixel; INFER: 4 bytes/pixel, byte3=alpha, bytes0-2=colour, BGRA or RGBA unknown; luma=(b0+b1+b2)/3>>5)",
+                    kind, now - st->t0, (unsigned)w, (unsigned)h, (unsigned)stride, (unsigned)w * 4u, (unsigned long long)hv_fbp_ppm_of(s->rgb_nonzero, s->samples), (unsigned long long)hv_fbp_ppm_of(s->alpha_nonmax, s->samples),
+                    (unsigned long long)s->luma[0], (unsigned long long)s->luma[1], (unsigned long long)s->luma[2], (unsigned long long)s->luma[3], (unsigned long long)s->luma[4], (unsigned long long)s->luma[5], (unsigned long long)s->luma[6], (unsigned long long)s->luma[7],
+                    bb, (unsigned long long)s->samples, (unsigned long long)s->hash, chg, st->nchanges);
+}
+
+/* One observation step (call as often as you like; it observes every HV_FBP_PERIOD_S). now = monotonic seconds. Returns 1 when *line holds a line to log (no newline), else 0.
+   Lines: kind=first (the first valid framebuffer, immediately), kind=periodic (until HV_FBP_MAX_LINES), then kind=change (hash differs from the previous observation, up to HV_FBP_MAX_CHANGE_LINES)
+   and kind=slow (every 60 s, up to HV_FBP_MAX_SLOW_LINES). The caps limit LINES only: the hash and the change count keep being updated every observation.
+   *changed_first = 1 the first time the hash differs (caller may save one PNG); *at_10s = 1 at the first observation at or after t=10 s. *is_first = 1 on the very first line. */
 static inline int hv_fbp_tick(HvFbpState *st, double now, const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride, char *line, size_t cap, int *changed_first, int *at_10s) {
     if (changed_first) *changed_first = 0;
     if (at_10s) *at_10s = 0;
     if (st->t0 == 0) st->t0 = now;
-    if (st->lines >= HV_FBP_MAX_LINES) return 0;
     if (st->last_tick != 0 && now - st->last_tick < HV_FBP_PERIOD_S) return 0;
     HvFbpSummary s;
     if (hv_fbp_summarize(px, w, h, stride, &s) != 0) return 0;
-    const char *chg = "first";
+    int changed = 0; const char *chg = "first";
     if (st->have_prev) {
-        int c = st->prev_hash != s.hash;
-        chg = c ? "1" : "0";
-        if (c) { if (st->nchanges == 0 && changed_first) *changed_first = 1; st->nchanges++; }
+        changed = st->prev_hash != s.hash; chg = changed ? "1" : "0";
+        if (changed) { if (st->nchanges == 0 && changed_first) *changed_first = 1; st->nchanges++; }
     }
     if (at_10s && now - st->t0 >= 10.0 && !(st->last_tick != 0 && st->last_tick - st->t0 >= 10.0)) *at_10s = 1;
-    st->have_prev = 1; st->prev_hash = s.hash; st->last_tick = now; st->lines++;
-    snprintf(line, cap, "g7-boot-fb: t=%.1fs fb=%ux%u stride=%u nonempty=%lluppm(%llu/%llu samples) hash=%016llx changed=%s nchanges=%d",
-             now - st->t0, (unsigned)w, (unsigned)h, (unsigned)stride, (unsigned long long)hv_fbp_ppm(&s), (unsigned long long)s.nonempty, (unsigned long long)s.samples,
-             (unsigned long long)s.hash, chg, st->nchanges);
+    st->have_prev = 1; st->prev_hash = s.hash; st->last_tick = now;
+    const char *kind = NULL;
+    if (!st->first_done) { kind = "first"; st->first_done = 1; st->lines++; }
+    else if (st->lines < HV_FBP_MAX_LINES) { kind = "periodic"; st->lines++; }
+    else if (changed && st->change_lines < HV_FBP_MAX_CHANGE_LINES) { kind = "change"; st->change_lines++; }
+    else if (now - st->last_emit >= HV_FBP_SLOW_PERIOD_S && st->slow_lines < HV_FBP_MAX_SLOW_LINES) { kind = "slow"; st->slow_lines++; }
+    if (!kind) return 0;
+    st->last_emit = now;
+    hv_fbp_format(st, kind, now, &s, w, h, stride, chg, line, cap);
+    return 1;
+}
+
+/* The final-state line (VM stop). Always formatted (once is the caller's business); returns 0 when the region is unusable. Does not change the change statistics. */
+static inline int hv_fbp_final(HvFbpState *st, double now, const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride, char *line, size_t cap) {
+    HvFbpSummary s;
+    if (st->t0 == 0 || hv_fbp_summarize(px, w, h, stride, &s) != 0) return 0;
+    hv_fbp_format(st, "final", now, &s, w, h, stride, st->have_prev ? (st->prev_hash != s.hash ? "1" : "0") : "first", line, cap);
     return 1;
 }
 

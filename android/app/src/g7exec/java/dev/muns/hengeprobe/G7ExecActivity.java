@@ -520,7 +520,7 @@ public class G7ExecActivity extends Activity {
         final Runnable jpkShow = () -> { int v = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[Math.max(0, Math.min(jpk.length - 1, jpkSp.getSelectedItemPosition()))]; jpkNote.setText(!jex.isChecked() ? "정확 통계 꺼짐: 아래 한도는 쓰이지 않음" : v == 100 ? "100 MiB 한도: 표가 48 MiB(최대 72 MiB, 약 147만 키)에서 멈춰 부팅의 고유 블록 약 200만 개를 모두 기록할 수 없음. 넘친 만큼은 exact_overflow로 세고 exact_* 수치는 부분 결과" : "표 최대 96 MiB, 확장 중 최대 144 MiB(48+96). 고유 블록 약 200만 개를 모두 기록할 수 있음"); };
         jpkSp.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() { @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int i, long id) { jpkShow.run(); } @Override public void onNothingSelected(android.widget.AdapterView<?> p) { } });
         jex.setOnCheckedChangeListener((b, c) -> jpkShow.run()); jpkShow.run();
-        final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초)"); fb0c.setChecked(true);   // default ON (cost measured tiny); not remembered
+        final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초; 기본 꺼짐, F0 전용 실행에서만 켜고 J0/J1 시간 비교에서는 끔)"); fb0c.setChecked(false);   // default OFF, not remembered
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
         final CheckBox cdc = shortBox("Render Replay 캡처 (LAGFX_ARM64_DUMP_DATA=1)"); cdc.setChecked(cdcWas);

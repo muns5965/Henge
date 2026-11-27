@@ -110,10 +110,10 @@ public final class G7CloneBoot {
     static volatile boolean captureData = false;   // LAGFX_ARM64_DUMP_DATA=1 (Render Replay capture: buffers/textures/attachments of up to 256 draws, 128 MiB total; needs the dump + GPU execution)
     /** Per-draw diagnostics of the library (G7_DRAW_DIAG; not an HV_ name, so the runner's scrub leaves it alone). Default ON: the library's own default is on, the dialog always sends an explicit 1 or 0. Independent of captureData (Render Replay). */
     static volatile boolean drawDiag = true;
-    /** Early framebuffer observation (G7_FB0=1; host/g7_fb0.h: "g7-fb0:" lines, 250 ms x 60 s, at most 3 dumps). Default ON: measured at under 1 ms per scan on a PC (the runner logs the real cost, total_ms/max_ms, in its end line); the dialog checkbox turns it off (G7_FB0=0). */
-    static volatile boolean fb0 = true;
+    /** Early framebuffer observation (G7_FB0=1; host/g7_fb0.h: "g7-fb0:" lines, 250 ms x 60 s, at most 3 dumps). integ7b: default OFF (G7_FB0 is not set at all); the dialog checkbox, never remembered, turns it on for the dedicated F0 run. The runner logs the real cost (total_ms/max_ms) in its end line. */
+    static volatile boolean fb0 = false;
     /** VBL experiment switch (research/g7-hjit2; env LAGFX_VBL_EXP read by devices/pvg_lite.c; only meaningful together with the display-events checkbox). "0" = off = the behaviour of every earlier build, and then the variable is NOT set at all. */
-    public static final String[] VBL_EXP_CHOICES = {"0", "tick_none", "bit3_once", "swap_no_or2"};
+    public static final String[] VBL_EXP_CHOICES = {"0", "tick_none", "bit3_once", "swap_no_or2", "bit3_on_enable"};
     static boolean validVblExp(String v) { for (String c : VBL_EXP_CHOICES) if (c.equals(v)) return true; return false; }
     static volatile String vblExp = "0";
     static volatile boolean displayEvents = false;   // HV_PVG_DISPLAY_EVENTS: VBL + display cause bit (experiment)
@@ -142,7 +142,7 @@ public final class G7CloneBoot {
         }
         if (drawDiag) { env.put("LAGFX_PIPELINE_MATRIX", "1"); note.append("pipeline_matrix=ON (LAGFX_PIPELINE_MATRIX=1, with draw diag; runs on pipeline creation failure only); "); } env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
-        env.put("G7_FB0", fb0 ? "1" : "0"); note.append("fb0=" + (fb0 ? "ON" : "OFF") + " (G7_FB0=" + (fb0 ? "1" : "0") + ", early framebuffer observation, g7-fb0: lines); ");
+        if (fb0) env.put("G7_FB0", "1"); note.append("fb0=" + (fb0 ? "ON (G7_FB0=1" : "OFF (G7_FB0 unset") + ", early framebuffer observation, g7-fb0: lines; default OFF: enable only in the dedicated F0 run, keep OFF in J0/J1 timing comparisons); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");

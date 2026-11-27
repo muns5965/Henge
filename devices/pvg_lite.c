@@ -73,7 +73,7 @@ struct HvPvgLite {
     HvPvgCursorListener cursor_fn; void *cursor_ctx;
     uint64_t display_pa;
     uint64_t ev_bit[4];   /* [g7-vbl, research/g7-hjit2] bits delivered into the page's +0x100 by this device: bit0/bit3 by the tick, bit1 by a swap, bit2 by the mode-change flag (counters only) */
-    uint64_t ev_tick_suppressed, ev_swap_or2_skipped; int ev_bit3_sent;   /* LAGFX_VBL_EXP bookkeeping (all zero unless an experiment is selected) */
+    uint64_t ev_tick_suppressed, ev_swap_or2_skipped; int ev_bit3_sent; uint64_t ev_bit3_enable_swaps;   /* LAGFX_VBL_EXP bookkeeping (all zero unless an experiment is selected) */
     HvVblDiag vbl;   /* diagnostics only (pvg_vbldiag.h): bounded log lines and counters, no effect on delivery */
     uint64_t swaps;
     uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
@@ -144,7 +144,7 @@ static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t r
 static int display_events_on(void);
 static void display_cause(HvPvgLite *p, uint32_t bits);
 /* [g7-vbl, research/g7-hjit2] VBL experiment switches, env LAGFX_VBL_EXP (default unset/"0" = the behaviour before this change, byte for byte). See hv_pvg_lite_set_vbl_exp. */
-enum { VBL_EXP_NONE = 0, VBL_EXP_TICK_NONE, VBL_EXP_BIT3_ONCE, VBL_EXP_SWAP_NO_OR2, VBL_EXP_N };
+enum { VBL_EXP_NONE = 0, VBL_EXP_TICK_NONE, VBL_EXP_BIT3_ONCE, VBL_EXP_SWAP_NO_OR2, VBL_EXP_BIT3_ON_ENABLE, VBL_EXP_N };   /* integ7b: bit3_on_enable appended (the earlier values keep their numbers) */
 static int vbl_exp(void);
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
 
@@ -1321,8 +1321,9 @@ static void vbl_diag_summary(HvPvgLite *p, uint64_t now) {
 
 /* LAGFX_VBL_EXP (read once; an explicit hv_pvg_lite_set_vbl_exp() wins, for tests). Unset, "" or "0" = 0 = unchanged. Names: tick_none (V3': the 60 Hz tick sends nothing: no +0x100 bit, no cause bit, no interrupt; everything
    else unchanged), bit3_once (V3'': the tick sends nothing except bit 3 exactly once, at the first tick after the first swap, only if the guest armed bit 3), swap_no_or2 (V4: a swap does not OR 0x2 into +0x100; the
-   cause bit and everything else unchanged). "send 0x8 only" is deliberately NOT a mode: with the guest's enable mask 0xC the current tick (en & 9) is 0x8 already. An unrecognized value changes nothing and is said in the init line. */
-static const char *const vbl_exp_names[VBL_EXP_N] = {"0", "tick_none", "bit3_once", "swap_no_or2"};
+   cause bit and everything else unchanged), bit3_on_enable (integ7b, a SEPARATE experiment from bit3_once: the tick sends nothing except bit 3 exactly once, at the first display tick at which the guest's enable word has bit 3 set,
+   independent of any swap: the tick that follows the enable write, at most one 16.7 ms tick period after the poll sees it, not inside the MMIO write itself; bit3_once keeps its meaning: first tick after the first swap). "send 0x8 only" is deliberately NOT a mode: with the guest's enable mask 0xC the current tick (en & 9) is 0x8 already. An unrecognized value changes nothing and is said in the init line. */
+static const char *const vbl_exp_names[VBL_EXP_N] = {"0", "tick_none", "bit3_once", "swap_no_or2", "bit3_on_enable"};
 int hv_pvg_lite_vbl_exp_parse(const char *s) {
     if (!s || !*s) return VBL_EXP_NONE;
     for (int i = 0; i < VBL_EXP_N; i++) if (!strcmp(s, vbl_exp_names[i])) return i;
@@ -1341,9 +1342,9 @@ static void vbl_exp_line(const HvPvgLite *p, const char *what) {
     int r = g_vbl_exp >= 0 ? g_vbl_exp : hv_pvg_lite_vbl_exp_parse(e);
     char nm[80];
     if (r < 0) snprintf(nm, sizeof nm, "0 (UNRECOGNIZED value '%.40s', treated as 0)", e ? e : ""); else snprintf(nm, sizeof nm, "%s", vbl_exp_names[r]);
-    fprintf(stderr, "g7-vbl: %s exp=%s display_events=%s delivered_bit0=%llu bit1=%llu bit2=%llu bit3=%llu tick_suppressed=%llu swap_or2_skipped=%llu swaps=%llu (bits ORed into page+0x100 by this device; bit2 = the mode-change flag; LAGFX_VBL_EXP unset/0 = unchanged behaviour)\n",
+    fprintf(stderr, "g7-vbl: %s exp=%s display_events=%s delivered_bit0=%llu bit1=%llu bit2=%llu bit3=%llu tick_suppressed=%llu swap_or2_skipped=%llu swaps=%llu bit3_sent=%d bit3_sent_at_swaps=%llu (bits ORed into page+0x100 by this device; bit2 = the mode-change flag; LAGFX_VBL_EXP unset/0 = unchanged behaviour)\n",
             what, nm, display_events_on() ? "on" : "off",
-            (unsigned long long)p->ev_bit[0], (unsigned long long)p->ev_bit[1], (unsigned long long)p->ev_bit[2], (unsigned long long)p->ev_bit[3], (unsigned long long)p->ev_tick_suppressed, (unsigned long long)p->ev_swap_or2_skipped, (unsigned long long)p->swaps);
+            (unsigned long long)p->ev_bit[0], (unsigned long long)p->ev_bit[1], (unsigned long long)p->ev_bit[2], (unsigned long long)p->ev_bit[3], (unsigned long long)p->ev_tick_suppressed, (unsigned long long)p->ev_swap_or2_skipped, (unsigned long long)p->swaps, p->ev_bit3_sent, (unsigned long long)p->ev_bit3_enable_swaps);
 }
 static void vbl_exp_report(HvPvgLite *p, uint64_t now) {   /* every ~5 s, at most 40 lines, only while an experiment is selected */
     static uint64_t last; static int n;
@@ -1390,6 +1391,10 @@ static void display_events_tick(HvPvgLite *p) {
     {   /* g7-vbl experiments: the tick's pacing above is untouched; only what it SENDS changes (nothing for tick_none; bit 3 once for bit3_once) */
         int ex = vbl_exp();
         if (ex == VBL_EXP_TICK_NONE) { p->ev_tick_suppressed++; return; }
+        if (ex == VBL_EXP_BIT3_ON_ENABLE) {
+            if (!p->ev_bit3_sent && (en & 8u)) { tick_bits = 8u; p->ev_bit3_sent = 1; p->ev_bit3_enable_swaps = p->swaps; }
+            else { p->ev_tick_suppressed++; return; }
+        }
         if (ex == VBL_EXP_BIT3_ONCE) {
             if (!p->ev_bit3_sent && p->swaps >= 1 && (en & 8u)) { tick_bits = 8u; p->ev_bit3_sent = 1; }
             else { p->ev_tick_suppressed++; return; }

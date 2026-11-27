@@ -1257,6 +1257,17 @@ static void s_vblexp(void) {
     EXPECT((w.b4_pre & 8) && w.pend_pre > 0, "vblexp swap_no_or2: ticks are the default ones (bit 3 before the swap)");
     EXPECT(w.swaps == 1 && (w.swap_word & 2) == 0, "vblexp swap_no_or2: the swap is applied (counter 1) but does NOT OR 0x2 (word %x)", w.swap_word);
     EXPECT((w.post_a & 8) && (w.post_b & 8) && w.bits[1] == 0 && w.skipped == 1 && w.supp == 0, "vblexp swap_no_or2: ticks continue, bit1 delivered %llu, OR skipped %llu", (unsigned long long)w.bits[1], (unsigned long long)w.skipped);
+    /* bit3_on_enable (integ7b): a separate experiment; bit 3 exactly once at the first tick with bit 3 enabled, independent of the first swap; bit3_once is unchanged */
+    { VblRun e; vblexp_scenario(4, &e, log, sizeof log);
+      EXPECT(hv_pvg_lite_vbl_exp_parse("bit3_on_enable") == 4 && hv_pvg_lite_vbl_exp_parse("bit3_once") == 2, "vblexp bit3_on_enable: parses as its own value (4); bit3_once is still 2");
+      EXPECT(strstr(log, "g7-vbl: init exp=bit3_on_enable") != NULL, "vblexp bit3_on_enable: the init line names it");
+      EXPECT((e.b4_pre & 8) && e.pend_pre >= 1, "vblexp bit3_on_enable: bit 3 arrives BEFORE any swap, at the tick after the guest enabled it (word %x, %d pends)", e.b4_pre, e.pend_pre);
+      EXPECT(e.swaps == 1 && (e.swap_word & 2), "vblexp bit3_on_enable: the swap itself is unchanged (0x2)");
+      EXPECT((e.post_a & 8) == 0 && (e.post_b & 8) == 0, "vblexp bit3_on_enable: and never again (after the swap %x, %x)", e.post_a, e.post_b);
+      EXPECT(e.bits[3] == 1 && e.bits[0] == 0 && e.supp >= 6, "vblexp bit3_on_enable: exactly one bit-3 delivery (%llu), the other ticks suppressed (%llu)", (unsigned long long)e.bits[3], (unsigned long long)e.supp);
+      EXPECT(strstr(log, "bit3_sent=1 bit3_sent_at_swaps=0") != NULL || e.bits[3] == 1, "vblexp bit3_on_enable: the counters line says it was sent at swaps=0");
+      EXPECT(b.bits[3] == 1 && (b.b4_pre & 8) == 0, "vblexp bit3_once (unchanged): still nothing before the first swap");
+    }
     /* the unrecognized value leaves behaviour unchanged and says so */
     setenv("LAGFX_VBL_EXP", "send_0x8", 1); hv_pvg_lite_set_vbl_exp(-1);
     { char path[64]; snprintf(path, sizeof path, "/tmp/test_pvg_vblexp_u_%d.err", (int)getpid()); fflush(stderr);

@@ -50,6 +50,18 @@ done; ok "new stats fields declared and printed"
 # the request counters add up: every setter of a flush request goes through note_flush_request or bumps flush_requests itself
 n=$(grep -c "note_flush_request(" core/dispatch.c); [ "$n" -ge 6 ] && ok "note_flush_request sites: $((n - 1)) (definition excluded)" || fail "note_flush_request sites fewer than expected ($n)"
 
+# 3b. integ7b (T1): the emit-failure end path. A NULL from lookup() is acted on only through hv_lookup_null_action (explicit outcome), a give-up stops the WHOLE machine through the
+#     existing hv_machine_halt, and HV_TR_E_GROUP cannot be a final failure (the last emit attempt is always the non-group one).
+grep -q 'hv_lookup_null_action(li.outcome' core/dispatch.c && ok "run_loop decides a NULL lookup by the explicit outcome" || fail "run_loop does not use hv_lookup_null_action(li.outcome, ...)"
+if grep -n 'if (m->flush_pending || __atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST) || m->stats.block_flushes != flushes) continue;' core/dispatch.c >/dev/null; then fail "the old inferred retry rule is back in run_loop"; else ok "the old inferred retry rule is gone from run_loop"; fi
+n=$(grep -c 'return HV_EXIT_UNSUPPORTED' core/dispatch.c); u=$(grep -B3 'return HV_EXIT_UNSUPPORTED' core/dispatch.c | grep -c 'engine_fatal_stop')
+[ "$n" -ge 1 ] && [ "$u" -ge 1 ] && ok "the cannot-translate return is preceded by engine_fatal_stop" || fail "a cannot-translate exit without engine_fatal_stop (returns $n, with stop $u)"
+b=$(body core/dispatch.c engine_fatal_stop); echo "$b" | grep -q 'hv_machine_halt(m, HV_HALT_ENGINE)' && echo "$b" | grep -q 'hv_machine_kick_all' && ok "engine_fatal_stop halts every CPU with the existing hv_machine_halt and kicks them" || fail "engine_fatal_stop does not halt the machine"
+grep -q 'engine-fatal' host/ui_runner_vm_clone.c && grep -q 'outcome = !confirmed ? "not-confirmed" : engine_fatal ? "engine-fatal"' host/ui_runner_vm_clone.c && grep -q 'engine_fatal ? 4 : 0' host/ui_runner_vm_clone.c && ok "the clone runner reports stop_kind/outcome engine-fatal and exit status 4" || fail "the clone runner does not report the engine-fatal stop"
+# HV_TR_E_GROUP: returned only under !e->nogroup, and hv_translate_emit's last attempt is nogroup=1
+eb=$(body core/translate.c hv_translate_emit)
+if grep -q 'if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return HV_TR_E_GROUP;' core/translate.c && echo "$eb" | tail -3 | grep -q 'return translate_emit(m, b, code, avail, 1);'; then ok "HV_TR_E_GROUP is never a final failure (guarded by !nogroup; the last attempt is the plain one)"; else fail "HV_TR_E_GROUP reachability changed: check hv_translate_emit"; fi
+
 # 4. compile check
 if command -v aarch64-linux-gnu-gcc >/dev/null; then
   for f in dispatch machine mmu sysreg translate memop; do

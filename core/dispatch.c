@@ -150,8 +150,10 @@ static __thread HvEmitFailState emit_fail_state;
 int hv_emit_fail_max_flushes = HV_EMIT_FAIL_MAX_FLUSHES;
 #define emit_fail_max_flushes hv_emit_fail_max_flushes
 
-static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail) {
+/* li (integ7b): why a NULL came back, as an explicit outcome (core/emitfail.h). A returned block leaves li->outcome HV_LK_OK. */
+static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail, HvLookupInfo *li) {
     HvMachine *m = cpu->m;
+    li->outcome = HV_LK_OK, li->rc = 0, li->gen = 0, li->flushes = 0;
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
     __typeof__(cpu->pc_state->jc[0]) *jc = cpu->pc_state->jc;
     HvBlock *c = jc[j].va == va ? jc[j].b : NULL;
@@ -168,6 +170,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
 
     if (m->flush_pending) {
         note_flush_request(m, &m->stats.flush_pending_at_lookup);
+        li->outcome = HV_LK_WAIT_FLUSH; /* another CPU's request: wait for its flush */
         goto flush_unlocked;
     }
     /* Writes to this page must take the slow path from now on so we notice them:
@@ -193,11 +196,13 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
             __atomic_add_fetch(&m->stats.emit_fail_retry_exhausted, 1, __ATOMIC_RELAXED);
             if (!emit_fail_state.logged) {
                 emit_fail_state.logged = 1;
-                fprintf(stderr, "hengevm: cpu %u: cannot translate block va %llx pa %llx flags %x gen %u: %s (%d); still failing after %u flush(es), giving up on this CPU\n",
+                fprintf(stderr, "hengevm: cpu %u: cannot translate block va %llx pa %llx flags %x gen %u: %s (%d); still failing after %u flush(es), giving up (the dispatcher then stops the whole VM: ENGINE FATAL)\n",
                         cpu->index, (unsigned long long)va, (unsigned long long)pa, flags, gen, hv_translate_err_name(emit_rc), emit_rc, emit_fail_state.flushes);
             }
-            return NULL; /* nothing pending: run_loop reports the block and parks the CPU */
+            li->outcome = HV_LK_FATAL_EMIT, li->rc = emit_rc, li->gen = gen, li->flushes = emit_fail_state.flushes;
+            return NULL; /* no flush asked for: run_loop stops the whole machine (engine fatal), whatever other CPUs have pending */
         }
+        li->outcome = HV_LK_FLUSH_RETRY;
         __atomic_add_fetch(&m->stats.flush_emit_fail, 1, __ATOMIC_RELAXED);
         note_flush_request(m, NULL); /* flush_emit_fail is its own cause counter, bumped just above */
         goto flush_unlocked;
@@ -215,6 +220,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         pthread_mutex_lock(&m->tr_mu);
         m->stats.flush_full++;
         m->stats.emit_fail_region++; /* under tr_mu */
+        li->outcome = HV_LK_FLUSH_RETRY;
         note_flush_request(m, &m->stats.flush_code_region_full);
         if (m->stats_interval) {
             m->stats.discarded_place_count++;
@@ -251,8 +257,10 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         if ((uint32_t)m->nblocks >= m->max_blocks) {
             m->stats.flush_table_full++;
             note_flush_request(m, NULL); /* flush_table_full is its own cause counter */
+            li->outcome = HV_LK_FLUSH_RETRY;
         } else {
             note_flush_request(m, &m->stats.flush_pending_at_publish);
+            li->outcome = HV_LK_WAIT_FLUSH;
         }
         m->stats.flush_full++;
         if (m->stats_interval) {
@@ -950,6 +958,22 @@ static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
     m->stats.chained++;
 }
 
+/* integ7b (T1): a block the translator can never emit (or a NULL nobody can explain) stops the WHOLE machine, through the existing stop (hv_machine_halt): before this only the
+   CPU that gave up stopped, and a secondary's thread just ended (host/vm.c) while the guest went on and could hang on an IPI or a lock that CPU would have taken. Every CPU sees the
+   halt at the top of its run_loop, CPU 0's thread then runs hv_vm_quiesce + the disk flush as for any stop, and the runner reports the record (hv_vm_engine_fatal). The first
+   record wins; a second CPU giving up at the same time only parks. */
+static void engine_fatal_stop(HvCpu *cpu, uint64_t pa, uint32_t flags, const HvLookupInfo *li) {
+    HvMachine *m = cpu->m;
+    int rc = li->outcome == HV_LK_FATAL_EMIT ? li->rc : 0;
+    if (hv_engfatal_record(&m->engine_fatal, cpu->index, cpu->pc, pa, flags, li->gen, rc, li->flushes)) {
+        __atomic_add_fetch(&m->stats.engine_fatal, 1, __ATOMIC_RELAXED);
+        fprintf(stderr, "hengevm: ENGINE FATAL: cpu %u cannot translate block va %llx pa %llx flags %x gen %u: %s (%d), lookup outcome %d, after %u flush(es); stopping the whole VM (reason %d)\n",
+                cpu->index, (unsigned long long)cpu->pc, (unsigned long long)pa, flags, li->gen, rc ? hv_translate_err_name(rc) : "no block and nothing pending", rc, li->outcome, li->flushes, HV_HALT_ENGINE);
+        hv_machine_halt(m, HV_HALT_ENGINE);
+        hv_machine_kick_all(m);
+    }
+}
+
 static int run_loop(HvCpu *cpu, int one);
 
 static int run(HvCpu *cpu, int one) {
@@ -1178,15 +1202,17 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         last_fault = ~0ull;
         uint64_t flushes = m->stats.block_flushes;
-        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail);
+        HvLookupInfo li;
+        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail, &li);
         /* A full flush while translating freed the slot the last exit came through,
            and new blocks may have it now: chaining it would rewrite one of theirs. */
         if (m->stats.block_flushes != flushes) pending_chain = NULL;
         if (!b) {
             /* Everything is about to be dropped, or just was (another CPU may have
                done the flush this lookup asked for): try again after. */
-            if (m->flush_pending || __atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST) || m->stats.block_flushes != flushes) continue;
-            fprintf(stderr, "hengevm: cannot translate block at %llx\n", (unsigned long long)cpu->pc);
+            int pending = m->flush_pending || __atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST);
+            if (hv_lookup_null_action(li.outcome, pending, m->stats.block_flushes != flushes) == HV_LKA_RETRY) continue;
+            engine_fatal_stop(cpu, pa, block_flags(cpu), &li);
             park(cpu);
             return HV_EXIT_UNSUPPORTED;
         }

@@ -6,6 +6,7 @@
 
 #include "cpu.h"
 #include "jit_region.h"
+#include "emitfail.h"
 
 /* Guest physical memory: RAM regions backed by host memory, and MMIO regions
    handled by device callbacks. The fast path only ever sees RAM. */
@@ -123,6 +124,7 @@ typedef struct HvStats {
     uint64_t flush_code_region_full;   /* flush requests: hv_translate_place found no room (always kept) */
     uint64_t flush_pending_at_lookup, flush_pending_at_publish; /* ...a flush was already requested when the block was looked up / about to be published (concurrent requests) */
     uint64_t flush_req_other;          /* ...hv_knob_set, HV_IC_FLUSH (host tools that set flush_pending themselves are not counted) */
+    uint64_t engine_fatal; /* integ7b: engine-fatal stops recorded (0 or 1 per run) */
     uint64_t emit_fail_region, emit_fail_deterministic, emit_fail_retry_exhausted; /* g7-jit3, always kept: placements that found the region full / emits that failed with a cause that belongs to the block (see core/emitfail.h) / blocks given up after HV_EMIT_FAIL_MAX_FLUSHES flushes (the CPU is parked, HV_EXIT_UNSUPPORTED) */
     uint64_t flush_requests;           /* all requests: region full + table full + emit fail + pending seen + other */
     uint64_t flush_req_during_stw;     /* requests made while a stop-the-world flush was under way (they can cause an immediate second flush) */
@@ -321,6 +323,9 @@ typedef struct HvMachine {
        with a RELEASE store, so a reader that sees 2 via an ACQUIRE (or stronger) load is guaranteed to see
        all of them too, regardless of which CPU's thread is doing the reading or how its own halt-detection
        path happens to order things. */
+    /* integ7b: the first engine-fatal stop (a block the translator can never emit; core/emitfail.h). Written once by the CPU that gave up, then the whole machine is halted
+       with HV_HALT_ENGINE; read through host/vm.c's hv_vm_engine_fatal(). */
+    HvEngineFatal engine_fatal;
     int psci_halt_valid;
     uint32_t psci_halt_fn;    /* 0x84000008 (SYSTEM_OFF) or 0x84000009 (SYSTEM_RESET) */
     uint32_t psci_halt_cpu;   /* the calling CPU's cpu->index */

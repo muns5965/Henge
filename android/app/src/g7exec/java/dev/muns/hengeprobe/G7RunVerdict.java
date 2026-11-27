@@ -11,10 +11,10 @@ import java.util.regex.Pattern;
  * confirmed, a halt without a PSCI record) is not a restart.
  */
 public final class G7RunVerdict {
-    public static final String RESTART = "restart", SHUTDOWN = "shutdown", HALT_OTHER = "halt-other", HOST_STOP = "host-stop", NOT_CONFIRMED = "not-confirmed";
+    public static final String RESTART = "restart", SHUTDOWN = "shutdown", HALT_OTHER = "halt-other", HOST_STOP = "host-stop", NOT_CONFIRMED = "not-confirmed", ENGINE_FATAL = "engine-fatal";
 
     private static final Pattern P = Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) disk_flush=(ok|FAILED|not-attempted) macos_boot=not-determined"
-            + "(?: outcome=(restart|shutdown|halt-other|host-stop|not-confirmed) psci=(none|SYSTEM_OFF|SYSTEM_RESET) quiesced=(1|0|n/a) uptime_s=(\\d{1,9}) disk_writes=(\\d{1,18}) disk_write_refused=(\\d{1,18})"
+            + "(?: outcome=(restart|shutdown|halt-other|host-stop|not-confirmed|engine-fatal) psci=(none|SYSTEM_OFF|SYSTEM_RESET) quiesced=(1|0|n/a) uptime_s=(\\d{1,9}) disk_writes=(\\d{1,18}) disk_write_refused=(\\d{1,18})"
             // NEW optional trailing fields (a runner that prints them: root and AUX counted separately). An older runner stops after disk_write_refused=; the whole group is optional so such a line parses exactly as before.
             + "(?: root_writes=(\\d{1,18}) root_write_bytes=(\\d{1,18}) root_write_refused=(\\d{1,18}) root_write_failed=(\\d{1,18}) root_flush=(ok|FAILED|skipped|never) root_flush_calls=(\\d{1,18}) root_flush_failed=(\\d{1,18})"
             + " aux_writes=(\\d{1,18}) aux_write_bytes=(\\d{1,18}) aux_write_refused=(\\d{1,18}) aux_write_failed=(\\d{1,18}) aux_flush=(ok|FAILED|skipped|never) aux_flush_calls=(\\d{1,18}) aux_flush_failed=(\\d{1,18}))?)?.*$");

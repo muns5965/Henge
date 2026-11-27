@@ -117,6 +117,17 @@ public class G7CloneBootTest {
         check("the picture is kept in memory (4x2 RGB, class as the runner said), not written to the log", fr != null && fr.w == 4 && fr.h == 2 && fr.rgb.length == 24 && (fr.rgb[0] & 0xff) == 255 && fr.rgb[3] == 0 && fr.cls.equals("mostly-black-small-content") && !lt.contains("ffffff000000") && lt.contains("g7-frame: src=1920x1080 out=4x2 class=mostly-black-small-content"));
         check("the parsed frame keeps the machine's own size (src) apart from the small copy", fr != null && fr.srcW == 1920 && fr.srcH == 1080);
         check("verdict keeps 'the machine stopped' apart from 'macOS booted'", s.run.verdict().contains("VM 종료 확인: 예") && s.run.verdict().contains("디스크 flush: 성공") && s.run.verdict().contains("시험 시간 제한") && s.run.verdict().contains("부팅 성공 여부는 판정하지 않았습니다") && lt.contains("g7-cboot-verdict:"));
+        {   // integ7b: the engine stopped the whole VM (a block that can never be emitted): its own wording and exit code 4, not a guest request, not a restart
+            Fake ef = new Fake("hengevm: ENGINE FATAL: cpu 1 cannot translate block va fffffe0012345678 pa 80001000 flags 1 gen 3: relocation table overflow (-3), lookup outcome 3, after 1 flush(es); stopping the whole VM (reason 5)\n"
+                + "ui_runner_vm_clone ENGINE-FATAL: ENGINE FATAL: cpu1 cannot translate block va=0xfffffe0012345678 pa=0x80001000 flags=0x1 gen=3 cause=relocation table overflow (-3) after 1 flush(es); the engine stopped the whole VM (loop ended by: x)\n"
+                + "ui_runner_vm_clone RESULT: stopped, confirmed (ENGINE FATAL: cpu1 ...), ignored input lines 0\n"
+                + "ui_runner_vm_clone VERDICT: vm_stop_confirmed=1 stop_kind=engine-fatal disk_flush=ok macos_boot=not-determined outcome=engine-fatal psci=none quiesced=1 uptime_s=99 disk_writes=3 disk_write_refused=0 (x)\n", 4, false);
+            G7CloneBoot.Start es = G7CloneBoot.startWith(sp(ef), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none);
+            waitDone(es.run);
+            String ev = es.run.verdict();
+            check("engine-fatal: exit code 4 is kept, the verdict names the engine, not the guest, and says the VM was stopped", es.started && es.run.exitCode() == 4 && ev.contains("엔진 치명 오류") && !ev.contains("게스트가 스스로 멈춤") && ev.contains("VM 종료 확인: 예"));
+            check("engine-fatal is never a restart", es.run.parsedVerdict() != null && !es.run.parsedVerdict().isRestart() && G7RunVerdict.ENGINE_FATAL.equals(es.run.parsedVerdict().outcome));
+        }
         for (int um = 1; um <= 3; um++) {
             Fake uf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
             G7CloneBoot.Start us = G7CloneBoot.startWith(sp(uf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, um);

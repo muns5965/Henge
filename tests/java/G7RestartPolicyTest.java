@@ -33,7 +33,7 @@ public class G7RestartPolicyTest {
         check(!p.decide(v, true, t + 1).restart, "cancelled by the person: no restart");
         check(!p.decide(null, false, t + 1).restart, "no verdict: no restart");
         check(!p.decide(old, false, t + 1).restart, "older runner without outcome: no restart");
-        String[][] no = {{"shutdown", "SYSTEM_OFF"}, {"halt-other", "none"}, {"host-stop", "none"}, {"not-confirmed", "none"}};
+        String[][] no = {{"shutdown", "SYSTEM_OFF"}, {"halt-other", "none"}, {"host-stop", "none"}, {"not-confirmed", "none"}, {"engine-fatal", "none"}};
         for (String[] n : no) check(!p.decide(G7RunVerdict.parse(line(1, "guest-initiated", "ok", n[0], n[1], "1", 50, 0)), false, t + 2).restart, n[0] + " never restarts");
         check(!p.decide(G7RunVerdict.parse(line(0, "guest-initiated", "not-attempted", "restart", "SYSTEM_RESET", "n/a", 50, 0)), false, t + 3).restart, "unconfirmed stop: no restart");
         check(!p.decide(G7RunVerdict.parse(line(1, "guest-initiated", "FAILED", "restart", "SYSTEM_RESET", "1", 50, 0)), false, t + 4).restart, "flush failed: no restart");

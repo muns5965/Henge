@@ -15,7 +15,7 @@ for mode in plain asan; do
   timeout 300 "$OUT/test_jitstats_$mode" > "$OUT/jitstats_$mode.out" 2>&1 || rc=1
   cat "$OUT/jitstats_$mode.out"
   echo "=== emitfail ($mode)"
-  $CC $W $F tests/test_emitfail.c -o "$OUT/test_emitfail_$mode" 2> "$OUT/emitfail_$mode.log" || { echo "FAILED  build emitfail ($mode)"; head -40 "$OUT/emitfail_$mode.log"; rc=1; continue; }
+  $CC $W $F tests/test_emitfail.c -lpthread -o "$OUT/test_emitfail_$mode" 2> "$OUT/emitfail_$mode.log" || { echo "FAILED  build emitfail ($mode)"; head -40 "$OUT/emitfail_$mode.log"; rc=1; continue; }
   timeout 60 "$OUT/test_emitfail_$mode" > "$OUT/emitfail_$mode.out" 2>&1 || rc=1
   cat "$OUT/emitfail_$mode.out"
 done

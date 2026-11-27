@@ -462,6 +462,16 @@ int main(int argc, char **argv) {
     double ts = now();
     while (!atomic_load(&g_exited) && (now() - ts) * 1000 < (double)stop_wait_ms) usleep(2000);
     int confirmed = atomic_load(&g_exited);
+    /* integ7b (T1): the engine itself gave up (a block the translator can never emit) and stopped the whole VM. Whatever else ended the loop, this is what the run is reported as: a distinct stop_kind and
+       outcome ("engine-fatal"), a loud line with cpu/va/pa/cause, and exit status 4 (3 stays "stop not confirmed"). The disks were flushed by the ordinary exit path (quiesce, then flush) like any stop. */
+    HvVmEngineFatal efat; int engine_fatal = hv_vm_engine_fatal(&efat);
+    char efat_txt[400] = "";
+    if (engine_fatal) {
+        snprintf(efat_txt, sizeof efat_txt, "ENGINE FATAL: cpu%u cannot translate block va=%#llx pa=%#llx flags=%#x gen=%u cause=%s (%d) after %u flush(es); the engine stopped the whole VM",
+                 efat.cpu, (unsigned long long)efat.va, (unsigned long long)efat.pa, efat.flags, efat.gen, efat.cause_name, efat.rc, efat.flushes);
+        printf("ui_runner_vm_clone ENGINE-FATAL: %s (loop ended by: %s)\n", efat_txt, why_stop);
+        why_stop = efat_txt; stop_kind = "engine-fatal";
+    }
     int flush_rc = confirmed && hv_vm_quiesced_ok() == 1 ? hv_vm_flush_disks_checked() : -2;   /* -2 also when the other threads or the disk workers did not end: the flush alone then proves nothing */   /* -2: not attempted (the machine's stop was not confirmed) */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     disk_counters_line(confirmed ? "at stop (after the final flush; a guest SYSTEM_RESET stop included)" : "at stop (stop NOT confirmed)");
@@ -474,7 +484,7 @@ int main(int argc, char **argv) {
     int have_psci = hv_vm_psci_halt_info(&vfn, &vcpu, &vpc, &vlr);
     const char *psci_name = !have_psci ? "none" : vfn == 0x84000008 ? "SYSTEM_OFF" : "SYSTEM_RESET";
     int guest_end = !strcmp(stop_kind, "guest-initiated");
-    const char *outcome = !confirmed ? "not-confirmed" : !guest_end ? "host-stop" : !have_psci ? "halt-other" : vfn == 0x84000008 ? "shutdown" : "restart";
+    const char *outcome = !confirmed ? "not-confirmed" : engine_fatal ? "engine-fatal" : !guest_end ? "host-stop" : !have_psci ? "halt-other" : vfn == 0x84000008 ? "shutdown" : "restart";
     int qok = hv_vm_quiesced_ok();
     uint64_t wcalls = 0, wrefused = 0; hv_vm_disk_write_stats(&wcalls, &wrefused);
     HvDiskStats vr, va; hv_vm_disk_stats(&vr, &va);   /* the split counters: NEW optional trailing fields of the VERDICT line, after disk_write_refused= */
@@ -487,5 +497,5 @@ int main(int argc, char **argv) {
     /* Only a machine whose threads and disk workers all ended is torn down here. When quiesce failed a thread or a disk worker may still use the runner, the shared state and the clone's
        descriptors: they are left as they are and the process end (immediately below) releases them, so nothing is freed or unlocked under a live user. */
     if (confirmed && qok == 1) { hv_runner_destroy(g_run); hv_shm_close(g_shm); hv_clone_close(&cl); }
-    return confirmed ? 0 : 3;
+    return confirmed ? (engine_fatal ? 4 : 0) : 3;   /* 4: the engine stopped the VM (integ7b); 3: the stop was not confirmed */
 }

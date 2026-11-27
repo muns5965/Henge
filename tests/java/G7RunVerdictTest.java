@@ -27,6 +27,12 @@ public class G7RunVerdictTest {
         check(t.contains("root: writes 10") && t.contains("AUX: writes 7") && t.contains("do not show that the guest's boot device persisted"), "log text names root and AUX apart and does not claim persistence");
         // 4. the new line without the trailing text, and with a trailing text that itself looks like fields
         check(G7RunVerdict.parse(STRUCT + SPLIT) != null && G7RunVerdict.parse(STRUCT + SPLIT).aux.writes == 7, "new line without the explanatory text");
+        // 4b. integ7b: the engine-fatal stop (a block the translator can never emit): its own stop_kind and outcome, parsed, never a restart
+        String ef = HEAD.replace("stop_kind=guest-initiated", "stop_kind=engine-fatal") + " outcome=engine-fatal psci=none quiesced=1 uptime_s=77 disk_writes=5 disk_write_refused=0";
+        G7RunVerdict efv = G7RunVerdict.parse(ef + SPLIT + TAIL);
+        check(efv != null && efv.structured && efv.stopKind.equals("engine-fatal") && G7RunVerdict.ENGINE_FATAL.equals(efv.outcome) && !efv.isRestart() && efv.verifiedQuiesced() && efv.aux.writes == 7, "engine-fatal line parses, is not a restart");
+        G7RunVerdict efx = G7RunVerdict.parse(ef.replace("outcome=engine-fatal", "outcome=engine-fatally"));
+        check(efx != null && !efx.structured && efx.outcome == null && !efx.isRestart(), "a misspelt outcome is not interpreted (no structured fields)");
         // 5. an incomplete split block is NOT half-read: the old fields still parse, the split block is ignored
         String half = STRUCT + " root_writes=10 root_write_bytes=40960" + TAIL;
         G7RunVerdict h = G7RunVerdict.parse(half);

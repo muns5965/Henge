@@ -283,12 +283,12 @@ public final class G7CloneBoot {
             if (v == null) return "러너가 결과 줄을 남기지 않고 끝났습니다(종료 코드 " + exitCode + "). VM 종료 확인 없음, 원인 미확인(비정상 종료 가능). macOS 부팅 성공 여부는 판정하지 않았습니다.";
             java.util.regex.Matcher m = VERDICT.matcher(v);
             if (!m.matches()) return "러너의 결과 줄을 해석하지 못했습니다. macOS 부팅 성공 여부는 판정하지 않았습니다.";
-            String kind = m.group(2), who = kind.equals("guest-initiated") ? "게스트가 스스로 멈춤" : kind.equals("time-limit") ? "시험 시간 제한" : kind.equals("requested-quit") ? "사용자 취소/종료 요청" : kind.equals("signal") ? "신호로 종료" : kind.equals("app-closed") ? "앱이 닫음" : "입력 오류";
+            String kind = m.group(2), who = kind.equals("guest-initiated") ? "게스트가 스스로 멈춤" : kind.equals("time-limit") ? "시험 시간 제한" : kind.equals("requested-quit") ? "사용자 취소/종료 요청" : kind.equals("signal") ? "신호로 종료" : kind.equals("app-closed") ? "앱이 닫음" : kind.equals("engine-fatal") ? "엔진 치명 오류(번역할 수 없는 블록, VM 전체를 멈춤)" : "입력 오류";
             String fl = m.group(3).equals("ok") ? "성공" : m.group(3).equals("FAILED") ? "실패(디스크에 모두 반영됐다고 볼 수 없음)" : "시도하지 않음";
             G7RunVerdict rv = G7RunVerdict.parse(v);
             String more = "";
             if (rv != null && rv.structured) {
-                String oc = rv.isRestart() ? "게스트가 재시작을 요청함(SYSTEM_RESET)" : rv.outcome.equals("shutdown") ? "게스트가 종료를 요청함(SYSTEM_OFF)" : rv.outcome.equals("halt-other") ? "PSCI 기록 없는 정지(정지 주소 등, 원인 미확인)" : rv.outcome.equals("host-stop") ? "호스트가 멈춤" : "종료 미확인";
+                String oc = rv.isRestart() ? "게스트가 재시작을 요청함(SYSTEM_RESET)" : rv.outcome.equals("shutdown") ? "게스트가 종료를 요청함(SYSTEM_OFF)" : rv.outcome.equals("halt-other") ? "PSCI 기록 없는 정지(정지 주소 등, 원인 미확인)" : rv.outcome.equals("host-stop") ? "호스트가 멈춤" : rv.outcome.equals("engine-fatal") ? "엔진 치명 오류(번역 실패로 엔진이 VM 전체를 멈춤, 로그의 ENGINE FATAL 줄 참조, 종료 코드 4)" : "종료 미확인";
                 more = " 결과: " + oc + ", 가동 " + rv.uptimeS + "초, CPU 스레드·디스크 작업자 정리: " + (rv.quiesced == 1 ? "완료" : rv.quiesced == 0 ? "일부 미종료" : "미보고") + ", 디스크 쓰기 " + rv.diskWrites + "건 중 거부 " + rv.diskWriteRefused + "건.";
             }
             if (rv != null && rv.structured && !rv.diskSplitText().isEmpty()) more += " " + rv.diskSplitText();   // root and AUX counted apart (new runners only); counts, not a persistence claim

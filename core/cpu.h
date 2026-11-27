@@ -310,7 +310,7 @@ _Static_assert(sizeof(HvTlbEntry) == 32, "TLB entries are indexed with lsl #5");
 
 /* The values HvCpu.halted holds when the machine was stopped (0 = running); the names the original Henge uses, with the numbers this port already used (1 SYSTEM_OFF, 2
    SYSTEM_RESET, 3 host stop, 4 guest pvpanic). hv_machine_halt records the first one only. */
-enum HvHaltReason { HV_HALT_NONE, HV_HALT_SHUTDOWN, HV_HALT_RESET, HV_HALT_HOST, HV_HALT_PANIC };
+enum HvHaltReason { HV_HALT_NONE, HV_HALT_SHUTDOWN, HV_HALT_RESET, HV_HALT_HOST, HV_HALT_PANIC, HV_HALT_ENGINE /* integ7b: the engine gave up on a block (HvMachine.engine_fatal says which) */ };
 
 /* Why the last block returned to the dispatcher. */
 enum {

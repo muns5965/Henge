@@ -27,6 +27,7 @@
 
 #include "audio_mac.h"
 #include "dispatch.h"
+#include "translate.h" /* hv_translate_err_name (integ7b engine-fatal record) */
 #include "net_slirp.h"
 
 static HvMachine m;
@@ -546,6 +547,16 @@ void hv_vm_set_poll(void (*poll)(void)) { extra_poll = poll; }
    read), 2 complete and published with a RELEASE store (core/exception.c's psci()) -- so this ACQUIRE
    load, on seeing 2, is guaranteed to see every field below too, even from a thread other than the one
    that wrote them (core/machine.h's comment on the field has the cross-CPU reason this matters). */
+int hv_vm_engine_fatal(HvVmEngineFatal *out) {
+    HvEngineFatal f;
+    if (!hv_engfatal_get(&m.engine_fatal, &f)) return 0;
+    if (out) {
+        out->cpu = f.cpu, out->flags = f.flags, out->gen = f.gen, out->flushes = f.flushes, out->rc = f.rc, out->va = f.va, out->pa = f.pa;
+        out->cause_name = f.rc ? hv_translate_err_name(f.rc) : "no block and nothing pending";
+    }
+    return 1;
+}
+
 int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr) {
     if (__atomic_load_n(&m.psci_halt_valid, __ATOMIC_ACQUIRE) != 2) return 0;
     if (fn) *fn = m.psci_halt_fn;

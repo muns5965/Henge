@@ -129,6 +129,12 @@ const char *hv_vm_reason_name(int reason);
    Any out-param may be NULL. Independent of HV_PSCI_LOG and every other HV_* environment variable. */
 int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr);
 
+/* integ7b: 1 and a copy of the record when the engine stopped the machine because a block could not be translated (core/emitfail.h; the machine was halted with HV_HALT_ENGINE,
+   every CPU stopped, the disks flushed by the usual exit path); 0 otherwise. Whatever exit reason CPU 0 reports (it usually sees the halt: HV_EXIT_HALT) this is the authority. out->cause_name is a
+   static string. A runner that does not call it still gets the stop; it just cannot say why. */
+typedef struct { uint32_t cpu, flags, gen, flushes; int rc; uint64_t va, pa; const char *cause_name; } HvVmEngineFatal;
+int hv_vm_engine_fatal(HvVmEngineFatal *out);
+
 /* A second accessor for the same captured halt (0 under the exact same conditions as hv_vm_psci_halt_info,
    and always 1 at the same time that one is, since both read the one psci_halt_valid publish) -- kept
    separate rather than widening hv_vm_psci_halt_info's signature, so existing callers of that one are

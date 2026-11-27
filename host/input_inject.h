@@ -31,7 +31,7 @@ typedef struct HvInject {
     HvTouch touch;                     /* moves the pointer; its own sink is the same */
     void (*log)(void *ctx, const char *line); void *log_ctx;
     HvInjectJob q[HV_INJECT_QUEUE]; int qhead, qtail;
-    HvInjectJob cur; int active, phase, clicks_done; int64_t phase_ms, start_ms; int held_btn; int held_key[HV_INJECT_STEPS]; int dw, dh;
+    HvInjectJob cur; int active, phase, clicks_done; int64_t phase_ms, start_ms; int held_btn; int arrive_confirmed; int held_key[HV_INJECT_STEPS]; int dw, dh;
     /* counters (what this module itself called, NOT what the guest did) */
     uint64_t jobs_done, keys_down, keys_up, btn_down, btn_up, refused;
     /* input paths: set by the runner from the machine it really built (default both 1). A path that is 0 makes key / click / dclick answer -2 (REJECTED) and nothing is queued or counted as sent. */

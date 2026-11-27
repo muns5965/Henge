@@ -116,6 +116,7 @@ int hv_inject_busy(const HvInject *j) { return j->active || j->qhead != j->qtail
 static int arrived(HvInject *j, double *ex, double *ey) {
     HvTouchDiag d; hv_touch_diag(&j->touch, &d);
     *ex = d.pointer_x; *ey = d.pointer_y;
+    j->arrive_confirmed = d.pointer_confirmed;   /* 1 = the guest's own pointer feedback; 0 = dead reckoning only */
     return d.has_target && d.pointer_known && fabs(d.target_x - d.pointer_x) <= 1.5 && fabs(d.target_y - d.pointer_y) <= 1.5;
 }
 
@@ -155,7 +156,7 @@ void hv_inject_tick(HvInject *j, int known, int px, int py, int64_t now) {
     case 1: {
         int ok = arrived(j, &ex, &ey);
         if (ok || now - j->phase_ms >= HV_INJECT_ARRIVE_MS) {
-            if (ok) say(j, "pointer arrived at %.0f,%.0f", ex, ey);
+            if (ok) say(j, "pointer arrived at %.0f,%.0f (%s)", ex, ey, j->arrive_confirmed ? "confirmed by the guest's pointer feedback" : "ESTIMATE ONLY: dead reckoning, no guest pointer feedback seen, so guest arrival is NOT proven");
             else say(j, "pointer did NOT arrive within %d ms (now %.0f,%.0f): clicking anyway", HV_INJECT_ARRIVE_MS, ex, ey);
             j->phase = 2;
         }

@@ -202,6 +202,7 @@ void hv_touch_diag(const HvTouch *t, HvTouchDiag *d) {
     d->fingers = t->nptr;
     d->has_target = t->has_target; d->target_x = t->tx; d->target_y = t->ty;
     d->pointer_known = t->known || t->homed;
+    d->pointer_confirmed = t->known;
     d->pointer_x = est_x(t); d->pointer_y = est_y(t);
     d->drag = t->drag; d->button_held = t->button_held;
     d->tgt_seq = t->tgt_seq; d->tgt_src_x = t->tgt_src_x; d->tgt_src_y = t->tgt_src_y;

@@ -40,6 +40,7 @@ int main(void) {
     fresh(&j); hv_inject_command(&j, "dclick 1190 550", T, m, sizeof m); run(&j, 0, 3000);
     { int x = -1, y = -1; const char *p = strstr(ev, "B0v("); if (p) sscanf(p, "B0v(%d,%d)", &x, &y); EXPECT(count("B0v") == 2 && count("B0^") == 2 && abs(x - 1190) <= 2 && abs(y - 550) <= 2, "dclick without feedback: two down/up pairs at %d,%d: %s", x, y, ev); }
     EXPECT(strstr(lg, "NOT available, dead reckoning") != NULL, "the log says the pointer feedback was missing");
+    EXPECT(strstr(lg, "ESTIMATE ONLY") != NULL && strstr(lg, "NOT proven") != NULL, "without guest feedback the arrival line says ESTIMATE ONLY (guest arrival not proven)");
     /* a pointer that never moves: the click goes ahead after the timeout and the log says it did not arrive */
     fresh(&j); hv_inject_command(&j, "click 960 397", T, m, sizeof m);
     for (int i = 0; i < 3000 / 5; i++) { hv_inject_tick(&j, 1, 10, 10, T); T += 5; }

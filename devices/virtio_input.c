@@ -126,9 +126,9 @@ void hv_virtio_input_poll(HvVirtioInput *d) {
         memcpy(ev, &d->ring[i].type, 2);
         memcpy(ev + 2, &d->ring[i].code, 2);
         memcpy(ev + 4, &d->ring[i].value, 4);
-        hv_virtq_write(v, &e, 0, ev, 8);
-        hv_virtq_push(v, EVENTQ, &e, 8);
-        d->delivered++;
+        uint32_t wn = hv_virtq_write(v, &e, 0, ev, 8);
+        hv_virtq_push(v, EVENTQ, &e, wn == 8 ? 8 : wn);
+        if (wn == 8) d->delivered++; else d->short_writes++;   /* a buffer smaller than one event is not a delivery */
         any = 1;
     }
     pthread_mutex_unlock(&d->mu);

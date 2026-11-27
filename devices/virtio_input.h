@@ -32,7 +32,7 @@ typedef struct HvVirtioInput {
     pthread_mutex_t mu;
     struct { uint16_t type, code; uint32_t value; } ring[HV_VINPUT_RING];
     uint32_t head, tail; /* under mu */
-    uint64_t delivered, dropped;
+    uint64_t delivered, dropped, short_writes;
 } HvVirtioInput;
 
 HvVirtioInput *hv_virtio_input_create(HvMachine *m, HvPcie *bus, int kind);

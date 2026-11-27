@@ -95,6 +95,7 @@ typedef struct {
     int has_target;              /* a target exists (it stays after the finger lifts; a cancel or release_all clears it) */
     double target_x, target_y;   /* guest pixels, as converted from the view */
     int pointer_known;           /* the module's own idea of the guest pointer: the feedback, or dead reckoning */
+    int pointer_confirmed;       /* 1 only when the position came from the guest's own pointer feedback (not dead reckoning after a home move) */
     double pointer_x, pointer_y;
     int drag, button_held;
     int tgt_seq;                 /* number of times the target was set (every call that converts a view point, same point or not; UP, two-finger and ignored events do not). A cancel keeps it. */

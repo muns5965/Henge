@@ -72,6 +72,8 @@ struct HvPvgLite {
     uint32_t cursor_last_word, cursor_last_flag; int cursor_seen;
     HvPvgCursorListener cursor_fn; void *cursor_ctx;
     uint64_t display_pa;
+    uint64_t ev_bit[4];   /* [g7-vbl, research/g7-hjit2] bits delivered into the page's +0x100 by this device: bit0/bit3 by the tick, bit1 by a swap, bit2 by the mode-change flag (counters only) */
+    uint64_t ev_tick_suppressed, ev_swap_or2_skipped; int ev_bit3_sent;   /* LAGFX_VBL_EXP bookkeeping (all zero unless an experiment is selected) */
     HvVblDiag vbl;   /* diagnostics only (pvg_vbldiag.h): bounded log lines and counters, no effect on delivery */
     uint64_t swaps;
     uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
@@ -141,6 +143,9 @@ static uint32_t root_ring32(HvPvgLite *p, uint64_t buf, uint32_t off, uint32_t r
 
 static int display_events_on(void);
 static void display_cause(HvPvgLite *p, uint32_t bits);
+/* [g7-vbl, research/g7-hjit2] VBL experiment switches, env LAGFX_VBL_EXP (default unset/"0" = the behaviour before this change, byte for byte). See hv_pvg_lite_set_vbl_exp. */
+enum { VBL_EXP_NONE = 0, VBL_EXP_TICK_NONE, VBL_EXP_BIT3_ONCE, VBL_EXP_SWAP_NO_OR2, VBL_EXP_N };
+static int vbl_exp(void);
 static uint32_t reg(HvPvgLite *p, uint32_t off) { return p->regs[(off - 0x1000) / 4]; }
 
 /* Diagnostic only: a doorbell was rung on `ch` (0: root ring). Two relaxed stores; no lock, no effect on the device. */
@@ -289,6 +294,7 @@ static void display_set_page(HvPvgLite *p, uint64_t pa) {
     d[0xfa9] = 1;    /* ack pending */
     PUT32(0xfc0, 1); /* state: told the guest, waiting for the ack */
     __atomic_store_n((uint32_t *)(d + 0x100), 4, __ATOMIC_RELEASE); /* mode change: read when the guest sets its mask */
+    p->ev_bit[2]++;
 #undef PUT32
 #undef PUTF
 }
@@ -712,7 +718,8 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     if (g_test_pattern) test_pattern_write(p, mapping);
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
-    __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
+    if (vbl_exp() != VBL_EXP_SWAP_NO_OR2) { __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE); p->ev_bit[1]++; }   /* V4 (LAGFX_VBL_EXP=swap_no_or2) skips exactly this OR */
+    else p->ev_swap_or2_skipped++;
     if (display_events_on()) display_cause(p, 1u);   /* the display cause bit: the ISR reads +0x1014 first */
     if (p->log) fprintf(stderr, "hengevm: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
     /* [2026-11-21, explicitly approved, read-only diagnostic] HV_PVG_TALLY only: one bounded line per swap
@@ -1312,6 +1319,44 @@ static void vbl_diag_summary(HvPvgLite *p, uint64_t now) {
     }
 }
 
+/* LAGFX_VBL_EXP (read once; an explicit hv_pvg_lite_set_vbl_exp() wins, for tests). Unset, "" or "0" = 0 = unchanged. Names: tick_none (V3': the 60 Hz tick sends nothing: no +0x100 bit, no cause bit, no interrupt; everything
+   else unchanged), bit3_once (V3'': the tick sends nothing except bit 3 exactly once, at the first tick after the first swap, only if the guest armed bit 3), swap_no_or2 (V4: a swap does not OR 0x2 into +0x100; the
+   cause bit and everything else unchanged). "send 0x8 only" is deliberately NOT a mode: with the guest's enable mask 0xC the current tick (en & 9) is 0x8 already. An unrecognized value changes nothing and is said in the init line. */
+static const char *const vbl_exp_names[VBL_EXP_N] = {"0", "tick_none", "bit3_once", "swap_no_or2"};
+int hv_pvg_lite_vbl_exp_parse(const char *s) {
+    if (!s || !*s) return VBL_EXP_NONE;
+    for (int i = 0; i < VBL_EXP_N; i++) if (!strcmp(s, vbl_exp_names[i])) return i;
+    return -1;
+}
+static int g_vbl_exp = -1;
+void hv_pvg_lite_set_vbl_exp(int mode) { g_vbl_exp = mode < 0 || mode >= VBL_EXP_N ? -1 : mode; }
+static int vbl_exp(void) {
+    static int v = -1;
+    if (g_vbl_exp >= 0) return g_vbl_exp;
+    if (v < 0) { int r = hv_pvg_lite_vbl_exp_parse(getenv("LAGFX_VBL_EXP")); v = r < 0 ? 0 : r; }
+    return v;
+}
+static void vbl_exp_line(const HvPvgLite *p, const char *what) {
+    const char *e = getenv("LAGFX_VBL_EXP");
+    int r = g_vbl_exp >= 0 ? g_vbl_exp : hv_pvg_lite_vbl_exp_parse(e);
+    char nm[80];
+    if (r < 0) snprintf(nm, sizeof nm, "0 (UNRECOGNIZED value '%.40s', treated as 0)", e ? e : ""); else snprintf(nm, sizeof nm, "%s", vbl_exp_names[r]);
+    fprintf(stderr, "g7-vbl: %s exp=%s display_events=%s delivered_bit0=%llu bit1=%llu bit2=%llu bit3=%llu tick_suppressed=%llu swap_or2_skipped=%llu swaps=%llu (bits ORed into page+0x100 by this device; bit2 = the mode-change flag; LAGFX_VBL_EXP unset/0 = unchanged behaviour)\n",
+            what, nm, display_events_on() ? "on" : "off",
+            (unsigned long long)p->ev_bit[0], (unsigned long long)p->ev_bit[1], (unsigned long long)p->ev_bit[2], (unsigned long long)p->ev_bit[3], (unsigned long long)p->ev_tick_suppressed, (unsigned long long)p->ev_swap_or2_skipped, (unsigned long long)p->swaps);
+}
+static void vbl_exp_report(HvPvgLite *p, uint64_t now) {   /* every ~5 s, at most 40 lines, only while an experiment is selected */
+    static uint64_t last; static int n;
+    if (vbl_exp() == VBL_EXP_NONE || n >= 40 || (last && now - last < 5000000000ull)) return;
+    last = now; n++; vbl_exp_line(p, "counters");
+}
+void hv_pvg_lite_vbl_exp_counters(const HvPvgLite *p, uint64_t bits[4], uint64_t *tick_suppressed, uint64_t *swap_or2_skipped) {
+    if (!p) return;
+    if (bits) for (int i = 0; i < 4; i++) bits[i] = p->ev_bit[i];
+    if (tick_suppressed) *tick_suppressed = p->ev_tick_suppressed;
+    if (swap_or2_skipped) *swap_or2_skipped = p->ev_swap_or2_skipped;
+}
+
 static void display_events_tick(HvPvgLite *p) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;
@@ -1334,13 +1379,22 @@ static void display_events_tick(HvPvgLite *p) {
     /* [2026-11-27, EXPERIMENT, unverified] The first experiment gated the tick on enable bit0 only; this guest armed 0xc (bits 2 and 3) for the whole run and never bit0, so that gate
        could never open (vbl_sent stayed 0). Which armed bit paces the display is not established from our own data, so a tick is now sent for each armed bit among {bit0, bit3}
        (the guest asked for it; nothing is forced for bits it did not arm). Bit2 (online) is the library's one-shot. Counters per bit are logged. */
-    const uint32_t tick_bits = en & 9u;
+    uint32_t tick_bits = en & 9u;
+    if (vbl_exp() != VBL_EXP_NONE) { struct timespec rs; clock_gettime(CLOCK_MONOTONIC, &rs); vbl_exp_report(p, (uint64_t)rs.tv_sec * 1000000000ull + (uint64_t)rs.tv_nsec); }
     if (!display_events_on() || !tick_bits) return;
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     static uint64_t last_ns; static uint64_t nvbl;
     if (now - last_ns < 16666667ull) return;
     last_ns = now;
+    {   /* g7-vbl experiments: the tick's pacing above is untouched; only what it SENDS changes (nothing for tick_none; bit 3 once for bit3_once) */
+        int ex = vbl_exp();
+        if (ex == VBL_EXP_TICK_NONE) { p->ev_tick_suppressed++; return; }
+        if (ex == VBL_EXP_BIT3_ONCE) {
+            if (!p->ev_bit3_sent && p->swaps >= 1 && (en & 8u)) { tick_bits = 8u; p->ev_bit3_sent = 1; }
+            else { p->ev_tick_suppressed++; return; }
+        }
+    }
     uint32_t before = __atomic_fetch_or((uint32_t *)(d + 0x100), tick_bits, __ATOMIC_RELEASE);
     if (before & tick_bits) __atomic_fetch_add(&c_vbl_unread, 1, __ATOMIC_RELAXED);
     vbl_diag_tick(p, d, en, tick_bits, before, now);   /* diagnostics only: the page word around our OR, before the cause bit and the interrupt */
@@ -1349,6 +1403,8 @@ static void display_events_tick(HvPvgLite *p) {
     __atomic_fetch_add(&c_vbl, 1, __ATOMIC_RELAXED);
     if (tick_bits & 1u) __atomic_fetch_add(&c_vbl_b0, 1, __ATOMIC_RELAXED);
     if (tick_bits & 8u) __atomic_fetch_add(&c_vbl_b3, 1, __ATOMIC_RELAXED);
+    if (tick_bits & 1u) p->ev_bit[0]++;
+    if (tick_bits & 8u) p->ev_bit[3]++;
     if (++nvbl == 1 || nvbl % 600 == 0) fprintf(stderr, "hengevm: pvg-lite: display ticks sent: %llu (armed bits %x; bit0 %llu bit3 %llu)\n", (unsigned long long)nvbl, (unsigned)tick_bits, (unsigned long long)c_vbl_b0, (unsigned long long)c_vbl_b3);
 }
 
@@ -1478,6 +1534,7 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->gfx_irq = gfx_irq;
     p->iosfc_irq = iosfc_irq;
     p->log = getenv("HV_PVG_LITE_LOG") != NULL;
+    vbl_exp_line(p, "init");   /* one line: which VBL experiment (if any) this run has, and the counters (zero here) */
     p->tally = getenv("HV_PVG_TALLY") != NULL;
     hv_gicv3_watch(gic, gfx_irq);   /* diagnostics only: counts pend / IAR / EOIR of this SPI, changes nothing */
 #ifdef HV_WITH_LAGFX

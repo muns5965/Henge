@@ -72,6 +72,10 @@ public final class G7CloneBoot {
     static volatile boolean drawDiag = true;
     /** Early framebuffer observation (G7_FB0=1; host/g7_fb0.h: "g7-fb0:" lines, 250 ms x 60 s, at most 3 dumps). Default ON: measured at under 1 ms per scan on a PC (the runner logs the real cost, total_ms/max_ms, in its end line); the dialog checkbox turns it off (G7_FB0=0). */
     static volatile boolean fb0 = true;
+    /** VBL experiment switch (research/g7-hjit2; env LAGFX_VBL_EXP read by devices/pvg_lite.c; only meaningful together with the display-events checkbox). "0" = off = the behaviour of every earlier build, and then the variable is NOT set at all. */
+    public static final String[] VBL_EXP_CHOICES = {"0", "tick_none", "bit3_once", "swap_no_or2"};
+    static boolean validVblExp(String v) { for (String c : VBL_EXP_CHOICES) if (c.equals(v)) return true; return false; }
+    static volatile String vblExp = "0";
     static volatile boolean displayEvents = false;   // HV_PVG_DISPLAY_EVENTS: VBL + display cause bit (experiment)
     static volatile File gpuDumpDir = null;
 
@@ -88,8 +92,9 @@ public final class G7CloneBoot {
         note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF") + " (start dialog checkbox: GPU 실제 실행); ");   // first item on purpose: the state of the one switch that changes what the library does
         note.append("jit_mb=" + jitArg + "; ");
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY");   // never inherit these from the parent environment: the start dialog alone decides
         if (drawDiag) { env.put("LAGFX_PIPELINE_MATRIX", "1"); note.append("pipeline_matrix=ON (LAGFX_PIPELINE_MATRIX=1, with draw diag; runs on pipeline creation failure only); "); } env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
+        { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
         env.put("G7_FB0", fb0 ? "1" : "0"); note.append("fb0=" + (fb0 ? "ON" : "OFF") + " (G7_FB0=" + (fb0 ? "1" : "0") + ", early framebuffer observation, g7-fb0: lines); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;

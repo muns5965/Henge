@@ -159,6 +159,10 @@ grep -q 'static volatile boolean fb0 = true;' "$CB" && grep -q 'env.put("G7_FB0"
 grep -q 'fb0c.setChecked(true)' "$A" && ! grep -qE 'fb0c.*(KEY_|opts\.)' "$A" || bad "the fb0 checkbox must default to checked and must not be remembered"
 grep -q 'if (!e || strcmp(e, "1") != 0) return;' host/vm.c && [ "$(grep -c 'g7_fb0_maybe_start();' host/vm.c)" = 1 ] || bad "host/vm.c: the g7-fb0 sampler must start only on G7_FB0=1, from exactly one place"
 grep -q 'HV_FB0_MAX_DUMPS 3' host/g7_fb0.h && grep -q 'HV_FB0_PERIOD_MS 250' host/g7_fb0.h && grep -q 'HV_FB0_SECONDS 60' host/g7_fb0.h || bad "host/g7_fb0.h: the sampler's bounds (250 ms, 60 s, 3 dumps) changed"
+# VBL experiment switch: default "0" = variable not set; only the three named values can ever be passed; the spinner is built from the same list and is not remembered
+grep -q 'VBL_EXP_CHOICES = {"0", "tick_none", "bit3_once", "swap_no_or2"};' "$CB" && grep -q 'static volatile String vblExp = "0";' "$CB" || bad "G7CloneBoot: the VBL experiment choices must be exactly {0, tick_none, bit3_once, swap_no_or2}, default 0"
+grep -q 'validVblExp(vx) && !"0".equals(vx)' "$CB" && [ "$(grep -c 'env.put("LAGFX_VBL_EXP"' "$CB")" = 1 ] || bad "G7CloneBoot: LAGFX_VBL_EXP may be set only from a validated, non-default value, in one place"
+grep -q 'adapter\|setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, G7CloneBoot.VBL_EXP_CHOICES))' "$A" && ! grep -qE 'vblSp.*(KEY_|opts\.)' "$A" || bad "the VBL experiment spinner must be built from VBL_EXP_CHOICES and must not be remembered"
 # the engine stats line and the runner's 10 s window line carry the JIT region size
 grep -q 'of %.0f MB jit' core/dispatch.c || bad "core/dispatch.c: the stats line must show the JIT region size"
 grep -q 'g7-jit: t=' host/ui_runner_vm_clone.c || bad "host/ui_runner_vm_clone.c: the g7-jit window line is missing"

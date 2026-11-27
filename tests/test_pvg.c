@@ -1184,6 +1184,89 @@ static void s_vbldiag(void) {
 #undef P32
 }
 
+/* ---- [g7-vbl, research/g7-hjit2] LAGFX_VBL_EXP switches: default unchanged, each switch does what it says ----
+   Scenario for every mode: display events ON, the guest armed 0xc (as the real guest does), polls paced 20 ms (the tick's 16.7 ms gate), +0x100 cleared by hand where the guest would, a swap in the middle. */
+typedef struct { uint32_t b4_pre, b4_after_swap, swap_word, post_a, post_b; int pend_pre, pend_post; uint64_t bits[4], supp, skipped; uint32_t swaps; } VblRun;
+static void vblexp_scenario(int mode, VblRun *r, char *log, size_t logcap) {
+    char path[64]; snprintf(path, sizeof path, "/tmp/test_pvg_vblexp_%d.err", (int)getpid());
+    fflush(stderr);
+    int saved = dup(2), fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    dup2(fd, 2); close(fd);
+    memset(r, 0, sizeof *r);
+    hv_pvg_lite_set_display_events(1);
+    hv_pvg_lite_set_vbl_exp(mode);
+    hv_pvg_lite_set_mode(1920, 1080);
+    dev_new(1);
+    chan_setup(4, 1);
+    uint32_t dpn = alloc_page(); uint32_t a1[2] = {0, dpn};
+    chan_cmd(4, 1, 41, a1, 8); ring_bell(4);
+    uint8_t *pg = hv_pvg_lite_display_page(dev);
+#define P32(o) (*(volatile uint32_t *)(pg + (o)))
+    if (pg) {
+        P32(0x104) = 0xc; P32(0x100) = 0;
+        int p0 = pends;
+        for (int i = 0; i < 4; i++) { usleep(20000); hv_pvg_lite_poll(dev); }
+        r->b4_pre = P32(0x100); r->pend_pre = pends - p0;
+        P32(0x100) = 0;
+        uint32_t swap[10] = {0, 0, 3, 0x5, 0, 0, 0, 0, 3, 0xabcd};
+        chan_cmd(4, 8, 43, swap, 40); ring_bell(4);
+        r->swap_word = P32(0x100); r->swaps = *(uint32_t *)(pg + 0xf98);
+        P32(0x100) = 0;
+        p0 = pends;
+        for (int i = 0; i < 4; i++) { usleep(20000); hv_pvg_lite_poll(dev); }
+        r->post_a = P32(0x100); r->pend_post = pends - p0;
+        P32(0x100) = 0;
+        for (int i = 0; i < 4; i++) { usleep(20000); hv_pvg_lite_poll(dev); }
+        r->post_b = P32(0x100);
+        hv_pvg_lite_vbl_exp_counters(dev, r->bits, &r->supp, &r->skipped);
+    }
+#undef P32
+    fflush(stderr); dup2(saved, 2); close(saved);
+    FILE *f = fopen(path, "r"); size_t got = f ? fread(log, 1, logcap - 1, f) : 0; if (f) fclose(f); unlink(path); log[got] = 0;
+    hv_pvg_lite_set_display_events(0);
+    hv_pvg_lite_set_vbl_exp(-1);
+}
+static void s_vblexp(void) {
+    static char log[1 << 17]; VblRun d, t, b, w;
+    EXPECT(hv_pvg_lite_vbl_exp_parse(NULL) == 0 && hv_pvg_lite_vbl_exp_parse("") == 0 && hv_pvg_lite_vbl_exp_parse("0") == 0 && hv_pvg_lite_vbl_exp_parse("tick_none") == 1 && hv_pvg_lite_vbl_exp_parse("bit3_once") == 2 &&
+           hv_pvg_lite_vbl_exp_parse("swap_no_or2") == 3 && hv_pvg_lite_vbl_exp_parse("send_0x8") == -1 && hv_pvg_lite_vbl_exp_parse("1") == -1, "vblexp: names parse; unset/empty/0 = none; anything else (incl. send_0x8, 1) is unrecognized");
+    /* default (0): exactly the earlier behaviour */
+    vblexp_scenario(0, &d, log, sizeof log);
+    EXPECT(strstr(log, "g7-vbl: init exp=0 display_events=") != NULL, "vblexp: default: one init line says exp=0");
+    EXPECT((d.b4_pre & 8) && d.pend_pre > 0, "vblexp default: before any swap the tick ORs bit 3 into +0x100 and pends the interrupt (word %x, %d pends)", d.b4_pre, d.pend_pre);
+    EXPECT(d.swaps == 1 && (d.swap_word & 2), "vblexp default: a swap ORs 0x2 (word %x)", d.swap_word);
+    EXPECT((d.post_a & 8) && (d.post_b & 8) && d.pend_post > 0, "vblexp default: ticks keep sending bit 3 after the swap (%x, %x)", d.post_a, d.post_b);
+    EXPECT(d.bits[3] >= 3 && d.bits[1] == 1 && d.bits[2] == 1 && d.bits[0] == 0 && d.supp == 0 && d.skipped == 0, "vblexp default: counters bit1=%llu bit2=%llu bit3=%llu, nothing suppressed or skipped", (unsigned long long)d.bits[1], (unsigned long long)d.bits[2], (unsigned long long)d.bits[3]);
+    /* tick_none */
+    vblexp_scenario(1, &t, log, sizeof log);
+    EXPECT(strstr(log, "g7-vbl: init exp=tick_none") != NULL, "vblexp tick_none: the init line names the experiment");
+    EXPECT((t.b4_pre & 8) == 0 && t.pend_pre == 0, "vblexp tick_none: no tick event before the swap: no bit 3, no interrupt (word %x, %d pends)", t.b4_pre, t.pend_pre);
+    EXPECT(t.swaps == 1 && (t.swap_word & 2), "vblexp tick_none: the swap still ORs 0x2 (swap path unchanged)");
+    EXPECT((t.post_a & 8) == 0 && (t.post_b & 8) == 0 && t.pend_post == 0, "vblexp tick_none: no tick event after the swap either (%x, %x, %d pends)", t.post_a, t.post_b, t.pend_post);
+    EXPECT(t.bits[3] == 0 && t.bits[0] == 0 && t.supp >= 3 && t.bits[1] == 1, "vblexp tick_none: delivered bit3=%llu, ticks suppressed=%llu (>=3), bit1=%llu", (unsigned long long)t.bits[3], (unsigned long long)t.supp, (unsigned long long)t.bits[1]);
+    EXPECT(strstr(log, "g7-vbl: counters exp=tick_none") != NULL || t.supp > 0, "vblexp tick_none: counters are reported");
+    /* bit3_once */
+    vblexp_scenario(2, &b, log, sizeof log);
+    EXPECT((b.b4_pre & 8) == 0 && b.pend_pre == 0, "vblexp bit3_once: nothing before the first swap (word %x, %d pends)", b.b4_pre, b.pend_pre);
+    EXPECT(b.swaps == 1 && (b.swap_word & 2), "vblexp bit3_once: the swap itself is unchanged (0x2)");
+    EXPECT((b.post_a & 8) && b.pend_post > 0, "vblexp bit3_once: bit 3 arrives after the first swap (%x, %d pends)", b.post_a, b.pend_post);
+    EXPECT((b.post_b & 8) == 0, "vblexp bit3_once: and never again (the next ticks sent %x)", b.post_b);
+    EXPECT(b.bits[3] == 1 && b.bits[0] == 0 && b.supp >= 3, "vblexp bit3_once: exactly one bit-3 delivery (%llu), the other ticks suppressed (%llu)", (unsigned long long)b.bits[3], (unsigned long long)b.supp);
+    /* swap_no_or2 */
+    vblexp_scenario(3, &w, log, sizeof log);
+    EXPECT((w.b4_pre & 8) && w.pend_pre > 0, "vblexp swap_no_or2: ticks are the default ones (bit 3 before the swap)");
+    EXPECT(w.swaps == 1 && (w.swap_word & 2) == 0, "vblexp swap_no_or2: the swap is applied (counter 1) but does NOT OR 0x2 (word %x)", w.swap_word);
+    EXPECT((w.post_a & 8) && (w.post_b & 8) && w.bits[1] == 0 && w.skipped == 1 && w.supp == 0, "vblexp swap_no_or2: ticks continue, bit1 delivered %llu, OR skipped %llu", (unsigned long long)w.bits[1], (unsigned long long)w.skipped);
+    /* the unrecognized value leaves behaviour unchanged and says so */
+    setenv("LAGFX_VBL_EXP", "send_0x8", 1); hv_pvg_lite_set_vbl_exp(-1);
+    { char path[64]; snprintf(path, sizeof path, "/tmp/test_pvg_vblexp_u_%d.err", (int)getpid()); fflush(stderr);
+      int saved = dup(2), fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600); dup2(fd, 2); close(fd);
+      dev_new(1); fflush(stderr); dup2(saved, 2); close(saved);
+      FILE *f = fopen(path, "r"); size_t got = f ? fread(log, 1, sizeof log - 1, f) : 0; if (f) fclose(f); unlink(path); log[got] = 0; }
+    unsetenv("LAGFX_VBL_EXP");
+    EXPECT(strstr(log, "g7-vbl: init exp=0 (UNRECOGNIZED value 'send_0x8', treated as 0)") != NULL, "vblexp: an unrecognized env value is reported and means exp=0");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     ram = aligned_alloc(0x4000, RSZ);
@@ -1204,6 +1287,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "fuzz")) s_fuzz(argc > 2 ? atoi(argv[2]) : 400);
     if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();
+    if (all || !strcmp(sc, "vblexp")) s_vblexp();
     if (all || !strcmp(sc, "rgha")) s_rgha();
     if (all || !strcmp(sc, "live")) s_live();
     if (all || !strcmp(sc, "vbldiag")) s_vbldiag();

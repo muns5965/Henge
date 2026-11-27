@@ -27,6 +27,10 @@ void hv_pvg_lite_set_test_pattern(int on);
    hv_vm_create); without a call the device falls back to HV_PVG_DISPLAY_EVENTS. _applied returns what the device will actually use. */
 void hv_pvg_lite_set_display_events(int on);
 int hv_pvg_lite_display_events_applied(void);
+/* VBL experiment switches (env LAGFX_VBL_EXP; unset/"0" = unchanged): 0 none, 1 tick_none, 2 bit3_once, 3 swap_no_or2. hv_pvg_lite_vbl_exp_parse: -1 for an unrecognized name. set_vbl_exp(-1) = back to the environment. */
+int hv_pvg_lite_vbl_exp_parse(const char *s);
+void hv_pvg_lite_set_vbl_exp(int mode);
+void hv_pvg_lite_vbl_exp_counters(const HvPvgLite *p, uint64_t bits[4], uint64_t *tick_suppressed, uint64_t *swap_or2_skipped);
 
 /* Between the device and its Metal side (pvg_metal.m). */
 typedef struct HvPvgMetal HvPvgMetal;

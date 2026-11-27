@@ -52,7 +52,7 @@ final class G7PipeRepro {
         for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
         if (ids.isEmpty()) { buf.write(("ladder: --list-rows gave no rows; output:\n" + listOut + "\n").getBytes(StandardCharsets.UTF_8)); return 2; }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
-        int r0 = -9, built = 0, fail = 0, bad = 0; boolean complete = false; String r0v = "not run";
+        int r0 = -9, built = 0, fail = 0, bad = 0, na = 0; boolean complete = false; String r0v = "not run";
         long end = System.currentTimeMillis() + 840_000L;
         // each row is appended to its own file as soon as it is done, so an app kill or a crash keeps everything finished so far (the final window/file still comes at the end)
         File partial = new File(logDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + "-ladder-partial.txt");
@@ -64,13 +64,20 @@ final class G7PipeRepro {
             String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, 40, ec, 4_000_000);
             String rowLine = null;
             for (String ln : out.split("\n")) if (ln.contains("pipeline-reduce: row=" + id + " ")) { rowLine = ln.substring(ln.indexOf("pipeline-reduce:")); break; }
-            if (rowLine == null) { String l = "pipeline-reduce: row=" + id + " result=" + (ec[0] == -2 ? "TIMEOUT" : "CRASH") + " exit=" + ec[0] + " (no row line; process ended)"; o.append(l).append("\n"); appendQuiet(partial, l); bad++; continue; }
+            if (rowLine == null) {
+                // exit 0 with no row line is NOT a crash: an older library (the pinned one) prints no row for an offline-file row (F:<name>) whose file is absent, only the summary
+                // "N offline file row(s) absent ..."; a signal or a non-zero exit is a crash, -2 a timeout
+                boolean absent = ec[0] == 0 && id.startsWith("F:") && out.contains("offline file row(s) absent");
+                String l = absent ? "pipeline-reduce: row=" + id + " result=n/a exit=0 (offline file absent: the row was NOT run; the library printed no row line for it)"
+                        : "pipeline-reduce: row=" + id + " result=" + (ec[0] == -2 ? "TIMEOUT" : ec[0] == 0 ? "NOROW" : "CRASH") + " exit=" + ec[0] + (ec[0] == 0 ? " (no row line although the process exited normally)" : " (no row line; process ended)");
+                o.append(l).append("\n"); appendQuiet(partial, l); if (absent) na++; else bad++; continue;
+            }
             o.append(rowLine).append("\n"); appendQuiet(partial, rowLine);
-            if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
+            if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else if (rowLine.contains("result=n/a")) na++; else bad++;
             if (id.equals("R0V")) r0v = rowLine.contains("result=BUILT") ? "BUILT" : rowLine.contains("result=FAIL vk=-13(") ? "same -13" : rowLine.contains("result=FAIL") ? "FAIL (other VkResult)" : "undecided";
             if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL vk=-13(") ? 1 : rowLine.contains("result=FAIL") ? 4 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
         }
-        o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
+        o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" n/a=").append(na).append(" other=").append(bad).append("\n");
             complete = System.currentTimeMillis() <= end && !ids.isEmpty();
         } catch (RuntimeException | InterruptedException | IOException e) {
             o.append("ladder: ABORTED: ").append(e).append(" (the rows above were completed)\n");

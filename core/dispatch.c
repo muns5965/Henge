@@ -1,4 +1,5 @@
 #include "dispatch.h"
+#include "emitfail.h"
 
 #include "../host/platform.h"
 #include <sched.h>
@@ -9,6 +10,7 @@
 #include <unistd.h>
 
 #include "exception.h"
+#include "jitstats.h"
 #include "memop.h"
 #include "mmu.h"
 #include "sysreg.h"
@@ -28,6 +30,12 @@ void hv_flush_blocks(HvMachine *m) {
     m->stats.block_flushes++;
     m->stats.flushed_blocks += (uint64_t)m->nblocks; /* what this drops, to tell a code region too small for the working set (every flush drops a full region) from other causes */
     m->stats.flushed_words += (uint64_t)m->jit.used;
+    /* g7-jit2: what was live (published, direct size) against what was reserved (flushed_words), per flush. Under tr_mu. */
+    m->stats.live_words_at_flush_sum += m->stats.epoch_live_words;
+    if (m->stats.epoch_live_words > m->stats.live_words_at_flush_max) m->stats.live_words_at_flush_max = m->stats.epoch_live_words;
+    m->stats.dup_words_at_flush_sum += m->stats.epoch_dup_words;
+    m->stats.unpub_words_at_flush_sum += m->stats.epoch_unpub_words;
+    m->stats.epoch_live_words = m->stats.epoch_dup_words = m->stats.epoch_unpub_words = 0;
     __atomic_add_fetch(&m->jit_gen, 1, __ATOMIC_SEQ_CST);
     for (int i = 0; i < m->ncpus; i++)
         if (m->cpus[i]) {
@@ -126,6 +134,22 @@ static void block_dump(const HvBlock *b, const uint32_t *code) {
     pthread_mutex_unlock(&mu);
 }
 
+/* Every request for a whole flush, by cause (g7-jit2). Cheap: relaxed atomics, and only where a flush is being asked for. */
+static void note_flush_request(HvMachine *m, uint64_t *cause) {
+    if (cause) __atomic_add_fetch(cause, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&m->stats.flush_requests, 1, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&m->stw_active, __ATOMIC_RELAXED)) __atomic_add_fetch(&m->stats.flush_req_during_stw, 1, __ATOMIC_RELAXED);
+}
+
+/* Exact "translated before" set (HV_STATS_EXACT=<thousands of entries>), and the hashed bitmaps; both under tr_mu. */
+static HvJstatExact jstat_exact;
+static int jstat_exact_on = -1;
+
+/* Per CPU thread: the block whose emit failed last, and how often (core/emitfail.h). The limit is a variable only so a test can set it (-1: the old behaviour). */
+static __thread HvEmitFailState emit_fail_state;
+int hv_emit_fail_max_flushes = HV_EMIT_FAIL_MAX_FLUSHES;
+#define emit_fail_max_flushes hv_emit_fail_max_flushes
+
 static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail) {
     HvMachine *m = cpu->m;
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
@@ -142,7 +166,10 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         return b;
     }
 
-    if (m->flush_pending) goto flush_unlocked;
+    if (m->flush_pending) {
+        note_flush_request(m, &m->stats.flush_pending_at_lookup);
+        goto flush_unlocked;
+    }
     /* Writes to this page must take the slow path from now on so we notice them:
        before its code is read (so a write after that, or the IC IVAU after it,
        invalidates what we make), and without the lock (it may scan every CPU's
@@ -157,21 +184,45 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     /* Translate without the lock, into this thread's buffer... */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
-    if (hv_translate_emit(m, &nb, code, avail) != 0) {
+    int emit_rc = hv_translate_emit(m, &nb, code, avail);
+    if (emit_rc != 0) {
+        /* A failed emit belongs to the block, not the region: the same block fails again after a flush. One flush is
+           tried (as before); a second failure of the same key gives up instead of flushing forever (core/emitfail.h). */
+        __atomic_add_fetch(&m->stats.emit_fail_deterministic, 1, __ATOMIC_RELAXED);
+        if (hv_emitfail_note(&emit_fail_state, va, pa, flags, gen, emit_fail_max_flushes) == HV_EMITFAIL_GIVE_UP) {
+            __atomic_add_fetch(&m->stats.emit_fail_retry_exhausted, 1, __ATOMIC_RELAXED);
+            if (!emit_fail_state.logged) {
+                emit_fail_state.logged = 1;
+                fprintf(stderr, "hengevm: cpu %u: cannot translate block va %llx pa %llx flags %x gen %u: %s (%d); still failing after %u flush(es), giving up on this CPU\n",
+                        cpu->index, (unsigned long long)va, (unsigned long long)pa, flags, gen, hv_translate_err_name(emit_rc), emit_rc, emit_fail_state.flushes);
+            }
+            return NULL; /* nothing pending: run_loop reports the block and parks the CPU */
+        }
         __atomic_add_fetch(&m->stats.flush_emit_fail, 1, __ATOMIC_RELAXED);
+        note_flush_request(m, NULL); /* flush_emit_fail is its own cause counter, bumped just above */
         goto flush_unlocked;
     }
-    if (m->stats_interval) {
-        m->stats.translate_ticks += mach_absolute_time() - t0;
-        m->stats.translated_insns += nb.ninsns;
+    hv_emitfail_clear(&emit_fail_state);
+    uint64_t emit_ticks = 0;
+    if (m->stats_interval) { /* wall ticks of this thread inside hv_translate_emit (not CPU time; place, publish and lock waits are not in it) */
+        emit_ticks = mach_absolute_time() - t0;
+        __atomic_add_fetch(&m->stats.translate_ticks, emit_ticks, __ATOMIC_RELAXED); /* was a plain += from every CPU thread: updates could be lost */
+        __atomic_add_fetch(&m->stats.translated_insns, nb.ninsns, __ATOMIC_RELAXED);
     }
     /* ...and place it in the region (space is reserved atomically, so no lock either)... */
     size_t used0 = m->jit.used;
     if (hv_translate_place(m, &nb) != 0) { /* JIT region full: start over */
         pthread_mutex_lock(&m->tr_mu);
         m->stats.flush_full++;
+        m->stats.emit_fail_region++; /* under tr_mu */
+        note_flush_request(m, &m->stats.flush_code_region_full);
+        if (m->stats_interval) {
+            m->stats.discarded_place_count++;
+            m->stats.discarded_place_ticks += emit_ticks;
+        }
         goto flush;
     }
+    uint32_t placed_words = m->stats_interval ? hv_translate_last_place_words() : 0; /* this block's own size, before another CPU's placement can matter */
     if (m->gen_checks && nb.jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST))
         fprintf(stderr, "hengevm: cpu %u translated across a flush: gen %u to %u, placed at rx+%llx, used %llx, active %d\n", cpu->index, nb.jit_gen, m->jit_gen, (unsigned long long)(nb.code - m->jit.base) * 4, (unsigned long long)m->jit.used * 4, cpu->pc_state->active);
     block_dump(&nb, code);
@@ -186,27 +237,78 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     }
     b = find(m, h, va, pa, flags, gen); /* another CPU may have just made it: ours is dropped (its space stays used until a flush) */
     if (b) {
+        if (m->stats_interval) { /* two CPUs made the same block: this copy keeps its code space until the next flush */
+            m->stats.duplicate_translation_count++;
+            m->stats.duplicate_translation_words += placed_words;
+            m->stats.duplicate_translation_ticks += emit_ticks;
+            m->stats.epoch_dup_words += placed_words;
+        }
         pthread_mutex_unlock(&m->tr_mu);
         jc[j].va = va, jc[j].b = b;
         return b;
     }
     if ((uint32_t)m->nblocks >= m->max_blocks || m->flush_pending) {
-        if ((uint32_t)m->nblocks >= m->max_blocks) m->stats.flush_table_full++;
+        if ((uint32_t)m->nblocks >= m->max_blocks) {
+            m->stats.flush_table_full++;
+            note_flush_request(m, NULL); /* flush_table_full is its own cause counter */
+        } else {
+            note_flush_request(m, &m->stats.flush_pending_at_publish);
+        }
         m->stats.flush_full++;
+        if (m->stats_interval) {
+            m->stats.unpublished_count++;
+            m->stats.unpublished_words += placed_words;
+            m->stats.unpublished_ticks += emit_ticks;
+            m->stats.epoch_unpub_words += placed_words;
+        }
         goto flush;
     }
     b = &m->blocks[m->nblocks];
     *b = nb;
     m->stats.translations++;
     if (m->stats_interval) {
+        /* translated_words: the region's growth between before our placement and now. The region is reserved in 1 MB
+           chunks per CPU without any lock, so this is 0 for most blocks and a whole chunk for the one that took it, and
+           a chunk another CPU took inside the same window is counted here too. Kept as it was; published_words is the
+           block's own size. */
         m->stats.translated_words += m->jit.used - used0;
-        static uint64_t seen_va[1 << 18], seen_vapa[1 << 18]; /* was this code translated before? (hashed, so approximate) */
-        uint32_t hv = (uint32_t)(((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull >> 40);
-        uint32_t hp = (uint32_t)((((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull ^ pa * 0xc2b2ae3d27d4eb4full) >> 40);
-        if (seen_va[hv >> 6] >> (hv & 63) & 1) m->stats.retrans_va++;
-        if (seen_vapa[hp >> 6] >> (hp & 63) & 1) m->stats.retrans_vapa++;
-        seen_va[hv >> 6] |= 1ull << (hv & 63);
-        seen_vapa[hp >> 6] |= 1ull << (hp & 63);
+        m->stats.published_words += placed_words;
+        m->stats.epoch_live_words += placed_words;
+        /* Was this code translated before? Hashed bitmaps (never cleared, no page generation), so approximate. */
+        static uint64_t seen_va[HV_JSTAT_BITMAP_WORDS], seen_vapa[HV_JSTAT_BITMAP_WORDS];
+        int again_va = hv_jstat_bitmap_test_set(seen_va, hv_jstat_hash_va(va, flags));
+        int again_vapa = hv_jstat_bitmap_test_set(seen_vapa, hv_jstat_hash_vapa(va, pa, flags));
+        if (again_va) m->stats.retrans_va++;
+        if (again_vapa) m->stats.retrans_vapa++;
+        if (again_vapa) m->stats.retranslation_ticks += emit_ticks;
+        else m->stats.first_translation_ticks += emit_ticks;
+        if (jstat_exact_on < 0) { /* HV_STATS_EXACT=<max entries in thousands> (default 2048 with any value that is not a number) */
+            const char *e = getenv("HV_STATS_EXACT");
+            if (!e) e = getenv("G7_STATS_EXACT"); /* the Android clone runner scrubs every HV_* variable; a name outside HV_* gets through (the launcher does not set it yet) */
+            long k = e ? atol(e) : 0;
+            jstat_exact_on = e != NULL && *e != '0';
+            if (jstat_exact_on) {
+                hv_jstat_exact_init(&jstat_exact, (uint64_t)(k > 1 ? k : 2048) * 1000);
+                const char *pk = getenv("HV_STATS_EXACT_PEAK_MIB");
+                if (!pk) pk = getenv("G7_STATS_EXACT_PEAK_MIB"); /* optional cap on old + new while the table grows (core/jitstats.h) */
+                if (pk && atol(pk) > 0) hv_jstat_exact_set_budget(&jstat_exact, (uint64_t)atol(pk) << 20);
+            }
+        }
+        if (jstat_exact_on) {
+            uint32_t og = 0, oe = 0, epoch = (uint32_t)m->stats.block_flushes;
+            int r = hv_jstat_exact_note(&jstat_exact, va, pa, flags, gen, epoch, &og, &oe);
+            if (r < 0) m->stats.exact_overflow++;
+            else if (r == 0) {
+                m->stats.exact_new++;
+                m->stats.exact_first_ticks += emit_ticks;
+                if (again_vapa) m->stats.exact_bitmap_false++;
+            } else {
+                if (og == gen) m->stats.exact_again_same_gen++;
+                else m->stats.exact_again_new_gen++;
+                m->stats.exact_gap[hv_jstat_gap_bucket(epoch - oe)]++;
+                m->stats.exact_retrans_ticks += emit_ticks;
+            }
+        }
     }
     m->nblocks++;
     b->next = m->hash[h];
@@ -649,6 +751,34 @@ static void print_stats(HvCpu *cpu, int force) {
         fprintf(stderr, "  translations dropped by whole flushes: %llu blocks in %llu flushes (avg %.0f blocks, %.1f MB of code each); flushes requested by an unemittable block %llu, by a full block table %llu; TLBI never drops translations (they are keyed by VA+PA+flags+page generation)\n",
                 (unsigned long long)s->flushed_blocks, (unsigned long long)s->block_flushes, s->block_flushes ? (double)s->flushed_blocks / (double)s->block_flushes : 0.0,
                 s->block_flushes ? (double)s->flushed_words * 4 / (double)s->block_flushes / (1 << 20) : 0.0, (unsigned long long)s->flush_emit_fail, (unsigned long long)s->flush_table_full);
+        { /* g7-jit2: why flushes were asked for, what the region held, where the translating time went (docs/research/jit-reverification.md) */
+            double mb = 4.0 / (1 << 20), nf = s->block_flushes ? (double)s->block_flushes : 1;
+            double pubn = (double)s->translations + 1e-9;
+            fprintf(stderr, "  flush requests: %llu (code region full %llu, block table full %llu, emit fail %llu, pending seen at lookup %llu / at publish %llu, other %llu, during stop-the-world %llu); executed %llu; old flush_full %llu\n",
+                    (unsigned long long)s->flush_requests, (unsigned long long)s->flush_code_region_full, (unsigned long long)s->flush_table_full, (unsigned long long)s->flush_emit_fail,
+                    (unsigned long long)s->flush_pending_at_lookup, (unsigned long long)s->flush_pending_at_publish, (unsigned long long)s->flush_req_other,
+                    (unsigned long long)s->flush_req_during_stw, (unsigned long long)s->block_flushes, (unsigned long long)s->flush_full);
+            fprintf(stderr, "  code: published %.1f B/block direct (translated_words says %.1f, x%.2f); duplicates %llu (%.2f MB, %.2f s emit); unpublished after placement %llu (%.2f MB); dropped before placement %llu (%.2f s); per flush (%llu so far): reserved %.2f MB, live %.2f (max %.2f), duplicate %.2f, unpublished %.2f, other (chunk slack, open chunks) %.2f\n",
+                    (double)s->published_words * 4 / pubn, (double)s->translated_words * 4 / pubn, s->published_words ? (double)s->translated_words / (double)s->published_words : 0.0,
+                    (unsigned long long)s->duplicate_translation_count, (double)s->duplicate_translation_words * mb, (double)s->duplicate_translation_ticks / 24e6,
+                    (unsigned long long)s->unpublished_count, (double)s->unpublished_words * mb, (unsigned long long)s->discarded_place_count, (double)s->discarded_place_ticks / 24e6,
+                    (unsigned long long)s->block_flushes, (double)s->flushed_words * mb / nf, (double)s->live_words_at_flush_sum * mb / nf, (double)s->live_words_at_flush_max * mb,
+                    (double)s->dup_words_at_flush_sum * mb / nf, (double)s->unpub_words_at_flush_sum * mb / nf,
+                    ((double)s->flushed_words - (double)s->live_words_at_flush_sum - (double)s->dup_words_at_flush_sum - (double)s->unpub_words_at_flush_sum) * mb / nf);
+            fprintf(stderr, "  emit/place failures (g7-jit3): region full %llu (flush, retry as before), block cannot be emitted %llu (up to %d flush per block), gave up on a block %llu (CPU parked)\n",
+                    (unsigned long long)s->emit_fail_region, (unsigned long long)s->emit_fail_deterministic, hv_emit_fail_max_flushes, (unsigned long long)s->emit_fail_retry_exhausted);
+            double wall = (double)(now - last_t);
+            fprintf(stderr, "  translate wall time (emit only, summed over CPUs, share of the interval): first %.1f%% retranslated %.1f%% (bitmap), exact first %.1f%% retranslated %.1f%%; duplicates %.1f%%; total %.1f%%; cumulative first %.2f s retranslated %.2f s\n",
+                    100.0 * (double)(s->first_translation_ticks - last.first_translation_ticks) / wall, 100.0 * (double)(s->retranslation_ticks - last.retranslation_ticks) / wall,
+                    100.0 * (double)(s->exact_first_ticks - last.exact_first_ticks) / wall, 100.0 * (double)(s->exact_retrans_ticks - last.exact_retrans_ticks) / wall,
+                    100.0 * (double)(s->duplicate_translation_ticks - last.duplicate_translation_ticks) / wall, 100.0 * (double)(s->translate_ticks - last.translate_ticks) / wall,
+                    (double)s->first_translation_ticks / 24e6, (double)s->retranslation_ticks / 24e6);
+            if (jstat_exact_on > 0)
+                fprintf(stderr, "  exact seen-set (%llu keys, %llu not recorded; table %llu MiB, peak while growing %llu MiB): new %llu, again %llu (page unchanged: dropped by a flush %llu, page changed %llu), bitmap said again for a new key %llu; epochs since last translation 0:%llu 1:%llu 2:%llu 3-4:%llu 5+:%llu\n",
+                        (unsigned long long)jstat_exact.count, (unsigned long long)s->exact_overflow, (unsigned long long)(jstat_exact.cur_bytes >> 20), (unsigned long long)(jstat_exact.peak_bytes >> 20), (unsigned long long)s->exact_new, (unsigned long long)(s->exact_again_same_gen + s->exact_again_new_gen),
+                        (unsigned long long)s->exact_again_same_gen, (unsigned long long)s->exact_again_new_gen, (unsigned long long)s->exact_bitmap_false,
+                        (unsigned long long)s->exact_gap[0], (unsigned long long)s->exact_gap[1], (unsigned long long)s->exact_gap[2], (unsigned long long)s->exact_gap[3], (unsigned long long)s->exact_gap[4]);
+        }
         fprintf(stderr, "  cache drops/s: full %.0f, ASID %.0f, user VA %.0f, kernel VA %.0f, code %.0f (whole user half %.0f, filter full %.0f, big user range %.0f)\n", RATE(reset_why[0]),
                 RATE(reset_why[1]), RATE(reset_why[2]), RATE(reset_why[3]), RATE(reset_why[4]), RATE(reset_why[5]), RATE(reset_why[6]), RATE(reset_why[7]));
         { /* block hash health: chain lengths and how much of it is stale */

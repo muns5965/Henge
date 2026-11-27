@@ -118,7 +118,24 @@ typedef struct HvStats {
     uint32_t nelchg;
     uint64_t nrecent;
     uint64_t translate_ticks, translated_insns, translated_words; /* time spent translating, guest and host code size */
-    uint64_t retrans_va, retrans_vapa; /* translations of a VA (and VA+PA) translated before: diagnostics */
+    uint64_t retrans_va, retrans_vapa; /* translations of a VA (and VA+PA) translated before: diagnostics (hashed bitmaps: approximate, see core/jitstats.h) */
+    /* g7-jit2 (re-verification). Kept only with --stats unless said; atomics are relaxed, the rest is under tr_mu. */
+    uint64_t flush_code_region_full;   /* flush requests: hv_translate_place found no room (always kept) */
+    uint64_t flush_pending_at_lookup, flush_pending_at_publish; /* ...a flush was already requested when the block was looked up / about to be published (concurrent requests) */
+    uint64_t flush_req_other;          /* ...hv_knob_set, HV_IC_FLUSH (host tools that set flush_pending themselves are not counted) */
+    uint64_t emit_fail_region, emit_fail_deterministic, emit_fail_retry_exhausted; /* g7-jit3, always kept: placements that found the region full / emits that failed with a cause that belongs to the block (see core/emitfail.h) / blocks given up after HV_EMIT_FAIL_MAX_FLUSHES flushes (the CPU is parked, HV_EXIT_UNSUPPORTED) */
+    uint64_t flush_requests;           /* all requests: region full + table full + emit fail + pending seen + other */
+    uint64_t flush_req_during_stw;     /* requests made while a stop-the-world flush was under way (they can cause an immediate second flush) */
+    uint64_t duplicate_translation_count, duplicate_translation_words, duplicate_translation_ticks; /* blocks made, placed, then dropped because another CPU published the same key first */
+    uint64_t unpublished_count, unpublished_words, unpublished_ticks; /* blocks made and placed, then dropped because a flush was due (table full or pending) */
+    uint64_t discarded_place_count, discarded_place_ticks; /* blocks made, then dropped because the region had no room (nothing placed) */
+    uint64_t published_words;          /* host words (hot + cold + pool + padding, no chunk slack) of the blocks published: the direct size */
+    uint64_t first_translation_ticks, retranslation_ticks; /* emit time of published blocks, by the bitmap: VA+PA+flags not seen before / seen (approximate) */
+    uint64_t exact_first_ticks, exact_retrans_ticks;       /* the same by the exact set (HV_STATS_EXACT) */
+    uint64_t epoch_live_words, epoch_dup_words, epoch_unpub_words; /* since the last flush (under tr_mu) */
+    uint64_t live_words_at_flush_sum, live_words_at_flush_max, dup_words_at_flush_sum, unpub_words_at_flush_sum; /* summed over flushes */
+    uint64_t exact_new, exact_again_same_gen, exact_again_new_gen, exact_overflow, exact_bitmap_false; /* exact set: new, again with the page unchanged (dropped by a flush), again after a code change; table full; bitmap said "again" for a new key */
+    uint64_t exact_gap[5];             /* retranslations by flush epochs since the block's last translation: 0, 1, 2, 3-4, 5+ */
     uint64_t helper[12];      /* by HV_OP_* */
     uint64_t tlb_flushes, fetch_walks, exceptions, interrupts;
     uint64_t wfi, wfi_ticks;  /* WFI exits, host ticks spent asleep */

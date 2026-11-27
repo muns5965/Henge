@@ -1941,7 +1941,26 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
 
 static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup);
 
+const char *hv_translate_err_name(int rc) {
+    switch (rc) {
+    case 0: return "ok";
+    case HV_TR_E_TOO_BIG: return "block over the emit buffer";
+    case HV_TR_E_OVERFLOW: return "relocation table overflow";
+    case HV_TR_E_GROUP: return "group copies did not fit";
+    case HV_TR_E_INJECTED: return "injected (test)";
+    default: return "unknown";
+    }
+}
+
+#ifdef HV_TEST_HOOKS
+int (*hv_test_emit_hook)(HvMachine *m, HvBlock *b);
+int (*hv_test_place_hook)(HvMachine *m, HvBlock *b);
+#endif
+
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail) {
+#ifdef HV_TEST_HOOKS
+    if (hv_test_emit_hook && hv_test_emit_hook(m, b)) return HV_TR_E_INJECTED;
+#endif
     /* HV_GROUPS=1: group accesses (off by default: measured no faster, and the
        plain copies make the code about 15% bigger, so the JIT region fills sooner). */
     if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0) == 0) return 0;
@@ -1989,7 +2008,7 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     if (!ended) put_branch_exit(e, b->va + 4ull * i, 1);
     b->ninsns = i;
     uint32_t inline_words = e->n;
-    if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return -1;
+    if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return HV_TR_E_GROUP;
     cold_on(e);
     emit_ool(e);
     if (m->stats_interval) {
@@ -2006,7 +2025,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     if (e->n & 1) put(e, 0xd503201f);
     if (e->flat) e->ncold = 0, e->nhot = ncold;
     else e->ncold = ncold, e->nhot = e->n;
-    if (e->nhot > MAX_WORDS || e->ncold > MAX_WORDS || e->overflow) return -1;
+    if (e->nhot > MAX_WORDS || e->ncold > MAX_WORDS) return HV_TR_E_TOO_BIG;
+    if (e->overflow) return HV_TR_E_OVERFLOW;
 
     for (uint32_t k = 0; k < e->nfix; k++) {
         LitFix *f = &e->fix[k];
@@ -2018,6 +2038,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 }
 
 uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /* hot words (no pool) of this thread's last block */
+/* Words the last block of this thread takes in the region: hot + padding + cold (with its pool), no chunk slack. Valid after hv_translate_emit, until the next one. */
+uint32_t hv_translate_last_place_words(void) { return E.nhot + (hv_knob[HV_K_TEST1] & ~1u) + E.ncold; }
 
 /* A B, B.cond, CBZ or CBNZ now going off words away, if it reaches. 1 if it does. */
 int hv_branch_retarget(uint32_t *w, int64_t off) {
@@ -2061,6 +2083,9 @@ static int chunk_take(HvMachine *m, uint32_t hot, uint32_t cold, uint32_t **hot_
 
 int hv_translate_place(HvMachine *m, HvBlock *b) {
     Emit *e = &E;
+#ifdef HV_TEST_HOOKS
+    if (hv_test_place_hook && hv_test_place_hook(m, b)) return -1;
+#endif
     uint32_t pad = hv_knob[HV_K_TEST1] & ~1u; /* HV_K1: words of nothing after each block's hot part, to see what density is worth */
     uint32_t *dst, *cold;
     if (chunk_take(m, e->nhot + pad, e->ncold, &dst, &cold) != 0) return -1;

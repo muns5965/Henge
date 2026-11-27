@@ -833,7 +833,7 @@ public class G7ExecActivity extends Activity {
     // ---- TEMPORARY guest input test (research/g7-input). Normal virtual-device events only (virtual USB keyboard, virtual mouse), sent as text lines to the running clone-boot runner's input
     // (host/input_inject.h); nothing writes guest memory and nothing skips a step of the Startup Disk flow. The runner's INJECT lines say how far each event got; "delivered" there means a
     // report/event was written into a buffer the guest's driver posted, NOT that a guest application acted on it. ----
-    private TextView injOut, injCoord; private android.widget.EditText injX, injY; private CheckBox injPreviewClick;
+    private TextView injOut, injCoord; private android.widget.SeekBar injX, injY; private TextView injXY; private CheckBox injPreviewClick;
 
     private void injButton(LinearLayout row, String label, final String cmd, final boolean sizeFirst) {
         Button b = new Button(this); b.setText(label); b.setAllCaps(false);
@@ -851,8 +851,15 @@ public class G7ExecActivity extends Activity {
         row = injRow(root);
         injButton(row, "클릭(현재 위치)", "inject click", false); injButton(row, "더블클릭(현재 위치)", "inject dclick", false); injButton(row, "입력 중단", "inject abort", false);
         row = injRow(root);
-        injX = new android.widget.EditText(this); injX.setHint("X (0-1919)"); injX.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); row.addView(injX, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        injY = new android.widget.EditText(this); injY.setHint("Y (0-1079)"); injY.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); row.addView(injY, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        injXY = new TextView(this); injXY.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(injXY);
+        android.widget.SeekBar.OnSeekBarChangeListener sl = new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar sb, int p, boolean user) { injXY.setText("X " + injX.getProgress() + "  Y " + injY.getProgress() + "  (게스트 1920x1080)"); }
+            public void onStartTrackingTouch(android.widget.SeekBar sb) { sb.getParent().requestDisallowInterceptTouchEvent(true); }
+            public void onStopTrackingTouch(android.widget.SeekBar sb) { }
+        };
+        injX = new android.widget.SeekBar(this); injX.setMax(G7InputMap.GUEST_W - 1); injX.setProgress(G7InputMap.RESTART_X); injX.setOnSeekBarChangeListener(sl); root.addView(injX);
+        injY = new android.widget.SeekBar(this); injY.setMax(G7InputMap.GUEST_H - 1); injY.setProgress(G7InputMap.RESTART_Y); injY.setOnSeekBarChangeListener(sl); root.addView(injY);
+        sl.onProgressChanged(injX, 0, false);
         row = injRow(root);
         Button cb = new Button(this); cb.setText("클릭 X,Y"); cb.setAllCaps(false); cb.setOnClickListener(v -> injAt(false)); row.addView(cb, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         Button db = new Button(this); db.setText("더블클릭 X,Y"); db.setAllCaps(false); db.setOnClickListener(v -> injAt(true)); row.addView(db, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -891,9 +898,7 @@ public class G7ExecActivity extends Activity {
     private String injShown = "";
 
     private void injAt(boolean dbl) {
-        int x, y;
-        try { x = Integer.parseInt(injX.getText().toString().trim()); y = Integer.parseInt(injY.getText().toString().trim()); }
-        catch (NumberFormatException e) { status.setText("X, Y에 숫자를 넣으세요."); return; }
+        int x = injX.getProgress(), y = injY.getProgress();
         if (x < 0 || y < 0 || x >= G7InputMap.GUEST_W || y >= G7InputMap.GUEST_H) { status.setText("범위 밖입니다(0-1919, 0-1079)."); return; }
         injSend(dbl ? "더블클릭 " + x + "," + y : "클릭 " + x + "," + y, dbl ? G7InputMap.dclick(x, y) : G7InputMap.click(x, y), true);
     }

@@ -1,0 +1,45 @@
+# spirv-opt single-pass variants (flags: --preserve-bindings --preserve-interface --target-env=vulkan1.2; counts by a python parse of the module words). OLD = ce5c70c189b74076, NEW = d88e3f350504ac39
+## OLD
+variant	bytes	inst	fnvars	blocks	loads	stores	phi	fns	valid
+ORIG	346780	20189	3135	723	1905	4262	0	56	yes
+O	9552956	62441	11861	2138	1087	15281	7794	1	yes
+Os	9545188	62060	11861	2138	1087	15281	7794	1	yes
+asm	346780	20189	3135	723	1905	4262	0	56	yes
+ccp	346948	20196	3135	723	1905	4262	0	56	yes
+hlsl	9561876	62986	11861	2138	1618	15281	7794	1	yes
+inline	504112	27511	3240	723	2727	4367	0	56	yes
+local-multi-store	1052588	19424	3135	723	424	4262	696	56	yes
+local-redundancy	345956	20146	3135	723	1890	4262	0	56	yes
+local-single-block	338420	19666	3135	723	1384	4260	0	56	yes
+locals	1052008	19382	3112	723	424	4239	696	56	yes
+redundancy	345916	20144	3135	723	1890	4262	0	56	yes
+scalar	346200	20147	3112	723	1905	4239	0	56	yes
+simplify	344460	20075	3135	723	1905	4262	0	56	yes
+ssa	1052588	19424	3135	723	424	4262	696	56	yes
+u2	210452	12240	3135	257	557	1439	0	56	yes
+u3	84644	5095	1944	7	44	6	0	1	yes
+u5	311884	18387	3135	723	1905	4262	0	56	yes
+unify	316884	18401	3135	723	1905	4262	0	56	yes
+## NEW
+variant	bytes	inst	fnvars	blocks	loads	stores	phi	fns	valid
+ORIG	348036	20246	3135	723	1915	4262	0	56	yes
+O	9554780	62488	11861	2138	1087	15281	7794	1	yes
+Os	9547012	62107	11861	2138	1087	15281	7794	1	yes
+asm	348036	20246	3135	723	1915	4262	0	56	yes
+ccp	348204	20253	3135	723	1915	4262	0	56	yes
+hlsl	9563696	63033	11861	2138	1618	15281	7794	1	yes
+inline	506248	27568	3240	723	2737	4367	0	56	yes
+local-multi-store	1053684	19471	3135	723	424	4262	696	56	yes
+local-redundancy	347212	20203	3135	723	1900	4262	0	56	yes
+local-single-block	339628	19720	3135	723	1391	4260	0	56	yes
+locals	1053104	19429	3112	723	424	4239	696	56	yes
+redundancy	347172	20201	3135	723	1900	4262	0	56	yes
+scalar	347456	20204	3112	723	1915	4239	0	56	yes
+simplify	345716	20132	3135	723	1915	4262	0	56	yes
+ssa	1053684	19471	3135	723	424	4262	696	56	yes
+strip	347964	20244	3135	723	1915	4262	0	56	yes
+u2	211468	12287	3135	257	557	1439	0	56	yes
+u3	85508	5142	1944	7	44	6	0	1	yes
+u5	312488	18406	3135	723	1915	4262	0	56	yes
+unify	317488	18420	3135	723	1915	4262	0	56	yes
+## no-op passes (output byte-identical to input, no file): private-to-local, dce(aggressive), dead-branches, dead-functions, merge-blocks, local-single-store, convert-local-access-chains, combine-access-chains, copy-propagate-arrays, vector-dce, dead-inserts, dead-variables, cfg-cleanup, if-conversion, reduce-load-size, strip-nonsemantic; OLD also strip-debug and re-encode, NEW re-encode

@@ -924,10 +924,10 @@ public class G7ExecActivity extends Activity {
     /** Lists the dump runs (newest first, the newest preselected) and builds the ZIP of the chosen one: its dump files plus the VM log and the lagfx log of that run. Only after the run has ended; nothing is deleted. */
     private void chooseDumpExport() {
         if (G7CloneBoot.hasLive()) { status.setText("복제본 부팅이 실행 중입니다. 실행이 끝난 뒤에 내보낼 수 있습니다(로그와 덤프가 아직 쓰이는 중)."); return; }
-        final List<G7ExecDumpExport.DumpRun> runs = G7ExecDumpExport.listRuns(dumpRoot());
+        final List<G7ExecDumpExport.DumpRun> runs = G7ExecDumpExport.choices(getFilesDir(), dumpRoot());   // element 0 = the CURRENT (latest clone-boot) run: with its dump, or logs only; never an older run's dump in its place
         if (runs.isEmpty()) { status.setText("내보낼 덤프 실행이 없습니다(" + dumpRoot() + " 에 run-* 폴더 없음). '게스트 셰이더·파이프라인 데이터 저장'을 켜고 부팅한 뒤 다시 시도하세요."); return; }
         final String[] names = new String[runs.size()];
-        for (int i = 0; i < names.length; i++) names[i] = (i == 0 ? "[최신] " : "") + runs.get(i).label();
+        for (int i = 0; i < names.length; i++) names[i] = (i == 0 ? (G7ExecDumpExport.latestCboot(getFilesDir()) != null ? "[현재 실행] " : "[최신] ") : "[이전 실행] ") + runs.get(i).label();
         final int[] pick = {0};
         new AlertDialog.Builder(this).setTitle("내보낼 실행 선택").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w)
                 .setNegativeButton("취소", null)

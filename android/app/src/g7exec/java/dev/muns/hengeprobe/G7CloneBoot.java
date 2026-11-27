@@ -146,7 +146,7 @@ public final class G7CloneBoot {
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
         if (gpuReadback) env.put("LAGFX_GPU_READBACK", "1");
         if (wbVerify) env.put("LAGFX_WB_VERIFY", "1");
-        note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; wb_verify=" + (wbVerify ? "ON (LAGFX_WB_VERIFY=1)" : "OFF (unset)") + "; ");
+        note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; wb_verify=" + WBV_MARK + "; ");   // the effective value is filled in at the end from the environment actually built (the write-back mode also sets it)
         if (fb0) env.put("G7_FB0", "1"); note.append("fb0=" + (fb0 ? "ON (G7_FB0=1" : "OFF (G7_FB0 unset") + ", early framebuffer observation, g7-fb0: lines; default OFF: enable only in the dedicated F0 run, keep OFF in J0/J1 timing comparisons); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
@@ -169,11 +169,21 @@ public final class G7CloneBoot {
             }
         }
         if (!env.containsKey("LAGFX_ARM64_DUMP_DATA")) note.append(captureData ? "; render_replay=REQUESTED BUT NOT ACTIVE (needs gpu_exec=ON and the shader/pipeline dump folder)" : "; render_replay=OFF");
-        lastGpuNote = note.toString();
+        lastGpuNote = note.toString().replace(WBV_MARK, wbVerifyText(env.get("LAGFX_WB_VERIFY"), wbVerify, gpuExec ? gpuWritebackMode : 0));
+    }
+
+    private static final String WBV_MARK = "@WBV@";
+    /** Effective LAGFX_WB_VERIFY for the g7-gpu-options note: the value really put in the environment and why (checkbox and/or write-back mode). Text only. */
+    static String wbVerifyText(String envValue, boolean checkbox, int wbMode) {
+        if (!"1".equals(envValue)) return "OFF (unset)";
+        String wb = wbMode == 1 ? "immediate write-back mode" : wbMode == 2 ? "deferred write-back mode" : null;
+        String via = checkbox && wb != null ? "checkbox and " + wb : checkbox ? "checkbox" : wb != null ? wb : "unknown";
+        return "ON (LAGFX_WB_VERIFY=1 via " + via + ")";
     }
 
     /** What lagfxEnv decided about the GPU switches, written at the top of the run log so a missing dump can be explained. */
     static volatile String lastGpuNote = "";
+    static volatile String lastRunConfig = "";
 
     /** The newest lagfx log on disk (g7_lagfx_*.txt), or null. */
     public static File newestLagfxLog(File filesDir) {
@@ -413,6 +423,7 @@ public final class G7CloneBoot {
             cmd.add("--seconds"); cmd.add(String.valueOf(seconds));   // 0 = no limit (the runner then waits for the stop request, a guest end or a fatal error)
             cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));   // validated against JIT_MB_CHOICES above; default 64
             cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode));
+            lastRunConfig = "clone=" + cloneDir.getName() + "; usb_mode=" + usbMode;   // log text only: lets the export read the run's own options
             Process p;
             try { p = sp.spawn(cmd); }
             catch (IOException e) { try { logOut.close(); } catch (IOException ignored) { } return new Start(false, "실행 파일을 시작하지 못했습니다: " + G7ExecLauncher.mask(String.valueOf(e.getMessage()), ecid), null); }
@@ -430,6 +441,7 @@ public final class G7CloneBoot {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 run.put("g7-cboot-start: " + System.currentTimeMillis() + "\n", true);
                 run.put("g7-gpu-options: " + lastGpuNote + "\n", true);
+                run.put("g7-run-config: " + lastRunConfig + "\n", true);
                 run.put("g7-jit-config: jit_mb=" + jit + (jit == JIT_MB_DEFAULT ? " (default)" : " (chosen on the start dialog; runner --jit-mb " + jit + ")") + " jit_exact=" + (exact ? "ON" : "OFF") + " jit_exact_peak_mib=" + (exact ? statsExactPeakName(peakNow) : "n/a") + "\n", true);
                 run.put(engineDiagLine(exact), true);
                 String line;

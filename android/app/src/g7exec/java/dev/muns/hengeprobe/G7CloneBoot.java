@@ -107,6 +107,8 @@ public final class G7CloneBoot {
     static volatile boolean gpuExec = false;
     /** Experiment switch, independent of gpuExec (only meaningful with it): LAGFX_ARM64_MAPPED_WRITEBACK. 0 = not set, 1 = "1" (write back after every exec that drew), 2 = "swap" (owed surfaces are paid before a display command). */
     static volatile int gpuWritebackMode = 0;
+    /** integ7b T7: independent readback (LAGFX_GPU_READBACK=1) and write-back verify (LAGFX_WB_VERIFY=1) of the library. Default OFF, never remembered, only set when exactly asked (otherwise the variable is removed, never "0"); logged in g7-gpu-options. WB_VERIFY alone does not enable the readback sync. */
+    static volatile boolean gpuReadback = false, wbVerify = false;
     static volatile boolean captureData = false;   // LAGFX_ARM64_DUMP_DATA=1 (Render Replay capture: buffers/textures/attachments of up to 256 draws, 128 MiB total; needs the dump + GPU execution)
     /** Per-draw diagnostics of the library (G7_DRAW_DIAG; not an HV_ name, so the runner's scrub leaves it alone). Default ON: the library's own default is on, the dialog always sends an explicit 1 or 0. Independent of captureData (Render Replay). */
     static volatile boolean drawDiag = true;
@@ -134,7 +136,7 @@ public final class G7CloneBoot {
         final boolean exact = statsExact;   // read once for the note, the environment and run-info.txt
         note.append("jit_exact=" + statsExactText(exact) + "; ");
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("LAGFX_GPU_READBACK"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
         if (exact) {   // the only place it is set; absent (not "0") when OFF
             env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);
             int pk = statsExactPeakMib;   // one validated value; unlimited (0) = the variable stays unset
@@ -142,6 +144,9 @@ public final class G7CloneBoot {
         }
         if (drawDiag) { env.put("LAGFX_PIPELINE_MATRIX", "1"); note.append("pipeline_matrix=ON (LAGFX_PIPELINE_MATRIX=1, with draw diag; runs on pipeline creation failure only); "); } env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
+        if (gpuReadback) env.put("LAGFX_GPU_READBACK", "1");
+        if (wbVerify) env.put("LAGFX_WB_VERIFY", "1");
+        note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; wb_verify=" + (wbVerify ? "ON (LAGFX_WB_VERIFY=1)" : "OFF (unset)") + "; ");
         if (fb0) env.put("G7_FB0", "1"); note.append("fb0=" + (fb0 ? "ON (G7_FB0=1" : "OFF (G7_FB0 unset") + ", early framebuffer observation, g7-fb0: lines; default OFF: enable only in the dedicated F0 run, keep OFF in J0/J1 timing comparisons); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;

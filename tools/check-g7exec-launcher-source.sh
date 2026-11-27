@@ -212,5 +212,8 @@ grep -q 'G7Exec' $MAIN/AndroidManifest.xml && bad "the general manifest names G7
 grep -q 'g7exec {' android/app/build.gradle || bad "android/app/build.gradle lacks the g7exec build type"
 # no binary is committed into the source set
 x=$(find $X/jniLibs -type f ! -name .gitkeep 2>/dev/null); [ -z "$x" ] || { bad "a binary is committed under $X/jniLibs:"; echo "$x"; }
+# T7: independent readback / wb-verify options: default OFF, set only when asked, not remembered
+grep -q 'static volatile boolean gpuReadback = false, wbVerify = false;' "$CB" && grep -q 'if (gpuReadback) env.put("LAGFX_GPU_READBACK", "1");' "$CB" && grep -q 'if (wbVerify) env.put("LAGFX_WB_VERIFY", "1");' "$CB" && [ "$(grep -c 'env.put("LAGFX_GPU_READBACK"' "$CB")" = 1 ] || bad "G7CloneBoot: readback/wb-verify must default OFF and be set only to 1, only when asked"
+grep -q 'rbc.setChecked(false)' "$A" && grep -q 'wvc.setChecked(false)' "$A" && ! grep -qE '(rbc|wvc).*(KEY_|opts\.)' "$A" || bad "readback/wb-verify checkboxes must default unchecked and not be remembered"
 [ $fail = 0 ] && echo "OK  G7 execution launcher source rules (switch off, one process creation, no ECID on a command line, no delete/move, not in the general source set)"
 exit $fail

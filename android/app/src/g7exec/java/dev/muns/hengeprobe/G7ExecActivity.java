@@ -520,6 +520,8 @@ public class G7ExecActivity extends Activity {
         final Runnable jpkShow = () -> { int v = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[Math.max(0, Math.min(jpk.length - 1, jpkSp.getSelectedItemPosition()))]; jpkNote.setText(!jex.isChecked() ? "정확 통계 꺼짐: 아래 한도는 쓰이지 않음" : v == 100 ? "100 MiB 한도: 표가 48 MiB(최대 72 MiB, 약 147만 키)에서 멈춰 부팅의 고유 블록 약 200만 개를 모두 기록할 수 없음. 넘친 만큼은 exact_overflow로 세고 exact_* 수치는 부분 결과" : "표 최대 96 MiB, 확장 중 최대 144 MiB(48+96). 고유 블록 약 200만 개를 모두 기록할 수 있음"); };
         jpkSp.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() { @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int i, long id) { jpkShow.run(); } @Override public void onNothingSelected(android.widget.AdapterView<?> p) { } });
         jex.setOnCheckedChangeListener((b, c) -> jpkShow.run()); jpkShow.run();
+        final CheckBox rbc = shortBox("독립 readback (LAGFX_GPU_READBACK=1, 기본 꺼짐, 기억 안 함; fence 대기로 프레임 경쟁을 가릴 수 있음)"); rbc.setChecked(false);
+        final CheckBox wvc = shortBox("write-back 검증 (LAGFX_WB_VERIFY=1, 기본 꺼짐, 기억 안 함)"); wvc.setChecked(false);
         final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초; 기본 꺼짐, F0 전용 실행에서만 켜고 J0/J1 시간 비교에서는 끔)"); fb0c.setChecked(false);   // default OFF, not remembered
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
@@ -534,7 +536,7 @@ public class G7ExecActivity extends Activity {
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp)); box.addView(labelRow("JIT 크기", jitSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(jex); box.addView(labelRow("정확 통계 메모리 한도", jpkSp)); box.addView(jpkNote); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(rbc); box.addView(wvc); box.addView(jex); box.addView(labelRow("정확 통계 메모리 한도", jpkSp)); box.addView(jpkNote); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -556,7 +558,7 @@ public class G7ExecActivity extends Activity {
                     G7CloneBoot.gpuExec = gx.isChecked();
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES[Math.max(0, Math.min(G7CloneBoot.JIT_MB_CHOICES.length - 1, jitSp.getSelectedItemPosition()))];
-                    G7CloneBoot.fb0 = fb0c.isChecked();
+                    G7CloneBoot.fb0 = fb0c.isChecked(); G7CloneBoot.gpuReadback = rbc.isChecked(); G7CloneBoot.wbVerify = wvc.isChecked();
                     G7CloneBoot.statsExact = jex.isChecked();
                     G7CloneBoot.statsExactPeakMib = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[Math.max(0, Math.min(G7CloneBoot.STATS_EXACT_PEAK_CHOICES.length - 1, jpkSp.getSelectedItemPosition()))];
                     G7CloneBoot.vblExp = G7CloneBoot.VBL_EXP_CHOICES[Math.max(0, Math.min(G7CloneBoot.VBL_EXP_CHOICES.length - 1, vblSp.getSelectedItemPosition()))];

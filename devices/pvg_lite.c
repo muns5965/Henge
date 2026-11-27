@@ -75,6 +75,13 @@ struct HvPvgLite {
     HvVblDiag vbl;   /* diagnostics only (pvg_vbldiag.h): bounded log lines and counters, no effect on delivery */
     uint64_t swaps;
     uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
+    /* hv_pvg_lite_live_surface_bgra(): a private copy of an RGhA surface's raw bytes, taken under the device lock and converted after it is
+       released (the conversion is most of the work). One caller at a time owns it (live_busy 0 -> 1); another one at the same moment uses the
+       old in-lock path. Never freed: the device has no destroy. */
+    uint8_t *live_scratch;
+    size_t live_scratch_cap;
+    _Atomic int live_busy;
+    _Atomic uint64_t live_staged, live_inlock; /* calls by path (staged copy, all in the lock), for the tests */
     /* The last stamp handed to the worker per channel, and who is being drained. */
     uint32_t submitted[MAX_CHANNELS];
     uint32_t draining;
@@ -511,9 +518,12 @@ void hv_pvg_lite_tally_surface(HvPvgLite *p, const char *when) {
    too-small case only, *need_out (if non-NULL) is set to the bytes the caller's buffer would need
    (width*height*4) so it can grow once and retry -- 0 in every other failure case, since the size isn't yet
    known or isn't the problem. Never partially fills buf. */
-int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out) {
-    if (need_out) *need_out = 0;
-    if (!p || !buf || !width || !height) return -1;
+/* The device lock is held only for what has to be atomic with the guest's display state: the descriptor checks and the copy of the guest's bytes.
+   For 'RGhA' (8 bytes a pixel, half floats) that copy is a plain memcpy of the surface into a private buffer, and the conversion to BGRA (a table lookup
+   per component, the larger part of the time) runs after the lock is released, so the vCPUs' device accesses are not held off by it (a 1920x1080 frame held
+   the lock for ~9-20 ms about ten times a second). What the caller gets is the same bytes as before: the guest's pixels as they were at one moment inside the
+   lock, converted. If the private buffer cannot be had, or another thread is in here, everything happens under the lock as it always did. */
+static int live_surface_in_lock(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out) {
     hv_dev_lock(p->m);
     int rc = -1;
     if (p->swaps) {
@@ -537,6 +547,67 @@ int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, ui
     }
     hv_dev_unlock(p->m);
     return rc;
+}
+
+int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out) {
+    if (need_out) *need_out = 0;
+    if (!p || !buf || !width || !height) return -1;
+    int idle = 0;
+    if (!atomic_compare_exchange_strong(&p->live_busy, &idle, 1)) { /* another thread is in here, with the private buffer */
+        atomic_fetch_add(&p->live_inlock, 1);
+        return live_surface_in_lock(p, buf, buf_cap, width, height, need_out);
+    }
+    int rc = -1, staged = 0;
+    uint64_t sw = 0, sh = 0;
+    hv_dev_lock(p->m);
+    if (p->swaps) {
+        uint32_t fourcc, first;
+        uint64_t row, npages;
+        const uint32_t *pages;
+        if (decode_surface(p, p->last_mapping, &fourcc, &sw, &sh, &row, &first, &pages, &npages, "live") == 0) {
+            if (!fourcc_supported(fourcc)) {
+                log_refused("live", p->last_mapping, fourcc);
+            } else if (sw * sh * 4 > buf_cap) {
+                if (need_out) *need_out = (size_t)(sw * sh * 4);
+            } else {
+                size_t raw = (size_t)(sw * sh * (fourcc == HV_FOURCC_RGHA ? 8 : 4));
+                if (fourcc == HV_FOURCC_RGHA && p->live_scratch_cap < raw) { /* sw, sh <= 8192 and the pages <= 64 MB, checked by decode_surface() */
+                    uint8_t *n = realloc(p->live_scratch, raw);
+                    if (n) p->live_scratch = n, p->live_scratch_cap = raw;
+                }
+                int ok = 1;
+                if (fourcc == HV_FOURCC_RGHA && p->live_scratch_cap >= raw) { /* the guest's bytes now, the conversion after the unlock */
+                    for (uint64_t y = 0; y < sh && ok; y++)
+                        if (surface_read(p, pages, npages, first + y * row, p->live_scratch + y * sw * 8, sw * 8)) ok = 0;
+                    if (ok) staged = 1;
+                } else { /* 'BGRA' is only a copy (into the caller's buffer, as before); RGhA without a private buffer is converted here */
+                    for (uint64_t y = 0; y < sh && ok; y++)
+                        if (surface_row_bgra(p, pages, npages, fourcc, first, row, sw, y, buf + y * sw * 4)) ok = 0;
+                    if (ok) rc = 0;
+                }
+                if (!ok) fprintf(stderr, "pvgpix live mapping %llu: a row became unreadable mid-copy, discarding this frame\n", (unsigned long long)p->last_mapping);
+            }
+        }
+    }
+    hv_dev_unlock(p->m);
+    if (staged) {
+        const uint8_t *lut = hv_half_to_byte_table();
+        if (!lut) fprintf(stderr, "pvgpix live mapping %llu: a row became unreadable mid-copy, discarding this frame\n", (unsigned long long)p->last_mapping);
+        else {
+            for (uint64_t y = 0; y < sh; y++) hv_half_row_to_bgra((const uint16_t *)(p->live_scratch + y * sw * 8), buf + y * sw * 4, sw, lut);
+            rc = 0;
+        }
+        atomic_fetch_add(&p->live_staged, 1);
+    } else if (rc == 0) atomic_fetch_add(&p->live_inlock, 1);
+    if (rc == 0) *width = (uint32_t)sw, *height = (uint32_t)sh;
+    atomic_store(&p->live_busy, 0);
+    return rc;
+}
+
+/* How many successful live copies took each path (the tests check that RGhA is staged). */
+void hv_pvg_lite_live_paths(HvPvgLite *p, uint64_t *staged, uint64_t *in_lock) {
+    if (staged) *staged = p ? atomic_load(&p->live_staged) : 0;
+    if (in_lock) *in_lock = p ? atomic_load(&p->live_inlock) : 0;
 }
 
 /* [2026-11-26 diagnostic, default OFF] The display-path test pattern: when hv_pvg_lite_set_test_pattern(1) was called (the clone runner does so only

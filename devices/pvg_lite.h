@@ -141,5 +141,6 @@ int hv_pvg_lite_last_surface_bgra(HvPvgLite *p, uint8_t **out, uint32_t *width, 
    *need_out (if non-NULL) is set to the bytes needed (width*height*4) so the caller can grow once and retry;
    0 in every other failure case. */
 int hv_pvg_lite_live_surface_bgra(HvPvgLite *p, uint8_t *buf, size_t buf_cap, uint32_t *width, uint32_t *height, size_t *need_out);
+void hv_pvg_lite_live_paths(HvPvgLite *p, uint64_t *staged, uint64_t *in_lock); /* successful live copies: RGhA staged (lock held for the byte copy only) / done entirely under the lock */
 
 #endif

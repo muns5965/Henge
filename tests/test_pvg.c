@@ -8,6 +8,7 @@
    guest builder below is written from the header comment, so a wrong reading of the real driver would be wrong in both places. */
 #define _GNU_SOURCE
 #include <setjmp.h>
+#include <time.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #include "../devices/pvg_lite.h"
 #include "../devices/pvg_vbldiag.h"
 #include "../devices/gicv3.h"
+#include "../devices/pvg_half.h"
 
 /* ---- the machine: flat RAM ---- */
 #define RB 0x70000000ull
@@ -58,8 +60,16 @@ int hv_gicv3_watch_get(HvGic *g, HvGicWatch *w, HvGicWatchState *st) {
 /* [2026-11-21, D2/D3] Real core/machine.c's device lock, needed only since hv_pvg_lite_live_surface_bgra()
    (new this change) takes it; this test drives the device from one thread only, so a no-op stand-in is
    faithful -- nothing here exercises the actual cross-thread exclusion that lock provides in the real engine. */
-void hv_dev_lock(HvMachine *m) { (void)m; }
-void hv_dev_unlock(HvMachine *m) { (void)m; }
+/* [g7-jit1] Still one thread and no real exclusion, but it now times how long the device lock is held (outermost hold, summed) and lets a test run a
+   hook the moment the lock is released: what the guest could do the instant after (rewrite the surface), or a second caller arriving. */
+static double lk_hold_ms; static int lk_depth; static struct timespec lk_t0; static void (*unlock_hook)(void);
+static double ms_since(const struct timespec *a) { struct timespec b; clock_gettime(CLOCK_MONOTONIC, &b); return (double)(b.tv_sec - a->tv_sec) * 1e3 + (double)(b.tv_nsec - a->tv_nsec) / 1e6; }
+void hv_dev_lock(HvMachine *m) { (void)m; if (lk_depth++ == 0) clock_gettime(CLOCK_MONOTONIC, &lk_t0); }
+void hv_dev_unlock(HvMachine *m) {
+    (void)m;
+    if (--lk_depth == 0) lk_hold_ms += ms_since(&lk_t0);
+    if (unlock_hook) { void (*h)(void) = unlock_hook; unlock_hook = NULL; h(); }
+}
 
 /* ---- the Metal side: a recorder ---- */
 typedef struct { int ch; uint32_t len; uint8_t d[9000]; } Sub;
@@ -915,6 +925,100 @@ static uint8_t g_out[64 * 64 * 4];
 static int live_once(void *unused) { (void)unused; uint32_t w = 0, h = 0; size_t need = 0; return hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &w, &h, &need); }
 static int live_many(void *unused) { int rc = 0; for (int i = 0; i < 5000; i++) rc = live_once(unused); return rc; }
 
+/* ---- [g7-jit1] hv_pvg_lite_live_surface_bgra: the RGhA frame is copied under the device lock and converted after it ----
+   Same output as the in-lock conversion; the guest rewriting the surface right after the unlock changes nothing in the frame (it is a snapshot taken inside the
+   lock); a second caller meanwhile gets the old in-lock path and the same frame; a missing page discards the frame and leaves the caller's buffer untouched;
+   and the lock is held for a fraction of the call (printed, and compared with the whole call). */
+#define LW 1280
+#define LH 720
+static uint8_t g_big[LW * LH * 4], g_ref[LW * LH * 4], g_big2[LW * LH * 4];
+static uint32_t live_datap0, live_npg;
+static uint8_t *live_data(uint64_t off) { return pgp(live_datap0 + (uint32_t)(off >> 14)) + (off & 0x3fff); }
+static int live_hook_ran, live_inner_rc;
+static uint32_t live_w2, live_h2; static HvPvgLite *live_dev_for_hook;
+static const uint8_t *live_buf_at_unlock; static int live_seen_converted;
+static void hook_peek(void) { live_seen_converted = 0; for (size_t i = 0; i < sizeof g_big; i += 4096) if (live_buf_at_unlock[i] != 0x77) live_seen_converted = 1; live_hook_ran = 1; }
+static void hook_rewrite(void) { for (uint32_t i = 0; i < live_npg; i++) memset(pgp(live_datap0 + i), 0x3c, 0x4000); live_hook_ran = 1; }   /* 0x3c3c = 1.0625 (half): a different, all-white frame */
+static void hook_second_caller(void) { size_t need = 0; live_inner_rc = hv_pvg_lite_live_surface_bgra(live_dev_for_hook, g_big2, sizeof g_big2, &live_w2, &live_h2, &need); live_hook_ran = 1; }
+static void s_live(void) {
+    hv_pvg_lite_set_mode(1280, 720);
+    dev_new(1);
+    chan_setup(4, 1);
+    uint32_t dpn = alloc_page();
+    uint32_t a1[2] = {0, dpn};
+    chan_cmd(4, 1, 41, a1, 8); ring_bell(4);
+    uint32_t tabp = alloc_page(), descp = alloc_page(), listp = alloc_page();
+    live_npg = (LW * 8 * LH + 0x3fff) >> 14;
+    live_datap0 = next_page;
+    for (uint32_t i = 0; i < live_npg; i++) ((uint32_t *)pgp(listp))[i] = (alloc_page() << 2) | 1;
+    ((uint32_t *)pgp(tabp))[0] = (uint32_t)((((uint64_t)descp << 14) >> 12) | 1);
+    ios_w(ios_o, 0x1010, (uint64_t)tabp << 14, 8);
+    uint8_t *desc = pgp(descp) + 0x400 * 3;
+    uint32_t swap[10] = {0, 0, 3, 0x5, 0, 0, 0, 0, 3, 0xabcd};
+    chan_cmd(4, 8, 43, swap, 40); ring_bell(4);
+    put_desc(desc, listp, 0x52476841u, (uint64_t)LW * 8 * LH, LW, LH, LW * 8, 0);
+    /* deterministic pseudo-random halves: every class of value (normal, subnormal, negative, inf, NaN) turns up */
+    uint32_t x = 12345;
+    for (uint64_t off = 0; off < (uint64_t)LW * 8 * LH; off += 2) { x = x * 1664525u + 1013904223u; uint16_t h = (uint16_t)(x >> 16); if ((x & 7) == 0) h = (uint16_t)(0x3800 + (h & 0x7ff)); memcpy(live_data(off), &h, 2); }
+    const uint8_t *lut = hv_half_to_byte_table();
+    for (int y = 0; y < LH; y++) hv_half_row_to_bgra((const uint16_t *)live_data((uint64_t)y * LW * 8), g_ref + (uint64_t)y * LW * 4, LW, lut);
+
+    uint32_t w = 0, h = 0; size_t need = 0; uint64_t st0, il0, st1, il1;
+    hv_pvg_lite_live_paths(dev, &st0, &il0);
+    memset(g_big, 0x77, sizeof g_big);
+    live_hook_ran = 0; live_buf_at_unlock = g_big; live_seen_converted = -1;
+    unlock_hook = hook_peek;   /* what has the caller's buffer got in it at the moment the lock is released? */
+    int rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    hv_pvg_lite_live_paths(dev, &st1, &il1);
+    EXPECT(rc == 0 && w == LW && h == LH && !memcmp(g_big, g_ref, sizeof g_ref), "live RGhA %dx%d: the frame equals the reference conversion byte for byte (rc %d)", LW, LH, rc);
+    EXPECT(st1 == st0 + 1 && il1 == il0, "live RGhA: it took the staged path (staged %llu -> %llu, in-lock %llu -> %llu)", (unsigned long long)st0, (unsigned long long)st1, (unsigned long long)il0, (unsigned long long)il1);
+    EXPECT(live_hook_ran && live_seen_converted == 0, "live RGhA: when the lock is released the caller's buffer holds none of the frame yet: the conversion happens outside the lock");
+    {   /* steady state (the first call also paid for the private buffer): mean call time and mean time the lock was held, for the record */
+        lk_hold_ms = 0;
+        struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 20; i++) hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+        double total = ms_since(&t0);
+        printf("INFO live RGhA %dx%d, 20 calls: %.2f ms a call, device lock held %.2f ms a call (%.0f%%)\n", LW, LH, total / 20, lk_hold_ms / 20, 100 * lk_hold_ms / total);
+    }
+
+    /* the guest rewrites the surface the instant the lock is released: the frame is still the one inside the lock */
+    memset(g_big, 0x77, sizeof g_big); live_hook_ran = 0;
+    unlock_hook = hook_rewrite;
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    EXPECT(live_hook_ran && rc == 0 && !memcmp(g_big, g_ref, sizeof g_ref), "live RGhA: a rewrite of the surface right after the unlock does not reach the frame (a snapshot, not a live read)");
+    /* and the next frame sees the new content (all 0x3c3c halves = 1.0625: every colour byte 255) */
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    int white = 1; for (size_t i = 0; i < sizeof g_big; i++) if (g_big[i] != 255) { white = 0; break; }
+    EXPECT(rc == 0 && white, "live RGhA: the next call shows the new content (nothing stale is kept between calls)");
+
+    /* a second caller while the first one converts: the in-lock path, the same frame */
+    for (uint64_t off = 0; off < (uint64_t)LW * 8 * LH; off += 2) { x = x * 1664525u + 1013904223u; uint16_t hh = (uint16_t)(x >> 16); memcpy(live_data(off), &hh, 2); }
+    for (int y = 0; y < LH; y++) hv_half_row_to_bgra((const uint16_t *)live_data((uint64_t)y * LW * 8), g_ref + (uint64_t)y * LW * 4, LW, lut);
+    hv_pvg_lite_live_paths(dev, &st0, &il0);
+    live_dev_for_hook = dev; live_hook_ran = 0; live_inner_rc = 99; memset(g_big2, 0x55, sizeof g_big2);
+    unlock_hook = hook_second_caller;
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    hv_pvg_lite_live_paths(dev, &st1, &il1);
+    EXPECT(live_hook_ran && rc == 0 && live_inner_rc == 0 && !memcmp(g_big, g_ref, sizeof g_ref) && !memcmp(g_big2, g_ref, sizeof g_ref), "live RGhA: two callers at once both get the right frame");
+    EXPECT(st1 == st0 + 1 && il1 >= il0 + 1, "live RGhA: the second caller used the in-lock path (staged +%llu, in-lock +%llu)", (unsigned long long)(st1 - st0), (unsigned long long)(il1 - il0));
+
+    /* a page of the surface missing: the frame is discarded and the caller's buffer is left as it was */
+    ((uint32_t *)pgp(listp))[200] &= ~1u;
+    memset(g_big, 0x77, sizeof g_big);
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    int untouched = 1; for (size_t i = 0; i < sizeof g_big; i++) if (g_big[i] != 0x77) { untouched = 0; break; }
+    EXPECT(rc == -1 && untouched, "live RGhA: a missing page discards the frame and leaves the buffer untouched (rc %d)", rc);
+    ((uint32_t *)pgp(listp))[200] |= 1u;
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    EXPECT(rc == 0 && !memcmp(g_big, g_ref, sizeof g_ref), "live RGhA: after the failed frame the next one works (the busy flag was released)");
+    /* a buffer that is too small reports the size and releases the flag too */
+    uint8_t tiny[16]; need = 0;
+    EXPECT(hv_pvg_lite_live_surface_bgra(dev, tiny, sizeof tiny, &w, &h, &need) == -1 && need == (size_t)LW * LH * 4, "live RGhA: too small a buffer reports %zu bytes", need);
+    rc = hv_pvg_lite_live_surface_bgra(dev, g_big, sizeof g_big, &w, &h, &need);
+    EXPECT(rc == 0, "live RGhA: and the call after it works");
+    hv_pvg_lite_set_mode(1920, 1080);
+}
+
 static void s_rgha(void) {
     setenv("HV_PVG_TALLY", "1", 1);
     hv_pvg_lite_set_mode(800, 600);
@@ -1101,6 +1205,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();
     if (all || !strcmp(sc, "rgha")) s_rgha();
+    if (all || !strcmp(sc, "live")) s_live();
     if (all || !strcmp(sc, "vbldiag")) s_vbldiag();
     printf("%s test_pvg %s\n", bad ? "FAIL" : "PASS", sc);
     return bad ? 1 : 0;

@@ -148,6 +148,19 @@ jobs:
           ls -l android/app/build/outputs/apk/g7start/
           G7_REQUIRE_PIPEREPRO=1 READELF="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" tools/check-g7exec-apk.sh start android/app/build/outputs/apk/g7start/app-g7start.apk
           echo "- G7 lagfx start APK: built and checked (switch ON marker, runner as AArch64); published: ${{ inputs.publish_start == true }}" >> "$GITHUB_STEP_SUMMARY"
+      # TEST-APK STEP: exists ONLY on the research/g7-integ7c branch (never on research/android-port or main). It runs after the build and check steps succeed, uploads the same signed APK as a short-lived Actions artifact, and creates no release, tag or prerelease. The publish_start-gated steps below are unchanged.
+      - name: "Test APK: print package, versionCode, signing certificate and key type (research branch only)"
+        run: |
+          APK=android/app/build/outputs/apk/g7start/app-g7start.apk
+          ls -l "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | grep -E "^package:" | cut -c1-200
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -z "${KEYSTORE_FILE:-}" ]; then echo "::warning::TEST APK signed with a temporary key: it will NOT install over the existing app"; echo "- TEST APK: TEMPORARY key (not installable over the existing app)" >> "$GITHUB_STEP_SUMMARY"; else echo "- TEST APK: signed with the project keystore" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-g7-lagfx-test-apk
+          path: android/app/build/outputs/apk/g7start/app-g7start.apk
+          retention-days: 7
       - name: Show the start APK's package, versionCode and certificate (only when it is published)
         if: ${{ inputs.publish_start == true }}
         run: |

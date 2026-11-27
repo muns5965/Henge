@@ -52,7 +52,7 @@ final class G7PipeRepro {
         for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
         if (ids.isEmpty()) { buf.write(("ladder: --list-rows gave no rows; output:\n" + listOut + "\n").getBytes(StandardCharsets.UTF_8)); return 2; }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
-        int r0 = -9, built = 0, fail = 0, bad = 0; boolean complete = false;
+        int r0 = -9, built = 0, fail = 0, bad = 0; boolean complete = false; String r0v = "not run";
         long end = System.currentTimeMillis() + 840_000L;
         // each row is appended to its own file as soon as it is done, so an app kill or a crash keeps everything finished so far (the final window/file still comes at the end)
         File partial = new File(logDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + "-ladder-partial.txt");
@@ -67,6 +67,7 @@ final class G7PipeRepro {
             if (rowLine == null) { String l = "pipeline-reduce: row=" + id + " result=" + (ec[0] == -2 ? "TIMEOUT" : "CRASH") + " exit=" + ec[0] + " (no row line; process ended)"; o.append(l).append("\n"); appendQuiet(partial, l); bad++; continue; }
             o.append(rowLine).append("\n"); appendQuiet(partial, rowLine);
             if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
+            if (id.equals("R0V")) r0v = rowLine.contains("result=BUILT") ? "BUILT" : rowLine.contains("result=FAIL vk=-13(") ? "same -13" : rowLine.contains("result=FAIL") ? "FAIL (other VkResult)" : "undecided";
             if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL vk=-13(") ? 1 : rowLine.contains("result=FAIL") ? 4 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
         }
         o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" other=").append(bad).append("\n");
@@ -76,7 +77,7 @@ final class G7PipeRepro {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
         } finally {
             o.append("ladder-status: R0=").append(r0 == 1 ? "same -13 (reproduced)" : r0 == 0 ? "BUILT (not reproduced)" : r0 == 4 ? "FAIL with a different VkResult" : r0 == -9 ? "no R0 line" : "undecided (crash/timeout/invalid)")
-             .append("; run=").append(complete ? "complete" : "INCOMPLETE (aborted, time budget, or no rows)").append(" (the two are independent)\n");
+             .append("; R0V (original FS + REAL VS) = ").append(r0v).append("; run=").append(complete ? "complete" : "INCOMPLETE (aborted, time budget, or no rows)").append(" (the two are independent)\n");
             buf.write(o.toString().getBytes(StandardCharsets.UTF_8));   // whatever was collected so far is always handed to the result window
         }
         return !complete ? -3 : r0 == 1 ? 0 : r0 == 0 ? 1 : 2;   // an incomplete run never reports a plain verdict   // 0 reproduced (R0 FAIL), 1 not reproduced (R0 BUILT), 2 undecided

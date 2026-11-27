@@ -480,7 +480,15 @@ public class G7ExecActivity extends Activity {
         final CheckBox nvp = shortBox("NVRAM 사전 설정 auto-boot=true (실험, 기본 꺼짐)");   // never remembered: unchecked every time the dialog opens
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
         final android.widget.Spinner vblSp = new android.widget.Spinner(this); vblSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, G7CloneBoot.VBL_EXP_CHOICES));   // index 0 = "0" = off (default); not remembered
-        final CheckBox jex = shortBox("JIT 정확 통계 (G7_STATS_EXACT, 메모리 최대 +96 MiB, 일반 비교 실행은 끔)"); jex.setChecked(G7CloneBoot.readStatsExactMarker(privDir));   // default OFF; the test marker jit_exact only preselects; never remembered
+        final CheckBox jex = shortBox("JIT 정확 통계 (G7_STATS_EXACT; 표 최대 96 MiB, 커지는 동안 최대 144 MiB(48+96); 일반 비교 실행은 끔)"); jex.setChecked(G7CloneBoot.readStatsExactMarker(privDir));   // default OFF; the test marker jit_exact only preselects; never remembered
+        final String[] jpk = new String[G7CloneBoot.STATS_EXACT_PEAK_CHOICES.length];
+        for (int i = 0; i < jpk.length; i++) { int v = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[i]; jpk[i] = (v == 0 ? "제한 없음 (최대 144 MiB)" : v + " MiB") + (v == G7CloneBoot.STATS_EXACT_PEAK_DEFAULT ? " (기본)" : ""); }
+        final android.widget.Spinner jpkSp = new android.widget.Spinner(this); jpkSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, jpk));
+        jpkSp.setSelection(peakIndexFor(G7CloneBoot.readStatsExactPeakMarker(privDir)));   // default 100 (index 0); the marker jit_exact_peak only preselects; never remembered
+        final TextView jpkNote = new TextView(this); jpkNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); jpkNote.setTextColor(0xFF9A6700);
+        final Runnable jpkShow = () -> { int v = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[Math.max(0, Math.min(jpk.length - 1, jpkSp.getSelectedItemPosition()))]; jpkNote.setText(!jex.isChecked() ? "정확 통계 꺼짐: 아래 한도는 쓰이지 않음" : v == 100 ? "100 MiB 한도: 표가 48 MiB(최대 72 MiB, 약 147만 키)에서 멈춰 부팅의 고유 블록 약 200만 개를 모두 기록할 수 없음. 넘친 만큼은 exact_overflow로 세고 exact_* 수치는 부분 결과" : "표 최대 96 MiB, 확장 중 최대 144 MiB(48+96). 고유 블록 약 200만 개를 모두 기록할 수 있음"); };
+        jpkSp.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() { @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int i, long id) { jpkShow.run(); } @Override public void onNothingSelected(android.widget.AdapterView<?> p) { } });
+        jex.setOnCheckedChangeListener((b, c) -> jpkShow.run()); jpkShow.run();
         final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초)"); fb0c.setChecked(true);   // default ON (cost measured tiny); not remembered
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
@@ -495,7 +503,7 @@ public class G7ExecActivity extends Activity {
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp)); box.addView(labelRow("JIT 크기", jitSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(jex); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(jex); box.addView(labelRow("정확 통계 메모리 한도", jpkSp)); box.addView(jpkNote); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -519,6 +527,7 @@ public class G7ExecActivity extends Activity {
                     G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES[Math.max(0, Math.min(G7CloneBoot.JIT_MB_CHOICES.length - 1, jitSp.getSelectedItemPosition()))];
                     G7CloneBoot.fb0 = fb0c.isChecked();
                     G7CloneBoot.statsExact = jex.isChecked();
+                    G7CloneBoot.statsExactPeakMib = G7CloneBoot.STATS_EXACT_PEAK_CHOICES[Math.max(0, Math.min(G7CloneBoot.STATS_EXACT_PEAK_CHOICES.length - 1, jpkSp.getSelectedItemPosition()))];
                     G7CloneBoot.vblExp = G7CloneBoot.VBL_EXP_CHOICES[Math.max(0, Math.min(G7CloneBoot.VBL_EXP_CHOICES.length - 1, vblSp.getSelectedItemPosition()))];
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();
@@ -544,6 +553,7 @@ public class G7ExecActivity extends Activity {
 
     /** The activity takes no Intent input (a source rule), so the test hook is a marker file; see G7CloneBoot.readJitMarker. */
     static int jitIndexFor(int mb) { for (int i = 0; i < G7CloneBoot.JIT_MB_CHOICES.length; i++) if (G7CloneBoot.JIT_MB_CHOICES[i] == mb) return i; return 0; }
+    static int peakIndexFor(int mib) { for (int i = 0; i < G7CloneBoot.STATS_EXACT_PEAK_CHOICES.length; i++) if (G7CloneBoot.STATS_EXACT_PEAK_CHOICES[i] == mib) return i; return 0; }
     private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
     private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }
     private LinearLayout labelRow(String label, View field) {
@@ -562,6 +572,7 @@ public class G7ExecActivity extends Activity {
             + "화면 시험 패턴: 게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인.\n\n"
             + "NVRAM 사전 설정(기본 꺼짐, 기억하지 않음): 부팅 전에 복제본 AUX 이미지에서 유효한 v3 NVRAM 저장소(\"3VVN\")를 찾으면 auto-boot=true를 추가함. 저장소를 못 찾으면 아무것도 쓰지 않고 로그(g7-nvram:)에 그렇게 남김. boot-volume은 값을 알 수 없어 여기서는 쓰지 않음.\n\n"
             + "디스플레이 이벤트(VBL): VBL ~60Hz와 디스플레이 원인 비트를 전달(HV_PVG_DISPLAY_EVENTS). 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험.\n\n"
+            + "JIT 정확 통계(기본 꺼짐, 기억하지 않음): 엔진이 \"이전에 번역한 블록\"을 정확한 집합으로 기록(G7_STATS_EXACT=2048). 표는 최대 96 MiB, 커지는 동안 최대 144 MiB(48+96). 메모리 한도 100 MiB를 고르면 표가 48 MiB(최대 72 MiB, 약 147만 키)에서 멈춰 부팅의 고유 블록 약 200만 개를 모두 기록할 수 없고(넘친 만큼 exact_overflow), 150 MiB 이상이면 모두 기록할 수 있음. 일반 A/B 비교 실행에서는 끔.\n\n"
             + "셰이더·파이프라인 저장: 게스트 셰이더·파이프라인 데이터를 앱 외부 저장 폴더 g7_gpudump에 크기 제한으로 저장.\n\n"
             + "그리기별 진단(G7_DRAW_DIAG, 기본 켜짐, 마지막 선택을 기억): 라이브러리가 draw별 요약을 로그에 남김(용량 제한). 켬=1, 끔=0을 항상 명시해 전달. Render Replay 캡처와 별개.\n\n"
             + "Render Replay 캡처(LAGFX_ARM64_DUMP_DATA=1, 기본 꺼짐, 마지막 선택을 기억): draw의 버퍼·텍스처·어태치먼트 전후 이미지 저장(최대 256 draw·128 MiB). 셰이더 저장과 GPU 실행을 함께 켜야 하며 메모리 여유가 적으니 주의.\n\n"

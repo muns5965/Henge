@@ -182,6 +182,40 @@ public class G7CloneBootTest {
           Files.write(xm.toPath(), "1\n".getBytes()); check("marker 1 preselects ON", G7CloneBoot.readStatsExactMarker(priv));
           for (String junk : new String[]{"0", "2048", "11", "on", "true", "1 junk", "00000000000000001"}) { Files.write(xm.toPath(), junk.getBytes()); check("marker '" + junk + "' stays OFF", !G7CloneBoot.readStatsExactMarker(priv)); }
           Files.delete(xm.toPath()); }
+        // integ7b T2: the exact set's peak budget (G7_STATS_EXACT_PEAK_MIB): a validated choice {100,150,200,unlimited}, default 100, passed only with exact ON, recorded everywhere jit_exact is, honest text about what 100 MiB can record
+        { check("peak choices are exactly {100,150,200,unlimited(0)}, default 100", java.util.Arrays.equals(G7CloneBoot.STATS_EXACT_PEAK_CHOICES, new int[]{100, 150, 200, 0}) && G7CloneBoot.STATS_EXACT_PEAK_DEFAULT == 100 && G7CloneBoot.statsExactPeakMib == 100);
+          java.util.List<String> pc = java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r", "--jit-mb", "256");
+          java.util.Map<String, String> p0 = new java.util.HashMap<>(); p0.put("G7_STATS_EXACT_PEAK_MIB", "7"); p0.put("HV_STATS_EXACT_PEAK_MIB", "7"); G7CloneBoot.lagfxEnv(p0, pc);
+          check("exact OFF: no PEAK variable at all (an inherited one is removed), whatever the spinner says", !p0.containsKey("G7_STATS_EXACT_PEAK_MIB") && !p0.containsKey("G7_STATS_EXACT"));
+          int[][] cases = {{100, 100}, {150, 150}, {200, 200}, {0, -1}};
+          for (int[] c : cases) {
+              G7CloneBoot.statsExact = true; G7CloneBoot.statsExactPeakMib = c[0];
+              java.util.Map<String, String> pm = new java.util.HashMap<>(); pm.put("G7_STATS_EXACT_PEAK_MIB", "7"); G7CloneBoot.lagfxEnv(pm, pc);
+              G7CloneBoot.statsExact = false; G7CloneBoot.statsExactPeakMib = 100;
+              check("exact ON, budget " + c[0] + ": " + (c[1] < 0 ? "variable absent (unlimited)" : "G7_STATS_EXACT_PEAK_MIB=" + c[1]) + ", no HV_ name", "2048".equals(pm.get("G7_STATS_EXACT")) && (c[1] < 0 ? !pm.containsKey("G7_STATS_EXACT_PEAK_MIB") : String.valueOf(c[1]).equals(pm.get("G7_STATS_EXACT_PEAK_MIB"))) && !pm.containsKey("HV_STATS_EXACT_PEAK_MIB") && G7CloneBoot.lastGpuNote.contains("jit_exact=ON (G7_STATS_EXACT=2048, peak budget " + G7CloneBoot.statsExactPeakName(c[0])));
+          }
+          G7CloneBoot.statsExact = true; G7CloneBoot.statsExactPeakMib = 100; G7CloneBoot.lagfxEnv(new java.util.HashMap<>(), pc); String n100 = G7CloneBoot.lastGpuNote;
+          G7CloneBoot.statsExactPeakMib = 150; G7CloneBoot.lagfxEnv(new java.util.HashMap<>(), pc); String n150 = G7CloneBoot.lastGpuNote; G7CloneBoot.statsExact = false; G7CloneBoot.statsExactPeakMib = 100;
+          check("100 MiB text says it cannot record all ~2 M blocks (48 MiB table, 72 MiB peak, ~1.47 M keys, exact_overflow, partial)", n100.contains("CANNOT record all of a boot's ~2 M unique blocks") && n100.contains("48 MiB (peak 72 MiB, about 1.47 M keys)") && n100.contains("exact_overflow") && n100.contains("PARTIAL"));
+          check("150 MiB text states 96 MiB final, 144 MiB peak (48 + 96) and that it is enough", n150.contains("up to 96 MiB final and up to 144 MiB peak while it grows (48 + 96)") && !n150.contains("CANNOT"));
+          for (int bad : new int[]{-1, 1, 99, 101, 1000, 144}) {
+              G7CloneBoot.statsExact = true; G7CloneBoot.statsExactPeakMib = bad; int sb = spawned;
+              G7CloneBoot.Start rs = G7CloneBoot.startWith(sp(new Fake("x\n", 0, false)), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0);
+              G7CloneBoot.statsExact = false; G7CloneBoot.statsExactPeakMib = 100;
+              check("exact ON with an unlisted budget " + bad + ": refused, nothing spawned", !rs.started && spawned == sb);
+          }
+          { G7CloneBoot.statsExact = true; G7CloneBoot.statsExactPeakMib = 100;
+            G7CloneBoot.Start ps = G7CloneBoot.startWith(sp(new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false)), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); G7CloneBoot.statsExact = false; waitDone(ps.run);
+            String pl = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, ps.run.logName()).toPath()), StandardCharsets.UTF_8);
+            check("log header: jit_exact=ON jit_exact_peak_mib=100 in g7-jit-config and the CANNOT text in g7-gpu-options; command line unchanged", ps.started && pl.contains(" jit_exact=ON jit_exact_peak_mib=100") && pl.contains("CANNOT record all") && !String.join(" ", lastCmd).contains("exact") && !String.join(" ", lastCmd).contains("peak"));
+            G7CloneBoot.Start po = G7CloneBoot.startWith(sp(new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false)), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); waitDone(po.run);
+            String ol = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, po.run.logName()).toPath()), StandardCharsets.UTF_8);
+            check("exact OFF: the header says jit_exact_peak_mib=n/a", po.started && ol.contains(" jit_exact=OFF jit_exact_peak_mib=n/a")); }
+          File pmk = new File(priv, "jit_exact_peak");
+          check("no marker: preselect 100", G7CloneBoot.readStatsExactPeakMarker(priv) == 100);
+          for (String[] pk2 : new String[][]{{"100", "100"}, {"150\n", "150"}, {"200", "200"}, {"unlimited", "0"}}) { Files.write(pmk.toPath(), pk2[0].getBytes()); check("marker '" + pk2[0].trim() + "' preselects " + pk2[1], String.valueOf(G7CloneBoot.readStatsExactPeakMarker(priv)).equals(pk2[1])); }
+          for (String junk : new String[]{"0", "99", "2048", "unlim", "150 junk", "-1", "00000000000000000150"}) { Files.write(pmk.toPath(), junk.getBytes()); check("marker '" + junk + "' falls back to 100", G7CloneBoot.readStatsExactPeakMarker(priv) == 100); }
+          Files.delete(pmk.toPath()); }
         int beforeSecs = spawned;
         check("a run time that is not one of the four choices (-1, 1, 7200): refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, -1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 7200).started && spawned == beforeSecs);
         int beforeUsb = spawned;

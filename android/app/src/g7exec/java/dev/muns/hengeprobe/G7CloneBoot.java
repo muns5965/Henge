@@ -57,7 +57,30 @@ public final class G7CloneBoot {
             return "1".equals(new String(Files.readAllBytes(p), StandardCharsets.US_ASCII).trim());
         } catch (IOException | RuntimeException e) { return false; }
     }
-    static String statsExactText(boolean on) { return on ? "ON (G7_STATS_EXACT=" + STATS_EXACT_VALUE + ", extra memory up to 96 MiB, 144 MiB peak while the table grows)" : "OFF"; }
+    /** integ7b (T2): the peak-memory budget (MiB) of the exact set while its table grows (G7_STATS_EXACT_PEAK_MIB, core/jitstats.h: a growth whose old + new table would pass it is refused). The table is up to 96 MiB (2^22 slots, 2,936,012 keys) and up to 144 MiB at its peak while the last
+     *  doubling runs (48 + 96). With 100 the last doubling is refused: the table stays at 48 MiB (peak 72 MiB, about 1.47 M keys), so it CANNOT record all of the ~2 M unique blocks a boot translates; the rest are counted as exact_overflow and the
+     *  retranslation figures are then PARTIAL. 150 and 200 allow the full table (peak 144 MiB). 0 = unlimited = the variable is not set. Default 100: the smaller footprint on a phone; choose 150 for a complete set. Only these four values can be passed. */
+    public static final int[] STATS_EXACT_PEAK_CHOICES = {100, 150, 200, 0};
+    public static final int STATS_EXACT_PEAK_DEFAULT = 100;
+    static boolean validStatsExactPeak(int v) { for (int c : STATS_EXACT_PEAK_CHOICES) if (c == v) return true; return false; }
+    static volatile int statsExactPeakMib = STATS_EXACT_PEAK_DEFAULT;
+    static String statsExactPeakName(int v) { return v == 0 ? "unlimited" : String.valueOf(v); }
+    /** Test hook like jit_exact: a one-line marker file "jit_exact_peak" next to vm_ecid.txt, content exactly 100, 150, 200 or unlimited, PRESELECTS the spinner. Anything else (missing, link, over 16 bytes, other content) = the default 100. */
+    public static int readStatsExactPeakMarker(File priv) {
+        try {
+            java.nio.file.Path p = new File(priv, "jit_exact_peak").toPath();
+            if (!Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.size(p) > 16) return STATS_EXACT_PEAK_DEFAULT;
+            String t = new String(Files.readAllBytes(p), StandardCharsets.US_ASCII).trim();
+            for (int c : STATS_EXACT_PEAK_CHOICES) if (statsExactPeakName(c).equals(t)) return c;
+            return STATS_EXACT_PEAK_DEFAULT;
+        } catch (IOException | RuntimeException e) { return STATS_EXACT_PEAK_DEFAULT; }
+    }
+    /** What the exact set costs and can do, in words, for the dialog, the log header and the notes. */
+    static String statsExactCapacityText(int peak) {
+        return peak == 100 ? "peak budget 100 MiB: the table stops at 48 MiB (peak 72 MiB, about 1.47 M keys), so it CANNOT record all of a boot's ~2 M unique blocks; the rest are counted as exact_overflow and the exact_* figures are PARTIAL"
+                : "peak budget " + statsExactPeakName(peak) + ": table up to 96 MiB final and up to 144 MiB peak while it grows (48 + 96), 2,936,012 keys, enough for ~2 M unique blocks";
+    }
+    static String statsExactText(boolean on) { return on ? "ON (G7_STATS_EXACT=" + STATS_EXACT_VALUE + ", " + statsExactCapacityText(statsExactPeakMib) + ")" : "OFF"; }
     /** One line at the top of the run log: which engine diagnostics are on in this run (the engine's own --stats lines every 10 s are always on in the clone runner). */
     static String engineDiagLine(boolean exact) {
         return "g7-engine-diag: stats_lines=ON (every 10 s, always); exact_seen_set=" + statsExactText(exact) + "; draw_diag=" + (drawDiag ? "ON" : "OFF") + "; fb0=" + (fb0 ? "ON" : "OFF") + "; display_events=" + (displayEvents ? "ON" : "OFF")
@@ -112,7 +135,11 @@ public final class G7CloneBoot {
         note.append("jit_exact=" + statsExactText(exact) + "; ");
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
         env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
-        if (exact) env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);   // the only place it is set; absent (not "0") when OFF
+        if (exact) {   // the only place it is set; absent (not "0") when OFF
+            env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);
+            int pk = statsExactPeakMib;   // one validated value; unlimited (0) = the variable stays unset
+            if (validStatsExactPeak(pk) && pk > 0) env.put("G7_STATS_EXACT_PEAK_MIB", String.valueOf(pk));
+        }
         if (drawDiag) { env.put("LAGFX_PIPELINE_MATRIX", "1"); note.append("pipeline_matrix=ON (LAGFX_PIPELINE_MATRIX=1, with draw diag; runs on pipeline creation failure only); "); } env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
         env.put("G7_FB0", fb0 ? "1" : "0"); note.append("fb0=" + (fb0 ? "ON" : "OFF") + " (G7_FB0=" + (fb0 ? "1" : "0") + ", early framebuffer observation, g7-fb0: lines); ");
@@ -128,7 +155,7 @@ public final class G7CloneBoot {
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
                 if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1"); note.append("render_replay=ON (LAGFX_ARM64_DUMP_DATA=1, library caps: 256 draws / 128 MiB); "); }
                 try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
-                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\njit_mb=" + jitArg + "\njit_exact=" + (exact ? "ON" : "OFF") + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
+                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\njit_mb=" + jitArg + "\njit_exact=" + (exact ? "ON" : "OFF") + "\njit_exact_peak_mib=" + (exact ? statsExactPeakName(statsExactPeakMib) : "n/a") + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
                     java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
                 } catch (java.io.IOException | RuntimeException e) { note.append("(run-info.txt not written: ").append(e.getClass().getSimpleName()).append(") "); }
                 note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");
@@ -344,6 +371,8 @@ public final class G7CloneBoot {
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
         if (!validSeconds(seconds)) return new Start(false, "허용되지 않은 실행 시간 제한이라 시작하지 않았습니다.", null);
         final boolean exactNow = statsExact;   // the log header; lagfxEnv reads the same switch when the process is spawned
+        final int peakNow = statsExactPeakMib;   // same: the log header and the environment use this value
+        if (exactNow && !validStatsExactPeak(peakNow)) return new Start(false, "허용되지 않은 정확 통계 메모리 한도(" + peakNow + " MiB)라 시작하지 않았습니다.", null);
         final int jit = jitMb;   // one read: the check, the command line and the log header all use this value
         if (!validJitMb(jit)) return new Start(false, "허용되지 않은 JIT 크기(" + jit + " MiB)라 시작하지 않았습니다.", null);
         if (usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
@@ -382,17 +411,17 @@ public final class G7CloneBoot {
             run.log = logOut;
             G7ExecLauncher.OTHER_LIVE = G7CloneBoot::hasLive;
             CURRENT = run;
-            watch(run, p, ecid, jit, exactNow);
+            watch(run, p, ecid, jit, exactNow, peakNow);
             return new Start(true, "복제본(" + cloneDir.getName() + ") 부팅을 시작했습니다. 원본 설치 쌍은 사용하지 않습니다.", run);
         }
     }
 
-    private static void watch(final Run run, final Process p, final long ecid, final int jit, final boolean exact) {
+    private static void watch(final Run run, final Process p, final long ecid, final int jit, final boolean exact, final int peakNow) {
         final Thread reader = new Thread(() -> {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 run.put("g7-cboot-start: " + System.currentTimeMillis() + "\n", true);
                 run.put("g7-gpu-options: " + lastGpuNote + "\n", true);
-                run.put("g7-jit-config: jit_mb=" + jit + (jit == JIT_MB_DEFAULT ? " (default)" : " (chosen on the start dialog; runner --jit-mb " + jit + ")") + " jit_exact=" + (exact ? "ON" : "OFF") + "\n", true);
+                run.put("g7-jit-config: jit_mb=" + jit + (jit == JIT_MB_DEFAULT ? " (default)" : " (chosen on the start dialog; runner --jit-mb " + jit + ")") + " jit_exact=" + (exact ? "ON" : "OFF") + " jit_exact_peak_mib=" + (exact ? statsExactPeakName(peakNow) : "n/a") + "\n", true);
                 run.put(engineDiagLine(exact), true);
                 String line;
                 while ((line = r.readLine()) != null) {

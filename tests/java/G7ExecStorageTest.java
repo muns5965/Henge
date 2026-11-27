@@ -189,6 +189,14 @@ public class G7ExecStorageTest {
         r = G7Storage.deleteCloneWith(p -> { if (p.getFileName().toString().equals("macos_disk.img")) throw new IOException("x"); Files.delete(p); }, true, NOT_LIVE, () -> false, vcl, "clone-004", () -> 0);
         check("clones: an error in the middle leaves a folder without marker (no longer a clone) and says so", !r.ok && !new File(c4, "clone_state.txt").exists() && new File(c4, "macos_disk.img").exists() && G7Storage.deleteCloneWith(OK, true, NOT_LIVE, () -> false, vcl, "clone-004", () -> 0).ok);
 
+        // ---- the opt-in NVRAM pre-seed marker: ON writes exactly auto-boot=true, OFF writes 0 (never deletes), a non-regular marker is refused
+        {
+            File pq = Files.createTempDirectory("pre").toFile();
+            check("preseed marker: ON", G7Storage.setPreseedMarker(pq, true) && new String(Files.readAllBytes(new File(pq, "nvram_preseed").toPath())).equals("auto-boot=true\n"));
+            check("preseed marker: OFF writes 0 (file stays, request says off)", G7Storage.setPreseedMarker(pq, false) && new String(Files.readAllBytes(new File(pq, "nvram_preseed").toPath())).equals("0\n"));
+            File pv2 = Files.createTempDirectory("pre2").toFile(); new File(pv2, "nvram_preseed").mkdir();
+            check("preseed marker: a folder in its place is refused", !G7Storage.setPreseedMarker(pv2, true));
+        }
         System.out.println(fails == 0 ? "G7EXEC STORAGE OK (0 failed)" : "G7EXEC STORAGE FAILED " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

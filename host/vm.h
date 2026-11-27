@@ -116,6 +116,8 @@ int hv_vm_flush_disks_checked(void);   /* 0 when both flushes succeeded, -1 othe
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused);
 /* The same, split: the root disk and the auxiliary storage separately, with bytes written, failed writes and the flush results (counts and file size/mtime only; no contents). */
 void hv_vm_disk_stats(HvDiskStats *root, HvDiskStats *aux);
+/* The auxiliary-storage disk object of the running machine (NVRAM lives in it; host/g7_nvram.h observes and, opt-in, seeds it). Valid after hv_vm_create succeeded. */
+HvDisk *hv_vm_aux_disk(void);
 const char *hv_vm_reason_name(int reason);
 /* Which PSCI call halted the machine (SYSTEM_OFF 0x84000008 or SYSTEM_RESET 0x84000009), and the CPU/PC/LR
    captured at that call (core/exception.c's psci(), core/machine.h's psci_halt_* fields) -- not reconstructed

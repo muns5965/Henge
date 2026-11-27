@@ -15,7 +15,14 @@ typedef struct HvDisk {
     uint64_t write_failed, write_bytes;    /* writes that passed the checks but whose pwrite failed; bytes pwrite reported written (not synced) */
     uint64_t flush_calls, flush_failed;    /* hv_disk_flush calls, and those whose sync failed */
     int flush_last;                        /* HV_FLUSH_* result of the newest hv_disk_flush call */
+    void (*trace)(void *ctx, int op, uint64_t off, const void *buf, uint64_t len, int rc);   /* optional, read-only observer (host/g7_nvram.h); NULL = none. Set before the machine runs; never changes a request. */
+    void *trace_ctx;
 } HvDisk;
+#define HV_DISK_TRACE_READ 0    /* buf holds what was read (valid when rc == 0) */
+#define HV_DISK_TRACE_WRITE 1   /* buf holds what the guest asked to write; rc is the write's result */
+#define HV_DISK_TRACE_FLUSH 2   /* buf NULL, len 0 */
+/* Install an observer on one disk (offsets are guest-visible, i.e. after the hidden offset). It only looks at the bytes; the caller's buffers and results are untouched. */
+void hv_disk_set_trace(HvDisk *d, void (*fn)(void *ctx, int op, uint64_t off, const void *buf, uint64_t len, int rc), void *ctx);
 #define HV_FLUSH_NEVER (-1)     /* hv_disk_flush was never called */
 #define HV_FLUSH_OK 0           /* a sync was done and succeeded */
 #define HV_FLUSH_FAILED 1       /* the sync failed */

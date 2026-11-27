@@ -37,6 +37,7 @@
 #include "virtio_input.h"
 #include "g7_mem.h"
 #include "g7_diag.h"
+#include "g7_nvram.h"
 #include "pvg_lite.h"
 #include "runner_vm_core.h"
 #include "usb_host.h"
@@ -105,6 +106,7 @@ static void inj_log(void *ctx, const char *line) {
     printf(" | guest consumption: unknown\n");
     fflush(stdout);
 }
+static G7Nv g_nv;   /* NVRAM observer state (host/g7_nvram.h) */
 static int cursor_wake_fd = -1;           /* read end of the pointer-moved doorbell pipe (hv_vm_cursor_wake_open), -1 = none */
 static unsigned long cursor_wake_loops;   /* loop passes that the doorbell woke (log only) */
 
@@ -318,6 +320,35 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* NVRAM diagnostics (host/g7_nvram.h). The guest's NVRAM lives inside the aux image, so there is no NVRAM device to hook: the observer below looks at the aux disk's reads, writes and flushes (read-only,
+       never changes a request) and prints at most 200 "g7-nvram:" lines plus one summary at stop. Default ON (light); G7_NVRAM_LOG=0 turns it off. The opt-in pre-seed (default OFF) runs BEFORE the
+       observer is installed and BEFORE the machine starts; it writes only when a valid v3 store is found in the aux image, and only to the clone's own aux disk (the same writable file the guest uses).
+       Requested by G7_NVRAM_PRESEED or HENGE_NVRAM_PRESEED (neither is an HV_* name, so the scrub does not touch them) or by the marker file <ecid-dir>/nvram_preseed (the boot dialog's checkbox writes it). */
+    {
+        const char *lg = getenv("G7_NVRAM_LOG");
+        g7nv_init(&g_nv, stdout, !(lg && lg[0] == '0'));
+        char ftxt[512] = "", spec[512] = "", mp[PATH_MAX + 32];
+        int have_file = 0;
+        snprintf(mp, sizeof mp, "%s/nvram_preseed", ecid_dir);
+        FILE *mf = fopen(mp, "r");
+        if (mf) { size_t nr = fread(ftxt, 1, sizeof ftxt - 1, mf); ftxt[nr] = 0; fclose(mf); have_file = 1; }
+        const char *src = g7nv_spec_source(getenv("G7_NVRAM_PRESEED"), getenv("HENGE_NVRAM_PRESEED"), have_file ? ftxt : NULL, spec, sizeof spec);
+        G7NvSeed items[G7NV_SEED_MAX]; char perr[96] = ""; int ni = src ? g7nv_parse_spec(spec, items, G7NV_SEED_MAX, perr, sizeof perr) : 0;
+        printf("g7-nvram: log %s (cap %d lines + 1 summary; default ON, G7_NVRAM_LOG=0 turns it off) | preseed %s\n", g_nv.on ? "ON" : "OFF", G7NV_LINE_CAP,
+               !src ? "OFF (default, nothing requested)" : ni < 0 ? "REFUSED (bad request, nothing written)" : ni == 0 ? "OFF (request says off)" : "REQUESTED");
+        if (src && ni < 0) printf("g7-nvram: preseed request from %s refused: %s\n", src, perr);
+        if (src && ni > 0) {
+            printf("g7-nvram: preseed requested via %s: %d item(s):", src, ni);
+            for (int q = 0; q < ni; q++) printf(" %s=<%zu bytes>", items[q].name, items[q].vlen);   /* names and sizes only; the values are in the result lines */
+            printf("\n"); fflush(stdout);
+            HvDisk *ad = hv_vm_aux_disk();
+            if (!ad || ad->readonly) printf("g7-nvram: preseed skipped: the aux disk is not writable here; nothing written\n");
+            else (void)g7nv_preseed(ad, items, ni, stdout);
+        }
+        fflush(stdout);
+        if (g_nv.on && hv_vm_aux_disk()) hv_disk_set_trace(hv_vm_aux_disk(), g7nv_trace, &g_nv);
+    }
+
     hv_vm_start(1, on_exit_cb);
     if (hv_vm_start_failed()) {   /* a vCPU thread could not be created: the machine is not whole, do not report it as running */
         printf("ui_runner_vm_clone RESULT: FAILED, the machine could not start all its threads; not running\n");
@@ -416,6 +447,7 @@ int main(int argc, char **argv) {
     int flush_rc = confirmed && hv_vm_quiesced_ok() == 1 ? hv_vm_flush_disks_checked() : -2;   /* -2 also when the other threads or the disk workers did not end: the flush alone then proves nothing */   /* -2: not attempted (the machine's stop was not confirmed) */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
     disk_counters_line(confirmed ? "at stop (after the final flush; a guest SYSTEM_RESET stop included)" : "at stop (stop NOT confirmed)");
+    g7nv_summary(&g_nv);   /* one line: what the guest asked of the aux disk (where its NVRAM lives) during this run */
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
     /* Structured end result for the app (appended AFTER macos_boot=..., so the app's older pattern, which ends in ".*$", still matches). outcome says what the app may do next: only a

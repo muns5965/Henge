@@ -174,6 +174,17 @@ public final class G7Storage {
         } catch (IOException e) { return false; }
     }
 
+    /** Opt-in NVRAM pre-seed switch (default OFF): the marker file nvram_preseed next to vm_ecid.txt. ON writes exactly "auto-boot=true" (the runner, host/g7_nvram.h, writes it only into a valid v3 store it finds in the clone's aux
+     *  image, and says so in the g7-nvram: lines); OFF writes "0", which the runner reads as "not requested". boot-volume is never written from here: it needs a string that is not known, so it can only come from the environment. */
+    public static boolean setPreseedMarker(File priv, boolean on) {
+        Path p = new File(priv, "nvram_preseed").toPath();
+        try {
+            if (exists(p) && !regular(p)) return false;
+            Files.write(p, (on ? "auto-boot=true\n" : "0\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            return true;
+        } catch (IOException e) { return false; }
+    }
+
     private static final java.util.regex.Pattern CLONE_NAME = java.util.regex.Pattern.compile("clone-[0-9]{3,}");
 
     /** One folder under vm/clones/ for the delete list: its name and the space it really occupies. Looks only. */

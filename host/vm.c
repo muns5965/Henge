@@ -767,6 +767,8 @@ void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) {
     *calls = c1 + c2, *refused = r1 + r2;
 }
 
+HvDisk *hv_vm_aux_disk(void) { return &aux; }
+
 void hv_vm_disk_stats(HvDiskStats *root, HvDiskStats *auxs) {
     hv_disk_stats(&disk, root);
     hv_disk_stats(&aux, auxs);

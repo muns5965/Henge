@@ -129,6 +129,17 @@ grep -q 'buildInputTest(inputPanel)' "$A" && grep -q 'inputScroll = new ScrollVi
 grep -q 'cbPause = new CheckBox' "$A" && grep -q 'if (!uiPaused || r.finished()) refreshCloneView(r);' "$A" || bad "the pause toggle must freeze the monitor/picture refresh while cbootPoll keeps polling the run state"
 [ "$(grep -c 'log.postDelayed(this::cbootPoll, 2000);' "$A")" = 1 ] || bad "cbootPoll must keep rescheduling itself (the run-state poll continues while paused)"
 [ "$(grep -c 'if (!uiPaused || r.finished())' "$A")" -ge 3 ] || bad "the restore, network and clone-boot polls must all honour the pause toggle"
+# NVRAM diagnostics / pre-seed (research/g7-nvram1): the pre-seed toggle is OFF every time the dialog opens (never remembered), is written for EVERY start ("0" when unchecked), and the runner has no default for it
+grep -q 'final CheckBox nvp = shortBox(' "$A" && ! grep -qE 'nvp\.setChecked|opts\.(getBoolean|edit\(\))[^;]*nvp' "$A" || bad "the NVRAM pre-seed checkbox must start unchecked and must not be remembered"
+[ "$(grep -c 'G7Storage.setPreseedMarker(privDir, nvp.isChecked())' "$A")" = 1 ] || bad "the pre-seed marker must be written exactly once per start from the checkbox state"
+grep -q '"auto-boot=true' $XJ/G7Storage.java && ! grep -q 'boot-volume=' $XJ/G7Storage.java || bad "the app side may write auto-boot=true only; boot-volume is never written from the app"
+R=host/ui_runner_vm_clone.c; N=host/g7_nvram.h
+[ "$(grep -c 'g7nv_preseed(' $R)" = 1 ] && grep -q 'g7nv_spec_source(getenv("G7_NVRAM_PRESEED"), getenv("HENGE_NVRAM_PRESEED")' $R || bad "the runner must request the pre-seed only through g7nv_spec_source (env or marker file), exactly one call"
+l1=$(grep -n 'g7nv_preseed(ad' $R | head -1 | cut -d: -f1); l2=$(grep -n 'hv_disk_set_trace(hv_vm_aux_disk()' $R | head -1 | cut -d: -f1); l3=$(grep -n 'hv_vm_start(1, on_exit_cb)' $R | head -1 | cut -d: -f1)
+{ [ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l3" ]; } || bad "$R: pre-seed, then the observer, then hv_vm_start"
+grep -q 'if (!src) return NULL;' $N || bad "$N: with nothing requested the pre-seed must stay off"
+grep -q 'NO valid v3' $N && grep -q 'NOTHING WRITTEN' $N || bad "$N: no store found must write nothing and say so"
+[ "$(grep -c 'g7nv_summary(&g_nv)' $R)" = 1 ] || bad "$R: one g7-nvram summary at stop"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

@@ -36,6 +36,9 @@ public class G7ExecActivity extends Activity {
     private File pendingExport;   // the ZIP the user is about to save with the system file picker
     private static final int REQ_SAVE_ZIP = 77;
     private TextView cbMon; private ScrollView cbScroll;
+    // UI-stability state (research/g7-ui-fix). uiPaused: the person froze the live monitor/picture/log; the VM and the run-state polls keep going. The fixed dock holds the input controls outside the scrolling page.
+    private volatile boolean uiPaused; private CheckBox cbPause; private LinearLayout inputPanel; private ScrollView inputScroll; private Button inputToggle, cbBig; private TextView injMsg;
+    private String cbMonShown = "", cbNoteShown = "", logShown = "";
     private TextView auxOut;
     // Restart after a guest SYSTEM_RESET (same clone, same options, never the E-mode NVRAM write again); only a confirmed clean stop, with a loop limit (G7RestartPolicy).
     private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
@@ -151,15 +154,21 @@ public class G7ExecActivity extends Activity {
         pipeRepro.setOnClickListener(v -> choosePipeRepro());
         cbCopy = new Button(this); cbCopy.setText("복제본 부팅 로그 끝부분 복사"); root.addView(cbCopy);
         add(root, "아래 상자는 '복제본 부팅'의 상태·로그입니다(복원 로그와 다름). 반복되는 USB 진단 줄은 화면에서만 묶어 보이며 로그 파일에는 모두 남습니다.", 12);
-        cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE); cbMon.setTextIsSelectable(true);
+        cbMon = new TextView(this); cbMon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); cbMon.setTypeface(android.graphics.Typeface.MONOSPACE);
+        cbMon.setFocusable(false); cbMon.setFocusableInTouchMode(false);   // live text: never selectable/focusable (a focused TextView scrolls the outer page on every setText); 'copy' button copies the log
         cbScroll = new ScrollView(this); cbScroll.addView(cbMon);
+        cbScroll.setFocusable(false); cbScroll.setFocusableInTouchMode(false); cbScroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         cbScroll.setOnTouchListener((v, e) -> { v.getParent().requestDisallowInterceptTouchEvent(true); return false; });
         root.addView(cbScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 360)));
         cbFrame = new Button(this); cbFrame.setText("지금 화면 확인(러너에 요청)"); root.addView(cbFrame);
         cbFrame.setOnClickListener(v -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) status.setText("실행 중인 복제본 부팅이 없습니다."); else { r.requestFrame(); status.setText("화면을 요청했습니다. 러너 응답이 아래(이미지 자리)에 표시됩니다. 화면이 아직 없으면 그 이유가 나옵니다."); } });
-        cbImage = new ImageView(this); cbImage.setAdjustViewBounds(true); cbImage.setMinimumHeight(1); root.addView(cbImage);
-        cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); root.addView(cbImageNote);
-        buildInputTest(root);
+        cbImage = new ImageView(this); cbImage.setAdjustViewBounds(false); cbImage.setFocusable(false);   // fixed reserved area: the page height never changes when a picture arrives
+        root.addView(cbImage, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 240)));
+        cbBig = new Button(this); cbBig.setText("화면 크게 보기(현재 사본)"); cbBig.setAllCaps(false); root.addView(cbBig);
+        cbBig.setOnClickListener(v -> showBigFrame());
+        cbImageNote = new TextView(this); cbImageNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); cbImageNote.setMinLines(5); root.addView(cbImageNote);
+        inputPanel = new LinearLayout(this); inputPanel.setOrientation(LinearLayout.VERTICAL);
+        buildInputTest(inputPanel);   // the input controls live in the fixed dock below the scrolling page, not in the page
         add(root, "[AUX 비교] 복원 전(macos_aux.initial)과 복원 후(macos_aux.img)의 AUX를 읽기 전용으로 비교하고, 복제본들의 AUX가 원본과 같은지도 봅니다. 아무것도 쓰거나 바꾸지 않습니다.", 13);
         auxBtn = new Button(this); auxBtn.setText("AUX 비교 실행(읽기 전용)"); root.addView(auxBtn);
         auxOut = new TextView(this); auxOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); auxOut.setTextIsSelectable(true); root.addView(auxOut);
@@ -261,8 +270,43 @@ public class G7ExecActivity extends Activity {
         });
         ScrollView sv = new ScrollView(this);
         sv.addView(root);
-        setContentView(sv);
+        LinearLayout frame = new LinearLayout(this); frame.setOrientation(LinearLayout.VERTICAL);
+        frame.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        frame.addView(buildInputDock(), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));   // fixed at the bottom: never scrolls away
+        setContentView(frame);
     }
+
+    /** The fixed bottom area: pause toggle, show/hide of the input panel, the last input message, and the input panel itself (own small scroll area of fixed height). */
+    private LinearLayout buildInputDock() {
+        final float dp = getResources().getDisplayMetrics().density;
+        LinearLayout dock = new LinearLayout(this); dock.setOrientation(LinearLayout.VERTICAL); dock.setPadding((int) (8 * dp), (int) (4 * dp), (int) (8 * dp), (int) (4 * dp));
+        View line = new View(this); line.setBackgroundColor(0x66888888); dock.addView(line, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) Math.max(1, dp)));
+        LinearLayout head = new LinearLayout(this); head.setOrientation(LinearLayout.HORIZONTAL); dock.addView(head);
+        inputToggle = new Button(this); inputToggle.setAllCaps(false); head.addView(inputToggle, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cbPause = new CheckBox(this); cbPause.setText("로그·화면 갱신 일시정지(VM은 계속 실행)"); cbPause.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        head.addView(cbPause, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f));
+        injMsg = new TextView(this); injMsg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11); injMsg.setLines(2); injMsg.setEllipsize(android.text.TextUtils.TruncateAt.END); injMsg.setText("입력 메시지: 없음"); dock.addView(injMsg);
+        inputScroll = new ScrollView(this); inputScroll.addView(inputPanel);
+        dock.addView(inputScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().heightPixels * 0.34f)));
+        final Runnable setToggle = () -> inputToggle.setText(inputScroll.getVisibility() == View.VISIBLE ? "입력 패널 접기" : "입력 패널 펴기");
+        setToggle.run();
+        inputToggle.setOnClickListener(v -> { inputScroll.setVisibility(inputScroll.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE); setToggle.run(); });
+        cbPause.setOnCheckedChangeListener((v, on) -> {
+            uiPaused = on;
+            if (!on) { G7CloneBoot.Run r = G7CloneBoot.current(); if (r != null) refreshCloneView(r); }   // resume: one catch-up refresh
+        });
+        return dock;
+    }
+
+    /** A one-time snapshot of the current picture in a dialog (the live view stays as it is). */
+    private void showBigFrame() {
+        android.graphics.drawable.Drawable d = cbImage.getDrawable();
+        if (d == null) { status.setText("확대할 화면 사본이 아직 없습니다('지금 화면 확인'으로 요청하세요)."); return; }
+        ImageView big = new ImageView(this); big.setImageDrawable(d); big.setAdjustViewBounds(true); big.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        new AlertDialog.Builder(this).setTitle("화면 사본(확대, 갱신 안 됨)").setView(big).setPositiveButton("닫기", null).show();
+    }
+
+    private static boolean setIfChanged(TextView t, String cur, String next) { if (next.equals(cur)) return false; t.setText(next); return true; }
 
 
     private java.util.function.IntSupplier runnerSt() { return () -> G7ExecLauncher.runnerStatus(android.os.Process.myPid(), getFilesDir()); }   // evaluated inside the start lock
@@ -525,8 +569,10 @@ public class G7ExecActivity extends Activity {
         else { text = G7CloneBoot.describeSaved(getFilesDir()); if (text.isEmpty()) text = "복제본 부팅 로그가 아직 없습니다."; }
         View c = cbScroll.getChildAt(0);
         boolean atEnd = cbScroll.getScrollY() + cbScroll.getHeight() >= c.getHeight() - 40;
-        cbMon.setText(text);
-        if (atEnd) cbScroll.post(() -> cbScroll.fullScroll(View.FOCUS_DOWN));
+        if (text.equals(cbMonShown)) return;   // unchanged: no setText, no layout pass
+        cbMonShown = text; cbMon.setText(text);
+        // no focus-moving full-scroll call here: it requests focus and so scrolls the outer page; a plain scrollTo changes only this box
+        if (atEnd) cbScroll.post(() -> cbScroll.scrollTo(0, Math.max(0, cbMon.getHeight() - cbScroll.getHeight())));
     }
 
     /** The guest asked for a restart and the policy allowed it: the same clone again, through the same gates as a person's start (validate, isolation, ROM/ECID). */
@@ -539,9 +585,8 @@ public class G7ExecActivity extends Activity {
         else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
     }
 
-    private void cbootPoll() {
-        final G7CloneBoot.Run r = G7CloneBoot.current();
-        if (r == null) return;
+    /** The live monitor box and the picture/note. Not called while the person has paused the refresh (it is called once on resume and when the run has finished). */
+    private void refreshCloneView(G7CloneBoot.Run r) {
         showCloneBox(r);
         G7CloneBoot.Frame f = r.frame();
         if (f != null && f != cbShownFrame) {   // a new picture: drawn from memory (never written), scaled up without smoothing so single pixels stay visible
@@ -549,11 +594,18 @@ public class G7ExecActivity extends Activity {
             for (int i = 0; i < px.length; i++) px[i] = 0xff000000 | ((f.rgb[3 * i] & 0xff) << 16) | ((f.rgb[3 * i + 1] & 0xff) << 8) | (f.rgb[3 * i + 2] & 0xff);
             android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(px, f.w, f.h, android.graphics.Bitmap.Config.ARGB_8888);
             android.graphics.drawable.BitmapDrawable bd = new android.graphics.drawable.BitmapDrawable(getResources(), bm); bd.setFilterBitmap(false);
-            cbImage.setImageDrawable(bd); cbImage.setMinimumHeight((int) (getResources().getDisplayMetrics().density * 200));
-            cbImageNote.setText("화면 사본 " + f.w + "x" + f.h + ", 통계 분류(추정): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요.");
+            cbImage.setImageDrawable(bd);   // the view has a fixed size: no layout change of the page
+            String n = "화면 사본 " + f.w + "x" + f.h + ", 통계 분류(추정): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요.";
+            if (setIfChanged(cbImageNote, cbNoteShown, n)) cbNoteShown = n;
             cbShownFrame = f;
         }
-        if (f == null) cbImageNote.setText(r.frameNote() + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"));
+        if (f == null) { String n = r.frameNote() + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"); if (setIfChanged(cbImageNote, cbNoteShown, n)) cbNoteShown = n; }
+    }
+
+    private void cbootPoll() {
+        final G7CloneBoot.Run r = G7CloneBoot.current();
+        if (r == null) return;
+        if (!uiPaused || r.finished()) refreshCloneView(r);   // paused: the run state below is still polled, only the text and picture stay frozen
         if (r.finished()) {
             cbtn.setEnabled(true); cbStop.setEnabled(false);
             String msg = "복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict();
@@ -631,8 +683,7 @@ public class G7ExecActivity extends Activity {
         log.postDelayed(() -> {
             G7ExecLauncher.Run r = G7ExecLauncher.current();
             if (r == null) return;
-            log.setText(r.tail());
-            showSummary();
+            if (!uiPaused || r.finished()) { String t = r.tail(); if (!t.equals(logShown)) { logShown = t; log.setText(t); } showSummary(); }
             if (r.finished()) { status.setText(G7ExecLauncher.meaning(r.exitCode())); cancel.setEnabled(false); } else poll();
         }, 2000);
     }
@@ -641,7 +692,7 @@ public class G7ExecActivity extends Activity {
         log.postDelayed(() -> {
             G7NetProbe.Run r = G7NetProbe.current();
             if (r == null) return;
-            log.setText(r.tail());
+            if (!uiPaused || r.finished()) { String t = r.tail(); if (!t.equals(logShown)) { logShown = t; log.setText(t); } }
             if (r.finished()) { status.setText("네트워크 시험이 끝났습니다(종료 코드 " + r.exitCode() + (r.cancelled() ? ", 중지됨" : "") + "). '네트워크 시험 로그 공유'로 보내세요."); netStop.setEnabled(false); } else netPoll();
         }, 2000);
     }
@@ -940,10 +991,10 @@ public class G7ExecActivity extends Activity {
             if (act == android.view.MotionEvent.ACTION_UP && g != null && injPreviewClick.isChecked()) injSend("미리보기 탭", G7InputMap.click(g[0], g[1]), true);
             return true;
         });
-        injOut = new TextView(this); injOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10); injOut.setTypeface(android.graphics.Typeface.MONOSPACE); injOut.setTextIsSelectable(true); injOut.setText("입력 로그: 없음");
-        ScrollView sv = new ScrollView(this); sv.addView(injOut);
+        injOut = new TextView(this); injOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10); injOut.setTypeface(android.graphics.Typeface.MONOSPACE); injOut.setFocusable(false); injOut.setText("입력 로그: 없음");
+        ScrollView sv = new ScrollView(this); sv.addView(injOut); sv.setFocusable(false); sv.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         sv.setOnTouchListener((v, e) -> { v.getParent().requestDisallowInterceptTouchEvent(true); return false; });
-        root.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 240)));
+        root.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().density * 110)));
         injTick();
     }
 
@@ -956,19 +1007,22 @@ public class G7ExecActivity extends Activity {
 
     private void injAt(boolean dbl) {
         int x = injX.getProgress(), y = injY.getProgress();
-        if (x < 0 || y < 0 || x >= G7InputMap.GUEST_W || y >= G7InputMap.GUEST_H) { status.setText("범위 밖입니다(0-1919, 0-1079)."); return; }
+        if (x < 0 || y < 0 || x >= G7InputMap.GUEST_W || y >= G7InputMap.GUEST_H) { injNote("범위 밖입니다(0-1919, 0-1079)."); return; }
         injSend(dbl ? "더블클릭 " + x + "," + y : "클릭 " + x + "," + y, dbl ? G7InputMap.dclick(x, y) : G7InputMap.click(x, y), true);
     }
 
     /** One button press: the app's own step goes into the trail first, then the runner's lines follow. sizeFirst: tell the runner the picture size the coordinates are in (1920x1080, the size the presets were measured at). */
     private void injSend(String label, String cmd, boolean sizeFirst) {
         G7CloneBoot.Run r = G7CloneBoot.current();
-        if (r == null || r.finished()) { status.setText("실행 중인 복제본 부팅이 없습니다."); return; }
+        if (r == null || r.finished()) { injNote("실행 중인 복제본 부팅이 없습니다."); return; }
         r.injectNote("app: button '" + label + "' pressed");
-        if (sizeFirst) { String w = r.sendInject(G7InputMap.display(G7InputMap.GUEST_W, G7InputMap.GUEST_H)); if (w != null) { status.setText("입력 보내기 실패: " + w); return; } }
+        if (sizeFirst) { String w = r.sendInject(G7InputMap.display(G7InputMap.GUEST_W, G7InputMap.GUEST_H)); if (w != null) { injNote("입력 보내기 실패: " + w); return; } }
         String why = r.sendInject(cmd);
-        status.setText(why == null ? "러너에 보냈습니다: " + cmd + " (아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
+        injNote(why == null ? "러너에 보냈습니다: " + cmd + " (아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
     }
+
+    /** Input feedback goes to the page's status line and also to the fixed dock (the page may be scrolled far away from the status line). */
+    private void injNote(String m) { status.setText(m); if (injMsg != null) injMsg.setText(m); }
 
     private void add(LinearLayout root, String s, int sp) {
         TextView t = new TextView(this);

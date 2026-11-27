@@ -117,6 +117,18 @@ x=$(grep -nE '\.delete\(|renameTo|Files\.walk|deleteRecursively|walkFileTree|REP
 [ "$(grep -c 'G7Isolation.gate(' "$S")" = 3 ] || bad "all three deletions must pass the isolation's gate"
 [ "$(grep -c 'synchronized (G7ExecLauncher.START_LOCK)' "$S")" = 3 ] || bad "all three deletions must hold the start lock"
 x=$(grep -nE '\.delete\(|Files\.delete|Files::delete|deleteRecursively|G7Storage\.delete'  $L $A | grep -v 'G7Storage\.delete\(Archives\|Current\|Clone\)' ); [ -z "$x" ] || { bad "something other than the storage class deletes:"; echo "$x"; }
+# UI stability (research/g7-ui-fix): the live clone-boot monitor must not move the page under the person's finger; the input controls live in a fixed dock
+x=$(grep -nE 'cbMon\.setTextIsSelectable|injOut\.setTextIsSelectable' "$A"); [ -z "$x" ] || { bad "a live monitor TextView is selectable again (a focused TextView scrolls the outer page on every setText):"; echo "$x"; }
+grep -q 'cbMon.setFocusable(false)' "$A" && grep -q 'cbScroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS)' "$A" || bad "the live monitor box must be non-focusable and block descendant focus"
+x=$(grep -nE 'fullScroll\(' "$A"); [ -z "$x" ] || { bad "fullScroll moves focus and so scrolls the outer page; use scrollTo on the box:"; echo "$x"; }
+grep -q 'cbImage.setAdjustViewBounds(false)' "$A" && ! grep -qE 'cbImage\.setMinimumHeight|cbImage\.setAdjustViewBounds\(true\)' "$A" || bad "the picture view must keep a fixed reserved height (no adjustViewBounds, no minimum-height toggling)"
+grep -q 'if (text.equals(cbMonShown)) return;' "$A" || bad "the monitor text must be set only when it changed"
+grep -q 'frame.addView(buildInputDock()' "$A" && grep -q 'frame.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))' "$A" || bad "the input controls must sit in a fixed dock outside the scrolling page"
+x=$(grep -nE 'buildInputTest\(root\)' "$A"); [ -z "$x" ] || { bad "the input controls were put back into the scrolling page:"; echo "$x"; }
+grep -q 'buildInputTest(inputPanel)' "$A" && grep -q 'inputScroll = new ScrollView(this); inputScroll.addView(inputPanel)' "$A" || bad "the input panel must be built into inputPanel and shown in the dock"
+grep -q 'cbPause = new CheckBox' "$A" && grep -q 'if (!uiPaused || r.finished()) refreshCloneView(r);' "$A" || bad "the pause toggle must freeze the monitor/picture refresh while cbootPoll keeps polling the run state"
+[ "$(grep -c 'log.postDelayed(this::cbootPoll, 2000);' "$A")" = 1 ] || bad "cbootPoll must keep rescheduling itself (the run-state poll continues while paused)"
+[ "$(grep -c 'if (!uiPaused || r.finished())' "$A")" -ge 3 ] || bad "the restore, network and clone-boot polls must all honour the pause toggle"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

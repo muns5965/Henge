@@ -176,6 +176,16 @@ grep -q 'return "1".equals(new String(Files.readAllBytes(p), StandardCharsets.US
 grep -q 'jit_exact=' "$CB" && grep -q 'g7-engine-diag:' "$CB" || bad "jit_exact and the engine diagnostics must be written to the run log header and run-info.txt"
 grep -q 'run_jit_exact=' $XJ/G7ExecDumpExport.java || bad "the export manifest must record the run's exact-stats state"
 
+# integ7b T9: the live preview is the runner's FULL-RESOLUTION picture file (G7FrameFile), drawn with bilinear filtering from one reused bitmap; the hex FRAME line is a low-resolution diagnostic only
+! grep -q 'setFilterBitmap(false)' "$A" || bad "the live preview must not use setFilterBitmap(false) (no unsmoothed upscaling of a tiny copy)"
+grep -q 'cbDrawable.setFilterBitmap(true)' "$A" && grep -q 'cbReader.read(ff, ' "$A" || bad "the preview must be drawn from the full-resolution file reader with filtering on"
+! grep -qE 'f\.rgb|new int\[f\.w \* f\.h\]|createBitmap\(px' "$A" || bad "the activity must not build the preview from the hex diagnostic frame (Frame.rgb)"
+grep -q 'previewToGuest(e.getX(), e.getY(), v.getWidth(), v.getHeight(), gw, gh, gw, gh)' "$A" || bad "the preview touch must map through the shown picture's own size (letterboxing included)"
+grep -q 'w > 96 || h < 1 || h > 64' "$CB" || bad "the hex diagnostic must keep its 96x64 limits"
+grep -q 'g7ff_publish(g_frame_dir, buf, w, h, seen)' host/ui_runner_vm_clone.c && grep -q 'rename(tmp, fin)' host/g7_frame_file.h || bad "the runner must publish the full picture file by temp file + rename"
+! grep -qE 'FRAMEFILE.*data=|printf\("ui_runner_vm_clone FRAMEFILE[^\n]*hex' host/ui_runner_vm_clone.c || bad "no pixels on the FRAMEFILE line"
+[ -f tests/java/G7FrameFileTest.java ] && grep -q 'g7-frameview-test' tools/g7-frameview-test.sh 2>/dev/null || [ -f tools/g7-frameview-test.sh ] || bad "the full-resolution picture test is missing"
+
 # F1 early framebuffer observation: default ON in the dialog (not remembered), always an explicit G7_FB0 value, the runner side only starts it on G7_FB0=1
 grep -q 'static volatile boolean fb0 = true;' "$CB" && grep -q 'env.put("G7_FB0", fb0 ? "1" : "0")' "$CB" || bad "G7CloneBoot: fb0 must default to ON and always send an explicit G7_FB0 value"
 grep -q 'fb0c.setChecked(true)' "$A" && ! grep -qE 'fb0c.*(KEY_|opts\.)' "$A" || bad "the fb0 checkbox must default to checked and must not be remembered"

@@ -33,6 +33,7 @@
 
 #include "clone_dir.h"
 #include "frame_shm.h"
+#include "g7_frame_file.h"
 #include "input_inject.h"
 #include "xhci.h"
 #include "virtio_input.h"
@@ -88,6 +89,7 @@ static int clone_boot_config_ok(const HvVmConfig *c, uint64_t ecid, int clone_ve
 }
 
 static HvShm *g_shm;
+static char g_frame_dir[900];   /* the shared file's folder: where the full-resolution picture file goes (host/g7_frame_file.h) */
 static HvRunner *g_run;
 
 /* TEMPORARY guest input test (research/g7-input): stdin lines "inject <command>" (host/input_inject.h) become ordinary hv_vm_key / hv_vm_mouse_* calls, i.e. events of the virtual USB keyboard
@@ -181,7 +183,15 @@ static void frame_line(void) {
     unsigned long pct = total ? nb * 100 / total : 0;
     const char *cls = nb == 0 ? "all-black" : pct < 5 ? "mostly-black-small-content" : colors < 12 ? "few-colors-content" : "many-colors-content";
     printf("ui_runner_vm_clone FRAME src=%ux%u out=%ux%u class=%s nonblack_pct=%lu colors=%u estimate=pixel-statistics-only data=%s\n", w, h, ow, oh, cls, pct, colors, hex);
-    fflush(stdout); free(hex); free(buf);
+    fflush(stdout); free(hex);
+    /* integ7b T9: the same picture at its own size, as a file for the app (the hex line above stays a low-resolution diagnostic; the app's preview does not use it). Short line, no pixels. */
+    if (g_frame_dir[0]) {
+        if (g7ff_publish(g_frame_dir, buf, w, h, seen) == 0)
+            printf("ui_runner_vm_clone FRAMEFILE name=%s w=%u h=%u seq=%llu bytes=%llu format=bgra8888 stride=%u\n", G7FF_NAME, w, h, (unsigned long long)seen, (unsigned long long)(G7FF_HDR + (uint64_t)w * 4 * h + G7FF_TRL), w * 4u);
+        else printf("ui_runner_vm_clone FRAMEFILE failed errno=%d (%s)\n", errno, strerror(errno));
+        fflush(stdout);
+    }
+    free(buf);
 }
 
 int main(int argc, char **argv) {
@@ -288,6 +298,7 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
+    { const char *sl = strrchr(shm_path, '/'); size_t dl = sl ? (size_t)(sl - shm_path) : 0; if (sl && dl && dl < sizeof g_frame_dir) { memcpy(g_frame_dir, shm_path, dl); g_frame_dir[dl] = 0; } else if (!sl) strcpy(g_frame_dir, "."); }
     if (hv_shm_create(shm_path, &g_shm) != 0) { fprintf(stderr, "ui_runner_vm_clone: cannot make the shared file: %s\n", strerror(errno)); return 2; }
     g_run = hv_runner_create(&REAL_API, g_shm);
     if (!g_run) { fprintf(stderr, "ui_runner_vm_clone: out of memory\n"); hv_shm_set_state(g_shm, HV_SHM_STOPPED); return 2; }

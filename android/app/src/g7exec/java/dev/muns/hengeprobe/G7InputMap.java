@@ -28,6 +28,20 @@ public final class G7InputMap {
         return new int[] { Math.min(gx, guestW - 1), Math.min(gy, guestH - 1) };
     }
 
+    /** integ7b T9: where the picture is drawn in a view (FIT_CENTER: aspect ratio kept, centred): {left, top, width, height} in view pixels, or null for impossible sizes. */
+    public static double[] fitRect(int viewW, int viewH, int srcW, int srcH) {
+        if (viewW <= 0 || viewH <= 0 || srcW <= 0 || srcH <= 0) return null;
+        double scale = Math.min((double) viewW / srcW, (double) viewH / srcH), cw = srcW * scale, ch = srcH * scale;
+        return new double[] { (viewW - cw) / 2.0, (viewH - ch) / 2.0, cw, ch };
+    }
+
+    /** The other way: the centre of guest pixel (gx, gy) of a guestW x guestH picture, in view coordinates, for a picture of srcW x srcH shown FIT_CENTER in viewW x viewH. Null if the numbers cannot be or the pixel is outside. */
+    public static float[] guestToPreview(int gx, int gy, int viewW, int viewH, int srcW, int srcH, int guestW, int guestH) {
+        double[] r = fitRect(viewW, viewH, srcW, srcH);
+        if (r == null || guestW <= 0 || guestH <= 0 || gx < 0 || gy < 0 || gx >= guestW || gy >= guestH) return null;
+        return new float[] { (float) (r[0] + (gx + 0.5) / guestW * r[2]), (float) (r[1] + (gy + 0.5) / guestH * r[3]) };
+    }
+
     public static String key(String name) { return "inject key " + name; }
     public static String click(int x, int y) { return "inject click " + x + " " + y; }
     public static String dclick(int x, int y) { return "inject dclick " + x + " " + y; }

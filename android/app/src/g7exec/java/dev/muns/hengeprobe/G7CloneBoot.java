@@ -242,7 +242,7 @@ public final class G7CloneBoot {
 
     public static boolean isPackaged(File nativeLibDir) { return nativeLibDir != null && new File(nativeLibDir, LIB_NAME).isFile(); }
 
-    /** One picture the runner printed (a downsampled copy of what the machine shows, at most 96x64, RGB) and its pixel-statistics class. The class is an ESTIMATE, not a decision about what is on the screen. */
+    /** LOW-RESOLUTION DIAGNOSTIC (T9): the hex FRAME line, at most 96x64 RGB. It feeds the class/statistics text only; the picture the screen shows comes from the full-resolution file (G7FrameFile). One picture the runner printed (a downsampled copy of what the machine shows, at most 96x64, RGB) and its pixel-statistics class. The class is an ESTIMATE, not a decision about what is on the screen. */
     public static final class Frame {
         public final int w, h; public final byte[] rgb; public final String cls; public final int nonblackPct, colors;
         /** The size of the picture the runner copied from (before it made the small copy): the machine's own width x height. */
@@ -266,6 +266,8 @@ public final class G7CloneBoot {
     private static final java.util.regex.Pattern VERDICT = java.util.regex.Pattern.compile("^ui_runner_vm_clone VERDICT: vm_stop_confirmed=([01]) stop_kind=([a-z-]{1,24}) disk_flush=(ok|FAILED|not-attempted) macos_boot=not-determined.*$");
 
     public static final class Run {
+        volatile G7FrameFile.Info frameFile;   // newest FRAMEFILE answer (T9); a new object per answer
+        public G7FrameFile.Info frameFile() { return frameFile; }
         volatile Frame frame; volatile String verdictLine, frameNote = "아직 러너에 화면을 요청하지 않았습니다."; volatile long frameAnsweredMs;
         final G7CloneMonitor mon = new G7CloneMonitor();
         public G7CloneMonitor monitor() { return mon; }
@@ -427,6 +429,12 @@ public final class G7CloneBoot {
                 while ((line = r.readLine()) != null) {
                     line = G7ExecLauncher.mask(line, ecid);
                     G7BootStage.Stage s = run.stages.feed(line, System.currentTimeMillis() - run.t0);
+                    if (line.startsWith("ui_runner_vm_clone FRAMEFILE ")) {   // integ7b T9: the full-resolution picture is a FILE in the app's files folder (host/g7_frame_file.h); this short line only says it is there. Not the hex path.
+                        G7FrameFile.Info fi = G7FrameFile.parseLine(line);
+                        if (fi != null) { run.put("g7-frame-file: " + fi.w + "x" + fi.h + " seq=" + fi.seq + " (" + G7FrameFile.NAME + ", full resolution, BGRA)\n", false); run.frameFile = fi; }
+                        else run.put("g7-frame-file: runner answer not usable: " + (line.length() > 160 ? line.substring(0, 160) : line) + "\n", false);
+                        continue;
+                    }
                     if (line.startsWith("ui_runner_vm_clone FRAME ")) {   // the picture is kept in memory for the screen, never written; the log gets a short line without the pixels
                         Frame f = parseFrame(line);
                         run.frameAnsweredMs = System.currentTimeMillis();

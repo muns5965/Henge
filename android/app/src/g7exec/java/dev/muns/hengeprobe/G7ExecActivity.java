@@ -44,6 +44,10 @@ public class G7ExecActivity extends Activity {
     private final G7RestartPolicy restartPolicy = new G7RestartPolicy();
     private File restartClone; private int restartUsb, restartSeconds = G7CloneBoot.RUN_SECONDS; private volatile boolean restartPending; private int restartGen;   // restartGen changes whenever a scheduled restart is cancelled or a run starts: an old callback then does nothing
     private ImageView cbImage; private TextView cbImageNote; private Object cbShownFrame;
+    // integ7b T9: the live picture is the runner's full-resolution file (G7FrameFile), read into ONE reused Bitmap; the hex FRAME line is only a diagnostic text
+    private final G7FrameFile.Reader cbReader = new G7FrameFile.Reader();
+    private android.graphics.Bitmap cbBitmap; private android.graphics.drawable.BitmapDrawable cbDrawable;
+    private G7FrameFile.Info cbShownInfo; private long cbLastReadMs; private int cbShownW, cbShownH; private String cbFileNote = "";
     private static volatile boolean cloneCancel;   // static: the copy thread outlives the Activity; a recreated Activity's cancel button must still reach it
     private TextView storageInfo;
     private LinearLayout archiveBox;
@@ -298,12 +302,39 @@ public class G7ExecActivity extends Activity {
         return dock;
     }
 
-    /** A one-time snapshot of the current picture in a dialog (the live view stays as it is). */
+    /** A one-time snapshot of the current picture in a dialog, at the picture's own resolution (a copy: the live bitmap keeps being reused). */
     private void showBigFrame() {
-        android.graphics.drawable.Drawable d = cbImage.getDrawable();
-        if (d == null) { status.setText("확대할 화면 사본이 아직 없습니다('지금 화면 확인'으로 요청하세요)."); return; }
-        ImageView big = new ImageView(this); big.setImageDrawable(d); big.setAdjustViewBounds(true); big.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        new AlertDialog.Builder(this).setTitle("화면 사본(확대, 갱신 안 됨)").setView(big).setPositiveButton("닫기", null).show();
+        if (cbBitmap == null || cbShownW == 0) { status.setText("확대할 화면이 아직 없습니다('지금 화면 확인'으로 요청하세요)."); return; }
+        android.graphics.Bitmap snap = cbBitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
+        if (snap == null) { status.setText("화면 사본을 만들 메모리가 부족합니다."); return; }
+        snap.setDensity(android.graphics.Bitmap.DENSITY_NONE);
+        android.graphics.drawable.BitmapDrawable bd = new android.graphics.drawable.BitmapDrawable(getResources(), snap); bd.setFilterBitmap(true);
+        ImageView big = new ImageView(this); big.setImageDrawable(bd); big.setAdjustViewBounds(true); big.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        new AlertDialog.Builder(this).setTitle("화면 사본(원본 " + snap.getWidth() + "x" + snap.getHeight() + ", 갱신 안 됨)").setView(big).setPositiveButton("닫기", null).show();
+    }
+
+    /** Reads the runner's full-resolution picture file into the reused bitmap. Both sizes come from the file itself; a size that differs from the runner's last line is retried once with the file's own. True when a whole, consistent picture is now shown. */
+    private boolean loadFullFrame(G7FrameFile.Info fi) {
+        File ff = new File(getFilesDir(), G7FrameFile.NAME);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            final int w = fi.w, h = fi.h;
+            if (cbBitmap == null || cbBitmap.getWidth() != w || cbBitmap.getHeight() != h) {
+                cbBitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888); cbBitmap.setDensity(android.graphics.Bitmap.DENSITY_NONE);   // intrinsic size = pixels, never density-scaled
+                cbDrawable = new android.graphics.drawable.BitmapDrawable(getResources(), cbBitmap); cbDrawable.setFilterBitmap(true);   // bilinear: the picture is shown smaller than it is
+                cbImage.setImageDrawable(cbDrawable);
+            }
+            final android.graphics.Bitmap bm = cbBitmap;
+            int st = cbReader.read(ff, (argb, y0, rows, bw) -> { if (bw == bm.getWidth() && y0 + rows <= bm.getHeight()) bm.setPixels(argb, 0, bw, 0, y0, bw, rows); });
+            if (st == G7FrameFile.OK && cbReader.width == w && cbReader.height == h) {
+                cbShownW = w; cbShownH = h; cbShownInfo = fi; cbImage.invalidate();
+                cbFileNote = "화면 " + w + "x" + h + " (원본 해상도, 프레임 번호 " + cbReader.seq + ")";
+                return true;
+            }
+            if (st == G7FrameFile.OK) { fi = new G7FrameFile.Info(cbReader.width, cbReader.height, cbReader.seq); continue; }
+            cbFileNote = "화면 파일을 읽지 못했습니다: " + G7FrameFile.statusName(st) + (st == G7FrameFile.TORN ? " (그림이 일부만 바뀌었을 수 있음, 다시 요청하세요)" : "");
+            return false;
+        }
+        return false;
     }
 
     private static boolean setIfChanged(TextView t, String cur, String next) { if (next.equals(cur)) return false; t.setText(next); return true; }
@@ -615,18 +646,15 @@ public class G7ExecActivity extends Activity {
     /** The live monitor box and the picture/note. Not called while the person has paused the refresh (it is called once on resume and when the run has finished). */
     private void refreshCloneView(G7CloneBoot.Run r) {
         showCloneBox(r);
-        G7CloneBoot.Frame f = r.frame();
-        if (f != null && f != cbShownFrame) {   // a new picture: drawn from memory (never written), scaled up without smoothing so single pixels stay visible
-            int[] px = new int[f.w * f.h];
-            for (int i = 0; i < px.length; i++) px[i] = 0xff000000 | ((f.rgb[3 * i] & 0xff) << 16) | ((f.rgb[3 * i + 1] & 0xff) << 8) | (f.rgb[3 * i + 2] & 0xff);
-            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(px, f.w, f.h, android.graphics.Bitmap.Config.ARGB_8888);
-            android.graphics.drawable.BitmapDrawable bd = new android.graphics.drawable.BitmapDrawable(getResources(), bm); bd.setFilterBitmap(false);
-            cbImage.setImageDrawable(bd);   // the view has a fixed size: no layout change of the page
-            String n = "화면 사본 " + f.w + "x" + f.h + ", 통계 분류(추정): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요.";
+        G7FrameFile.Info fi = r.frameFile();
+        long nowMs = System.currentTimeMillis();
+        if (fi != null && fi != cbShownInfo && nowMs - cbLastReadMs >= 1000) { cbLastReadMs = nowMs; loadFullFrame(fi); }   // throttled: at most one 8 MB read a second
+        G7CloneBoot.Frame f = r.frame();   // the low-resolution diagnostic (96x64 hex line): statistics text only, never drawn
+        if (cbShownW > 0 || f != null) {
+            String n = (cbShownW > 0 ? cbFileNote : r.frameNote()) + (f != null ? ". 통계 분류(추정, 저해상도 진단 사본 " + f.w + "x" + f.h + "): " + f.cls + ", 검지 않은 화소 " + f.nonblackPct + "%, 색 " + f.colors + "종. 분류는 Apple 로고인지 부팅 화면인지 구분하지 못합니다. 이미지를 직접 보고 판단하세요." : "");
             if (setIfChanged(cbImageNote, cbNoteShown, n)) cbNoteShown = n;
             cbShownFrame = f;
-        }
-        if (f == null) { String n = r.frameNote() + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"); if (setIfChanged(cbImageNote, cbNoteShown, n)) cbNoteShown = n; }
+        } else { String n = (cbFileNote.isEmpty() ? r.frameNote() : cbFileNote) + (r.frameAnsweredMs == 0 ? "" : " (응답 " + (System.currentTimeMillis() - r.frameAnsweredMs) / 1000 + "초 전)"); if (setIfChanged(cbImageNote, cbNoteShown, n)) cbNoteShown = n; }
     }
 
     private void cbootPoll() {
@@ -1009,13 +1037,11 @@ public class G7ExecActivity extends Activity {
             v.getParent().requestDisallowInterceptTouchEvent(true);
             int act = e.getActionMasked();
             if (act != android.view.MotionEvent.ACTION_DOWN && act != android.view.MotionEvent.ACTION_UP && act != android.view.MotionEvent.ACTION_MOVE) return true;
-            android.graphics.drawable.Drawable d = cbImage.getDrawable();
-            G7CloneBoot.Run r = G7CloneBoot.current();
-            G7CloneBoot.Frame f = r == null ? null : r.frame();
-            int gw = f != null && f.srcW > 0 ? f.srcW : G7InputMap.GUEST_W, gh = f != null && f.srcH > 0 ? f.srcH : G7InputMap.GUEST_H;
-            int[] g = d == null ? null : G7InputMap.previewToGuest(e.getX(), e.getY(), v.getWidth(), v.getHeight(), d.getIntrinsicWidth(), d.getIntrinsicHeight(), gw, gh);
+            // the shown picture IS the guest picture at its own size (the runner's file): its pixel size is both the aspect ratio of what is drawn and the coordinate space; the view's size is read now, so a rotation is covered
+            int gw = cbShownW > 0 ? cbShownW : G7InputMap.GUEST_W, gh = cbShownH > 0 ? cbShownH : G7InputMap.GUEST_H;
+            int[] g = cbShownW <= 0 ? null : G7InputMap.previewToGuest(e.getX(), e.getY(), v.getWidth(), v.getHeight(), gw, gh, gw, gh);
             injCoord.setText(String.format(java.util.Locale.US, "미리보기 터치 (%.0f,%.0f) 뷰 %dx%d -> 게스트 %s (그림 %dx%d)", e.getX(), e.getY(), v.getWidth(), v.getHeight(), g == null ? "없음(여백)" : g[0] + "," + g[1], gw, gh));
-            if (act == android.view.MotionEvent.ACTION_UP && g != null && injPreviewClick.isChecked()) injSend("미리보기 탭", G7InputMap.click(g[0], g[1]), true);
+            if (act == android.view.MotionEvent.ACTION_UP && g != null && injPreviewClick.isChecked()) injSend("미리보기 탭", G7InputMap.click(g[0], g[1]), gw, gh);
             return true;
         });
         injOut = new TextView(this); injOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10); injOut.setTypeface(android.graphics.Typeface.MONOSPACE); injOut.setFocusable(false); injOut.setText("입력 로그: 없음");
@@ -1039,11 +1065,13 @@ public class G7ExecActivity extends Activity {
     }
 
     /** One button press: the app's own step goes into the trail first, then the runner's lines follow. sizeFirst: tell the runner the picture size the coordinates are in (1920x1080, the size the presets were measured at). */
-    private void injSend(String label, String cmd, boolean sizeFirst) {
+    private void injSend(String label, String cmd, boolean sizeFirst) { injSend(label, cmd, sizeFirst ? G7InputMap.GUEST_W : 0, sizeFirst ? G7InputMap.GUEST_H : 0); }
+    /** dw x dh: the picture size the coordinates are in (0: do not send a size). The preview tap passes the shown picture's own size. */
+    private void injSend(String label, String cmd, int dw, int dh) {
         G7CloneBoot.Run r = G7CloneBoot.current();
         if (r == null || r.finished()) { injNote("실행 중인 복제본 부팅이 없습니다."); return; }
         r.injectNote("app: button '" + label + "' pressed");
-        if (sizeFirst) { String w = r.sendInject(G7InputMap.display(G7InputMap.GUEST_W, G7InputMap.GUEST_H)); if (w != null) { injNote("입력 보내기 실패: " + w); return; } }
+        if (dw > 0 && dh > 0) { String w = r.sendInject(G7InputMap.display(dw, dh)); if (w != null) { injNote("입력 보내기 실패: " + w); return; } }
         String why = r.sendInject(cmd);
         injNote(why == null ? "러너에 보냈습니다: " + cmd + " (아래 입력 로그에서 단계를 확인하세요)" : "입력 보내기 실패: " + why);
     }

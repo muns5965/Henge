@@ -1,0 +1,12 @@
+# Follow-up ledger (후속 개발 장부) - opened 2026-11-27. NOT part of the official census count (census stays 105 rows; P07 is only a proposal).
+Status words: OPEN = not started; nothing here is device-verified. Source: oss-macos-gg-qemu.md + code reads at library ece74ae.
+
+| id | item | evidence (code) | next step | priority |
+|---|---|---|---|---|
+| L1 | MSAA advertised vs implemented: device info advertises MSAASamples=4 (load-bearing - do NOT change without evidence); texture MSAA creation refused (TEXWHY_C_MSAA); host sample count fixed at 1_BIT; pipeline descriptor sample count not decoded (O01) | /tmp/mgq-B.md | (1) decode pipeline/attachment sample count + counter, (2) query per-format Vulkan sample support, (3) implement only if a guest request is observed, (4) re-check the advertisement | after boot-screen result |
+| L2 | Render target / blend feature check missing: missing COLOR_ATTACHMENT drops the usage bit silently; `no_target` counter does not say which format/feature; blend feature never queried | /tmp/mgq-A.md | log format + missing feature together (once per format); proposed census row P07 | after boot-screen result |
+| L3 | Cubic sampler: constexpr filter value != 0 maps to LINEAR (bicubic=2 included), no counter/log | src/vulkan/sampler_cache.c:55-56 (verified) | shared approximation counter + one log per kind; optional strict mode | later |
+| L4 | Constexpr address mode `% 5`: out-of-range values wrap onto a valid mode with unrelated meaning | src/vulkan/sampler_cache.c:54 (verified) | check the public enum range; explicit mapping, unsupported = counted + refused/diagnosed (not wrapped) | later |
+| L5 | Completion vs guest write: swap mode may complete a stamp while the surface is still owed; default mode never writes back flag-2 surfaces; immediate-mode write failure is not retried | /tmp/mgq-C.md | analyse g7-pvg-swap together with wbverify (wbverify proves the copy, not that the guest consumed the frame); test accuracy in immediate mode first | with device logs |
+| L6 | Long-run test: login-level progress unlikely within 3 min on 2 vCPU/2 GiB own JIT (INFER); only after a correct frame appears; use g7-alive progress=yes / g7-stall as the stop rule | /tmp/mgq-A.md | decide with device logs | later |
+| L7 | census text fixes: X06 (constexpr wiring exists), P03 gaps sentence, P01 note, header HEAD | /tmp/mgq-A.md, -B.md | verify by test/table diff, then edit | docs |

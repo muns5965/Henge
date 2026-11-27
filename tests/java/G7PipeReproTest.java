@@ -27,6 +27,12 @@ public class G7PipeReproTest {
     }
     static boolean has(String s, String t) { return s.contains(t); }
     static String readAll(File f) throws IOException { return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8); }
+    static boolean alive(File pidFile) throws Exception {
+        if (!pidFile.isFile()) return false;
+        String pid = readAll(pidFile).trim(); File st = new File("/proc/" + pid + "/stat");
+        for (int i = 0; i < 40; i++) { if (!st.exists() || readAll(st).contains(") Z ")) return false; Thread.sleep(50); }
+        return true;
+    }
     static void rm(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) rm(c); f.delete(); }
 
     public static void main(String[] a) throws Exception {
@@ -94,12 +100,12 @@ public class G7PipeReproTest {
             Path d4 = Files.createDirectory(root.resolve("d")); File log4 = Files.createDirectory(root.resolve("log4")).toFile();
             File lib4 = fake(d4, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=CRASH'; exit 0;;\n");
             buf = new ByteArrayOutputStream(); String o4 = run(lib4, buf, code, log4);
-            check("R0 line with result=CRASH: undecided (return 2), R0V 'not run'", code[0] == 2 && has(o4, "R0=undecided (crash/timeout/invalid);") && has(o4, "R0V (original FS + REAL VS) = not run"));
+            check("R0 line with result=CRASH: its own status CRASH (return 2), R0V 'not run'", code[0] == 2 && has(o4, "R0=CRASH (the R0 process crashed; undecided, NOT reproduced);") && has(o4, "R0V (original FS + REAL VS) = not run"));
             // ---- R0 process itself crashes (no row line): current behaviour is the label "no R0 line" (r0 is only set from a parsed line), still return 2
             Path d4b = Files.createDirectory(root.resolve("d2")); File log4b = Files.createDirectory(root.resolve("log4b")).toFile();
             File lib4b = fake(d4b, new String[]{"R0"}, "R0) exit 9;;\n");
             buf = new ByteArrayOutputStream(); String o4b = run(lib4b, buf, code, log4b);
-            check("R0 process crash: row CRASH exit=9, status 'no R0 line' (label quirk, documented), return 2", code[0] == 2 && has(o4b, "row=R0 result=CRASH exit=9") && has(o4b, "R0=no R0 line;"));
+            check("R0 process crash: row CRASH exit=9, status CRASH (not 'no R0 line'), return 2", code[0] == 2 && has(o4b, "row=R0 result=CRASH exit=9") && has(o4b, "R0=CRASH (the R0 process crashed") && !has(o4b, "R0=no R0 line"));
             // ---- no R0 line at all
             Path d5 = Files.createDirectory(root.resolve("e")); File log5 = Files.createDirectory(root.resolve("log5")).toFile();
             File lib5 = fake(d5, new String[]{"A1"}, "A1) echo 'pipeline-reduce: row=A1 result=BUILT'; exit 0;;\n");
@@ -115,6 +121,39 @@ public class G7PipeReproTest {
             File lib7 = fake(d7, new String[]{"R0", "R0V"}, "R0) echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; rm -f \"$0\"; exit 0;;\nR0V) echo 'pipeline-reduce: row=R0V result=BUILT'; exit 0;;\n");
             buf = new ByteArrayOutputStream(); String o7 = run(lib7, buf, code, log7);
             check("exe vanishing after R0: ABORTED note, R0 kept, return -3, status run=INCOMPLETE", code[0] == -3 && has(o7, "ladder: ABORTED:") && has(o7, "(the rows above were completed)") && has(o7, "row=R0 result=FAIL vk=-13") && has(o7, "run=INCOMPLETE"));
+
+
+            // ---- A5: R0 timeout / R0 NOROW have their own statuses; a never-listed R0 stays 'no R0 line'
+            Path d9 = Files.createDirectory(root.resolve("i")); File log9 = Files.createDirectory(root.resolve("log9")).toFile();
+            File lib9 = fake(d9, new String[]{"R0", "R0V"}, "R0) exec sleep 30;;\nR0V) echo chatter; exit 0;;\n");
+            buf = new ByteArrayOutputStream(); String o9 = run(lib9, buf, code, log9);
+            check("R0 timeout: status TIMEOUT, R0V NOROW, return 2", code[0] == 2 && has(o9, "R0=TIMEOUT (undecided);") && has(o9, "R0V (original FS + REAL VS) = NOROW;"));
+            check("class line distinguishes FAIL(-13), FAIL(other), BUILT, CRASH, TIMEOUT, NOROW, n/a", has(o, "ladder-classes: FAIL(-13)=1 FAIL(other VkResult)=1 BUILT=2 CRASH=4 TIMEOUT=1 NOROW=3 n/a=2 other=0\n"));
+
+            // ---- A4: the whole process tree is killed on timeout and on cancel, and the kill is VERIFIED (the grandchild is polled until gone)
+            Path d10 = Files.createDirectory(root.resolve("j")); File log10 = Files.createDirectory(root.resolve("log10")).toFile();
+            File gpid = root.resolve("grand.pid").toFile();
+            File lib10 = fake(d10, new String[]{"R0", "T2"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\nT2) sleep 30 & echo $! > \"" + gpid + "\"; wait;;\n");
+            buf = new ByteArrayOutputStream(); String o10 = run(lib10, buf, code, log10);
+            check("timeout row: the process tree is gone (grandchild killed) and the row says so", has(o10, "row=T2 result=TIMEOUT") && has(o10, "kill: process tree gone (child + ") && !alive(gpid));
+            // cancel mid-row
+            Path d11 = Files.createDirectory(root.resolve("k")); File log11 = Files.createDirectory(root.resolve("log11")).toFile();
+            File gpid2 = root.resolve("grand2.pid").toFile();
+            File lib11 = fake(d11, new String[]{"R0", "R0V", "R1"}, "R0) echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; exit 0;;\nR0V) sleep 30 & echo $! > \"" + gpid2 + "\"; wait;;\nR1) echo 'pipeline-reduce: row=R1 result=BUILT'; exit 0;;\n");
+            G7PipeRepro.Cancel cn = new G7PipeRepro.Cancel();
+            new Thread(() -> { try { for (int i = 0; i < 100 && !gpid2.isFile(); i++) Thread.sleep(50); Thread.sleep(200); } catch (InterruptedException ignored) {} cn.cancel("test cancel"); }).start();
+            buf = new ByteArrayOutputStream(); File bnd = new File(log11, "pipefail_x"); bnd.mkdirs();
+            long t0 = System.currentTimeMillis();
+            code[0] = G7PipeRepro.runLadder(lib11.getParentFile(), bnd, null, false, buf, log11, new G7PipeRepro.Options().cancel(cn));
+            String o11 = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            check("cancel: returns -5 quickly (not after the 2 s row timeout of the stuck row)", code[0] == -5 && System.currentTimeMillis() - t0 < 1900);
+            check("cancel: finished rows kept, cancelled row NOT recorded, later row not run, status CANCELLED, kill verified", has(o11, "row=R0 result=FAIL vk=-13") && !has(o11, "row=R0V result") && !has(o11, "row=R1 ") && has(o11, "ladder: CANCELLED during row R0V (test cancel)") && has(o11, "kill check: process tree gone") && has(o11, "run=CANCELLED"));
+            check("cancel: the grandchild process is really gone", !alive(gpid2));
+            // a Cancel already set before the run: nothing is started
+            G7PipeRepro.Cancel pre = new G7PipeRepro.Cancel(); pre.cancel("pre");
+            buf = new ByteArrayOutputStream();
+            code[0] = G7PipeRepro.runLadder(lib11.getParentFile(), bnd, null, false, buf, log11, new G7PipeRepro.Options().cancel(pre));
+            check("cancel before start: -5, no row run", code[0] == -5 && !new String(buf.toByteArray(), StandardCharsets.UTF_8).contains("row="));
 
             // ---- run(): the whole path (header, verdict text, result file), reduce=true, matrix=false
             Path d8 = Files.createDirectory(root.resolve("h")); File log8 = Files.createDirectory(root.resolve("log8")).toFile();

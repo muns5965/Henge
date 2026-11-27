@@ -115,7 +115,7 @@ Live versus allocated: with a region too small the live code at flush time is al
 
 On the evidence now, capacity is the better first lever; duplicate removal cannot be shown to matter and cannot exceed a bounded part of the cost.
 - Duplicates are outside the 84-98% (they are not counted as translations), so removing them cannot reduce the retranslation share at all. They can only save their emit time (inside the 10-12% per vCPU) and their region space (inside "other" per flush). Upper bound on the gain: the whole emit share; likely a small fraction of it [I], measured value [N].
-- Capacity acts on the dominant cost: ~98% of 4.2 M translations/s in t=31-41 s are blocks flushed and made again, about 0.6 s apart; the flush rate (1.6/s) is region-fill rate [V].
+- Capacity acts on the dominant cost: ~91-98% of the 374-420 k translations/s in t=31-41 s are blocks flushed and made again, about 0.6 s apart; the flush rate (1.6/s) is region-fill rate [V].
 - Against it: capacity is memory (400 MB RSS for 256 MB, item 3), swap is already in use on the phone, and the benefit is a cliff, not linear: nothing until the region approaches the working set, which is between 66 MB and 800 MB [I]. A cache that holds the working set but not the total (say the 220-300 k hot blocks) would stop the churn; 2 M distinct blocks does not need to fit.
 - A third lever, evicting less than everything on a flush, is not decided by any data here.
 Evidence still missing: (a) device A/B jit-mb 64 vs 256 (and 128) with the new counters; (b) `duplicate_translation_*` in a real boot; (c) `exact_gap` (needs the launcher to pass `G7_STATS_EXACT`); (d) real RSS/swap at 256; (e) `flush_emit_fail`, `flush_req_during_stw` values.

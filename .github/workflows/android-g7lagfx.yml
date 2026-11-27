@@ -18,6 +18,7 @@ on:
   push:
     branches:
       - research/android-port
+      - research/g7-integ-apk
     paths:
       - .github/workflows/android-g7lagfx.yml
       - tools/lagfx-clone-build.sh
@@ -27,7 +28,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: 50b5b98a3b2dd4acd628ed417962118f7c750884
+  LAGFX_SHA: ec47785acd848718e7c717ef8962bb7f85512a09
 
 jobs:
   apk:
@@ -141,7 +142,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           G7_HENGE_SHA: ${{ github.sha }}
-          G7_LAGFX_SHA: 50b5b98a3b2dd4acd628ed417962118f7c750884
+          G7_LAGFX_SHA: ec47785acd848718e7c717ef8962bb7f85512a09
         run: gradle -p android assembleG7start --no-daemon --stacktrace
       - name: Check the APK (runner present as AArch64, launcher present)
         run: |

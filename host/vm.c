@@ -144,8 +144,8 @@ static int boot_args_display(HvBootDisplay *d) {
                         (unsigned)h0(ram + found, 0), (unsigned)h0(ram + found, 1), (unsigned long long)q[5], (unsigned long long)q[6], (unsigned long long)q[7], (unsigned long long)q[8], (unsigned long long)q[9], (unsigned long long)q[10], (unsigned long long)q[8] * 4ull, (unsigned long long)(q[5] - VMAPPLE_MEM)); }
         }
         uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
-        if (q[1] >> 40 == 0xfffffe && w >= 320 && w <= 8192 && hh >= 200 && hh <= 8192 && base >= VMAPPLE_MEM &&
-            base - VMAPPLE_MEM + row * hh <= size) {
+        /* the same check the first search and g7_fb0 use (size, rowbytes >= width*4, 32-bit depth, base inside RAM): a boot_args page the guest rewrote must not be shown on a weaker test */
+        if (q[1] >> 40 == 0xfffffe && strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") == 0) {
             d->pixels = ram + (base - VMAPPLE_MEM);
             d->width = (uint32_t)w, d->height = (uint32_t)hh, d->stride = (uint32_t)row, d->source = HV_SCREEN_BOOT_ARGS;
             g7_fbp_src(5, "boot_args_used", d->width, d->height);

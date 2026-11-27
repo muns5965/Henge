@@ -66,6 +66,8 @@ typedef struct HvBlock {
 typedef struct HvStats {
     uint64_t blocks, translations, block_flushes;
     uint64_t flush_smc, flush_ic, flush_full;  /* why translations were dropped */
+    uint64_t flushed_blocks, flushed_words;    /* what whole flushes threw away: blocks, and host code words in use (diagnostic, g7-jit1) */
+    uint64_t flush_emit_fail, flush_table_full; /* of the flushes requested: a block that could not be emitted, the block table full (the rest: the code region full, or requested elsewhere) */
     uint64_t chained, ijc_fills, ijc_resets;
     uint64_t xchained;
     uint64_t kick_src[5];     /* exit_req set by: a request (TLBI), hv_cpu_wake, kick_all, hv_machine_wake, the CPU itself */        /* of them, exits to another page (TLB-checked) */

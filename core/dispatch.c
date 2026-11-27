@@ -26,6 +26,8 @@ void hv_flush_blocks(HvMachine *m) {
             }
     }
     m->stats.block_flushes++;
+    m->stats.flushed_blocks += (uint64_t)m->nblocks; /* what this drops, to tell a code region too small for the working set (every flush drops a full region) from other causes */
+    m->stats.flushed_words += (uint64_t)m->jit.used;
     __atomic_add_fetch(&m->jit_gen, 1, __ATOMIC_SEQ_CST);
     for (int i = 0; i < m->ncpus; i++)
         if (m->cpus[i]) {
@@ -155,7 +157,10 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     /* Translate without the lock, into this thread's buffer... */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
-    if (hv_translate_emit(m, &nb, code, avail) != 0) goto flush_unlocked;
+    if (hv_translate_emit(m, &nb, code, avail) != 0) {
+        __atomic_add_fetch(&m->stats.flush_emit_fail, 1, __ATOMIC_RELAXED);
+        goto flush_unlocked;
+    }
     if (m->stats_interval) {
         m->stats.translate_ticks += mach_absolute_time() - t0;
         m->stats.translated_insns += nb.ninsns;
@@ -186,6 +191,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         return b;
     }
     if ((uint32_t)m->nblocks >= m->max_blocks || m->flush_pending) {
+        if ((uint32_t)m->nblocks >= m->max_blocks) m->stats.flush_table_full++;
         m->stats.flush_full++;
         goto flush;
     }
@@ -640,6 +646,9 @@ static void print_stats(HvCpu *cpu, int force) {
         if (s->flush_checked)
             fprintf(stderr, "  switch-flush checks/s: %.0f, entries walked %.0f, found out of date %.0f (flushed), access flag only %.0f\n",
                     RATE(flush_checked), RATE(flush_check_entries), RATE(flush_check_bad), RATE(flush_check_af));
+        fprintf(stderr, "  translations dropped by whole flushes: %llu blocks in %llu flushes (avg %.0f blocks, %.1f MB of code each); flushes requested by an unemittable block %llu, by a full block table %llu; TLBI never drops translations (they are keyed by VA+PA+flags+page generation)\n",
+                (unsigned long long)s->flushed_blocks, (unsigned long long)s->block_flushes, s->block_flushes ? (double)s->flushed_blocks / (double)s->block_flushes : 0.0,
+                s->block_flushes ? (double)s->flushed_words * 4 / (double)s->block_flushes / (1 << 20) : 0.0, (unsigned long long)s->flush_emit_fail, (unsigned long long)s->flush_table_full);
         fprintf(stderr, "  cache drops/s: full %.0f, ASID %.0f, user VA %.0f, kernel VA %.0f, code %.0f (whole user half %.0f, filter full %.0f, big user range %.0f)\n", RATE(reset_why[0]),
                 RATE(reset_why[1]), RATE(reset_why[2]), RATE(reset_why[3]), RATE(reset_why[4]), RATE(reset_why[5]), RATE(reset_why[6]), RATE(reset_why[7]));
         { /* block hash health: chain lengths and how much of it is stale */

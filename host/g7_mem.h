@@ -82,6 +82,8 @@ static inline int hv_g7m_mib(char *out, size_t cap, uint64_t kb) {
     return snprintf(out, cap, "%lluMiB", (unsigned long long)(kb >> 10));
 }
 
+/* The largest line hv_g7m_line can write, with every number at its 64-bit maximum (95 fixed bytes + 20 for t + 11 x 20 for the MiB values + NUL = 336): a caller buffer of this size never cuts the line. Real values are far smaller. */
+#define HV_G7M_LINE_MAX 352
 /* One line (ends in '\n'); written with one write() by the caller. */
 static inline void hv_g7m_line(char *line, size_t cap, uint64_t t_s, const HvG7Mem *m) {
     char a[24], b[24], c[24], d[24], e[24], f[24], g[24], h[24], i[24], j[24], k[24];

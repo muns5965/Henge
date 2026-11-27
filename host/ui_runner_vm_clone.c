@@ -378,7 +378,7 @@ int main(int argc, char **argv) {
         if (t >= next_frame) { hv_runner_pump_frame(g_run); next_frame = t + 0.1; }
         hv_shm_heartbeat(g_shm);
         if (t >= next_mem) {   /* one memory line every 10 s (read-only procfs), the slower PSS on the first and every 10th */
-            HvG7Mem m; hv_g7m_sample(&m); char ml[300]; hv_g7m_line(ml, sizeof ml, (uint64_t)(t - tstart), &m); fputs(ml, stdout);
+            HvG7Mem m; hv_g7m_sample(&m); char ml[HV_G7M_LINE_MAX]; hv_g7m_line(ml, sizeof ml, (uint64_t)(t - tstart), &m); fputs(ml, stdout);
             if (nmem == 0 || nmem % 10 == 9) { char pl[100]; hv_g7m_pss_line(pl, sizeof pl, (uint64_t)(t - tstart), hv_g7m_pss_kb()); fputs(pl, stdout); }
             char d1[900], d2[1800]; hv_g7d_sample_lines(&diag_prev, (uint64_t)(t - tstart), d1, sizeof d1, d2, sizeof d2); fputs(d1, stdout); fputs(d2, stdout);   /* read-only: vmstat, PSI, swaps, one line per thread */
             {   /* read-only wait-site timing (core/waitdiag.h): why a stalled boot stalled. wd: one line per wait site, wd-cpu: one per vCPU (last pc / exit reason / which wait it is in), gfx-ch: the gfx channels' ring pointers */

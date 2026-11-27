@@ -22,6 +22,7 @@ final class G7PipeRepro {
     static final String LOG_PREFIX = "g7_pipelinerepro_";
     static final int MAX_OUT = 512 * 1024;
     static final long TIMEOUT_S = 180;
+    static int rowTimeoutS = 40;   // per row; not final only so the JVM test (tests/java/G7PipeReproTest.java) can use a short one
 
     private G7PipeRepro() {}
 
@@ -61,7 +62,7 @@ final class G7PipeRepro {
         for (String id : ids) {
             if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
             int[] ec = new int[1];
-            String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, 40, ec, 4_000_000);
+            String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, rowTimeoutS, ec, 4_000_000);
             String rowLine = null;
             for (String ln : out.split("\n")) if (ln.contains("pipeline-reduce: row=" + id + " ")) { rowLine = ln.substring(ln.indexOf("pipeline-reduce:")); break; }
             if (rowLine == null) {

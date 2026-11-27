@@ -48,4 +48,7 @@ java -cp "$O9" dev.muns.hengeprobe.G7RestartPolicyTest || R10=1
 java -cp "$O9" dev.muns.hengeprobe.G7InputMapTest | grep -E "FAIL|G7InputMapTest" ; java -cp "$O9" dev.muns.hengeprobe.G7InputMapTest > /dev/null || R10=1
 javac -encoding UTF-8 -d "$O9" $X/G7ExecDumpExport.java $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $X/G7Clone.java $X/G7CloneProgress.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/G7ExecDumpExportTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2>> "$O9/javac.log" || { echo "FAILED javac (dumpexport)"; head -30 "$O9/javac.log"; exit 1; }
 java -cp "$O9" dev.muns.hengeprobe.G7ExecDumpExportTest || R10=1
+# the pipeline-repro ladder (G7PipeRepro) against a fake runner script; AssetManager is a stub, no Android classes
+javac -encoding UTF-8 -d "$O9" $X/G7PipeRepro.java $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/android-stub/android/content/res/AssetManager.java tests/java/G7PipeReproTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2>> "$O9/javac.log" || { echo "FAILED javac (piperepro)"; head -30 "$O9/javac.log"; exit 1; }
+java -cp "$O9" dev.muns.hengeprobe.G7PipeReproTest || R10=1
 [ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ] && [ $R9 = 0 ] && [ $R10 = 0 ]

@@ -40,6 +40,11 @@ int main(void) {
     hv_g7m_line(l, sizeof l, 90, &q);
     CHECK(strstr(l, "swap=0MiB") != NULL, "a real zero prints as 0MiB");
 
+    /* worst case: every value just below the 64-bit maximum and t at the maximum still fits HV_G7M_LINE_MAX whole (the clone runner's buffer; gcc -Wformat-truncation bounds it at 336 bytes) */
+    HvG7Mem w; w.rss_kb = w.peak_kb = w.anon_kb = w.file_kb = w.shmem_kb = w.swap_kb = w.avail_kb = w.cached_kb = w.dirty_kb = w.writeback_kb = w.swapfree_kb = UINT64_MAX - 1;
+    char wl[HV_G7M_LINE_MAX]; hv_g7m_line(wl, sizeof wl, UINT64_MAX, &w);
+    CHECK(strlen(wl) == 335 && wl[334] == '\n' && strstr(wl, "swapfree=18014398509481983MiB\n"), "the largest possible line fits HV_G7M_LINE_MAX uncut (%zu bytes)", strlen(wl));
+
     /* a small buffer never overruns and still ends the string */
     char tiny[16]; memset(tiny, 'x', sizeof tiny); hv_g7m_line(tiny, sizeof tiny, 123456789, &m);
     CHECK(memchr(tiny, 0, sizeof tiny) != NULL, "a too small buffer is cut and terminated");

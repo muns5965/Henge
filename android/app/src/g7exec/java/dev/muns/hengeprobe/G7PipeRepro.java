@@ -37,7 +37,63 @@ final class G7PipeRepro {
     /** Options of one ladder run; every field has the previous behaviour as default (cancel null = never cancelled). */
     static final class Options {
         Cancel cancel;
+        java.util.Set<String> groups;     // null or containing "ALL" = every row (default); else group keys from GROUPS
+        Listener listener;                // progress, called from the worker thread after every row
         Options cancel(Cancel c) { cancel = c; return this; }
+        Options groups(java.util.Set<String> g) { groups = g; return this; }
+        Options listener(Listener l) { listener = l; return this; }
+    }
+    interface Listener { void onProgress(Progress p); }
+    /** done = rows finished in this run (incl. n/a); failed = FAIL(any) + CRASH + TIMEOUT + NOROW + other; remaining = selected rows not yet finished. */
+    static final class Progress {
+        int selected, done, built, failed, na, remaining; String current = "";
+        public String toString() { return "done " + done + "/" + selected + " (BUILT " + built + ", failed " + failed + ", n/a " + na + "), remaining " + remaining + (current.isEmpty() ? "" : ", now " + current); }
+    }
+
+    /** Row groups = row-id prefixes of the --list-rows output (nothing is typed: the UI shows these as check boxes with the row count). Every row belongs to exactly one group; BASE is whatever no other group claims
+     *  (R0, R0V and all base/binding before-after rows: their ids are not known to this app, so they stay in BASE). R0 and R0V are ANCHORS: always run, because the status line and the verdict depend on them. */
+    static final String[][] GROUPS = {
+        {"BASE", "기본 행 + 바인딩 전/후 (R0, R0V 포함; 아래 그룹이 아닌 모든 행)"},
+        {"XN", "CH10/CH11 입력 부분집합 XN*"},
+        {"XGU", "진입 컷 격자 XG* / XU*"},
+        {"PRUNE", "가지치기·SSA·지역변수 행 PB..PALLI (PB.CH10 형식)"},
+        {"SPVOPT", "spirv-opt 행 F:*"},
+        {"IW", "인터페이스 행 IW*"},
+        {"CXF", "constexpr-sampler 행 CXF*"},
+    };
+    static String groupOf(String id) {
+        if (id.startsWith("F:")) return "SPVOPT";
+        if (id.matches("XN[0-9a-fA-F]{2}")) return "XN";
+        if (id.startsWith("XG") || id.startsWith("XU")) return "XGU";
+        if (id.matches("P[A-Z]+\\..*")) return "PRUNE";
+        if (id.startsWith("IW")) return "IW";
+        if (id.startsWith("CXF")) return "CXF";
+        return "BASE";
+    }
+    static boolean isAnchor(String id) { return id.equals("R0") || id.equals("R0V"); }
+    /** The rows to run, in list order. groups null/empty/ALL = all rows. */
+    static List<String> select(List<String> ids, java.util.Set<String> groups) {
+        if (groups == null || groups.isEmpty() || groups.contains("ALL")) return new ArrayList<>(ids);
+        List<String> out = new ArrayList<>();
+        for (String id : ids) if (isAnchor(id) || groups.contains(groupOf(id))) out.add(id);
+        return out;
+    }
+    /** Row count per group key (LinkedHashMap in GROUPS order, empty groups included with 0). */
+    static java.util.Map<String, Integer> groupCounts(List<String> ids) {
+        java.util.Map<String, Integer> m = new java.util.LinkedHashMap<>();
+        for (String[] g : GROUPS) m.put(g[0], 0);
+        for (String id : ids) m.merge(groupOf(id), 1, Integer::sum);
+        return m;
+    }
+    /** Runs --list-rows once (UI: to show the group check boxes before the run). Empty list = the runner gave no rows. */
+    static List<String> listRows(File nativeLibDir, File bundle, File redDir, Cancel cancel) throws IOException, InterruptedException {
+        String exe = new File(nativeLibDir, LIB_NAME).getPath();
+        return parseIds(runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000, cancel, null));
+    }
+    static List<String> parseIds(String listOut) {
+        List<String> ids = new ArrayList<>();
+        for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
+        return ids;
     }
     private static volatile Cancel ACTIVE;
     /** For the activity's onDestroy: kills the running reproduction (child and its children). No-op when nothing runs. */
@@ -110,23 +166,27 @@ final class G7PipeRepro {
     static int runLadder(File nativeLibDir, File bundle, File redDir, boolean matrix, ByteArrayOutputStream buf, File logDir, Options opt) throws IOException, InterruptedException {
         Cancel cancel = opt.cancel;
         String exe = new File(nativeLibDir, LIB_NAME).getPath();
-        List<String> ids = new ArrayList<>();
         String listOut = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000, cancel, null);
-        for (String ln : listOut.split("\n")) { int k = ln.indexOf("pipeline-reduce: id "); if (k >= 0) ids.add(ln.substring(k + "pipeline-reduce: id ".length()).trim()); }
+        List<String> ids = parseIds(listOut);
         if (cancel != null && cancel.isCancelled()) { buf.write("ladder: CANCELLED before the row list was complete\n".getBytes(StandardCharsets.UTF_8)); return -5; }
         if (ids.isEmpty()) { buf.write(("ladder: --list-rows gave no rows; output:\n" + listOut + "\n").getBytes(StandardCharsets.UTF_8)); return 2; }
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
         int r0 = -9, built = 0, fail = 0, bad = 0, na = 0; boolean complete = false, cancelled = false; String r0v = "not run";
         java.util.Map<String, Integer> cls = new java.util.TreeMap<>();
+        List<String> sel = select(ids, opt.groups);
+        boolean partialSel = sel.size() != ids.size();
+        Progress pg = new Progress(); pg.selected = sel.size(); pg.remaining = sel.size();
+        if (partialSel) o.append("ladder-selection: groups=").append(new java.util.TreeSet<>(opt.groups)).append(" -> ").append(sel.size()).append(" of ").append(ids.size()).append(" rows (R0 and R0V always run); the other rows were NOT run\n");
+        if (opt.listener != null) opt.listener.onProgress(pg);
         long end = System.currentTimeMillis() + 840_000L;
         // each row is appended to its own file as soon as it is done, so an app kill or a crash keeps everything finished so far (the final window/file still comes at the end)
         File partial = new File(logDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + "-ladder-partial.txt");
         try { appendLine(partial, "bundle=" + bundle.getName() + " " + o.toString().trim()); } catch (IOException e) { o.append("(partial file not writable: ").append(e).append(")\n"); }
         try {
-        for (String id : ids) {
+        for (String id : sel) {
             if (cancel != null && cancel.isCancelled()) { cancelled = true; break; }
             if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
-            int[] ec = new int[1]; String[] kr = new String[1];
+            int[] ec = new int[1]; String[] kr = new String[1]; pg.current = id;
             String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, rowTimeoutS, ec, 4_000_000, cancel, kr);
             if (ec[0] == -6) { cancelled = true; o.append("ladder: CANCELLED during row ").append(id).append(" (").append(cancel.why).append("); this row is NOT recorded; kill check: ").append(kr[0]).append("\n"); break; }
             String rowLine = null;
@@ -142,13 +202,15 @@ final class G7PipeRepro {
             o.append(rowLine).append("\n"); appendQuiet(partial, rowLine);
             String c = classify(rowLine); cls.merge(c, 1, Integer::sum);
             if (c.equals("BUILT")) built++; else if (c.startsWith("FAIL")) fail++; else if (c.equals("NA")) na++; else bad++;
+            pg.done++; pg.remaining = sel.size() - pg.done; pg.built = built; pg.na = na; pg.failed = fail + bad; pg.current = "";
+            if (opt.listener != null) { try { opt.listener.onProgress(pg); } catch (RuntimeException ignored) {} }
             if (id.equals("R0V")) r0v = c.equals("BUILT") ? "BUILT" : c.equals("FAIL13") ? "same -13" : c.equals("FAILOTHER") ? "FAIL (other VkResult)" : c.equals("CRASH") || c.equals("TIMEOUT") || c.equals("NOROW") ? c : "undecided";
             if (id.equals("R0")) r0 = c.equals("BUILT") ? 0 : c.equals("FAIL13") ? 1 : c.equals("FAILOTHER") ? 4 : c.equals("CRASH") ? 5 : c.equals("TIMEOUT") ? 6 : c.equals("NOROW") ? 7 : 3;   // CRASH/TIMEOUT/NOROW/INVALID on R0 is NOT "failure reproduced"
         }
-        o.append("ladder: rows=").append(ids.size()).append(" built=").append(built).append(" fail=").append(fail).append(" n/a=").append(na).append(" other=").append(bad).append("\n");
+        o.append("ladder: rows=").append(sel.size()).append(" built=").append(built).append(" fail=").append(fail).append(" n/a=").append(na).append(" other=").append(bad).append("\n");
         o.append("ladder-classes: FAIL(-13)=").append(cls.getOrDefault("FAIL13", 0)).append(" FAIL(other VkResult)=").append(cls.getOrDefault("FAILOTHER", 0)).append(" BUILT=").append(built)
          .append(" CRASH=").append(cls.getOrDefault("CRASH", 0)).append(" TIMEOUT=").append(cls.getOrDefault("TIMEOUT", 0)).append(" NOROW=").append(cls.getOrDefault("NOROW", 0)).append(" n/a=").append(na).append(" other=").append(cls.getOrDefault("OTHER", 0)).append("\n");
-            complete = !cancelled && System.currentTimeMillis() <= end && !ids.isEmpty();
+            complete = !cancelled && System.currentTimeMillis() <= end && !sel.isEmpty();
         } catch (RuntimeException | InterruptedException | IOException e) {
             o.append("ladder: ABORTED: ").append(e).append(" (the rows above were completed)\n");
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();

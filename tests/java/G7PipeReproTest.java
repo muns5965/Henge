@@ -155,6 +155,29 @@ public class G7PipeReproTest {
             code[0] = G7PipeRepro.runLadder(lib11.getParentFile(), bnd, null, false, buf, log11, new G7PipeRepro.Options().cancel(pre));
             check("cancel before start: -5, no row run", code[0] == -5 && !new String(buf.toByteArray(), StandardCharsets.UTF_8).contains("row="));
 
+            // ---- A1: group selection by row-id prefix; A3: progress
+            String[] gids = {"R0", "R0V", "CH10", "BIND.before", "BIND.after", "XN01", "XN1e", "XG7.live", "XGnone.live", "XU29.null", "PB.CH10", "PALLI.ORIG", "PBW.CUT7", "F:a.bin", "IW1.all", "IWB0", "CXF", "CXF.CH10"};
+            check("groupOf: each id lands in exactly the documented group",
+                G7PipeRepro.groupOf("XN01").equals("XN") && G7PipeRepro.groupOf("XG7.live").equals("XGU") && G7PipeRepro.groupOf("XU29.null").equals("XGU") && G7PipeRepro.groupOf("PB.CH10").equals("PRUNE") && G7PipeRepro.groupOf("PALLI.ORIG").equals("PRUNE")
+                && G7PipeRepro.groupOf("F:a.bin").equals("SPVOPT") && G7PipeRepro.groupOf("IWB0").equals("IW") && G7PipeRepro.groupOf("CXF.CH10").equals("CXF") && G7PipeRepro.groupOf("R0").equals("BASE") && G7PipeRepro.groupOf("CH10").equals("BASE") && G7PipeRepro.groupOf("XNzz").equals("BASE"));
+            java.util.Map<String, Integer> gc = G7PipeRepro.groupCounts(Arrays.asList(gids));
+            check("groupCounts: counts per group, every group present", gc.get("BASE") == 5 && gc.get("XN") == 2 && gc.get("XGU") == 3 && gc.get("PRUNE") == 3 && gc.get("SPVOPT") == 1 && gc.get("IW") == 2 && gc.get("CXF") == 2 && gc.size() == G7PipeRepro.GROUPS.length);
+            check("select: null/empty/ALL = all rows in list order", G7PipeRepro.select(Arrays.asList(gids), null).size() == gids.length && G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("ALL", "XN"))).size() == gids.length && G7PipeRepro.select(Arrays.asList(gids), new HashSet<>()).size() == gids.length);
+            List<String> sx = G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("XN", "CXF")));
+            check("select XN+CXF keeps the anchors R0, R0V and list order", sx.equals(Arrays.asList("R0", "R0V", "XN01", "XN1e", "CXF", "CXF.CH10")));
+            check("select of an anchor-less list with a group that has no rows: only anchors", G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("SPVOPT"))).equals(Arrays.asList("R0", "R0V", "F:a.bin")));
+            Path d12 = Files.createDirectory(root.resolve("l")); File log12 = Files.createDirectory(root.resolve("log12")).toFile(); File exlog = root.resolve("exec12.log").toFile();
+            StringBuilder cs = new StringBuilder();
+            for (String id : gids) cs.append("\"").append(id).append("\") echo \"$ID\" >> \"").append(exlog).append("\"; echo 'pipeline-reduce: row=").append(id).append(" result=").append(id.equals("XN1e") ? "FAIL vk=-13(X)" : id.equals("CXF") ? "n/a" : id.equals("R0") ? "FAIL vk=-13(X)" : "BUILT").append("'; exit 0;;\n");
+            File lib12 = fake(d12, gids, cs.toString());
+            List<String> snaps = new ArrayList<>();
+            buf = new ByteArrayOutputStream(); File bnd12 = new File(log12, "pipefail_x"); bnd12.mkdirs();
+            code[0] = G7PipeRepro.runLadder(lib12.getParentFile(), bnd12, null, false, buf, log12, new G7PipeRepro.Options().groups(new HashSet<>(Arrays.asList("XN", "CXF"))).listener(pp -> snaps.add(pp.toString())));
+            String o12 = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            check("selection run executes only anchors + selected rows", Arrays.asList(readAll(exlog).trim().split("\n")).equals(Arrays.asList("R0", "R0V", "XN01", "XN1e", "CXF", "CXF.CH10")));
+            check("selection run says what was selected and that the rest was NOT run; header still counts all listed rows", has(o12, "ladder: 18 rows (one process per row") && has(o12, "ladder-selection: groups=[CXF, XN] -> 6 of 18 rows") && has(o12, "ladder: rows=6 built=3 fail=2 n/a=1 other=0") && code[0] == 0);
+            check("progress: first call selected=6 remaining=6, last done=6 remaining=0 failed=2 n/a=1", snaps.get(0).startsWith("done 0/6") && snaps.get(snaps.size() - 1).startsWith("done 6/6 (BUILT 3, failed 2, n/a 1), remaining 0") && snaps.size() == 7);
+
             // ---- run(): the whole path (header, verdict text, result file), reduce=true, matrix=false
             Path d8 = Files.createDirectory(root.resolve("h")); File log8 = Files.createDirectory(root.resolve("log8")).toFile();
             File lib8 = fake(d8, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; exit 0;;\n");

@@ -100,11 +100,11 @@ static int g_inj_on;
 static void inj_log(void *ctx, const char *line) {
     (void)ctx;
     HvVmapple *b = hv_vm_board();
-    unsigned long long kd = 0, kp = 0, md = 0, mx = 0, mq = 0;
+    unsigned long long kd = 0, kp = 0, md = 0, mx = 0, mq = 0, ms = 0;
     if (b && b->usb) { kd = __atomic_load_n(&b->usb->delivered, __ATOMIC_RELAXED); kp = (unsigned long long)(b->usb->rtail - b->usb->rhead); }
-    if (b && b->mouse) { md = __atomic_load_n(&b->mouse->delivered, __ATOMIC_RELAXED); mx = __atomic_load_n(&b->mouse->dropped, __ATOMIC_RELAXED); mq = (unsigned long long)(b->mouse->tail - b->mouse->head); }
+    if (b && b->mouse) { md = __atomic_load_n(&b->mouse->delivered, __ATOMIC_RELAXED); mx = __atomic_load_n(&b->mouse->dropped, __ATOMIC_RELAXED); ms = __atomic_load_n(&b->mouse->short_writes, __ATOMIC_RELAXED); mq = (unsigned long long)(b->mouse->tail - b->mouse->head); }
     int px = -1, py = -1, pk = hv_vm_pointer(&px, &py) == 0;
-    printf("ui_runner_vm_clone INJECT: %s | kbd reports delivered-to-guest-buffer %llu pending %llu | mouse events delivered-to-guest-buffer %llu pending %llu dropped %llu | guest pointer %s", line, kd, kp, md, mq, mx, pk ? "" : "not reported");
+    printf("ui_runner_vm_clone INJECT: %s | kbd reports delivered-to-guest-buffer %llu pending %llu | mouse events delivered-to-guest-buffer %llu pending %llu dropped %llu short_writes %llu | guest pointer %s", line, kd, kp, md, mq, mx, ms, pk ? "" : "not reported");
     if (pk) printf("%d,%d", px, py);
     printf(" | guest consumption: unknown\n");
     fflush(stdout);

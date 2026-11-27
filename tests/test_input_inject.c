@@ -45,6 +45,17 @@ int main(void) {
     fresh(&j); hv_inject_command(&j, "click 960 397", T, m, sizeof m);
     for (int i = 0; i < 3000 / 5; i++) { hv_inject_tick(&j, 1, 10, 10, T); T += 5; }
     EXPECT(count("B0v") == 1 && strstr(lg, "did NOT arrive") != NULL, "a stuck pointer: clicked after the timeout, logged as not arrived");
+    /* strict mode: no click without guest-confirmed arrival (estimate-only and a stuck pointer both end without a click); default behaviour untouched */
+    fresh(&j); EXPECT(hv_inject_command(&j, "strict on", T, m, sizeof m) == 0 && hv_inject_command(&j, "strict maybe", T, m, sizeof m) == -1, "strict on|off parsed, junk refused");
+    hv_inject_command(&j, "click 960 397", T, m, sizeof m); run(&j, 0, 3000);
+    EXPECT(count("B0v") == 0 && strstr(lg, "STRICT:") != NULL && strstr(lg, "NOT clicking") != NULL && !hv_inject_busy(&j) && j.strict_skipped == 1, "strict + no guest feedback (estimate only): no click, logged, job finished");
+    fresh(&j); hv_inject_command(&j, "strict on", T, m, sizeof m); hv_inject_command(&j, "click 960 397", T, m, sizeof m);
+    for (int i = 0; i < 3000 / 5; i++) { hv_inject_tick(&j, 1, 10, 10, T); T += 5; }
+    EXPECT(count("B0v") == 0 && strstr(lg, "NOT clicking") != NULL, "strict + a stuck pointer with feedback: no click");
+    fresh(&j); hv_inject_command(&j, "strict on", T, m, sizeof m); hv_inject_command(&j, "click 960 397", T, m, sizeof m); run(&j, 1, 3000);
+    EXPECT(count("B0v") == 1 && count("B0^") == 1 && strstr(lg, "confirmed by the guest") != NULL, "strict + guest feedback reaching the target: exactly one click");
+    fresh(&j); hv_inject_command(&j, "strict off", T, m, sizeof m); hv_inject_command(&j, "click 960 397", T, m, sizeof m); run(&j, 0, 3000);
+    EXPECT(count("B0v") == 1, "strict off: the old behaviour (click on estimate)");
     /* click here: no move */
     fresh(&j); gx = 300; gy = 200; hv_inject_command(&j, "click", T, m, sizeof m); run(&j, 1, 300);
     EXPECT(count("B0v(300,200)") == 1 && gx == 300 && gy == 200, "click at the current pointer moves nothing");

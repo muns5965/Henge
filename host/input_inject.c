@@ -70,6 +70,13 @@ int hv_inject_command(HvInject *j, const char *line, int64_t now_ms, char *msg, 
         if (msg && cap) snprintf(msg, cap, "aborted");
         return 0;
     }
+    if (!strcmp(w, "strict")) {   /* strict on|off: a click job only clicks when the guest's own pointer feedback shows the target reached; otherwise it is dropped and logged (default off = the old behaviour) */
+        if (strcmp(a, "on") && strcmp(a, "off")) REFUSE("strict on|off");
+        j->strict = !strcmp(a, "on");
+        say(j, "strict click mode %s", j->strict ? "ON (no click without guest-confirmed arrival)" : "OFF");
+        if (msg && cap) snprintf(msg, cap, "strict %s", a);
+        return 0;
+    }
     if (!strcmp(w, "display")) {
         int dw = 0, dh = 0;
         if (sscanf(line, "%*s %d %d", &dw, &dh) != 2 || dw < 16 || dh < 16 || dw > 16384 || dh > 16384) REFUSE("display W H out of range");
@@ -155,7 +162,14 @@ void hv_inject_tick(HvInject *j, int known, int px, int py, int64_t now) {
         break;
     case 1: {
         int ok = arrived(j, &ex, &ey);
-        if (ok || now - j->phase_ms >= HV_INJECT_ARRIVE_MS) {
+        int good = ok && (!j->strict || j->arrive_confirmed);
+        if (good || now - j->phase_ms >= HV_INJECT_ARRIVE_MS) {
+            if (!good && j->strict) {
+                say(j, "STRICT: guest-confirmed arrival not seen within %d ms (now %.0f,%.0f, %s): NOT clicking", HV_INJECT_ARRIVE_MS, ex, ey, ok ? "estimate only" : "pointer not at target");
+                j->strict_skipped++;
+                finish(j);
+                break;
+            }
             if (ok) say(j, "pointer arrived at %.0f,%.0f (%s)", ex, ey, j->arrive_confirmed ? "confirmed by the guest's pointer feedback" : "ESTIMATE ONLY: dead reckoning, no guest pointer feedback seen, so guest arrival is NOT proven");
             else say(j, "pointer did NOT arrive within %d ms (now %.0f,%.0f): clicking anyway", HV_INJECT_ARRIVE_MS, ex, ey);
             j->phase = 2;

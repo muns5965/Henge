@@ -56,6 +56,8 @@ on:
       - tools/net-probe-test.sh
       - tests/test_net_probe.*
       - tests/java/G7NetProbeTest.java
+      - tests/java/G7PipeReproTest.java
+      - tests/java/android-stub/**
       - .github/workflows/android-g7exec.yml
 
 env:

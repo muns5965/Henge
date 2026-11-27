@@ -32,6 +32,9 @@
 
 #include "clone_dir.h"
 #include "frame_shm.h"
+#include "input_inject.h"
+#include "xhci.h"
+#include "virtio_input.h"
 #include "g7_mem.h"
 #include "g7_diag.h"
 #include "pvg_lite.h"
@@ -84,6 +87,24 @@ static int clone_boot_config_ok(const HvVmConfig *c, uint64_t ecid, int clone_ve
 
 static HvShm *g_shm;
 static HvRunner *g_run;
+
+/* TEMPORARY guest input test (research/g7-input): stdin lines "inject <command>" (host/input_inject.h) become ordinary hv_vm_key / hv_vm_mouse_* calls, i.e. events of the virtual USB keyboard
+   and the virtual mouse. Every step is logged with the devices' own counters: xhci "delivered" = keyboard reports written into a transfer buffer the guest's USB driver posted;
+   virtio-input "delivered" = events written into an event buffer the guest's driver posted. Those say the guest-side driver took the report; they do NOT say a guest application acted on it. */
+static HvInject g_inj;
+static int g_inj_on;
+static void inj_log(void *ctx, const char *line) {
+    (void)ctx;
+    HvVmapple *b = hv_vm_board();
+    unsigned long long kd = 0, kp = 0, md = 0, mx = 0, mq = 0;
+    if (b && b->usb) { kd = __atomic_load_n(&b->usb->delivered, __ATOMIC_RELAXED); kp = (unsigned long long)(b->usb->rtail - b->usb->rhead); }
+    if (b && b->mouse) { md = __atomic_load_n(&b->mouse->delivered, __ATOMIC_RELAXED); mx = __atomic_load_n(&b->mouse->dropped, __ATOMIC_RELAXED); mq = (unsigned long long)(b->mouse->tail - b->mouse->head); }
+    int px = -1, py = -1, pk = hv_vm_pointer(&px, &py) == 0;
+    printf("ui_runner_vm_clone INJECT: %s | kbd reports delivered-to-guest-buffer %llu pending %llu | mouse events delivered-to-guest-buffer %llu pending %llu dropped %llu | guest pointer %s", line, kd, kp, md, mq, mx, pk ? "" : "not reported");
+    if (pk) printf("%d,%d", px, py);
+    printf(" | guest consumption: unknown\n");
+    fflush(stdout);
+}
 static int cursor_wake_fd = -1;           /* read end of the pointer-moved doorbell pipe (hv_vm_cursor_wake_open), -1 = none */
 static unsigned long cursor_wake_loops;   /* loop passes that the doorbell woke (log only) */
 
@@ -293,6 +314,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     hv_runner_set_ready(g_run, 1);
+    { HvInputSink isk = {hv_vm_key, hv_vm_mouse_move, hv_vm_mouse_button, hv_vm_mouse_wheel, hv_vm_mouse_hwheel}; hv_inject_init(&g_inj, &isk, inj_log, NULL); g_inj_on = 1; }
     hv_shm_set_state(g_shm, HV_SHM_RUNNING);
 
     const char *why_stop = "quit", *stop_kind = "requested-quit";
@@ -340,10 +362,16 @@ int main(int argc, char **argv) {
                 if (!strcmp(inl, "quit")) { why_stop = "quit"; break; }
                 else if (!strcmp(inl, "status")) status_line("status");
                 else if (!strcmp(inl, "frame")) frame_line();
+                else if (!strncmp(inl, "inject ", 7)) {
+                    char im[120] = "";
+                    int ir = g_inj_on ? hv_inject_command(&g_inj, inl + 7, (int64_t)(now() * 1000), im, sizeof im) : -1;
+                    printf("ui_runner_vm_clone INJECT-CMD: '%s' -> %s%s%s\n", inl + 7, ir == 0 ? "accepted" : "refused", im[0] ? ": " : "", g_inj_on ? im : "machine not running"); fflush(stdout);
+                }
                 else ignored++;
             } else if (ll + 1 < sizeof inl) inl[ll++] = c;
         }
     work:
+        if (g_inj_on) { int ix = 0, iy = 0, ik = hv_vm_pointer(&ix, &iy) == 0; hv_inject_tick(&g_inj, ik, ix, iy, (int64_t)(now() * 1000)); }
         hv_runner_pump_cmds(g_run);
         hv_runner_pump_pointer(g_run);
         double t = now();

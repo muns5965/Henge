@@ -14,7 +14,7 @@ dobjs="$(ls $E/dev_*.o)"
 vobjs="$E/vm_vm.o $E/vm_stubs_portable.o $E/vm_usb_host.o"
 for o in $eobjs $vobjs; do [ -f "$o" ] || { echo "FAILED  missing $o (run the engine and devices builds first)"; exit 1; }; done
 CF="-std=gnu11 -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Icore -Ihost -Idevices"
-srcs="host/ui_runner_vm_clone.c host/runner_vm_core.c host/frame_shm.c host/display_buf.c"
+srcs="host/ui_runner_vm_clone.c host/runner_vm_core.c host/frame_shm.c host/display_buf.c host/input_inject.c host/touch_input.c"
 objs=""
 for f in $srcs; do
   o="$OUT/uirvmc/$(basename "$f" .c).o"

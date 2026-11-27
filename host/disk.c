@@ -27,6 +27,7 @@
 
 int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly) {
     d->wfd = -1;
+    d->trace = NULL; d->trace_ctx = NULL;
     d->fd = open(path, readonly ? O_RDONLY : O_RDWR);
     if (d->fd < 0) return -1;
     struct stat st;
@@ -102,6 +103,7 @@ int hv_disk_read(HvDisk *d, uint64_t off, void *buf, uint64_t len) {
     uint64_t wd0 = hv_wd_begin(HV_WD_DISK_READ);
     int rc = disk_read_impl(d, off, buf, len);
     hv_wd_end(HV_WD_DISK_READ, wd0);
+    if (d->trace) d->trace(d->trace_ctx, HV_DISK_TRACE_READ, off, buf, len, rc);
     return rc;
 }
 
@@ -109,6 +111,7 @@ int hv_disk_write(HvDisk *d, uint64_t off, const void *buf, uint64_t len) {
     uint64_t wd0 = hv_wd_begin(HV_WD_DISK_WRITE);
     int rc = disk_write_impl(d, off, buf, len);
     hv_wd_end(HV_WD_DISK_WRITE, wd0);
+    if (d->trace) d->trace(d->trace_ctx, HV_DISK_TRACE_WRITE, off, buf, len, rc);
     return rc;
 }
 
@@ -132,7 +135,13 @@ int hv_disk_flush(HvDisk *d) {
     __atomic_add_fetch(&d->flush_calls, 1, __ATOMIC_RELAXED);
     if (state == HV_FLUSH_FAILED) __atomic_add_fetch(&d->flush_failed, 1, __ATOMIC_RELAXED);
     __atomic_store_n(&d->flush_last, state, __ATOMIC_RELAXED);
+    if (d->trace) d->trace(d->trace_ctx, HV_DISK_TRACE_FLUSH, 0, NULL, 0, rc);
     return rc;
+}
+
+void hv_disk_set_trace(HvDisk *d, void (*fn)(void *ctx, int op, uint64_t off, const void *buf, uint64_t len, int rc), void *ctx) {
+    d->trace_ctx = ctx;
+    d->trace = fn;
 }
 
 void hv_disk_write_stats(const HvDisk *d, uint64_t *calls, uint64_t *refused) {

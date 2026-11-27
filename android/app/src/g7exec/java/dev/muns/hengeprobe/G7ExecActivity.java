@@ -473,6 +473,7 @@ public class G7ExecActivity extends Activity {
         final Runnable gxShow = () -> { boolean on = gx.isChecked(); gxState.setText(on ? "현재: 켜짐 (Render/Blit를 Vulkan으로 실제 실행)" + (gxWas ? " - 지난 실행에서 켠 값을 불러옴" : "") : "현재: 꺼짐 (해석만 함, 기본값)"); gxState.setTextColor(on ? 0xFFB00020 : 0xFF555555); };
         gx.setOnCheckedChangeListener((b, c) -> gxShow.run()); gxShow.run();
         final CheckBox pat = shortBox("화면 시험 패턴");
+        final CheckBox nvp = shortBox("NVRAM 사전 설정 auto-boot=true (실험, 기본 꺼짐)");   // never remembered: unchecked every time the dialog opens
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
@@ -487,7 +488,7 @@ public class G7ExecActivity extends Activity {
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(de); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -505,6 +506,7 @@ public class G7ExecActivity extends Activity {
                     int limIdx = Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, limSp.getSelectedItemPosition()));
                     final int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[limIdx];
                     G7Storage.setPatternMarker(privDir, pat.isChecked());
+                    G7Storage.setPreseedMarker(privDir, nvp.isChecked());   // "0" when unchecked, so an old marker can never carry over
                     G7CloneBoot.gpuExec = gx.isChecked();
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.displayEvents = de.isChecked();
@@ -545,6 +547,7 @@ public class G7ExecActivity extends Activity {
             + "GPU 실제 실행: Render/Blit 명령을 Vulkan으로 실행(LAGFX_ARM64_EXEC). 끄면 해석만 함.\n\n"
             + "화면 되쓰기(GPU 실행을 켰을 때만 의미 있음, LAGFX_ARM64_MAPPED_WRITEBACK): 끔 = flag 4·동기화 때만 / 즉시 = 그린 exec마다 되쓰기(=1) / 지연 = 디스플레이 명령 직전에 한 번(=swap, 실험)\n\n"
             + "화면 시험 패턴: 게스트 swap마다 색 막대를 surface에 씀. GPU 렌더링 없이 화면 전달 경로만 확인.\n\n"
+            + "NVRAM 사전 설정(기본 꺼짐, 기억하지 않음): 부팅 전에 복제본 AUX 이미지에서 유효한 v3 NVRAM 저장소(\"3VVN\")를 찾으면 auto-boot=true를 추가함. 저장소를 못 찾으면 아무것도 쓰지 않고 로그(g7-nvram:)에 그렇게 남김. boot-volume은 값을 알 수 없어 여기서는 쓰지 않음.\n\n"
             + "디스플레이 이벤트(VBL): VBL ~60Hz와 디스플레이 원인 비트를 전달(HV_PVG_DISPLAY_EVENTS). 게스트가 enable 비트를 켰을 때만. 45초 정체 가설 시험.\n\n"
             + "셰이더·파이프라인 저장: 게스트 셰이더·파이프라인 데이터를 앱 외부 저장 폴더 g7_gpudump에 크기 제한으로 저장.\n\n"
             + "그리기별 진단(G7_DRAW_DIAG, 기본 켜짐, 마지막 선택을 기억): 라이브러리가 draw별 요약을 로그에 남김(용량 제한). 켬=1, 끔=0을 항상 명시해 전달. Render Replay 캡처와 별개.\n\n"

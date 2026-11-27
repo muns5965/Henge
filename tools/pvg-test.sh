@@ -23,11 +23,4 @@ for mode in plain asan; do
   echo "$(grep -c '^PASS' "$OUT/pvg_$mode.out") checks passed, $(grep -c '^FAIL' "$OUT/pvg_$mode.out") failed ($mode)"
   [ $r = 0 ] || { echo "test_pvg ($mode) FAILED (exit $r)"; tail -15 "$OUT/pvg_$mode.err"; rc=1; }
 done
-# g7-vbl-diag: the GIC's watch counters, through the real devices/gicv3.c (bare machine, any Linux)
-for mode in plain asan; do
-  case $mode in plain) F="-O1";; asan) F="-O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined";; esac
-  echo "=== gicwatch ($mode)"
-  $CC $W $F $INC devices/gicv3.c tests/test_gicwatch.c -lpthread -o "$OUT/test_gicwatch_$mode" 2> "$OUT/gicwatch_$mode.log" || { echo "FAILED  build ($mode)"; head -40 "$OUT/gicwatch_$mode.log"; rc=1; continue; }
-  ASAN_OPTIONS=detect_leaks=0 timeout 60 "$OUT/test_gicwatch_$mode" || rc=1
-done
 exit $rc

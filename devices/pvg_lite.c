@@ -39,8 +39,6 @@
 #endif
 #include <stdatomic.h>
 #include "pvg_half.h"
-#include "pvg_vbldiag.h"
-#include "gicv3.h"
 #include "pvg_lite.h"
 
 #include <stdio.h>
@@ -72,7 +70,6 @@ struct HvPvgLite {
     uint32_t cursor_last_word, cursor_last_flag; int cursor_seen;
     HvPvgCursorListener cursor_fn; void *cursor_ctx;
     uint64_t display_pa;
-    HvVblDiag vbl;   /* diagnostics only (pvg_vbldiag.h): bounded log lines and counters, no effect on delivery */
     uint64_t swaps;
     uint64_t last_mapping; /* the most recent display_swap()'s mapping id, for hv_pvg_lite_tally_surface() */
     /* The last stamp handed to the worker per channel, and who is being drained. */
@@ -1194,53 +1191,6 @@ static void display_cause(HvPvgLite *p, uint32_t bits) {
 #endif
     __atomic_fetch_or(&p->regs[(0x1014 - 0x1000) / 4], bits, __ATOMIC_RELEASE);
 }
-/* [2026-11-27, DIAGNOSTICS ONLY, g7-vbl-diag] See pvg_vbldiag.h. Everything below prints at most a fixed number of lines and changes nothing the guest can see. */
-static uint64_t vbl_now_ns(void) {
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-static void vbl_diag_read(HvPvgLite *p, uint64_t off, uint64_t v) {
-    if (hv_vbldiag_reg_index(off) < 0) return;
-    uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
-    uint32_t p0 = 0, p100 = 0, p104 = 0;
-    if (d) {
-        p0 = __atomic_load_n((uint32_t *)(d + 0x0), __ATOMIC_ACQUIRE);
-        p100 = __atomic_load_n((uint32_t *)(d + 0x100), __ATOMIC_ACQUIRE);
-        p104 = __atomic_load_n((uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE);
-    }
-    char line[256];
-    if (hv_vbldiag_note_read(&p->vbl, off, (uint32_t)v, d != NULL, p0, p100, p104, vbl_now_ns(), line, sizeof line)) fprintf(stderr, "%s\n", line);
-}
-static void vbl_diag_tick(HvPvgLite *p, uint8_t *d, uint32_t en, uint32_t bits, uint32_t before, uint64_t now) {
-    char line[320];
-    uint32_t after = __atomic_load_n((uint32_t *)(d + 0x100), __ATOMIC_ACQUIRE);
-    if (hv_vbldiag_note_tick(&p->vbl, en, bits, before, after, 1u, now, line, sizeof line)) fprintf(stderr, "%s\n", line);
-}
-/* Totals plus the GIC's view of the gfx SPI, every ~5 s, at most 24 times (about 2 minutes), flag on or off (so an OFF run gives the baseline). */
-static void vbl_diag_summary(HvPvgLite *p, uint64_t now) {
-    HvVblDiag *v = &p->vbl;   /* per device, not static: a second device (a test) gets its own first line */
-    if (v->sum_lines >= 24 || (v->sum_last_ns && now - v->sum_last_ns < 5000000000ull)) return;
-    v->sum_last_ns = now; v->sum_lines++;
-    char buf[900];
-    hv_vbldiag_summary(&p->vbl, now, buf, sizeof buf);
-    fprintf(stderr, "%s\n", buf);
-    HvGicWatch w; HvGicWatchState s;
-    if (p->gic && hv_gicv3_watch_get(p->gic, &w, &s)) {
-        uint64_t e = __atomic_load_n(&p->vbl.epoch_ns, __ATOMIC_RELAXED);
-#define REL(x) (unsigned long long)((x) > e ? ((x) - e) / 1000000ull : 0)
-        fprintf(stderr, "hengevm: pvg-lite: vbl-diag gic spi=%d pend_calls=%llu coalesced(already latched)=%llu while_active=%llu while_disabled=%llu iar=%llu eoir=%llu dir=%llu clear_without_active=%llu "
-                "active_ms[max=%llu avg=%llu n=%llu] first_pend=+%llums first_iar=+%llums last_pend=+%llums last_iar=+%llums last_eoir=+%llums "
-                "now[latch=%u level=%u active=%u enabled=%u edge=%u group=%u prio=%u target_cpu=%d irq_line0=%d fiq_line0=%d pmr0=%llx ctlr0=%llx igrpen1_0=%llx depth0=%d]\n",
-                w.intid, (unsigned long long)w.pend_calls, (unsigned long long)w.pend_coalesced, (unsigned long long)w.pend_while_active, (unsigned long long)w.pend_disabled,
-                (unsigned long long)w.iar, (unsigned long long)w.eoir, (unsigned long long)w.dir, (unsigned long long)w.eoir_without_active,
-                (unsigned long long)(w.active_ns_max / 1000000ull), (unsigned long long)(w.active_ns_n ? w.active_ns_sum / w.active_ns_n / 1000000ull : 0), (unsigned long long)w.active_ns_n,
-                REL(w.first_pend_ns), REL(w.first_iar_ns), REL(w.last_pend_ns), REL(w.last_iar_ns), REL(w.last_eoir_ns),
-                s.latch, s.level, s.active, s.enabled, s.edge, s.group, s.priority, s.target_cpu, s.irq_line_cpu0, s.fiq_line_cpu0,
-                (unsigned long long)s.pmr_cpu0, (unsigned long long)s.icc_ctlr_cpu0, (unsigned long long)s.igrpen1_cpu0, s.depth_cpu0);
-#undef REL
-    }
-}
-
 static void display_events_tick(HvPvgLite *p) {
     uint8_t *d = p->display_pa ? hv_phys_ptr(p->m, p->display_pa, 0x4000) : NULL;
     if (!d) return;
@@ -1253,12 +1203,7 @@ static void display_events_tick(HvPvgLite *p) {
             (unsigned long long)c_vbl, (unsigned long long)c_cause, (unsigned long long)c_isr_reads, (unsigned long long)c_isr_nonzero, (unsigned long long)c_vbl_unread,
             (unsigned)__atomic_load_n((uint32_t *)(d + 0x0), __ATOMIC_ACQUIRE), (unsigned)__atomic_load_n((uint32_t *)(d + 0x100), __ATOMIC_ACQUIRE)); }
     }
-    if (en != last_en && logged < 32) {
-        fprintf(stderr, "hengevm: pvg-lite: display enable word +104 = %x (events %s)\n", (unsigned)en, display_events_on() ? "on" : "off");
-        { uint64_t n = vbl_now_ns(); fprintf(stderr, "hengevm: pvg-lite: vbl-diag enable word change %x -> %x t=+%llu.%llums page+100=%x\n", (unsigned)last_en, (unsigned)en, VBL_MS_ARGS(hv_vbldiag_epoch(&p->vbl, n)), (unsigned)__atomic_load_n((uint32_t *)(d + 0x100), __ATOMIC_ACQUIRE)); }
-        logged++;
-    }
-    vbl_diag_summary(p, vbl_now_ns());
+    if (en != last_en && logged < 32) { fprintf(stderr, "hengevm: pvg-lite: display enable word +104 = %x (events %s)\n", (unsigned)en, display_events_on() ? "on" : "off"); logged++; }
     last_en = en;
     /* [2026-11-27, EXPERIMENT, unverified] The first experiment gated the tick on enable bit0 only; this guest armed 0xc (bits 2 and 3) for the whole run and never bit0, so that gate
        could never open (vbl_sent stayed 0). Which armed bit paces the display is not established from our own data, so a tick is now sent for each armed bit among {bit0, bit3}
@@ -1272,7 +1217,6 @@ static void display_events_tick(HvPvgLite *p) {
     last_ns = now;
     uint32_t before = __atomic_fetch_or((uint32_t *)(d + 0x100), tick_bits, __ATOMIC_RELEASE);
     if (before & tick_bits) __atomic_fetch_add(&c_vbl_unread, 1, __ATOMIC_RELAXED);
-    vbl_diag_tick(p, d, en, tick_bits, before, now);   /* diagnostics only: the page word around our OR, before the cause bit and the interrupt */
     display_cause(p, 1u);
     hv_gicv3_pend(p->gic, p->gfx_irq);
     __atomic_fetch_add(&c_vbl, 1, __ATOMIC_RELAXED);
@@ -1318,7 +1262,6 @@ static uint64_t gfx_read(void *opaque, uint64_t off, unsigned size) {
         break;
     }
     (void)size;
-    vbl_diag_read(p, off, v);   /* diagnostics only */
     return v;
 }
 
@@ -1373,9 +1316,7 @@ void hv_pvg_lite_tally_snapshot(HvPvgLite *p, uint64_t *execs, uint64_t *bad, ui
 static uint64_t gfx_read_lagfx(void *opaque, uint64_t off, unsigned size) {
     HvPvgLite *p = opaque;
     (void)size;
-    uint64_t v = hv_pvg_lagfx_read(p->lagfx, off);
-    vbl_diag_read(p, off, v);   /* diagnostics only: the library's value, unchanged */
-    return v;
+    return hv_pvg_lagfx_read(p->lagfx, off);
 }
 
 /* The library's Display ops (1/2/8) land in the same decoder the built-in device uses, so the shared page and the swapped surface are the ones
@@ -1408,7 +1349,6 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->iosfc_irq = iosfc_irq;
     p->log = getenv("HV_PVG_LITE_LOG") != NULL;
     p->tally = getenv("HV_PVG_TALLY") != NULL;
-    hv_gicv3_watch(gic, gfx_irq);   /* diagnostics only: counts pend / IAR / EOIR of this SPI, changes nothing */
 #ifdef HV_WITH_LAGFX
     /* Opt-in only: built with HV_WITH_LAGFX AND HV_PVG_LAGFX set AND the library accepts the device. Anything else keeps the path below, byte for byte. */
 #ifdef HV_PVG_LAGFX_DEFAULT_ON

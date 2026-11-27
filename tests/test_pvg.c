@@ -13,14 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "../core/machine.h"
 #include "../devices/pvg_lite.h"
-#include "../devices/pvg_vbldiag.h"
-#include "../devices/gicv3.h"
 
 /* ---- the machine: flat RAM ---- */
 #define RB 0x70000000ull
@@ -45,16 +42,6 @@ int hv_machine_add_mmio(HvMachine *m, uint64_t pa, uint64_t size, void *opaque, 
 }
 void hv_machine_wake(HvMachine *m) { (void)m; wakes++; }
 void hv_gicv3_pend(HvGic *g, int intid) { (void)g; pends++; last_intid = intid; }
-/* g7-vbl-diag: the real GIC's watch lives in devices/gicv3.c (tests/test_gicwatch.c); here a canned answer so the device's summary line can be checked. */
-static int watch_set = -1;
-void hv_gicv3_watch(HvGic *g, int intid) { (void)g; watch_set = intid; }
-int hv_gicv3_watch_get(HvGic *g, HvGicWatch *w, HvGicWatchState *st) {
-    (void)g;
-    if (watch_set < 0) return 0;
-    if (w) { memset(w, 0, sizeof *w); w->on = 1; w->intid = watch_set; w->pend_calls = 11; w->iar = 7; w->eoir = 7; }
-    if (st) { memset(st, 0, sizeof *st); st->enabled = 1; st->group = 1; }
-    return 1;
-}
 /* [2026-11-21, D2/D3] Real core/machine.c's device lock, needed only since hv_pvg_lite_live_surface_bgra()
    (new this change) takes it; this test drives the device from one thread only, so a no-op stand-in is
    faithful -- nothing here exercises the actual cross-thread exclusion that lock provides in the real engine. */
@@ -998,88 +985,6 @@ static void s_rgha(void) {
     hv_pvg_lite_set_mode(1920, 1080);
 }
 
-/* ---- g7-vbl-diag: the diagnostics header and the device's use of it ---- */
-static void s_vbldiag(void) {
-    char line[512];
-    /* header alone */
-    HvVblDiag vd; memset(&vd, 0, sizeof vd);
-    int printed = 0;
-    for (int i = 0; i < 30; i++) printed += hv_vbldiag_note_read(&vd, 0x1014, 0, 1, 1, 0, 0xc, 1000000000ull + i * 1000000ull, line, sizeof line);
-    EXPECT(printed == (int)VBL_READ_SAMPLES && vd.reads[0] == 30 && vd.nonzero[0] == 0 && vd.reads_before_tick[0] == 30, "vbldiag: first %u reads of a register are logged, all are counted, 30 happened before any tick", VBL_READ_SAMPLES);
-    EXPECT(hv_vbldiag_note_read(&vd, 0x1018, 0x4, 1, 1, 0, 0xc, 1100000000ull, line, sizeof line) == 1 && strstr(line, "+1018 = 0x4") && strstr(line, "(no tick yet)") && strstr(line, "page+104=c"), "vbldiag: line carries register, value, 'no tick yet', page words (%s)", line);
-    EXPECT(hv_vbldiag_note_read(&vd, 0x1020, 5, 1, 0, 0, 0, 1100000001ull, line, sizeof line) == 0 && vd.reads[0] == 30 && vd.reads[1] == 1 && vd.reads[2] == 0, "vbldiag: other offsets are ignored");
-    EXPECT(hv_vbldiag_note_tick(&vd, 0xc, 8, 0x4, 0xc, 1, 1200000000ull, line, sizeof line) == 1 && vd.first_tick_ns == 1200000000ull && strstr(line, "bits=8") && strstr(line, "before=4 after=c"), "vbldiag: first tick recorded with +0x100 before/after (%s)", line);
-    EXPECT(vd.ticks == 1 && vd.ticks_guest_read_since_prev == 0 && vd.ticks_no_guest_read_since_prev == 0, "vbldiag: the first tick has no previous tick to compare");
-    EXPECT(hv_vbldiag_note_tick(&vd, 0xc, 8, 0, 8, 1, 1216000000ull, line, sizeof line) == 1 && vd.ticks_no_guest_read_since_prev == 1, "vbldiag: tick 2: no 0x1014 read since tick 1");
-    hv_vbldiag_note_read(&vd, 0x1014, 1, 1, 1, 8, 0xc, 1220000000ull, line, sizeof line);
-    EXPECT(vd.first_read_after_tick_ns == 1220000000ull && vd.first_nonzero_cause_ns == 1220000000ull && vd.reads_before_tick[0] == 30 && vd.cause_union == 1, "vbldiag: first read after the first tick and first nonzero cause are stamped once");
-    hv_vbldiag_note_read(&vd, 0x102c, 0, 1, 1, 0, 0xc, 1220001000ull, line, sizeof line);   /* +0x100 already 0 when the same ISR reached 0x102c */
-    EXPECT(vd.p100_zero_at_102c == 1 && vd.p100_set_at_102c == 0 && vd.p100_union_at_1014 == 8, "vbldiag: page word cleared by the time of 0x102c is counted (order heuristic)");
-    EXPECT(hv_vbldiag_note_tick(&vd, 0xc, 8, 0, 8, 1, 1233000000ull, line, sizeof line) == 1 && vd.ticks_guest_read_since_prev == 1, "vbldiag: tick 3: a 0x1014 read happened since tick 2");
-    hv_vbldiag_note_read(&vd, 0x1014, 1, 1, 1, 8, 0xc, 1234000000ull, line, sizeof line);
-    hv_vbldiag_note_read(&vd, 0x102c, 0, 1, 1, 8, 0xc, 1234001000ull, line, sizeof line);   /* still set */
-    EXPECT(vd.p100_set_at_102c == 1, "vbldiag: page word still set at 0x102c is counted");
-    hv_vbldiag_note_read(&vd, 0x102c, 0, 1, 1, 8, 0xc, 1234002000ull, line, sizeof line);   /* a 0x102c with no preceding 0x1014: not classified */
-    EXPECT(vd.p100_set_at_102c == 1 && vd.p100_zero_at_102c == 1, "vbldiag: a 0x102c without its 0x1014 is not classified");
-    EXPECT(hv_vbldiag_note_tick(&vd, 0xc, 8, 8, 8, 1, 1250000000ull, line, sizeof line) == 1 && vd.ticks_unread_prev == 1, "vbldiag: a tick that finds its bit still set is counted");
-    for (int i = 0; i < 40; i++) hv_vbldiag_note_tick(&vd, 0xc, 8, 0, 8, 1, 1300000000ull + i, line, sizeof line);
-    EXPECT(hv_vbldiag_note_tick(&vd, 0xc, 8, 0, 8, 1, 1400000000ull, line, sizeof line) == 0 && vd.ticks == 45, "vbldiag: tick lines are capped at %u, ticks keep counting", VBL_TICK_SAMPLES);
-    char sum[1024];
-    size_t sl = hv_vbldiag_summary(&vd, 1500000000ull, sum, sizeof sum);
-    EXPECT(sl > 100 && sl < sizeof sum && strstr(sum, "reads[1014]=30") == NULL && strstr(sum, "reads[1014]=32") && strstr(sum, "first_tick=+") && strstr(sum, "ticks=45"), "vbldiag: summary line carries totals and first-event times (%s)", sum);
-    /* no overflow with a tiny buffer (canary after it) */
-    { char b[24 + 8]; memset(b, 0x5a, sizeof b); hv_vbldiag_note_read(&vd, 0x1014, 1, 1, 1, 1, 1, 1, b, 24); hv_vbldiag_note_tick(&vd, 1, 1, 0, 0, 1, 1, b, 24); hv_vbldiag_summary(&vd, 2, b, 24);
-      int ok = 1; for (int i = 24; i < 32; i++) ok &= (b[i] == 0x5a);
-      EXPECT(ok, "vbldiag: a too-small line buffer is never overrun"); }
-    HvVblDiag z; memset(&z, 0, sizeof z);
-    EXPECT(hv_vbldiag_note_read(&z, 0x1014, 1, 0, 0, 0, 0, 5, line, sizeof line) == 1 && strstr(line, "no display page yet") && z.p100_union_at_1014 == 0, "vbldiag: before the display page exists the line says so and no page state is assumed");
-
-    /* the device: events OFF by default changes nothing (no tick, +0x100 untouched, reads unchanged) and still samples reads */
-    hv_pvg_lite_set_display_events(0);
-    hv_pvg_lite_set_mode(1920, 1080);
-    dev_new(1);
-    chan_setup(4, 1);
-    uint32_t dpn = alloc_page();
-    uint32_t a1[2] = {0, dpn};
-    chan_cmd(4, 1, 41, a1, 8);
-    ring_bell(4);
-    uint8_t *pg = hv_pvg_lite_display_page(dev);
-    EXPECT(pg == pgp(dpn), "vbldiag(device): display page set");
-    if (!pg) return;
-#define P32(o) (*(uint32_t *)(pg + (o)))
-    P32(0x104) = 0xc;
-    char path[64]; snprintf(path, sizeof path, "/tmp/test_pvg_vbldiag_%d.err", (int)getpid());
-    fflush(stderr);
-    int saved = dup(2), fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    dup2(fd, 2); close(fd);
-    int p0 = pends;
-    for (int i = 0; i < 4; i++) { usleep(20000); hv_pvg_lite_poll(dev); }
-    EXPECT(pends == p0 && P32(0x100) == 4, "vbldiag(device): events off: no tick, no pend, +0x100 still the mode-change flag");
-    uint64_t r1014 = Rg(0x1014), r1018 = Rg(0x1018), r102c = Rg(0x102c);
-    EXPECT(r1014 == 0 && (r1018 & (1u << 4)), "vbldiag(device): events off: register values unchanged by the sampling (1014=%llx 1018=%llx)", (unsigned long long)r1014, (unsigned long long)r1018);
-    (void)r102c;
-    /* events ON: a tick per 16.7 ms while the guest armed bit 3 (the existing gate), the cause bit goes to 0x1014, and the lines appear */
-    hv_pvg_lite_set_display_events(1);
-    P32(0x100) = 0;
-    for (int i = 0; i < 3; i++) { usleep(20000); hv_pvg_lite_poll(dev); }
-    EXPECT(pends > p0 && (P32(0x100) & 8), "vbldiag(device): events on: ticks pend the interrupt and OR bit 3 into +0x100 (existing behaviour, unchanged)");
-    EXPECT(Rg(0x1014) == 1 && Rg(0x1014) == 0, "vbldiag(device): 0x1014 returns the cause once, then 0 (existing behaviour, unchanged)");
-    P32(0x100) = 0;
-    (void)Rg(0x102c);
-    hv_pvg_lite_set_display_events(0);
-    fflush(stderr);
-    dup2(saved, 2); close(saved);
-    char all[16384] = {0};
-    FILE *f = fopen(path, "r"); size_t got = f ? fread(all, 1, sizeof all - 1, f) : 0; if (f) fclose(f); unlink(path);
-    if (getenv("VBLDIAG_DUMP")) fputs(all, stdout);
-    EXPECT(got > 0 && strstr(all, "vbl-diag read #1 +1014 = 0x0") && strstr(all, "vbl-diag read #1 +1018 = 0x10") && strstr(all, "vbl-diag read #1 +102c"), "vbldiag(device): first reads of 0x1014 / 0x1018 / 0x102c are logged with values");
-    /* (the enable-word change line is paced by statics older than this change, so an earlier scenario may have used up its first lines: not asserted in "all" mode; "test_pvg vbldiag" shows it) */
-    EXPECT(strstr(all, "vbl-diag tick #1 ") && strstr(all, "bits=8") && strstr(all, "page+100 before=0 after=8"), "vbldiag(device): the first tick is logged with +0x100 before and after");
-    EXPECT(strstr(all, "vbl-diag summary") && strstr(all, "vbl-diag gic spi=7 pend_calls=11 coalesced") , "vbldiag(device): the totals line and the GIC watch line are printed (the watch is armed on the gfx SPI 7: %d)", watch_set);
-    EXPECT(watch_set == 7, "vbldiag(device): hv_pvg_lite_create arms the GIC watch on the gfx interrupt");
-#undef P32
-}
-
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     ram = aligned_alloc(0x4000, RSZ);
@@ -1101,7 +1006,6 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "ring")) s_ring();
     if (all || !strcmp(sc, "swap")) s_swap();
     if (all || !strcmp(sc, "rgha")) s_rgha();
-    if (all || !strcmp(sc, "vbldiag")) s_vbldiag();
     printf("%s test_pvg %s\n", bad ? "FAIL" : "PASS", sc);
     return bad ? 1 : 0;
 }

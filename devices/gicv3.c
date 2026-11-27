@@ -3,7 +3,6 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 /* Register layout follows the GICv3 architecture specification (IHI 0069);
    behaviour is checked against QEMU's hw/intc/arm_gicv3*. */
@@ -106,48 +105,8 @@ static void hv_gicv3_set_ppi_body(HvGic *g, int c, int intid, int level) {
     hv_gicv3_update(g);
 }
 
-/* ---- diagnostics only: the watched SPI's counters (never read by the GIC's own decisions) ---- */
-static uint64_t watch_now(void) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
-}
-static void watch_pend(HvGic *g, int intid) {
-    HvGicWatch *w = &g->watch;
-    if (!w->on || w->intid != intid) return;
-    uint64_t now = watch_now();
-    w->pend_calls++;
-    if (!w->first_pend_ns) w->first_pend_ns = now;
-    w->last_pend_ns = now;
-    if (g->latch[intid]) w->pend_coalesced++;
-    if (g->active[intid]) w->pend_while_active++;
-    if (!g->enabled[intid]) w->pend_disabled++;
-}
-static void watch_iar(HvGic *g, int intid) {
-    HvGicWatch *w = &g->watch;
-    if (!w->on || w->intid != intid) return;
-    uint64_t now = watch_now();
-    w->iar++;
-    if (!w->first_iar_ns) w->first_iar_ns = now;
-    w->last_iar_ns = now; w->iar_ns_cur = now;
-}
-static void watch_clear(HvGic *g, int intid, int via_dir) {
-    HvGicWatch *w = &g->watch;
-    if (!w->on || w->intid != intid) return;
-    uint64_t now = watch_now();
-    if (via_dir) w->dir++; else w->eoir++;
-    w->last_eoir_ns = now;
-    if (!g->active[intid]) { w->eoir_without_active++; return; }   /* called before the active bit is cleared */
-    if (w->iar_ns_cur && now >= w->iar_ns_cur) {
-        uint64_t d = now - w->iar_ns_cur;
-        w->active_ns_n++; w->active_ns_sum += d;
-        if (d > w->active_ns_max) w->active_ns_max = d;
-    }
-    w->iar_ns_cur = 0;
-}
-
 static void hv_gicv3_pend_body(HvGic *g, int intid) {
     if (intid < 32 || intid >= HV_GIC_NUM_IRQS) return;
-    watch_pend(g, intid);
     g->latch[intid] = 1;
     hv_gicv3_update(g);
 }
@@ -157,7 +116,6 @@ static void hv_gicv3_pend_body(HvGic *g, int intid) {
 static uint64_t acknowledge(HvGic *g, int c, int grp) {
     int i = hppi(g, c, 1);
     if (i == SPURIOUS || F(g, c, group, i) != grp) return SPURIOUS;
-    if (i >= 32) watch_iar(g, i);
     F(g, c, active, i) = 1;
     F(g, c, latch, i) = 0;
     HvGicCpu *k = &g->cpu[c];
@@ -170,8 +128,7 @@ static void end_of_interrupt(HvGic *g, int c, int intid) {
     if (intid >= HV_GIC_NUM_IRQS) return;
     HvGicCpu *k = &g->cpu[c];
     if (k->depth) k->depth--; /* priority drop: the most recent acknowledge */
-    if (!(k->icc_ctlr & 2)) { if (intid >= 32) watch_clear(g, intid, 0); F(g, c, active, intid) = 0; } /* EOImode 0 also deactivates */
-    else if (intid >= 32 && g->watch.on && g->watch.intid == intid) { g->watch.eoir++; g->watch.last_eoir_ns = watch_now(); }   /* EOImode 1: priority drop only (diagnostics) */
+    if (!(k->icc_ctlr & 2)) F(g, c, active, intid) = 0; /* EOImode 0 also deactivates */
     hv_gicv3_update(g);
 }
 
@@ -211,10 +168,7 @@ static void icc_write_body(HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v) {
     case R(3, 0, 4, 6, 0): k->pmr = v & 0xff; break;
     case R(3, 0, 12, 12, 1): case R(3, 0, 12, 8, 1): end_of_interrupt(g, c, (int)(v & 0xffffff)); break; /* EOIR1/0 */
     case R(3, 0, 12, 11, 1):                                           /* DIR */
-        if ((v & 0xffffff) < HV_GIC_NUM_IRQS) {
-            if ((v & 0xffffff) >= 32) watch_clear(g, (int)(v & 0xffffff), 1);
-            F(g, c, active, (int)(v & 0xffffff)) = 0;
-        }
+        if ((v & 0xffffff) < HV_GIC_NUM_IRQS) F(g, c, active, (int)(v & 0xffffff)) = 0;
         break;
     case R(3, 0, 12, 8, 3): k->bpr0 = v & 7; break;
     case R(3, 0, 12, 12, 3): k->bpr1 = v & 7; break;
@@ -447,32 +401,6 @@ void hv_gicv3_set_ppi(HvGic *g, int c, int intid, int level) {
     pthread_mutex_lock(&g->mu);
     hv_gicv3_set_ppi_body(g, c, intid, level);
     pthread_mutex_unlock(&g->mu);
-}
-
-void hv_gicv3_watch(HvGic *g, int intid) {
-    if (!g) return;
-    pthread_mutex_lock(&g->mu);
-    memset(&g->watch, 0, sizeof g->watch);
-    if (intid >= 32 && intid < HV_GIC_NUM_IRQS) g->watch.on = 1, g->watch.intid = intid;
-    pthread_mutex_unlock(&g->mu);
-}
-
-int hv_gicv3_watch_get(HvGic *g, HvGicWatch *w, HvGicWatchState *st) {
-    if (!g) return 0;
-    pthread_mutex_lock(&g->mu);
-    int on = g->watch.on;
-    if (on && w) *w = g->watch;
-    if (on && st) {
-        int i = g->watch.intid;
-        memset(st, 0, sizeof *st);
-        st->latch = g->latch[i], st->level = g->level[i], st->active = g->active[i], st->enabled = g->enabled[i];
-        st->edge = g->edge[i], st->group = g->group[i], st->priority = g->priority[i];
-        st->target_cpu = target_of(g, i);
-        st->irq_line_cpu0 = g->m->percpu[0].irq_line, st->fiq_line_cpu0 = g->m->percpu[0].fiq_line;
-        st->pmr_cpu0 = g->cpu[0].pmr, st->icc_ctlr_cpu0 = g->cpu[0].icc_ctlr, st->igrpen1_cpu0 = g->cpu[0].igrpen1, st->depth_cpu0 = g->cpu[0].depth;
-    }
-    pthread_mutex_unlock(&g->mu);
-    return on;
 }
 
 void hv_gicv3_pend(HvGic *g, int intid) {

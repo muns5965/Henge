@@ -108,6 +108,19 @@ static void inj_log(void *ctx, const char *line) {
 static int cursor_wake_fd = -1;           /* read end of the pointer-moved doorbell pipe (hv_vm_cursor_wake_open), -1 = none */
 static unsigned long cursor_wake_loops;   /* loop passes that the doorbell woke (log only) */
 
+/* Disk counters of the root disk and the auxiliary storage, SEPARATELY (counts, bytes, failed/refused writes, flush results, file size and mtime: metadata only, no contents are read or hashed).
+   "host accepted the write / the sync returned success" is what these say; they do NOT say that the guest boot device kept anything. */
+static const char *flush_name(int f) { return f == HV_FLUSH_OK ? "ok" : f == HV_FLUSH_FAILED ? "FAILED" : f == HV_FLUSH_SKIPPED ? "skipped" : "never"; }
+static void disk_counters_line(const char *tag) {
+    HvDiskStats r, a;
+    hv_vm_disk_stats(&r, &a);
+    printf("ui_runner_vm_clone disk-counters %s: root writes %llu bytes %llu refused %llu failed %llu flush %s (calls %llu failed %llu) file_size %llu mtime %llu | "
+           "aux writes %llu bytes %llu refused %llu failed %llu flush %s (calls %llu failed %llu) file_size %llu mtime %llu | counts only; not a statement about persistence on the guest boot device\n", tag,
+           (unsigned long long)r.write_calls, (unsigned long long)r.write_bytes, (unsigned long long)r.write_refused, (unsigned long long)r.write_failed, flush_name(r.flush_last), (unsigned long long)r.flush_calls, (unsigned long long)r.flush_failed, (unsigned long long)r.file_size, (unsigned long long)r.mtime_s,
+           (unsigned long long)a.write_calls, (unsigned long long)a.write_bytes, (unsigned long long)a.write_refused, (unsigned long long)a.write_failed, flush_name(a.flush_last), (unsigned long long)a.flush_calls, (unsigned long long)a.flush_failed, (unsigned long long)a.file_size, (unsigned long long)a.mtime_s);
+    fflush(stdout);
+}
+
 static void status_line(const char *tag) {
     HvRunnerStats r;
     hv_runner_stats(g_run, &r);
@@ -298,6 +311,7 @@ int main(int argc, char **argv) {
     HvVmapple *bd = hv_vm_board();
     int usb_present = bd && bd->vusb ? 1 : 0;
     printf("ui_runner_vm_clone: machine created in %.0f ms; usb device port present: %d (want %d for usb mode %ld)\n", (now() - t0) * 1e3, usb_present, cfg.usb_on_normal_boot, usb_mode);
+    disk_counters_line("at process start (per-process counters begin at 0; file size/mtime are what the previous process left)");
     if (!bd || usb_present != cfg.usb_on_normal_boot) {
         printf("ui_runner_vm_clone RESULT: FAILED, usb device port present=%d, expected %d for usb mode %ld; not started\n", usb_present, cfg.usb_on_normal_boot, usb_mode);
         hv_shm_set_state(g_shm, HV_SHM_STOPPED);
@@ -401,6 +415,7 @@ int main(int argc, char **argv) {
     int confirmed = atomic_load(&g_exited);
     int flush_rc = confirmed && hv_vm_quiesced_ok() == 1 ? hv_vm_flush_disks_checked() : -2;   /* -2 also when the other threads or the disk workers did not end: the flush alone then proves nothing */   /* -2: not attempted (the machine's stop was not confirmed) */
     hv_shm_set_state(g_shm, HV_SHM_STOPPED);
+    disk_counters_line(confirmed ? "at stop (after the final flush; a guest SYSTEM_RESET stop included)" : "at stop (stop NOT confirmed)");
     status_line("final");
     printf("ui_runner_vm_clone RESULT: %s (%s), ignored input lines %ld\n", confirmed ? "stopped, confirmed" : "STOP NOT CONFIRMED within the wait; ending the process anyway", why_stop, ignored);
     /* Structured end result for the app (appended AFTER macos_boot=..., so the app's older pattern, which ends in ".*$", still matches). outcome says what the app may do next: only a
@@ -412,9 +427,12 @@ int main(int argc, char **argv) {
     const char *outcome = !confirmed ? "not-confirmed" : !guest_end ? "host-stop" : !have_psci ? "halt-other" : vfn == 0x84000008 ? "shutdown" : "restart";
     int qok = hv_vm_quiesced_ok();
     uint64_t wcalls = 0, wrefused = 0; hv_vm_disk_write_stats(&wcalls, &wrefused);
-    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s disk_flush=%s macos_boot=not-determined outcome=%s psci=%s quiesced=%s uptime_s=%d disk_writes=%llu disk_write_refused=%llu (a confirmed stop says only that the machine ended; it does not say macOS booted, and it is not a flush result; quiesced=1 means every CPU thread and the kicker were joined and the disk workers stopped before the flush)\n",
+    HvDiskStats vr, va; hv_vm_disk_stats(&vr, &va);   /* the split counters: NEW optional trailing fields of the VERDICT line, after disk_write_refused= */
+    printf("ui_runner_vm_clone VERDICT: vm_stop_confirmed=%d stop_kind=%s disk_flush=%s macos_boot=not-determined outcome=%s psci=%s quiesced=%s uptime_s=%d disk_writes=%llu disk_write_refused=%llu root_writes=%llu root_write_bytes=%llu root_write_refused=%llu root_write_failed=%llu root_flush=%s root_flush_calls=%llu root_flush_failed=%llu aux_writes=%llu aux_write_bytes=%llu aux_write_refused=%llu aux_write_failed=%llu aux_flush=%s aux_flush_calls=%llu aux_flush_failed=%llu (the root_ and aux_ fields are host-side counts of the writes the guest asked for and of the sync results; they do not prove that the guest boot device or the auxiliary storage kept anything. a confirmed stop says only that the machine ended; it does not say macOS booted, and it is not a flush result; quiesced=1 means every CPU thread and the kicker were joined and the disk workers stopped before the flush)\n",
            confirmed ? 1 : 0, stop_kind, flush_rc == 0 ? "ok" : flush_rc == -2 ? "not-attempted" : "FAILED",
-           outcome, psci_name, qok == 1 ? "1" : qok == 0 ? "0" : "n/a", (int)(now() - tstart), (unsigned long long)wcalls, (unsigned long long)wrefused);
+           outcome, psci_name, qok == 1 ? "1" : qok == 0 ? "0" : "n/a", (int)(now() - tstart), (unsigned long long)wcalls, (unsigned long long)wrefused,
+           (unsigned long long)vr.write_calls, (unsigned long long)vr.write_bytes, (unsigned long long)vr.write_refused, (unsigned long long)vr.write_failed, flush_name(vr.flush_last), (unsigned long long)vr.flush_calls, (unsigned long long)vr.flush_failed,
+           (unsigned long long)va.write_calls, (unsigned long long)va.write_bytes, (unsigned long long)va.write_refused, (unsigned long long)va.write_failed, flush_name(va.flush_last), (unsigned long long)va.flush_calls, (unsigned long long)va.flush_failed);
     fflush(stdout);
     /* Only a machine whose threads and disk workers all ended is torn down here. When quiesce failed a thread or a disk worker may still use the runner, the shared state and the clone's
        descriptors: they are left as they are and the process end (immediately below) releases them, so nothing is freed or unlocked under a live user. */

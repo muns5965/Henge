@@ -11,8 +11,10 @@ public class G7PipeReproTest {
     static void check(String name, boolean ok) { System.out.println((ok ? "PASS " : "FAIL ") + name); if (!ok) fails++; }
 
     /** The fake runner: "--list-rows" prints the ids; "--only ID" behaves as the case table says. */
-    static File fake(Path dir, String[] ids, String cases) throws IOException {
-        StringBuilder list = new StringBuilder();
+    static File fake(Path dir, String[] ids, String cases) throws IOException { return fake(dir, ids, cases, ""); }
+    /** extraList: extra lines of the --list-rows output (the runner's own identity lines). */
+    static File fake(Path dir, String[] ids, String cases, String extraList) throws IOException {
+        StringBuilder list = new StringBuilder(extraList);
         for (String id : ids) list.append("echo 'pipeline-reduce: id ").append(id).append("'\n");
         String sh = "#!/bin/sh\nif [ \"$3\" = \"--list-rows\" ]; then\n" + list + "exit 0\nfi\nID=\"$4\"\ncase \"$ID\" in\n" + cases + "esac\n";
         File f = new File(dir.toFile(), G7PipeRepro.LIB_NAME);
@@ -27,6 +29,13 @@ public class G7PipeReproTest {
     }
     static boolean has(String s, String t) { return s.contains(t); }
     static String readAll(File f) throws IOException { return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8); }
+    static File newestPartial(File dir) { File[] f = dir.listFiles((d, n) -> n.endsWith("-ladder-partial.txt")); Arrays.sort(f); return f[f.length - 1]; }
+    static boolean alive(File pidFile) throws Exception {
+        if (!pidFile.isFile()) return false;
+        String pid = readAll(pidFile).trim(); File st = new File("/proc/" + pid + "/stat");
+        for (int i = 0; i < 40; i++) { if (!st.exists() || readAll(st).contains(") Z ")) return false; Thread.sleep(50); }
+        return true;
+    }
     static void rm(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) rm(c); f.delete(); }
 
     public static void main(String[] a) throws Exception {
@@ -94,12 +103,12 @@ public class G7PipeReproTest {
             Path d4 = Files.createDirectory(root.resolve("d")); File log4 = Files.createDirectory(root.resolve("log4")).toFile();
             File lib4 = fake(d4, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=CRASH'; exit 0;;\n");
             buf = new ByteArrayOutputStream(); String o4 = run(lib4, buf, code, log4);
-            check("R0 line with result=CRASH: undecided (return 2), R0V 'not run'", code[0] == 2 && has(o4, "R0=undecided (crash/timeout/invalid);") && has(o4, "R0V (original FS + REAL VS) = not run"));
+            check("R0 line with result=CRASH: its own status CRASH (return 2), R0V 'not run'", code[0] == 2 && has(o4, "R0=CRASH (the R0 process crashed; undecided, NOT reproduced);") && has(o4, "R0V (original FS + REAL VS) = not run"));
             // ---- R0 process itself crashes (no row line): current behaviour is the label "no R0 line" (r0 is only set from a parsed line), still return 2
             Path d4b = Files.createDirectory(root.resolve("d2")); File log4b = Files.createDirectory(root.resolve("log4b")).toFile();
             File lib4b = fake(d4b, new String[]{"R0"}, "R0) exit 9;;\n");
             buf = new ByteArrayOutputStream(); String o4b = run(lib4b, buf, code, log4b);
-            check("R0 process crash: row CRASH exit=9, status 'no R0 line' (label quirk, documented), return 2", code[0] == 2 && has(o4b, "row=R0 result=CRASH exit=9") && has(o4b, "R0=no R0 line;"));
+            check("R0 process crash: row CRASH exit=9, status CRASH (not 'no R0 line'), return 2", code[0] == 2 && has(o4b, "row=R0 result=CRASH exit=9") && has(o4b, "R0=CRASH (the R0 process crashed") && !has(o4b, "R0=no R0 line"));
             // ---- no R0 line at all
             Path d5 = Files.createDirectory(root.resolve("e")); File log5 = Files.createDirectory(root.resolve("log5")).toFile();
             File lib5 = fake(d5, new String[]{"A1"}, "A1) echo 'pipeline-reduce: row=A1 result=BUILT'; exit 0;;\n");
@@ -115,6 +124,146 @@ public class G7PipeReproTest {
             File lib7 = fake(d7, new String[]{"R0", "R0V"}, "R0) echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; rm -f \"$0\"; exit 0;;\nR0V) echo 'pipeline-reduce: row=R0V result=BUILT'; exit 0;;\n");
             buf = new ByteArrayOutputStream(); String o7 = run(lib7, buf, code, log7);
             check("exe vanishing after R0: ABORTED note, R0 kept, return -3, status run=INCOMPLETE", code[0] == -3 && has(o7, "ladder: ABORTED:") && has(o7, "(the rows above were completed)") && has(o7, "row=R0 result=FAIL vk=-13") && has(o7, "run=INCOMPLETE"));
+
+
+            // ---- A5: R0 timeout / R0 NOROW have their own statuses; a never-listed R0 stays 'no R0 line'
+            Path d9 = Files.createDirectory(root.resolve("i")); File log9 = Files.createDirectory(root.resolve("log9")).toFile();
+            File lib9 = fake(d9, new String[]{"R0", "R0V"}, "R0) exec sleep 30;;\nR0V) echo chatter; exit 0;;\n");
+            buf = new ByteArrayOutputStream(); String o9 = run(lib9, buf, code, log9);
+            check("R0 timeout: status TIMEOUT, R0V NOROW, return 2", code[0] == 2 && has(o9, "R0=TIMEOUT (undecided);") && has(o9, "R0V (original FS + REAL VS) = NOROW;"));
+            check("class line distinguishes FAIL(-13), FAIL(other), BUILT, CRASH, TIMEOUT, NOROW, n/a", has(o, "ladder-classes: FAIL(-13)=1 FAIL(other VkResult)=1 BUILT=2 CRASH=4 TIMEOUT=1 NOROW=3 n/a=2 other=0\n"));
+
+            // ---- A4: the whole process tree is killed on timeout and on cancel, and the kill is VERIFIED (the grandchild is polled until gone)
+            Path d10 = Files.createDirectory(root.resolve("j")); File log10 = Files.createDirectory(root.resolve("log10")).toFile();
+            File gpid = root.resolve("grand.pid").toFile();
+            File lib10 = fake(d10, new String[]{"R0", "T2"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\nT2) sleep 30 & echo $! > \"" + gpid + "\"; wait;;\n");
+            buf = new ByteArrayOutputStream(); String o10 = run(lib10, buf, code, log10);
+            check("timeout row: the process tree is gone (grandchild killed) and the row says so", has(o10, "row=T2 result=TIMEOUT") && has(o10, "kill: process tree gone (child + ") && !alive(gpid));
+            // cancel mid-row
+            Path d11 = Files.createDirectory(root.resolve("k")); File log11 = Files.createDirectory(root.resolve("log11")).toFile();
+            File gpid2 = root.resolve("grand2.pid").toFile();
+            File lib11 = fake(d11, new String[]{"R0", "R0V", "R1"}, "R0) echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; exit 0;;\nR0V) sleep 30 & echo $! > \"" + gpid2 + "\"; wait;;\nR1) echo 'pipeline-reduce: row=R1 result=BUILT'; exit 0;;\n");
+            G7PipeRepro.Cancel cn = new G7PipeRepro.Cancel();
+            new Thread(() -> { try { for (int i = 0; i < 100 && !gpid2.isFile(); i++) Thread.sleep(50); Thread.sleep(200); } catch (InterruptedException ignored) {} cn.cancel("test cancel"); }).start();
+            buf = new ByteArrayOutputStream(); File bnd = new File(log11, "pipefail_x"); bnd.mkdirs();
+            long t0 = System.currentTimeMillis();
+            code[0] = G7PipeRepro.runLadder(lib11.getParentFile(), bnd, null, false, buf, log11, new G7PipeRepro.Options().cancel(cn));
+            String o11 = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            check("cancel: returns -5 quickly (not after the 2 s row timeout of the stuck row)", code[0] == -5 && System.currentTimeMillis() - t0 < 1900);
+            check("cancel: finished rows kept, cancelled row NOT recorded, later row not run, status CANCELLED, kill verified", has(o11, "row=R0 result=FAIL vk=-13") && !has(o11, "row=R0V result") && !has(o11, "row=R1 ") && has(o11, "ladder: CANCELLED during row R0V (test cancel)") && has(o11, "kill check: process tree gone") && has(o11, "run=CANCELLED"));
+            check("cancel: the grandchild process is really gone", !alive(gpid2));
+            // a Cancel already set before the run: nothing is started
+            G7PipeRepro.Cancel pre = new G7PipeRepro.Cancel(); pre.cancel("pre");
+            buf = new ByteArrayOutputStream();
+            code[0] = G7PipeRepro.runLadder(lib11.getParentFile(), bnd, null, false, buf, log11, new G7PipeRepro.Options().cancel(pre));
+            check("cancel before start: -5, no row run", code[0] == -5 && !new String(buf.toByteArray(), StandardCharsets.UTF_8).contains("row="));
+
+            // ---- A1: group selection by row-id prefix; A3: progress
+            String[] gids = {"R0", "R0V", "CH10", "BIND.before", "BIND.after", "XN01", "XN1e", "XG7.live", "XGnone.live", "XU29.null", "PB.CH10", "PALLI.ORIG", "PBW.CUT7", "F:a.bin", "IW1.all", "IWB0", "CXF", "CXF.CH10"};
+            check("groupOf: each id lands in exactly the documented group",
+                G7PipeRepro.groupOf("XN01").equals("XN") && G7PipeRepro.groupOf("XG7.live").equals("XGU") && G7PipeRepro.groupOf("XU29.null").equals("XGU") && G7PipeRepro.groupOf("PB.CH10").equals("PRUNE") && G7PipeRepro.groupOf("PALLI.ORIG").equals("PRUNE")
+                && G7PipeRepro.groupOf("F:a.bin").equals("SPVOPT") && G7PipeRepro.groupOf("IWB0").equals("IW") && G7PipeRepro.groupOf("CXF.CH10").equals("CXF") && G7PipeRepro.groupOf("R0").equals("BASE") && G7PipeRepro.groupOf("CH10").equals("BASE") && G7PipeRepro.groupOf("XNzz").equals("BASE"));
+            java.util.Map<String, Integer> gc = G7PipeRepro.groupCounts(Arrays.asList(gids));
+            check("groupCounts: counts per group, every group present", gc.get("BASE") == 5 && gc.get("XN") == 2 && gc.get("XGU") == 3 && gc.get("PRUNE") == 3 && gc.get("SPVOPT") == 1 && gc.get("IW") == 2 && gc.get("CXF") == 2 && gc.size() == G7PipeRepro.GROUPS.length);
+            check("select: null/empty/ALL = all rows in list order", G7PipeRepro.select(Arrays.asList(gids), null).size() == gids.length && G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("ALL", "XN"))).size() == gids.length && G7PipeRepro.select(Arrays.asList(gids), new HashSet<>()).size() == gids.length);
+            List<String> sx = G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("XN", "CXF")));
+            check("select XN+CXF keeps the anchors R0, R0V and list order", sx.equals(Arrays.asList("R0", "R0V", "XN01", "XN1e", "CXF", "CXF.CH10")));
+            check("select of an anchor-less list with a group that has no rows: only anchors", G7PipeRepro.select(Arrays.asList(gids), new HashSet<>(Arrays.asList("SPVOPT"))).equals(Arrays.asList("R0", "R0V", "F:a.bin")));
+            Path d12 = Files.createDirectory(root.resolve("l")); File log12 = Files.createDirectory(root.resolve("log12")).toFile(); File exlog = root.resolve("exec12.log").toFile();
+            StringBuilder cs = new StringBuilder();
+            for (String id : gids) cs.append("\"").append(id).append("\") echo \"$ID\" >> \"").append(exlog).append("\"; echo 'pipeline-reduce: row=").append(id).append(" result=").append(id.equals("XN1e") ? "FAIL vk=-13(X)" : id.equals("CXF") ? "n/a" : id.equals("R0") ? "FAIL vk=-13(X)" : "BUILT").append("'; exit 0;;\n");
+            File lib12 = fake(d12, gids, cs.toString());
+            List<String> snaps = new ArrayList<>();
+            buf = new ByteArrayOutputStream(); File bnd12 = new File(log12, "pipefail_x"); bnd12.mkdirs();
+            code[0] = G7PipeRepro.runLadder(lib12.getParentFile(), bnd12, null, false, buf, log12, new G7PipeRepro.Options().groups(new HashSet<>(Arrays.asList("XN", "CXF"))).listener(pp -> snaps.add(pp.toString())));
+            String o12 = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            check("selection run executes only anchors + selected rows", Arrays.asList(readAll(exlog).trim().split("\n")).equals(Arrays.asList("R0", "R0V", "XN01", "XN1e", "CXF", "CXF.CH10")));
+            check("selection run says what was selected and that the rest was NOT run; header still counts all listed rows", has(o12, "ladder: 18 rows (one process per row") && has(o12, "ladder-selection: groups=[CXF, XN] -> 6 of 18 rows") && has(o12, "ladder: rows=6 built=3 fail=2 n/a=1 other=0") && code[0] == 0);
+            check("progress: first call selected=6 remaining=6, last done=6 remaining=0 failed=2 n/a=1", snaps.get(0).startsWith("done 0/6") && snaps.get(snaps.size() - 1).startsWith("done 6/6 (BUILT 3, failed 2, n/a 1), remaining 0") && snaps.size() == 7);
+
+            // ---- A2: resume only when the whole identity matches; indeterminate rows are retried; mismatch starts fresh and says why
+            Path d13 = Files.createDirectory(root.resolve("m")); File log13 = Files.createDirectory(root.resolve("log13")).toFile(); File ex13 = root.resolve("exec13.log").toFile(); File flags = Files.createDirectory(root.resolve("flags")).toFile();
+            String[] rids = {"R0", "R0V", "XN01", "TT", "CC", "NN", "B1"};
+            String rc = "R0) echo R0 >> \"" + ex13 + "\"; echo 'pipeline-reduce: row=R0 result=FAIL vk=-13(X)'; exit 0;;\n"
+                + "R0V) echo R0V >> \"" + ex13 + "\"; echo 'pipeline-reduce: row=R0V result=BUILT'; exit 0;;\n"
+                + "XN01) echo XN01 >> \"" + ex13 + "\"; echo 'pipeline-reduce: row=XN01 result=FAIL vk=-1(X)'; exit 0;;\n"
+                + "TT) echo TT >> \"" + ex13 + "\"; if [ ! -f \"" + flags + "/tt\" ]; then touch \"" + flags + "/tt\"; exec sleep 30; fi; echo 'pipeline-reduce: row=TT result=BUILT'; exit 0;;\n"
+                + "CC) echo CC >> \"" + ex13 + "\"; if [ ! -f \"" + flags + "/cc\" ]; then touch \"" + flags + "/cc\"; exit 9; fi; echo 'pipeline-reduce: row=CC result=BUILT'; exit 0;;\n"
+                + "NN) echo NN >> \"" + ex13 + "\"; if [ ! -f \"" + flags + "/nn\" ]; then touch \"" + flags + "/nn\"; echo chatter; exit 0; fi; echo 'pipeline-reduce: row=NN result=BUILT'; exit 0;;\n"
+                + "B1) echo B1 >> \"" + ex13 + "\"; echo 'pipeline-reduce: row=B1 result=n/a'; exit 0;;\n";
+            File lib13 = fake(d13, rids, rc);
+            File bnd13 = new File(log13, "pipefail_r"); bnd13.mkdirs(); Files.write(new File(bnd13, "fs.spv").toPath(), new byte[]{1, 2, 3}); Files.write(new File(bnd13, "vs.spv").toPath(), new byte[]{4}); Files.write(new File(bnd13, "state").toPath(), new byte[]{5, 6});
+            Path rl = root.resolve("redlogs"); File logR = Files.createDirectory(rl).toFile();
+            // first run: only XN selected -> R0, R0V, XN01 executed
+            buf = new ByteArrayOutputStream();
+            code[0] = G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, false, buf, logR, new G7PipeRepro.Options().groups(new HashSet<>(Arrays.asList("XN"))).ids("Pixel-X drv1", "lagfxSHA1"));
+            check("resume setup: first run executed R0, R0V, XN01", Arrays.asList(readAll(ex13).trim().split("\n")).equals(Arrays.asList("R0", "R0V", "XN01")));
+            File[] pf = logR.listFiles((dd, n) -> n.endsWith("-ladder-partial.txt"));
+            String ptxt = readAll(pf[0]);
+            check("partial file: header line first, identity line second (full VS/FS/state hashes, device, lib, mode)", ptxt.startsWith("bundle=pipefail_r ladder: 7 rows") && !ptxt.split("\n")[0].contains("ladder-selection") && ptxt.split("\n")[1].startsWith("identity: gen=java-rows-v1 | lib=") && has(ptxt, "| device=Pixel-X drv1 |") && has(ptxt, "| lagfx=lagfxSHA1 |") && has(ptxt, "| fs=" + G7PipeRepro.sha256(new byte[]{1, 2, 3}) + " |") && has(ptxt, "| vs=" + G7PipeRepro.sha256(new byte[]{4}) + " |") && has(ptxt, "| state=" + G7PipeRepro.sha256(new byte[]{5, 6}) + " |") && has(ptxt, "| layout=") && has(ptxt, "| runner=none(gap) |") && has(ptxt, "| mode=ladder matrix=false"));
+            // default (no resume flag) = a fresh file even though a matching one exists
+            Thread.sleep(3);
+            Files.write(ex13.toPath(), new byte[0]);
+            buf = new ByteArrayOutputStream();
+            G7PipeRepro.Options o13 = new G7PipeRepro.Options().ids("Pixel-X drv1", "lagfxSHA1");
+            code[0] = G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, false, buf, logR, o13);
+            check("default options: no resume, every row executed, a new partial file", Arrays.asList(readAll(ex13).trim().split("\n")).equals(Arrays.asList(rids)) && logR.listFiles((dd, n) -> n.endsWith("-ladder-partial.txt")).length == 2 && !new String(buf.toByteArray(), StandardCharsets.UTF_8).contains("ladder-resume"));
+            // that second run left TT (TIMEOUT), CC (CRASH), NN (NOROW) indeterminate; now resume
+            Files.write(ex13.toPath(), new byte[0]);
+            buf = new ByteArrayOutputStream(); List<String> sn13 = new ArrayList<>();
+            code[0] = G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, false, buf, logR, new G7PipeRepro.Options().ids("Pixel-X drv1", "lagfxSHA1").resume(true).listener(pp -> sn13.add(pp.toString())));
+            String o13r = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            check("resume: completed rows (R0, R0V, XN01, B1) are NOT run again; TIMEOUT, CRASH and NOROW rows ARE", Arrays.asList(readAll(ex13).trim().split("\n")).equals(Arrays.asList("TT", "CC", "NN")));
+            check("resume: says RESUMED, how many were taken over, how many are retried", has(o13r, "ladder-resume: RESUMED from g7_pipelinerepro_") && has(o13r, ": 4 selected row(s) taken over, 3 indeterminate row(s) of that file are run again"));
+            check("resume: all rows present in the output, counts and status as for a full run (R0 same -13, retried rows BUILT now)", has(o13r, "row=R0 result=FAIL vk=-13") && has(o13r, "row=TT result=BUILT") && has(o13r, "row=CC result=BUILT") && has(o13r, "row=NN result=BUILT") && has(o13r, "ladder: rows=7 built=4 fail=2 n/a=1 other=0") && has(o13r, "R0=same -13 (reproduced); R0V (original FS + REAL VS) = BUILT; run=complete") && code[0] == 0);
+            check("resume: progress counts the taken-over rows as done (resumed=4), ends done 7/7", sn13.get(sn13.size() - 1).startsWith("done 7/7") && sn13.size() == 8);
+            check("resume: the old partial file was appended to (a 'resume:' marker, retried rows), no third file", logR.listFiles((dd, n) -> n.endsWith("-ladder-partial.txt")).length == 2 && has(readAll(newestPartial(logR)), "\nresume: "));
+            // resume again: nothing indeterminate any more, nothing runs
+            Files.write(ex13.toPath(), new byte[0]);
+            buf = new ByteArrayOutputStream();
+            code[0] = G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, false, buf, logR, new G7PipeRepro.Options().ids("Pixel-X drv1", "lagfxSHA1").resume(true));
+            check("second resume: nothing is executed, result identical", readAll(ex13).isEmpty() && code[0] == 0 && has(new String(buf.toByteArray(), StandardCharsets.UTF_8), ": 7 selected row(s) taken over, 0 indeterminate"));
+            // preview agrees
+            G7PipeRepro.Preview pv = G7PipeRepro.preview(lib13.getParentFile(), bnd13, null, false, logR, new G7PipeRepro.Options().ids("Pixel-X drv1", "lagfxSHA1"));
+            check("preview: usable resume with 7 done, 7 listed rows, group counts", pv.resume.usable && pv.resume.done.size() == 7 && pv.listing.ids.size() == 7 && pv.groupCounts.get("XN") == 1);
+            // identity mismatches: each starts fresh and names the field
+            String[][] mism = {
+                {"device", "other-phone"}, {"lagfx", "otherSHA"}};
+            for (String[] mm : mism) {
+                Files.write(ex13.toPath(), new byte[0]); buf = new ByteArrayOutputStream();
+                G7PipeRepro.Options om = new G7PipeRepro.Options().resume(true).ids(mm[0].equals("device") ? mm[1] : "Pixel-X drv1", mm[0].equals("lagfx") ? mm[1] : "lagfxSHA1");
+                G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, false, buf, logR, om);
+                String om_o = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+                check("identity mismatch (" + mm[0] + "): resume refused, fresh run executes every row, reason names the field", has(om_o, "ladder-resume: requested but NOT used, starting fresh:") && has(om_o, "differs in [") && has(om_o, mm[0]) && readAll(ex13).trim().split("\n").length == 7);
+            }
+            Files.write(ex13.toPath(), new byte[0]); buf = new ByteArrayOutputStream();   // the matrix flag is part of the mode
+            G7PipeRepro.runLadder(lib13.getParentFile(), bnd13, null, true, buf, logR, new G7PipeRepro.Options().resume(true).ids("Pixel-X drv1", "lagfxSHA1"));
+            check("identity mismatch (mode matrix): refused", has(new String(buf.toByteArray(), StandardCharsets.UTF_8), "mode") && readAll(ex13).trim().split("\n").length == 7);
+            // note: the NEWEST partial file is now the fresh one of the last run; make a clean log dir for the next mismatches
+            Path d14 = Files.createDirectory(root.resolve("n")); File log14 = Files.createDirectory(root.resolve("log14")).toFile();
+            File bnd14 = new File(log14, "pipefail_r"); bnd14.mkdirs(); Files.write(new File(bnd14, "fs.spv").toPath(), new byte[]{1}); Files.write(new File(bnd14, "state").toPath(), new byte[]{2});
+            File lib14 = fake(d14, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\n", "echo 'pipeline-reduce: driver Adreno 840 v1'\necho 'pipeline-reduce: extensions A B'\n");
+            buf = new ByteArrayOutputStream(); G7PipeRepro.runLadder(lib14.getParentFile(), bnd14, null, false, buf, log14, new G7PipeRepro.Options());
+            check("runner identity lines (driver, extensions) are recorded when the runner prints them", has(readAll(newestPartial(log14)), "| runner=") && !has(readAll(newestPartial(log14)), "| runner=none(gap)") && has(readAll(newestPartial(log14)), "[driver, extensions]"));
+            check("same runner lines + same files: resume usable", G7PipeRepro.preview(lib14.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume.usable);
+            File lib14b = fake(d14, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\n", "echo 'pipeline-reduce: driver Adreno 840 v2'\necho 'pipeline-reduce: extensions A B'\n");
+            check("a changed driver line (and the changed runner binary) refuses the resume", !G7PipeRepro.preview(lib14b.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume.usable && G7PipeRepro.preview(lib14b.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume.reason.contains("runner"));
+            fake(d14, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\n", "echo 'pipeline-reduce: driver Adreno 840 v1'\necho 'pipeline-reduce: extensions A B'\n");
+            Files.write(new File(bnd14, "fs.spv").toPath(), new byte[]{9});
+            G7PipeRepro.ResumeInfo rfs = G7PipeRepro.preview(lib14.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume;
+            check("a changed fs.spv refuses the resume (fs and layout differ)", !rfs.usable && rfs.reason.contains("fs") && rfs.reason.contains("layout"));
+            Files.write(new File(bnd14, "fs.spv").toPath(), new byte[]{1}); Files.write(new File(bnd14, "state").toPath(), new byte[]{7});
+            G7PipeRepro.ResumeInfo rst = G7PipeRepro.preview(lib14.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume;
+            check("a changed pipeline state refuses the resume", !rst.usable && rst.reason.contains("state"));
+            Files.write(new File(bnd14, "state").toPath(), new byte[]{2});
+            check("restoring the files makes it usable again", G7PipeRepro.preview(lib14.getParentFile(), bnd14, null, false, log14, new G7PipeRepro.Options()).resume.usable);
+            // old-format partial file (no identity line) is never used
+            Path d15 = Files.createDirectory(root.resolve("o")); File log15 = Files.createDirectory(root.resolve("log15")).toFile(); File bnd15 = new File(log15, "pipefail_r"); bnd15.mkdirs();
+            Files.write(new File(log15, G7PipeRepro.LOG_PREFIX + "0000000000001-ladder-partial.txt").toPath(), "bundle=pipefail_r ladder: 1 rows\npipeline-reduce: row=R0 result=BUILT\n".getBytes(StandardCharsets.UTF_8));
+            File lib15 = fake(d15, new String[]{"R0"}, "R0) echo 'pipeline-reduce: row=R0 result=BUILT'; exit 0;;\n");
+            G7PipeRepro.ResumeInfo r15 = G7PipeRepro.preview(lib15.getParentFile(), bnd15, null, false, log15, new G7PipeRepro.Options()).resume;
+            check("partial file of an older app (no identity line): not used, reason says so", !r15.usable && r15.reason.contains("no identity line"));
+            check("no partial file at all: not usable, reason says so", !G7PipeRepro.findResume(root.resolve("nowhere").toFile(), "pipefail_r", "x").usable && G7PipeRepro.findResume(root.resolve("nowhere").toFile(), "pipefail_r", "x").reason.contains("no earlier partial file"));
 
             // ---- run(): the whole path (header, verdict text, result file), reduce=true, matrix=false
             Path d8 = Files.createDirectory(root.resolve("h")); File log8 = Files.createDirectory(root.resolve("log8")).toFile();

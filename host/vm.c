@@ -767,6 +767,11 @@ void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) {
     *calls = c1 + c2, *refused = r1 + r2;
 }
 
+void hv_vm_disk_stats(HvDiskStats *root, HvDiskStats *auxs) {
+    hv_disk_stats(&disk, root);
+    hv_disk_stats(&aux, auxs);
+}
+
 int hv_vm_run_cpu0(void) {
     return hv_run(&cpus[0]);
 }

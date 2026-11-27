@@ -275,3 +275,9 @@ Diagnostics and tooling added after the runs that touch no item's status: librar
 - Whether the 9 writable_skipped draws and the 117 unmirrored linear-texture draws of R1 now draw: needs a device run.
 - All class E items (list above) remain E; nothing from the research reports was used to move them.
 - Not re-run: the full test suite (the 124/0 figure is the existing testlog written after ef4d456); the census counts of R1/R2 (log counts, M/V/S/K/D/T items) were not re-derived for this update.
+
+## Update 2026-11-27 (vertex pairing, X03/X07, diagnostics) - nothing here is device-verified
+- Vertex pairing (58387a2): 8 PSOs had a mismatch between serialized attributes and the VS fetch-wrapper inputs. Pairing is now by buffer slot + byte offset. 4 of the 8 are actually fixed (Half4 pairs correctly); the other 4 feed `undef` to the wrapper (attribute not read) and stay positional. An undef input is NOT proof that the output is unused. PSO 12/23 are equal-count and were already correct.
+- X03: 2995 of ~3004 OpUndef harmless; 13 cap-bail returns (DISPATCH_MAX_ITERS=65536) in A2Xghfc reach outputs/control/address. CE_CAST gaps (9, unconsumed) fixed (f26a69e). OpUndef->OpConstantNull for cap-bail is pending ladder results (R0/R0V on Adreno).
+- Boot diagnostics (494ff3b library, 1c9221f Henge): read-only; log line caps do not stop observation; rgb_nonzero and alpha_nonmax separate; rowBytes logged beside width*4; VBL/cursor counters split. Sampled grid <=256x256; BGRA/RGBA is INFER.
+

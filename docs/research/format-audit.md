@@ -54,3 +54,8 @@ T2 colour table entries all agree with the public enum numbers: 1 A8Unorm, 10-14
 Mapped but unverified on a device (no dump uses them): everything in T2 other than 1, 80, 115 (and 25 / 250, verified earlier). 
 T1 (iosurface.c) knows only 80, 70, 115, 1/10, 252, 25, 250. It is NOT used by the arm64 mapper (arm64_resources.c says so). The upstream (MIT) copy had 25 -> D16, which
 this repo already corrected. Gaps in T1 relative to T2 (e.g. 30 RG8Unorm, 55, 65, 81, 71): not added, because no dump or log path reaches T1 with those values.
+
+## Corrections 2026-11-27
+- Vertex format 31 (Float4) IS present in PSO blobs (real-PSO fixtures vtxdesc_pso_*.bin); the earlier line "not in any PSO blob" is outdated.
+- Colour formats are now decoded through the table-based lagfx_metal_pixel_format_to_vk (44 colour + D16/D32; A8 id1 -> R8_UNORM). Device behaviour of the newly mapped formats is unverified.
+

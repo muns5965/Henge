@@ -84,3 +84,5 @@ Classification of the claim: "-13/SIGSEGV with FP16 + OpPhi" is true only for cl
 | 13 | Framebuffer-fetch row: remove input attachments/raster-order (plain texture read), and rasterization-order flags separately | NOT-FOUND publicly; local only |
 | 14 | SPIR-V 1.4 -> 1.3 downgrade row (remove interface-list changes) | NOT-FOUND publicly; local only |
 | 15 | Size-bisect rows (cut100/cut300 style) with spec size at 350 KB threshold | Godot (size/constants), general |
+
+Note: PR URLs and commit SHAs in this file and in adreno-workaround-cases.md come from page summaries; they were not verified through the GitHub API.

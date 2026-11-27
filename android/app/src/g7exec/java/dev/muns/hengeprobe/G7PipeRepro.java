@@ -45,7 +45,7 @@ final class G7PipeRepro {
 
     /** The ladder without fork (the library has no process creation in this build): list the rows once, then one process per row (--only id) so a compiler crash or hang
      *  costs one row, not the run. Adaptive rows (ddmin/greedy) depend on earlier results and are therefore NOT generated here. Returns 0 when R0 reproduced the failure. */
-    static int runLadder(File nativeLibDir, File bundle, File redDir, boolean matrix, ByteArrayOutputStream buf) throws IOException, InterruptedException {
+    static int runLadder(File nativeLibDir, File bundle, File redDir, boolean matrix, ByteArrayOutputStream buf, File logDir) throws IOException, InterruptedException {
         String exe = new File(nativeLibDir, LIB_NAME).getPath();
         List<String> ids = new ArrayList<>();
         String listOut = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--list-rows"), redDir, 60, null, 4_000_000);
@@ -54,6 +54,9 @@ final class G7PipeRepro {
         StringBuilder o = new StringBuilder("ladder: " + ids.size() + " rows (one process per row; adaptive rows not generated; BUILT = creation returned success on this device, not rendering)\n");
         int r0 = -9, built = 0, fail = 0, bad = 0; boolean complete = false;
         long end = System.currentTimeMillis() + 840_000L;
+        // each row is appended to its own file as soon as it is done, so an app kill or a crash keeps everything finished so far (the final window/file still comes at the end)
+        File partial = new File(logDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + "-ladder-partial.txt");
+        try { appendLine(partial, "bundle=" + bundle.getName() + " " + o.toString().trim()); } catch (IOException e) { o.append("(partial file not writable: ").append(e).append(")\n"); }
         try {
         for (String id : ids) {
             if (System.currentTimeMillis() > end) { o.append("ladder: time budget used up before row ").append(id).append("\n"); break; }
@@ -61,8 +64,8 @@ final class G7PipeRepro {
             String out = runOne(Arrays.asList(exe, bundle.getPath(), "--reduce", "--only", id), redDir, 40, ec, 4_000_000);
             String rowLine = null;
             for (String ln : out.split("\n")) if (ln.contains("pipeline-reduce: row=" + id + " ")) { rowLine = ln.substring(ln.indexOf("pipeline-reduce:")); break; }
-            if (rowLine == null) { o.append("pipeline-reduce: row=").append(id).append(" result=").append(ec[0] == -2 ? "TIMEOUT" : "CRASH").append(" exit=").append(ec[0]).append(" (no row line; process ended)\n"); bad++; continue; }
-            o.append(rowLine).append("\n");
+            if (rowLine == null) { String l = "pipeline-reduce: row=" + id + " result=" + (ec[0] == -2 ? "TIMEOUT" : "CRASH") + " exit=" + ec[0] + " (no row line; process ended)"; o.append(l).append("\n"); appendQuiet(partial, l); bad++; continue; }
+            o.append(rowLine).append("\n"); appendQuiet(partial, rowLine);
             if (rowLine.contains("result=BUILT")) built++; else if (rowLine.contains("result=FAIL")) fail++; else bad++;
             if (id.equals("R0")) r0 = rowLine.contains("result=BUILT") ? 0 : rowLine.contains("result=FAIL vk=-13(") ? 1 : rowLine.contains("result=FAIL") ? 4 : 3;   // CRASH/TIMEOUT/INVALID on R0 is NOT "failure reproduced"
         }
@@ -78,6 +81,11 @@ final class G7PipeRepro {
         }
         return !complete ? -3 : r0 == 1 ? 0 : r0 == 0 ? 1 : 2;   // an incomplete run never reports a plain verdict   // 0 reproduced (R0 FAIL), 1 not reproduced (R0 BUILT), 2 undecided
     }
+
+    private static void appendLine(File f, String line) throws IOException {
+        try (java.io.FileOutputStream fo = new java.io.FileOutputStream(f, true)) { fo.write((line + "\n").getBytes(StandardCharsets.UTF_8)); fo.getFD().sync(); }
+    }
+    private static void appendQuiet(File f, String line) { try { appendLine(f, line); } catch (IOException ignored) {} }
 
     private static String runOne(List<String> c, File redDir, int timeoutS, int[] exitOut, int maxBytes) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(c).redirectErrorStream(true);
@@ -137,7 +145,7 @@ final class G7PipeRepro {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         int code = -1; String note = "";
         try {
-            if (reduce) { code = runLadder(nativeLibDir, bundle, redDir, matrix, buf); return finish(head, code, buf, note, logDir); }
+            if (reduce) { code = runLadder(nativeLibDir, bundle, redDir, matrix, buf, logDir); return finish(head, code, buf, note, logDir); }
             int[] ec = new int[1];
             String outText = runOne(cmd, redDir, 180, ec, MAX_OUT);
             buf.write(outText.getBytes(StandardCharsets.UTF_8));

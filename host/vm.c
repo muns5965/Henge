@@ -1,6 +1,7 @@
 #include "vm.h"
 #include "pvg_lite.h"
 #include "g7_fbprobe.h"
+#include "g7_fb0.h"
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -191,7 +192,7 @@ static void display_diag(const uint8_t *px, uint32_t w, uint32_t h) {
    THREADS: the caller (the runner's frame pump, never a vCPU or the GPU thread) only copies the pixels (a memcpy, a few ms, a handful of times per run); the PNG encoding and the file write run on a
    short-lived worker thread. Stored deflate blocks, so no compression library is needed; written as .part and renamed, so a killed process never leaves a half file under the final name. */
 /* FRAME-FILES-BEGIN (tools/g7-frames-test.sh compiles exactly this region on its own) */
-#define FRAME_MAX_FILES 8   /* 6 before the boot-fb probe added two (first change, ~10 s) */
+#define FRAME_MAX_FILES 11   /* 6 before the boot-fb probe added two (first change, ~10 s), 8 before the g7-fb0 early observation added up to three */
 #define FRAME_MAX_PX (4u << 20)
 #define FRAME_MAX_BYTES (80u << 20)
 #define FRAME_MAX_INFLIGHT 2
@@ -388,6 +389,83 @@ static void g7_boot_fb_tick(void) {
     }
     if (fbp_png_first_pending && frame_save_async("boot_fb_first_change", "boot_fb(first change)", px, (uint32_t)w, (uint32_t)hh, (uint32_t)row) != 0) fbp_png_first_pending = 0;
     if (fbp_png_10s_pending && frame_save_async("boot_fb_t10s", "boot_fb(~10s)", px, (uint32_t)w, (uint32_t)hh, (uint32_t)row) != 0) fbp_png_10s_pending = 0;
+}
+
+/* F1 (research/g7-hjit2): early boot-framebuffer observation, log lines "g7-fb0:" (format: host/g7_fb0.h) plus at most 3 dumps. Runs ONLY when the environment says G7_FB0=1 (the g7exec start dialog sets it; every other
+   runner has no such thread). A detached thread of its own (never a vCPU, never the display pump): from the VM start, every HV_FB0_PERIOD_MS for HV_FB0_SECONDS, then it ends. It only READS guest RAM: the boot_args
+   Video words when a boot_args page has appeared (same relaxed scan as g7_boot_fb_tick, once per second until found), else the fixed carveout window at HV_FB0_DEFAULT_BASE. No lock is taken, nothing is written to the guest. */
+static void g7_fb0_dump(int n, int why, double t, int src, const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride, uint64_t winbytes) {
+    const char *dir = getenv("LAGFX_ARM64_DUMP_DIR");
+    char tag[64]; snprintf(tag, sizeof tag, "fb0_%d_%s_t%ums", n, why == 1 ? "first_nz" : "big_change", (unsigned)(t * 1000));
+    if (!dir || !*dir) { fprintf(stderr, "g7-fb0: dump %s NOT saved (no dump folder: LAGFX_ARM64_DUMP_DIR is not set; enable the shader/pipeline dump on the start dialog)\n", tag); return; }
+    if (src == 2) {
+        int rc = 0; for (int k = 0; k < 5 && (rc = frame_save_async(tag, tag, px, w, h, stride)) == 0; k++) usleep(40000);
+        fprintf(stderr, "g7-fb0: dump %s png %s\n", tag, rc == 1 ? "started" : "NOT saved (bound or no memory)");
+        return;
+    }
+    size_t len = winbytes < HV_FB0_RAW_DUMP_MAX ? (size_t)winbytes : HV_FB0_RAW_DUMP_MAX;
+    uint8_t *copy = malloc(len); char path[600], part[620];
+    if (!copy) return;
+    memcpy(copy, px, len);
+    snprintf(path, sizeof path, "%s/g7_%s_raw%zuB.bin", dir, tag, len); snprintf(part, sizeof part, "%s.part", path);
+    FILE *f = fopen(part, "wb"); int ok = f && fwrite(copy, 1, len, f) == len; if (f && fclose(f) != 0) ok = 0;
+    if (ok) ok = rename(part, path) == 0; else if (f) remove(part);
+    fprintf(stderr, "g7-fb0: dump %s raw %zu bytes %s\n", tag, len, ok ? "saved" : "NOT saved");
+    free(copy);
+}
+static void *g7_fb0_thread(void *unused) {
+    (void)unused;
+    HvFb0State st; hv_fb0_init(&st);
+    char line[700]; hv_fb0_start_line(line, sizeof line); fprintf(stderr, "%s\n", line);
+    double t0 = frame_mono(), total = 0, mx = 0, last_scan = -10;
+    uint64_t found = 0; int have = 0, said_bargs = 0, said_nowin = 0;
+    for (;;) {
+        double t = frame_mono() - t0;
+        if (t > HV_FB0_SECONDS) break;
+        uint8_t *ram = board.ram; uint64_t size = board.ram_size;
+        if (ram) {
+            if (!have && t - last_scan >= 1.0) {
+                last_scan = t;
+                uint64_t limit = size < (1ull << 30) ? size : 1ull << 30;
+                for (uint64_t off = 0; off + 0x1000 <= limit && !have; off += 0x4000) {
+                    const uint64_t *q = (const uint64_t *)(ram + off); const uint16_t *h = (const uint16_t *)(ram + off);
+                    if (h[0] < 2 || h[0] > 3 || h[1] < 1 || h[1] > 3) continue;
+                    if (q[1] >> 40 != 0xfffffe || q[2] < VMAPPLE_MEM || q[2] >= VMAPPLE_MEM + size || q[3] == 0 || q[3] > size) continue;
+                    if (strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") != 0) continue;
+                    found = off; have = 1;
+                }
+            }
+            int src = 1; uint64_t base = HV_FB0_DEFAULT_BASE; uint32_t w = 0, h = 0, row = 0;
+            if (have) {
+                const uint64_t *q = (const uint64_t *)(ram + found);
+                if (strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") == 0 && q[7] <= 0xffffffffull) { src = 2; base = q[5]; w = (uint32_t)q[8]; h = (uint32_t)q[9]; row = (uint32_t)q[7]; }
+            }
+            uint64_t winbytes = src == 2 ? (uint64_t)row * h : HV_FB0_DEFAULT_WINDOW;
+            if (base < VMAPPLE_MEM || base - VMAPPLE_MEM >= size) winbytes = 0;
+            else if (base - VMAPPLE_MEM + winbytes > size) winbytes = size - (base - VMAPPLE_MEM);
+            if (winbytes < 4096) { if (!said_nowin) { said_nowin = 1; fprintf(stderr, "g7-fb0: t=%.2fs no window (base %#llx is outside guest RAM %#llx+%#llx)\n", t, (unsigned long long)base, (unsigned long long)VMAPPLE_MEM, (unsigned long long)size); } }
+            else {
+                if (src == 2 && !said_bargs) { said_bargs = 1; fprintf(stderr, "g7-fb0: boot_args t=%.2fs base=%#llx w=%u h=%u row=%u\n", t, (unsigned long long)base, w, h, row); }
+                const uint8_t *px = ram + (base - VMAPPLE_MEM);
+                HvFb0Sample s; double c0 = frame_mono();
+                if (src == 2) hv_fb0_scan(px, w, h, row, &s); else hv_fb0_scan(px, (uint32_t)(winbytes / 4), 1, (uint32_t)winbytes, &s);
+                double ms = (frame_mono() - c0) * 1000; total += ms; if (ms > mx) mx = ms;
+                int dump = 0;
+                if (hv_fb0_step(&st, t, &s, src, base, w, h, line, sizeof line, &dump)) fprintf(stderr, "%s\n", line);
+                if (dump) g7_fb0_dump(st.dumps, dump, t, src, px, w, h, row, winbytes);
+            }
+        }
+        usleep(HV_FB0_PERIOD_MS * 1000);
+    }
+    hv_fb0_end_line(&st, frame_mono() - t0, total, mx, line, sizeof line); fprintf(stderr, "%s\n", line);
+    return NULL;
+}
+static void g7_fb0_maybe_start(void) {
+    const char *e = getenv("G7_FB0");
+    if (!e || strcmp(e, "1") != 0) return;
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &at, g7_fb0_thread, NULL) != 0) fprintf(stderr, "g7-fb0: sampler thread did not start (diagnostic only; the VM is unaffected)\n");
+    pthread_attr_destroy(&at);
 }
 
 int hv_vm_boot_display(HvBootDisplay *d) {
@@ -860,6 +938,7 @@ void hv_vm_start(int cpu0, void (*on_exit)(int reason)) {
     if (!kicker_started) fprintf(stderr, "hengevm: kicker thread did not start (error %d)\n", rc), failed = 1;
     if (cpu0 && (rc = pthread_create(&t, &attr, cpu0_thread, NULL)) != 0) fprintf(stderr, "hengevm: CPU 0 thread did not start (error %d)\n", rc), failed = cpu0_failed = 1;
     HV_STAGE("vcpus_started");
+    g7_fb0_maybe_start();
     if (failed) {
         __atomic_store_n(&start_failed, 1, __ATOMIC_RELEASE);   /* callers that can fail (the G7 runner) ask hv_vm_start_failed(); HV_EXIT_NONE alone is not an error code */
         hv_vm_stop();

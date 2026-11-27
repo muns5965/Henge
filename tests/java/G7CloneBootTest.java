@@ -63,6 +63,9 @@ public class G7CloneBootTest {
           check("draw diag defaults to ON: explicit G7_DRAW_DIAG=1, logged, and not an HV_ name", G7CloneBoot.drawDiag && "1".equals(env.get("G7_DRAW_DIAG")) && G7CloneBoot.lastGpuNote.contains("draw_diag=ON"));
           { G7CloneBoot.drawDiag = false; java.util.Map<String, String> e7 = new java.util.HashMap<>(); e7.put("G7_DRAW_DIAG", "1"); G7CloneBoot.captureData = false; G7CloneBoot.lagfxEnv(e7, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r"));
             check("draw diag OFF: explicit G7_DRAW_DIAG=0 (an inherited value is replaced), logged, independent of render replay", "0".equals(e7.get("G7_DRAW_DIAG")) && G7CloneBoot.lastGpuNote.contains("draw_diag=OFF") && !e7.containsKey("LAGFX_ARM64_DUMP_DATA")); G7CloneBoot.drawDiag = true; }
+          check("fb0 defaults to ON: G7_FB0=1 and the log note says so", G7CloneBoot.fb0 && "1".equals(env.get("G7_FB0")) && G7CloneBoot.lastGpuNote.contains("fb0=ON"));
+          { G7CloneBoot.fb0 = false; java.util.Map<String, String> e8 = new java.util.HashMap<>(); e8.put("G7_FB0", "1"); G7CloneBoot.lagfxEnv(e8, java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r", "--jit-mb", "256"));
+            check("fb0 OFF: explicit G7_FB0=0 (an inherited value is replaced), logged; the JIT size shows in the gpu note", "0".equals(e8.get("G7_FB0")) && G7CloneBoot.lastGpuNote.contains("fb0=OFF") && G7CloneBoot.lastGpuNote.contains("jit_mb=256;")); G7CloneBoot.fb0 = true; }
           check("lagfx env: no HV_ variable (the runner removes those)", env.keySet().stream().noneMatch(k -> k.startsWith("HV_"))); }
         check("switch off: refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, false, () -> false, lib, ext, priv, files, clone, true, none).started && spawned == 0);
         check("no consent: refused", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, false, none).started && spawned == 0);
@@ -119,6 +122,30 @@ public class G7CloneBootTest {
             G7CloneBoot.Start ts = G7CloneBoot.startWith(sp(tf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, secs);
             check("run time " + secs + " s (0 = no limit) reaches the command line, the rest of the command is unchanged", ts.started && String.join(" ", lastCmd).contains("--seconds " + secs + " ") && String.join(" ", lastCmd).contains("--usb-mode 0") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 64")); waitDone(ts.run);
         }
+        // JIT size (research/g7-hjit2): default 64 unchanged; every member of the set reaches the command line and the log header; anything else is refused before a process exists
+        check("JIT size default is 64 and the choice set is exactly {64,128,256,384,512,768}", G7CloneBoot.jitMb == 64 && java.util.Arrays.equals(G7CloneBoot.JIT_MB_CHOICES, new int[]{64, 128, 256, 384, 512, 768}));
+        for (int jm : G7CloneBoot.JIT_MB_CHOICES) {
+            Fake jf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+            G7CloneBoot.jitMb = jm;
+            G7CloneBoot.Start js = G7CloneBoot.startWith(sp(jf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0);
+            G7CloneBoot.jitMb = 64;
+            String jc = String.join(" ", lastCmd); waitDone(js.run);
+            String jl = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, js.run.logName()).toPath()), StandardCharsets.UTF_8);
+            check("jit " + jm + " MiB: command has --jit-mb " + jm + " exactly once, the rest unchanged, the run log header says so", js.started && jc.contains("--ram-mb 2048 --cpus 2 --jit-mb " + jm + " --usb-mode 0") && jc.split("--jit-mb").length == 2 && jl.contains("g7-jit-config: jit_mb=" + jm + (jm == 64 ? " (default)" : " (chosen")));
+        }
+        int beforeJit = spawned;
+        boolean jitBad = false;
+        for (int jm : new int[]{-1, 0, 1, 16, 63, 65, 100, 767, 769, 1024, 4096, 100000}) { G7CloneBoot.jitMb = jm; if (G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0).started) jitBad = true; }
+        G7CloneBoot.jitMb = 64;
+        check("a JIT size outside the set (including the runner's own legal 16, 100 and 767): refused, nothing spawned", !jitBad && spawned == beforeJit);
+        { File mp = new File(priv, "jit_mb");
+          check("no marker: preselect 64", G7CloneBoot.readJitMarker(priv) == 64);
+          Files.write(mp.toPath(), "256\n".getBytes()); check("marker 256 preselects 256", G7CloneBoot.readJitMarker(priv) == 256);
+          Files.write(mp.toPath(), "768".getBytes()); check("marker 768 preselects 768", G7CloneBoot.readJitMarker(priv) == 768);
+          Files.write(mp.toPath(), "100\n".getBytes()); check("marker with a value outside the set falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
+          Files.write(mp.toPath(), "256 junk".getBytes()); check("marker with junk falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
+          Files.write(mp.toPath(), "0000000000000000000256".getBytes()); check("marker over 16 bytes falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
+          Files.delete(mp.toPath()); }
         int beforeSecs = spawned;
         check("a run time that is not one of the four choices (-1, 1, 7200): refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, -1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 7200).started && spawned == beforeSecs);
         int beforeUsb = spawned;

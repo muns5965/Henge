@@ -26,6 +26,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/resource.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -430,6 +431,15 @@ int main(int argc, char **argv) {
                 static char wd[6000], gl[1200];
                 size_t wl = hv_wd_report(wd, sizeof wd, (uint64_t)(t - tstart), hv_vm_machine()); if (wl) fputs(wd, stdout);
                 size_t gn = hv_vm_gfx_diag(gl, sizeof gl); if (gn) fputs(gl, stdout);
+            }
+            {   /* g7-jit (research/g7-hjit2): the JIT region size and the whole-flush counters of this 10 s window next to the process's rss/swap/major faults, so a JIT-size A/B reads from one line. Only numbers the loop already has (HvG7Mem above, the engine's counters) plus one getrusage(); no extra sampling. Format: docs/g7-analysis-notes.md. */
+                static uint64_t pf = 0, pfull = 0, pdrop = 0, pmaj = 0; struct rusage ru; uint64_t maj = getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t)ru.ru_majflt : 0;
+                const HvStats *js = &hv_vm_machine()->stats;
+                char jr[24], jw[24]; hv_g7m_mib(jr, sizeof jr, m.rss_kb); hv_g7m_mib(jw, sizeof jw, m.swap_kb);
+                printf("g7-jit: t=%llus jit_mb=%zu used_mb=%.0f flushes=%llu(+%llu) full=%llu(+%llu) dropped_blocks=%llu(+%llu) emit_fail=%llu table_full=%llu rss=%s swap=%s majflt=%llu(+%llu)\n", (unsigned long long)(t - tstart), cfg.jit_bytes >> 20, (double)hv_vm_machine()->jit.used * 4 / (1 << 20),
+                       (unsigned long long)js->block_flushes, (unsigned long long)(js->block_flushes - pf), (unsigned long long)js->flush_full, (unsigned long long)(js->flush_full - pfull), (unsigned long long)js->flushed_blocks, (unsigned long long)(js->flushed_blocks - pdrop),
+                       (unsigned long long)js->flush_emit_fail, (unsigned long long)js->flush_table_full, jr, jw, (unsigned long long)maj, (unsigned long long)(maj - pmaj));
+                pf = js->block_flushes; pfull = js->flush_full; pdrop = js->flushed_blocks; pmaj = maj;
             }
             fflush(stdout); nmem++; next_mem = t + 10.0;
         }

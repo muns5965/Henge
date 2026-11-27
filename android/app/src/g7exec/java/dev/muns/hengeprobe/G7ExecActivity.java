@@ -462,6 +462,10 @@ public class G7ExecActivity extends Activity {
         final android.widget.Spinner usbSp = new android.widget.Spinner(this); usbSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, um));
         final android.widget.Spinner limSp = new android.widget.Spinner(this); limSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, lm));
         limSp.setSelection(0);   // 3 minutes: the length the GPU tests use (index into G7CloneBoot.RUN_SECONDS_CHOICES)
+        final String[] jm = new String[G7CloneBoot.JIT_MB_CHOICES.length];
+        for (int i = 0; i < jm.length; i++) jm[i] = G7CloneBoot.JIT_MB_CHOICES[i] + " MiB" + (G7CloneBoot.JIT_MB_CHOICES[i] == G7CloneBoot.JIT_MB_DEFAULT ? " (기본)" : "");
+        final android.widget.Spinner jitSp = new android.widget.Spinner(this); jitSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, jm));
+        jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)));   // default 64 (index 0); the test marker file jit_mb only preselects, anything else falls back to 64; never remembered by the app
         final android.widget.RadioGroup gw = new android.widget.RadioGroup(this); gw.setOrientation(android.widget.RadioGroup.HORIZONTAL);
         final String[] gwl = {"끔", "즉시", "지연"};
         for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); gw.addView(rb); }
@@ -475,6 +479,7 @@ public class G7ExecActivity extends Activity {
         final CheckBox pat = shortBox("화면 시험 패턴");
         final CheckBox nvp = shortBox("NVRAM 사전 설정 auto-boot=true (실험, 기본 꺼짐)");   // never remembered: unchecked every time the dialog opens
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
+        final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초)"); fb0c.setChecked(true);   // default ON (cost measured tiny); not remembered
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
         final CheckBox cdc = shortBox("Render Replay 캡처 (LAGFX_ARM64_DUMP_DATA=1)"); cdc.setChecked(cdcWas);
@@ -485,10 +490,10 @@ public class G7ExecActivity extends Activity {
         dd.setOnCheckedChangeListener((b, c) -> ddShow.run()); ddShow.run();
         final CheckBox ok = shortBox("복제본 디스크·AUX 쓰기 동의(원본은 쓰지 않음)");
         final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(pad * 2, pad, pad * 2, pad);
-        box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp));
+        box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp)); box.addView(labelRow("JIT 크기", jitSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(fb0c); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -509,6 +514,8 @@ public class G7ExecActivity extends Activity {
                     G7Storage.setPreseedMarker(privDir, nvp.isChecked());   // "0" when unchecked, so an old marker can never carry over
                     G7CloneBoot.gpuExec = gx.isChecked();
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
+                    G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES[Math.max(0, Math.min(G7CloneBoot.JIT_MB_CHOICES.length - 1, jitSp.getSelectedItemPosition()))];
+                    G7CloneBoot.fb0 = fb0c.isChecked();
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();
                     G7CloneBoot.drawDiag = dd.isChecked();
@@ -531,6 +538,8 @@ public class G7ExecActivity extends Activity {
     /** Boot-dialog options that are remembered between starts (SharedPreferences, private to the app). Every default is OFF. */
     static final String OPTS_PREFS = "g7exec_boot_options", KEY_GPU_EXEC = "gpu_exec", KEY_REPLAY = "render_replay", KEY_DRAW_DIAG = "draw_diag";   // the write consent is NOT here: it is ticked by hand for every run
 
+    /** The activity takes no Intent input (a source rule), so the test hook is a marker file; see G7CloneBoot.readJitMarker. */
+    static int jitIndexFor(int mb) { for (int i = 0; i < G7CloneBoot.JIT_MB_CHOICES.length; i++) if (G7CloneBoot.JIT_MB_CHOICES[i] == mb) return i; return 0; }
     private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
     private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }
     private LinearLayout labelRow(String label, View field) {

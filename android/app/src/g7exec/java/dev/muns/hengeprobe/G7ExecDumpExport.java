@@ -121,6 +121,8 @@ final class G7ExecDumpExport {
         String runHenge = info(run.dir, "henge_commit"), runLagfx = info(run.dir, "lagfx_commit");
         m.append("run_henge_commit=").append(runHenge == null ? "UNKNOWN" : runHenge).append("   (the build that PRODUCED this run, from run-info.txt)\n");
         m.append("run_libapplegfx_vulkan_commit=").append(runLagfx == null ? "UNKNOWN" : runLagfx).append('\n');
+        String runJit = info(run.dir, "jit_mb");
+        m.append("run_jit_mb=").append(runJit == null ? "UNKNOWN (older run: the runner default 64 was always passed)" : runJit).append('\n');
         m.append("exporter_henge_commit=").append(hengeSha).append("   (the build that made this ZIP; may differ from the run's)\n");
         m.append("exporter_libapplegfx_vulkan_commit=").append(lagfxSha).append('\n');
         m.append("app_version=").append(appVersion).append('\n');

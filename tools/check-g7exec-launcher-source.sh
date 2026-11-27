@@ -140,6 +140,28 @@ l1=$(grep -n 'g7nv_preseed(ad' $R | head -1 | cut -d: -f1); l2=$(grep -n 'hv_dis
 grep -q 'if (!src) return NULL;' $N || bad "$N: with nothing requested the pre-seed must stay off"
 grep -q 'NO valid v3' $N && grep -q 'NOTHING WRITTEN' $N || bad "$N: no store found must write nothing and say so"
 [ "$(grep -c 'g7nv_summary(&g_nv)' $R)" = 1 ] || bad "$R: one g7-nvram summary at stop"
+# JIT size (research/g7-hjit2): the runner gets --jit-mb only from the validated set {64,128,256,384,512,768}; default 64 (what every earlier build passed); the spinner offers exactly that set, selects index 0 (64) unless the Intent extra names a member, and is never remembered
+grep -q 'JIT_MB_CHOICES = {64, 128, 256, 384, 512, 768};' "$CB" || bad "G7CloneBoot.JIT_MB_CHOICES must be exactly {64, 128, 256, 384, 512, 768}"
+grep -q 'JIT_MB_DEFAULT = 64;' "$CB" && grep -q 'static volatile int jitMb = JIT_MB_DEFAULT;' "$CB" || bad "the JIT size default must be 64"
+grep -q 'if (!validJitMb(jit)) return new Start(false' "$CB" || bad "G7CloneBoot must refuse a JIT size outside the set before anything starts"
+grep -q 'cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));' "$CB" && ! grep -qE 'cmd\.add\("--jit-mb"\); cmd\.add\("[0-9]' "$CB" || bad "--jit-mb must come only from the validated value, never a literal"
+[ "$(grep -c '"--jit-mb"' "$CB")" = 2 ] || bad "G7CloneBoot names --jit-mb in exactly two places (command, log-note lookup)"
+grep -q 'jit_mb=' "$CB" && grep -q 'g7-jit-config: jit_mb=' "$CB" || bad "the chosen JIT size must be written to the run log header and run-info.txt"
+grep -q 'run_jit_mb=' $XJ/G7ExecDumpExport.java || bad "the export manifest must record the run's JIT size"
+grep -q 'new android.widget.Spinner(this); jitSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, jm))' "$A" || bad "the start dialog must have the JIT size spinner built from G7CloneBoot.JIT_MB_CHOICES"
+grep -q 'String\[\] jm = new String\[G7CloneBoot.JIT_MB_CHOICES.length\]' "$A" || bad "the JIT spinner values must come from JIT_MB_CHOICES (no values of its own)"
+grep -q 'G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES\[' "$A" || bad "the dialog must set jitMb only to a member of JIT_MB_CHOICES"
+[ "$(grep -c 'G7CloneBoot.jitMb' "$A")" = 1 ] || bad "jitMb is set in exactly one place in the activity"
+grep -q 'jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)))' "$A" && grep -q 'return validJitMb(v) ? v : JIT_MB_DEFAULT;' "$CB" || bad "the test marker may only preselect the spinner, and an unknown value must fall back to 64 (no Intent input is allowed)"
+x=$(grep -nE 'jitSp.*(KEY_|opts\.)' "$A"); [ -z "$x" ] || { bad "the JIT size must not be remembered between starts:"; echo "$x"; }
+# F1 early framebuffer observation: default ON in the dialog (not remembered), always an explicit G7_FB0 value, the runner side only starts it on G7_FB0=1
+grep -q 'static volatile boolean fb0 = true;' "$CB" && grep -q 'env.put("G7_FB0", fb0 ? "1" : "0")' "$CB" || bad "G7CloneBoot: fb0 must default to ON and always send an explicit G7_FB0 value"
+grep -q 'fb0c.setChecked(true)' "$A" && ! grep -qE 'fb0c.*(KEY_|opts\.)' "$A" || bad "the fb0 checkbox must default to checked and must not be remembered"
+grep -q 'if (!e || strcmp(e, "1") != 0) return;' host/vm.c && [ "$(grep -c 'g7_fb0_maybe_start();' host/vm.c)" = 1 ] || bad "host/vm.c: the g7-fb0 sampler must start only on G7_FB0=1, from exactly one place"
+grep -q 'HV_FB0_MAX_DUMPS 3' host/g7_fb0.h && grep -q 'HV_FB0_PERIOD_MS 250' host/g7_fb0.h && grep -q 'HV_FB0_SECONDS 60' host/g7_fb0.h || bad "host/g7_fb0.h: the sampler's bounds (250 ms, 60 s, 3 dumps) changed"
+# the engine stats line and the runner's 10 s window line carry the JIT region size
+grep -q 'of %.0f MB jit' core/dispatch.c || bad "core/dispatch.c: the stats line must show the JIT region size"
+grep -q 'g7-jit: t=' host/ui_runner_vm_clone.c || bad "host/ui_runner_vm_clone.c: the g7-jit window line is missing"
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

@@ -2018,6 +2018,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 }
 
 uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /* hot words (no pool) of this thread's last block */
+/* Words the last block of this thread takes in the region: hot + padding + cold (with its pool), no chunk slack. Valid after hv_translate_emit, until the next one. */
+uint32_t hv_translate_last_place_words(void) { return E.nhot + (hv_knob[HV_K_TEST1] & ~1u) + E.ncold; }
 
 /* A B, B.cond, CBZ or CBNZ now going off words away, if it reaches. 1 if it does. */
 int hv_branch_retarget(uint32_t *w, int64_t off) {

@@ -39,6 +39,8 @@ int hv_knob_set(HvMachine *m, const char *name, int value) {
     for (int i = 0; i < HV_K_COUNT; i++)
         if (!strcmp(name, hv_knob_names[i])) {
             hv_knob[i] = value;
+            __atomic_add_fetch(&m->stats.flush_req_other, 1, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&m->stats.flush_requests, 1, __ATOMIC_RELAXED);
             __atomic_store_n(&m->flush_pending, 1, __ATOMIC_SEQ_CST);
             hv_machine_kick_all(m);
             return 1;

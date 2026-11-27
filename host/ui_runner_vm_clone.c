@@ -433,13 +433,21 @@ int main(int argc, char **argv) {
                 size_t gn = hv_vm_gfx_diag(gl, sizeof gl); if (gn) fputs(gl, stdout);
             }
             {   /* g7-jit (research/g7-hjit2): the JIT region size and the whole-flush counters of this 10 s window next to the process's rss/swap/major faults, so a JIT-size A/B reads from one line. Only numbers the loop already has (HvG7Mem above, the engine's counters) plus one getrusage(); no extra sampling. Format: docs/g7-analysis-notes.md. */
-                static uint64_t pf = 0, pfull = 0, pdrop = 0, pmaj = 0; struct rusage ru; uint64_t maj = getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t)ru.ru_majflt : 0;
+                static uint64_t pf = 0, pfull = 0, pdrop = 0, pmaj = 0, preq = 0; struct rusage ru; uint64_t maj = getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t)ru.ru_majflt : 0;
                 const HvStats *js = &hv_vm_machine()->stats;
                 char jr[24], jw[24]; hv_g7m_mib(jr, sizeof jr, m.rss_kb); hv_g7m_mib(jw, sizeof jw, m.swap_kb);
-                printf("g7-jit: t=%llus jit_mb=%zu used_mb=%.0f flushes=%llu(+%llu) full=%llu(+%llu) dropped_blocks=%llu(+%llu) emit_fail=%llu table_full=%llu rss=%s swap=%s majflt=%llu(+%llu)\n", (unsigned long long)(t - tstart), cfg.jit_bytes >> 20, (double)hv_vm_machine()->jit.used * 4 / (1 << 20),
+                /* integ7: engine counters appended after the old fields (parsers of the old prefix keep working). req = all whole-flush requests, by cause: region = code region full, table = block table full, emitfail = a block that could not be emitted, pend_lookup/pend_publish = a flush was already pending when a block was looked up / about to be published, other = hv_knob_set / HV_IC_FLUSH. dup = blocks made twice (another CPU published the key first): count, MiB of code placed, seconds of emit time. ef_region/ef_det/ef_exh = emit failures: region full / cause belongs to the block / blocks given up after the flush limit. first_s / retrans_s = emit seconds of published blocks not seen / seen before (hashed bitmaps, approximate); they and dup are kept because stats_interval is set above. */
+                printf("g7-jit: t=%llus jit_mb=%zu used_mb=%.0f flushes=%llu(+%llu) full=%llu(+%llu) dropped_blocks=%llu(+%llu) emit_fail=%llu table_full=%llu rss=%s swap=%s majflt=%llu(+%llu)"
+                       " req=%llu(+%llu) req_region=%llu req_table=%llu req_emitfail=%llu req_pend_lookup=%llu req_pend_publish=%llu req_other=%llu req_stw=%llu"
+                       " dup=%llu dup_mb=%.1f dup_s=%.2f ef_region=%llu ef_det=%llu ef_exh=%llu first_s=%.2f retrans_s=%.2f\n", (unsigned long long)(t - tstart), cfg.jit_bytes >> 20, (double)hv_vm_machine()->jit.used * 4 / (1 << 20),
                        (unsigned long long)js->block_flushes, (unsigned long long)(js->block_flushes - pf), (unsigned long long)js->flush_full, (unsigned long long)(js->flush_full - pfull), (unsigned long long)js->flushed_blocks, (unsigned long long)(js->flushed_blocks - pdrop),
-                       (unsigned long long)js->flush_emit_fail, (unsigned long long)js->flush_table_full, jr, jw, (unsigned long long)maj, (unsigned long long)(maj - pmaj));
-                pf = js->block_flushes; pfull = js->flush_full; pdrop = js->flushed_blocks; pmaj = maj;
+                       (unsigned long long)js->flush_emit_fail, (unsigned long long)js->flush_table_full, jr, jw, (unsigned long long)maj, (unsigned long long)(maj - pmaj),
+                       (unsigned long long)js->flush_requests, (unsigned long long)(js->flush_requests - preq), (unsigned long long)js->flush_code_region_full, (unsigned long long)js->flush_table_full, (unsigned long long)js->flush_emit_fail,
+                       (unsigned long long)js->flush_pending_at_lookup, (unsigned long long)js->flush_pending_at_publish, (unsigned long long)js->flush_req_other, (unsigned long long)js->flush_req_during_stw,
+                       (unsigned long long)js->duplicate_translation_count, (double)js->duplicate_translation_words * 4 / (1 << 20), (double)js->duplicate_translation_ticks / 24e6,
+                       (unsigned long long)js->emit_fail_region, (unsigned long long)js->emit_fail_deterministic, (unsigned long long)js->emit_fail_retry_exhausted,
+                       (double)js->first_translation_ticks / 24e6, (double)js->retranslation_ticks / 24e6);
+                pf = js->block_flushes; preq = js->flush_requests; pfull = js->flush_full; pdrop = js->flushed_blocks; pmaj = maj;
             }
             fflush(stdout); nmem++; next_mem = t + 10.0;
         }

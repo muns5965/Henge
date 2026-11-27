@@ -178,6 +178,7 @@ grep -q 'adapter\|setAdapter(new android.widget.ArrayAdapter<>(this, android.R.l
 # the engine stats line and the runner's 10 s window line carry the JIT region size
 grep -q 'of %.0f MB jit' core/dispatch.c || bad "core/dispatch.c: the stats line must show the JIT region size"
 grep -q 'g7-jit: t=' host/ui_runner_vm_clone.c || bad "host/ui_runner_vm_clone.c: the g7-jit window line is missing"
+for f in ' req=%llu' ' dup=%llu' ' ef_det=%llu' ' first_s=%.2f'; do grep -q -- "$f" host/ui_runner_vm_clone.c || bad "host/ui_runner_vm_clone.c: the g7-jit line lost the integ7 engine counters ($f)"; done
 # the execution manifest overlay: one activity, only the activity of this build
 [ "$(grep -c '<activity' $X/AndroidManifest.xml)" = 1 ] || bad "the g7exec manifest declares exactly one activity"
 # the general manifest does not mention it

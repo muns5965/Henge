@@ -58,6 +58,23 @@ int main(void) {
     check("invalid line says valid=0 why=size", strstr(line, "valid=0 why=size") != NULL);
     q[8] = 1280; q[10] = 16; check("depth 16 -> depth", strcmp(hv_fbp_video_check(q, 0x70000000ull, 0x10000000ull), "depth") == 0);
     q[10] = 32; q[5] = 0x10; check("base outside RAM -> baseaddr", strcmp(hv_fbp_video_check(q, 0x70000000ull, 0x10000000ull), "baseaddr") == 0);
+    {   /* the command-line line: synthetic boot_args page with the XNU boot.h revision-2 offsets */
+        static uint8_t page[0x1000]; char cl[900]; memset(page, 0, sizeof page);
+        uint16_t r = 3, v = 2; uint32_t mt = 0x20, dtl = 0x12345; uint64_t dtp = 0xfffffe0012345000ull;
+        memcpy(page, &r, 2); memcpy(page + 2, &v, 2); memcpy(page + 88, &mt, 4); memcpy(page + 96, &dtp, 8); memcpy(page + 104, &dtl, 4);
+        memcpy(page + HV_FBP_CMDLINE_OFF, "rd=md0 -v\x01 debug=0x14e", 22);
+        hv_fbp_cmdline_line(cl, sizeof cl, page, sizeof page);
+        check("cmdline line: text, length, machineType, device-tree words, rev/ver, INFER", strstr(cl, "cmdline=\"rd=md0 -v? debug=0x14e\"") && strstr(cl, "cmdline_len=22") && strstr(cl, "terminated=1") && strstr(cl, "nonprintable=1") &&
+              strstr(cl, "machineType=32") && strstr(cl, "deviceTreeP=0xfffffe0012345000") && strstr(cl, "deviceTreeLength=74565") && strstr(cl, "rev=3 ver=2") && strstr(cl, "INFER"));
+        memset(page + HV_FBP_CMDLINE_OFF, 'A', sizeof page - HV_FBP_CMDLINE_OFF);
+        hv_fbp_cmdline_line(cl, sizeof cl, page, sizeof page);
+        check("unterminated long text: bounded to 1024 (BOOT_LINE_LENGTH) and the page, shown capped, terminated=0, line fits", strstr(cl, "terminated=0") && strstr(cl, "shown=240") && strlen(cl) < 700 && strstr(cl, "cmdline_len=1024"));
+        memset(page + HV_FBP_CMDLINE_OFF, 0, 64);
+        hv_fbp_cmdline_line(cl, sizeof cl, page, sizeof page);
+        check("empty command line is reported as empty", strstr(cl, "cmdline_len=0") && strstr(cl, "cmdline=\"\""));
+        hv_fbp_cmdline_line(cl, sizeof cl, page, 100);
+        check("page shorter than the offset is refused in words, nothing read past it", strstr(cl, "page too short") != NULL);
+    }
     printf(fails ? "G7FBPROBE FAILED\n" : "G7FBPROBE OK\n");
     return fails != 0;
 }

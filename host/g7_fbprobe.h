@@ -139,4 +139,29 @@ static inline int hv_fbp_boot_args_line(char *line, size_t cap, uint64_t off, co
              why[0] == 'o' && why[1] == 'k', why, (unsigned long long)ram_base, (unsigned long long)ram_size);
     return 1;
 }
+
+/* The kernel command line and the device-tree words of a boot_args page, as one log line (read-only; page = the boot_args page, page_len >= 0x1000). Offsets are the arm64 struct of XNU's
+   pexpert/pexpert/arm64/boot.h (Apple open source, APSL 2.0), revision 2: Revision u16 @0, Version u16 @2, virtBase @8, physBase @16, memSize @24, topOfKernelData @32, Video (6 x u64) @40,
+   machineType u32 @88, deviceTreeP u64 @96, deviceTreeLength u32 @104, CommandLine[] @108 (BOOT_LINE_LENGTH, 1024 for the simulator build). The Video words at @40 are the ones this file already
+   uses; the guest here reports revision 3, whose tail layout is NOT established, so the line says INFER and shows how much of the text is printable (a wrong offset shows as 0 or as noise).
+   Printable ASCII only (anything else is shown as '?'); at most HV_FBP_CMDLINE_SHOW characters. Returns 1. */
+#define HV_FBP_CMDLINE_OFF 108u
+#define HV_FBP_CMDLINE_MAX 1024u
+#define HV_FBP_CMDLINE_SHOW 240u
+static inline int hv_fbp_cmdline_line(char *line, size_t cap, const uint8_t *page, size_t page_len) {
+    uint32_t mt = 0, dtl = 0; uint64_t dtp = 0; uint16_t rev = 0, ver = 0;
+    if (page_len < HV_FBP_CMDLINE_OFF + 1) { snprintf(line, cap, "g7-boot-fb: boot_args cmdline: page too short (%zu bytes)", page_len); return 1; }
+    memcpy(&rev, page, 2); memcpy(&ver, page + 2, 2); memcpy(&mt, page + 88, 4); memcpy(&dtp, page + 96, 8); memcpy(&dtl, page + 104, 4);
+    size_t max = page_len - HV_FBP_CMDLINE_OFF; if (max > HV_FBP_CMDLINE_MAX) max = HV_FBP_CMDLINE_MAX;
+    size_t n = 0; while (n < max && page[HV_FBP_CMDLINE_OFF + n]) n++;
+    int terminated = n < max;
+    size_t nonprint = 0; char txt[HV_FBP_CMDLINE_SHOW + 1]; size_t shown = n < HV_FBP_CMDLINE_SHOW ? n : HV_FBP_CMDLINE_SHOW;
+    for (size_t i = 0; i < n; i++) { uint8_t c = page[HV_FBP_CMDLINE_OFF + i]; if (c < 0x20 || c >= 0x7f) nonprint++; }
+    for (size_t i = 0; i < shown; i++) { uint8_t c = page[HV_FBP_CMDLINE_OFF + i]; txt[i] = (c < 0x20 || c >= 0x7f) ? '?' : (char)c; }
+    txt[shown] = 0;
+    snprintf(line, cap, "g7-boot-fb: boot_args tail (INFER: offsets 88/96/104/108 are XNU boot.h revision 2; this page says rev=%u ver=%u) machineType=%u deviceTreeP=%#llx deviceTreeLength=%u "
+             "cmdline_len=%zu terminated=%d nonprintable=%zu shown=%zu cmdline=\"%s\"",
+             (unsigned)rev, (unsigned)ver, (unsigned)mt, (unsigned long long)dtp, (unsigned)dtl, n, terminated, nonprint, shown, txt);
+    return 1;
+}
 #endif

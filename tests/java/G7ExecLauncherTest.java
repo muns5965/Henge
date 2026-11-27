@@ -255,14 +255,62 @@ public class G7ExecLauncherTest {
         s = G7ExecLauncher.startWith(spawner0(stubborn), ROMS, true, lib, ext, priv, files9, true, SHA);
         s.run.cancel();
         for (int i = 0; i < 300 && !s.run.killUnconfirmed(); i++) Thread.sleep(20);
-        check("a process that survives SIGKILL is reported as not confirmed ended; the run is NOT finished", killed.get() && s.run.killSent() && s.run.killUnconfirmed() && !s.run.finished());
+        check("a process that survives SIGKILL is reported as not confirmed ended; the run is NOT finished", killed.get() && s.run.killRequested() && s.run.killCalled() && !s.run.killConfirmed() && s.run.killUnconfirmed() && !s.run.finished());
         String l9 = G7ExecLauncher.readLogTail(files9, 100000);
-        check("...the log has g7-kill and g7-kill-unconfirmed and no g7-exit", l9.contains("g7-kill:") && l9.contains("g7-kill-unconfirmed:") && !l9.contains("g7-exit:"));
+        check("...the log has the request, the call that returned and the unconfirmed end, in that order, no 'sent'/'confirmed' wording and no g7-exit", l9.contains("g7-kill: SIGKILL requested after") && l9.contains("g7-kill: destroyForcibly returned") && l9.contains("g7-kill: process exit unconfirmed")
+              && l9.indexOf("SIGKILL requested") < l9.indexOf("destroyForcibly returned") && l9.indexOf("destroyForcibly returned") < l9.indexOf("process exit unconfirmed") && !l9.contains("g7-kill-unconfirmed") && !l9.contains("SIGKILL sent") && !l9.contains("exit confirmed") && !l9.contains("g7-exit:"));
         check("...the screen tells the user what to do", G7ExecLauncher.summary(files9).contains("종료가 확인되지 않음") && G7ExecLauncher.summary(files9).contains("재시작"));
 
         unkillable.set(false);   // the process finally goes away
         for (int i = 0; i < 200 && !s.run.finished(); i++) Thread.sleep(20);
         check("when the process finally ends the run finishes with the kill exit code", s.run.finished() && s.run.exitCode() == 137 && G7ExecLauncher.readLogTail(files9, 100000).contains("g7-exit: 137"));
+
+        // 2b) integ7b: names match actions. Confirmed path, the call that throws, and an injected delay inside destroyForcibly() with a poller that reads the log the moment each flag turns true (log line must already be there).
+        for (int variant = 0; variant < 3; variant++) {   // 0: dies promptly after the kill, 1: destroyForcibly throws, 2: destroyForcibly is slow (injected delay) and the process survives
+            final int vv = variant;
+            final java.util.concurrent.atomic.AtomicBoolean kreq = new java.util.concurrent.atomic.AtomicBoolean(false), dead = new java.util.concurrent.atomic.AtomicBoolean(false);
+            Process pr = new Process() {
+                @Override public OutputStream getOutputStream() { return new java.io.ByteArrayOutputStream(); }
+                @Override public InputStream getInputStream() { return new InputStream() { @Override public int read() { while (!dead.get()) { try { Thread.sleep(20); } catch (InterruptedException e) { return -1; } } return -1; } @Override public int read(byte[] b, int o, int l) { return read(); } }; }
+                @Override public InputStream getErrorStream() { return new ByteArrayInputStream(new byte[0]); }
+                @Override public int waitFor() { while (!dead.get()) { try { Thread.sleep(20); } catch (InterruptedException e) { return -1; } } return 137; }
+                @Override public boolean waitFor(long t, TimeUnit u) { try { u.sleep(Math.min(t, 1)); } catch (InterruptedException e) { return false; } return dead.get(); }
+                @Override public int exitValue() { return 137; }
+                @Override public void destroy() { }
+                @Override public Process destroyForcibly() {
+                    kreq.set(true);
+                    if (vv == 1) throw new IllegalStateException("injected");
+                    if (vv == 2) { try { Thread.sleep(400); } catch (InterruptedException ignored) { } } else dead.set(true);
+                    return this;
+                }
+            };
+            File filesK = Files.createTempDirectory("filesK" + variant).toFile();
+            G7ExecLauncher.CANCEL_GRACE_SECONDS_FOR_TEST = 1; G7ExecLauncher.forceConfirmSeconds = 1;
+            final G7ExecLauncher.Start ks = G7ExecLauncher.startWith(spawner0(pr), ROMS, true, lib, ext, priv, filesK, true, SHA);
+            if (!ks.started) System.out.println("INFO kill variant " + variant + " did not start: " + ks.message);
+            final boolean[] order = {true, true, true, true}; final java.util.concurrent.atomic.AtomicBoolean stopPoll = new java.util.concurrent.atomic.AtomicBoolean(false);
+            Thread poll = new Thread(() -> {
+                boolean r = false, c = false, ok = false, un = false;
+                while (!stopPoll.get()) {
+                    if (!r && ks.run.killRequested()) { r = true; String l = G7ExecLauncher.readLogTail(filesK, 100000); order[0] = l.contains("g7-kill: SIGKILL requested"); }
+                    if (!c && ks.run.killCalled()) { c = true; String l = G7ExecLauncher.readLogTail(filesK, 100000); order[1] = l.contains("g7-kill: destroyForcibly returned"); }
+                    if (!ok && ks.run.killConfirmed()) { ok = true; String l = G7ExecLauncher.readLogTail(filesK, 100000); order[2] = l.contains("g7-kill: process exit confirmed"); }
+                    if (!un && ks.run.killUnconfirmed()) { un = true; String l = G7ExecLauncher.readLogTail(filesK, 100000); order[3] = l.contains("g7-kill: process exit unconfirmed"); }
+                    try { Thread.sleep(1); } catch (InterruptedException e) { return; }
+                }
+            });
+            poll.start();
+            ks.run.cancel();
+            for (int i = 0; i < 400 && !(ks.run.killConfirmed() || ks.run.killUnconfirmed()); i++) Thread.sleep(10);
+            if (variant == 2) { Thread.sleep(100); dead.set(true); }   // let the stubborn one go so the run ends
+            for (int i = 0; i < 200 && !ks.run.finished(); i++) Thread.sleep(20);
+            stopPoll.set(true); poll.join();
+            String lk = G7ExecLauncher.readLogTail(filesK, 100000);
+            if (variant == 0) check("kill variant 0 (process ends after the kill): requested, call returned, exit confirmed; not unconfirmed; each line was already in the log when its flag was seen", ks.run.killRequested() && ks.run.killCalled() && ks.run.killConfirmed() && !ks.run.killUnconfirmed() && order[0] && order[1] && order[2] && lk.contains("g7-kill: process exit confirmed") && !lk.contains("exit unconfirmed"));
+            if (variant == 1) check("kill variant 1 (destroyForcibly throws): requested is set, killCalled is NOT, and the log says the call threw instead of 'returned'/'sent'", ks.run.killRequested() && !ks.run.killCalled() && lk.contains("g7-kill: destroyForcibly threw IllegalStateException") && !lk.contains("destroyForcibly returned") && order[0]);
+            if (variant == 1) { dead.set(true); for (int i = 0; i < 200 && !ks.run.finished(); i++) Thread.sleep(20); }   // release it so the next variant may start (one live run at a time)
+            if (variant == 2) check("kill variant 2 (slow destroyForcibly, process survives the wait): flags in order, unconfirmed (never 'confirmed'), lines present when each flag was observed", ks.run.killRequested() && ks.run.killCalled() && !ks.run.killConfirmed() && ks.run.killUnconfirmed() && order[0] && order[1] && order[3] && lk.indexOf("SIGKILL requested") < lk.indexOf("destroyForcibly returned") && lk.indexOf("destroyForcibly returned") < lk.indexOf("exit unconfirmed"));
+        }
 
         // 3) process state letter from /proc/<pid>/status (read only; anything else is '?')
         File proc2 = Files.createTempDirectory("proc2").toFile();

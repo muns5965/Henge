@@ -122,7 +122,7 @@ public final class G7ExecLauncher {
         private final StringBuilder tail = new StringBuilder();
         private volatile int exit = Integer.MIN_VALUE;
         private volatile boolean cancelAsked;
-        private volatile boolean killSent, killUnconfirmed, logIncomplete;
+        private volatile boolean killRequested, killCalled, killConfirmed, killUnconfirmed, logIncomplete;
         final Object logLock = new Object();
         private OutputStream logOut;          // guarded by logLock; null once closed
         private long written; private boolean truncated; private String lastResult = "";   // guarded by logLock
@@ -132,7 +132,12 @@ public final class G7ExecLauncher {
         public String logName() { return logName; }
         public boolean finished() { return exit != Integer.MIN_VALUE; }
         public int exitCode() { return exit; }
-        public boolean killSent() { return killSent; }
+        /** SIGKILL was requested: the app is about to call destroyForcibly() (not yet a statement that it was sent or that the process ended). */
+        public boolean killRequested() { return killRequested; }
+        /** destroyForcibly() returned without an exception. It says the request was handed to the system, nothing about the process having ended. */
+        public boolean killCalled() { return killCalled; }
+        /** The process was seen to end within the wait after the kill. */
+        public boolean killConfirmed() { return killConfirmed; }
         public boolean killUnconfirmed() { return killUnconfirmed; }
         public boolean logIncomplete() { return logIncomplete; }
         public synchronized String tail() { return tail.toString(); }
@@ -151,6 +156,17 @@ public final class G7ExecLauncher {
                 if (k < o.length) truncated = true;
             }
         }
+        /** The process has ended and a kill had been requested. Called by the cancel thread (the wait succeeded) and by the watcher before it writes g7-exit and closes the log (otherwise the process
+         *  ending would close the log before the cancel thread could write its line). The line goes in before killConfirmed is raised. An end seen after the wait had already reported "unconfirmed" is logged as late and does not set killConfirmed. */
+        void killEndSeen() {
+            synchronized (logLock) {
+                if (!killRequested || killConfirmed) return;
+                if (killUnconfirmed) { if (!killLateNoted) { killLateNoted = true; note("g7-kill: process exit seen late, after the wait had already reported it unconfirmed"); } return; }
+                note("g7-kill: process exit confirmed");
+                killConfirmed = true;
+            }
+        }
+        private boolean killLateNoted;   // guarded by logLock
         /** SIGTERM first (the runner cancels the restore and keeps the pair in_progress); SIGKILL after CANCEL_GRACE_SECONDS, then the end is checked and the outcome is said plainly. Safe to call twice. */
         public void cancel() {
             if (cancelAsked || finished()) return;
@@ -160,13 +176,22 @@ public final class G7ExecLauncher {
                 boolean ended;
                 try { ended = proc.waitFor(graceSeconds(), TimeUnit.SECONDS); } catch (InterruptedException e) { ended = false; }
                 if (ended) return;
-                // The log line goes in BEFORE the flag is raised: whoever sees the flag (the screen, a test) can then rely on the line being in the log (research/g7-hjit3: the other order let a poller read the log in between).
-                note("g7-kill: SIGKILL sent after " + graceSeconds() + " s without an end");
-                killSent = true;
-                proc.destroyForcibly();
+                // Each name says what was done at that point, and each log line goes in BEFORE its flag is raised: whoever sees a flag (the screen, a test) can then rely on its line being in the log (research/g7-hjit3: the other order let a poller read the log in between).
+                note("g7-kill: SIGKILL requested after " + graceSeconds() + " s without an end");   // before the call
+                killRequested = true;
+                try {
+                    proc.destroyForcibly();
+                    note("g7-kill: destroyForcibly returned");                                      // after the call, no exception
+                    killCalled = true;
+                } catch (RuntimeException e) {
+                    note("g7-kill: destroyForcibly threw " + e.getClass().getSimpleName() + " (the process may not have been signalled)");
+                }
                 boolean gone;
                 try { gone = proc.waitFor(forceConfirmSeconds, TimeUnit.SECONDS); } catch (InterruptedException e) { gone = false; }
-                if (!gone) { note("g7-kill-unconfirmed: the process did not end within " + forceConfirmSeconds + " s after SIGKILL (no g7-exit is written for it)"); killUnconfirmed = true; }
+                if (gone) killEndSeen();
+                else synchronized (logLock) {   // under the log lock: the watcher may see the end at the same moment
+                    if (!killConfirmed) { note("g7-kill: process exit unconfirmed: the process did not end within " + forceConfirmSeconds + " s after the SIGKILL request (no g7-exit is written for it)"); killUnconfirmed = true; }
+                }
             });
             t.setDaemon(true);
             t.start();
@@ -325,6 +350,7 @@ public final class G7ExecLauncher {
             final boolean complete = !reader.isAlive();
             synchronized (run.logLock) {
                 run.logIncomplete = !complete;
+                run.killEndSeen();   // a kill was requested and the process is gone: the line goes in before g7-exit
                 try {
                     if (run.logOut != null) {
                         if (run.truncated) {
@@ -465,11 +491,11 @@ public final class G7ExecLauncher {
         if (r != null && !r.finished()) {
             s.append("상태: 실행 중");
             if (r.killUnconfirmed) s.append(" (강제 종료(SIGKILL)를 보냈으나 종료가 확인되지 않음 — 앱을 강제 종료하고, 그래도 남으면 휴대폰을 재시작하세요)");
-            else if (r.killSent) s.append(" (취소 후 강제 종료(SIGKILL)를 보냄 — 종료 확인 중)");
+            else if (r.killRequested) s.append(" (취소 후 강제 종료(SIGKILL)를 요청함 — 종료 확인 중)");
             else if (r.cancelAsked) s.append(" (취소 요청됨 — 아직 끝나지 않음)");
         } else if (r != null) {
             s.append("상태: 종료 — ").append(meaning(r.exitCode()));
-            if (r.killSent) s.append("\n강제 종료(SIGKILL)로 끝났습니다. 정상 취소가 아니며 g7-result가 없을 수 있습니다.");
+            if (r.killRequested) s.append("\n강제 종료(SIGKILL) 요청 뒤에 끝났습니다. 정상 취소가 아니며 g7-result가 없을 수 있습니다.");
             if (r.logIncomplete) s.append("\n로그 수집 미완료: 프로세스가 끝난 뒤에도 출력 파이프가 닫히지 않았습니다.");
         }
         else if (f == null) return "상태: 실행 기록 없음" + ps;

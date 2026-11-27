@@ -151,6 +151,26 @@ public class G7CloneBootTest {
           Files.write(mp.toPath(), "256 junk".getBytes()); check("marker with junk falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
           Files.write(mp.toPath(), "0000000000000000000256".getBytes()); check("marker over 16 bytes falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
           Files.delete(mp.toPath()); }
+        // JIT exact stats (research/g7-hjit3): default OFF, G7_STATS_EXACT is absent when OFF (an inherited value is removed), only the one validated value is passed when ON, logged in the gpu note, run-info and the log header
+        { check("exact stats default OFF and the only value is 2048", !G7CloneBoot.statsExact && "2048".equals(G7CloneBoot.STATS_EXACT_VALUE));
+          java.util.List<String> xc = java.util.Arrays.asList("/x/libg7cloneboot.so", "--shm", files.getPath() + "/g7_cloneboot.shm", "--rom", "/r", "--jit-mb", "256");
+          java.util.Map<String, String> x0 = new java.util.HashMap<>(); x0.put("G7_STATS_EXACT", "999999"); x0.put("G7_STATS_EXACT_PEAK_MIB", "1"); x0.put("HV_STATS_EXACT", "1"); G7CloneBoot.lagfxEnv(x0, xc);
+          check("exact OFF: no G7_STATS_EXACT / PEAK / HV_ name in the environment (inherited ones removed), the note says OFF", !x0.containsKey("G7_STATS_EXACT") && !x0.containsKey("G7_STATS_EXACT_PEAK_MIB") && !x0.containsKey("HV_STATS_EXACT") && G7CloneBoot.lastGpuNote.contains("jit_exact=OFF;"));
+          G7CloneBoot.statsExact = true; java.util.Map<String, String> x1 = new java.util.HashMap<>(); x1.put("G7_STATS_EXACT", "999999"); G7CloneBoot.lagfxEnv(x1, xc); G7CloneBoot.statsExact = false;
+          check("exact ON: G7_STATS_EXACT=2048 exactly (an inherited value is replaced), no HV_ name, the note says ON", "2048".equals(x1.get("G7_STATS_EXACT")) && !x1.containsKey("HV_STATS_EXACT") && G7CloneBoot.lastGpuNote.contains("jit_exact=ON (G7_STATS_EXACT=2048"));
+          Fake xf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+          G7CloneBoot.statsExact = true; G7CloneBoot.Start xs = G7CloneBoot.startWith(sp(xf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); G7CloneBoot.statsExact = false; waitDone(xs.run);
+          String xl = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, xs.run.logName()).toPath()), StandardCharsets.UTF_8);
+          check("exact ON: the log header says jit_exact=ON in g7-jit-config and lists the engine diagnostics; the command line is unchanged (no new option)", xs.started && xl.contains(" jit_exact=ON") && xl.contains("g7-engine-diag: stats_lines=ON") && xl.contains("exact_seen_set=ON") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 64 --usb-mode 0") && !String.join(" ", lastCmd).contains("exact"));
+          Fake xg = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
+          G7CloneBoot.Start xo = G7CloneBoot.startWith(sp(xg), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); waitDone(xo.run);
+          String xl0 = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, xo.run.logName()).toPath()), StandardCharsets.UTF_8);
+          check("exact OFF (default): the header says jit_exact=OFF and exact_seen_set=OFF", xo.started && xl0.contains("g7-jit-config: jit_mb=64 (default) jit_exact=OFF") && xl0.contains("exact_seen_set=OFF"));
+          File xm = new File(priv, "jit_exact");
+          check("no marker: exact preselect OFF", !G7CloneBoot.readStatsExactMarker(priv));
+          Files.write(xm.toPath(), "1\n".getBytes()); check("marker 1 preselects ON", G7CloneBoot.readStatsExactMarker(priv));
+          for (String junk : new String[]{"0", "2048", "11", "on", "true", "1 junk", "00000000000000001"}) { Files.write(xm.toPath(), junk.getBytes()); check("marker '" + junk + "' stays OFF", !G7CloneBoot.readStatsExactMarker(priv)); }
+          Files.delete(xm.toPath()); }
         int beforeSecs = spawned;
         check("a run time that is not one of the four choices (-1, 1, 7200): refused, nothing spawned", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, -1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 1).started && !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 7200).started && spawned == beforeSecs);
         int beforeUsb = spawned;

@@ -480,6 +480,7 @@ public class G7ExecActivity extends Activity {
         final CheckBox nvp = shortBox("NVRAM 사전 설정 auto-boot=true (실험, 기본 꺼짐)");   // never remembered: unchecked every time the dialog opens
         final CheckBox de = shortBox("디스플레이 이벤트(VBL)");
         final android.widget.Spinner vblSp = new android.widget.Spinner(this); vblSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, G7CloneBoot.VBL_EXP_CHOICES));   // index 0 = "0" = off (default); not remembered
+        final CheckBox jex = shortBox("JIT 정확 통계 (G7_STATS_EXACT, 메모리 최대 +96 MiB, 일반 비교 실행은 끔)"); jex.setChecked(G7CloneBoot.readStatsExactMarker(privDir));   // default OFF; the test marker jit_exact only preselects; never remembered
         final CheckBox fb0c = shortBox("초기 프레임버퍼 관찰 (g7-fb0, 60초)"); fb0c.setChecked(true);   // default ON (cost measured tiny); not remembered
         final CheckBox gd = shortBox("셰이더·파이프라인 저장");
         final boolean cdcWas = opts.getBoolean(KEY_REPLAY, false);   // default OFF; the last value used for a start
@@ -494,7 +495,7 @@ public class G7ExecActivity extends Activity {
         box.addView(labelRow("복제본", cloneSp)); box.addView(labelRow("USB 모드", usbSp)); box.addView(labelRow("실행 시간", limSp)); box.addView(labelRow("JIT 크기", jitSp));
         box.addView(sectionLabel("GPU")); box.addView(gx); box.addView(gxState);
         box.addView(labelRow("화면 되쓰기", gw));
-        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
+        box.addView(sectionLabel("실험 및 진단")); box.addView(pat); box.addView(nvp); box.addView(de); box.addView(labelRow("VBL 실험 (LAGFX_VBL_EXP)", vblSp)); box.addView(fb0c); box.addView(jex); box.addView(gd); box.addView(dd); box.addView(ddState); box.addView(cdc); box.addView(cdcState);
         final Runnable cdcShow = () -> {
             boolean want = cdc.isChecked(), active = want && gx.isChecked() && gd.isChecked();
             cdcState.setText(!want ? "현재: 꺼짐 (기본값)" : active ? "현재: 켜짐 - draw별 버퍼·텍스처·어태치먼트 저장(최대 256 draw·128 MiB)" + (cdcWas ? " - 지난 실행에서 켠 값을 불러옴" : "")
@@ -517,6 +518,7 @@ public class G7ExecActivity extends Activity {
                     opts.edit().putBoolean(KEY_GPU_EXEC, gx.isChecked()).apply();   // remembered for the next dialog (a cancelled dialog saves nothing)
                     G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES[Math.max(0, Math.min(G7CloneBoot.JIT_MB_CHOICES.length - 1, jitSp.getSelectedItemPosition()))];
                     G7CloneBoot.fb0 = fb0c.isChecked();
+                    G7CloneBoot.statsExact = jex.isChecked();
                     G7CloneBoot.vblExp = G7CloneBoot.VBL_EXP_CHOICES[Math.max(0, Math.min(G7CloneBoot.VBL_EXP_CHOICES.length - 1, vblSp.getSelectedItemPosition()))];
                     G7CloneBoot.displayEvents = de.isChecked();
                     G7CloneBoot.captureData = cdc.isChecked();

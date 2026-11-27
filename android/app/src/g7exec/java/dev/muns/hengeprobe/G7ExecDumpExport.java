@@ -123,6 +123,8 @@ final class G7ExecDumpExport {
         m.append("run_libapplegfx_vulkan_commit=").append(runLagfx == null ? "UNKNOWN" : runLagfx).append('\n');
         String runJit = info(run.dir, "jit_mb");
         m.append("run_jit_mb=").append(runJit == null ? "UNKNOWN (older run: the runner default 64 was always passed)" : runJit).append('\n');
+        String runExact = info(run.dir, "jit_exact");
+        m.append("run_jit_exact=").append(runExact == null ? "UNKNOWN (older run: the exact seen-set was never switched on)" : runExact).append('\n');
         m.append("exporter_henge_commit=").append(hengeSha).append("   (the build that made this ZIP; may differ from the run's)\n");
         m.append("exporter_libapplegfx_vulkan_commit=").append(lagfxSha).append('\n');
         m.append("app_version=").append(appVersion).append('\n');

@@ -207,7 +207,7 @@ static void frame_line(void) {
 
 int main(int argc, char **argv) {
     const char *shm_path = NULL, *rom = NULL, *clone_dir = NULL, *ecid_dir = NULL; HvClone cl;
-    long ram_mb = 2048, cpus = 2, jit_mb = 64, seconds = 0, stop_wait_ms = 5000, usb_mode = 0;   /* usb_mode: 0 = A none, 1 = B device port only, 2 = C port + enumeration (the same two flags host/ui_runner_vm.c sets) */
+    long ram_mb = 2048, cpus = 2, jit_mb = 256, seconds = 0, stop_wait_ms = 5000, usb_mode = 0;   /* usb_mode: 0 = A none, 1 = B device port only, 2 = C port + enumeration (the same two flags host/ui_runner_vm.c sets) */
     
     for (int i = 1; i < argc; i++) {
         int more = i + 1 < argc;

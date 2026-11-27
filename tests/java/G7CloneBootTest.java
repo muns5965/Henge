@@ -165,31 +165,31 @@ public class G7CloneBootTest {
         for (int secs : new int[]{900, 1800, 3600, 0}) {
             Fake tf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
             G7CloneBoot.Start ts = G7CloneBoot.startWith(sp(tf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, secs);
-            check("run time " + secs + " s (0 = no limit) reaches the command line, the rest of the command is unchanged", ts.started && String.join(" ", lastCmd).contains("--seconds " + secs + " ") && String.join(" ", lastCmd).contains("--usb-mode 0") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 64")); waitDone(ts.run);
+            check("run time " + secs + " s (0 = no limit) reaches the command line, the rest of the command is unchanged", ts.started && String.join(" ", lastCmd).contains("--seconds " + secs + " ") && String.join(" ", lastCmd).contains("--usb-mode 0") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 256")); waitDone(ts.run);
         }
         // JIT size (research/g7-hjit2): default 64 unchanged; every member of the set reaches the command line and the log header; anything else is refused before a process exists
-        check("JIT size default is 64 and the choice set is exactly {64,128,256,384,512,768}", G7CloneBoot.jitMb == 64 && java.util.Arrays.equals(G7CloneBoot.JIT_MB_CHOICES, new int[]{64, 128, 256, 384, 512, 768}));
+        check("JIT size default is 256 and the choice set is exactly {64,128,256,384,512,768}", G7CloneBoot.jitMb == 256 && java.util.Arrays.equals(G7CloneBoot.JIT_MB_CHOICES, new int[]{64, 128, 256, 384, 512, 768}));
         for (int jm : G7CloneBoot.JIT_MB_CHOICES) {
             Fake jf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
             G7CloneBoot.jitMb = jm;
             G7CloneBoot.Start js = G7CloneBoot.startWith(sp(jf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0);
-            G7CloneBoot.jitMb = 64;
+            G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_DEFAULT;
             String jc = String.join(" ", lastCmd); waitDone(js.run);
             String jl = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, js.run.logName()).toPath()), StandardCharsets.UTF_8);
-            check("jit " + jm + " MiB: command has --jit-mb " + jm + " exactly once, the rest unchanged, the run log header says so", js.started && jc.contains("--ram-mb 2048 --cpus 2 --jit-mb " + jm + " --usb-mode 0") && jc.split("--jit-mb").length == 2 && jl.contains("g7-jit-config: jit_mb=" + jm + (jm == 64 ? " (default)" : " (chosen")));
+            check("jit " + jm + " MiB: command has --jit-mb " + jm + " exactly once, the rest unchanged, the run log header says so", js.started && jc.contains("--ram-mb 2048 --cpus 2 --jit-mb " + jm + " --usb-mode 0") && jc.split("--jit-mb").length == 2 && jl.contains("g7-jit-config: jit_mb=" + jm + (jm == 256 ? " (default)" : " (chosen")));
         }
         int beforeJit = spawned;
         boolean jitBad = false;
         for (int jm : new int[]{-1, 0, 1, 16, 63, 65, 100, 767, 769, 1024, 4096, 100000}) { G7CloneBoot.jitMb = jm; if (G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0).started) jitBad = true; }
-        G7CloneBoot.jitMb = 64;
+        G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_DEFAULT;
         check("a JIT size outside the set (including the runner's own legal 16, 100 and 767): refused, nothing spawned", !jitBad && spawned == beforeJit);
         { File mp = new File(priv, "jit_mb");
-          check("no marker: preselect 64", G7CloneBoot.readJitMarker(priv) == 64);
+          check("no marker: preselect 256", G7CloneBoot.readJitMarker(priv) == 256);
           Files.write(mp.toPath(), "256\n".getBytes()); check("marker 256 preselects 256", G7CloneBoot.readJitMarker(priv) == 256);
           Files.write(mp.toPath(), "768".getBytes()); check("marker 768 preselects 768", G7CloneBoot.readJitMarker(priv) == 768);
-          Files.write(mp.toPath(), "100\n".getBytes()); check("marker with a value outside the set falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
-          Files.write(mp.toPath(), "256 junk".getBytes()); check("marker with junk falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
-          Files.write(mp.toPath(), "0000000000000000000256".getBytes()); check("marker over 16 bytes falls back to 64", G7CloneBoot.readJitMarker(priv) == 64);
+          Files.write(mp.toPath(), "100\n".getBytes()); check("marker with a value outside the set falls back to 256", G7CloneBoot.readJitMarker(priv) == 256);
+          Files.write(mp.toPath(), "256 junk".getBytes()); check("marker with junk falls back to 256", G7CloneBoot.readJitMarker(priv) == 256);
+          Files.write(mp.toPath(), "0000000000000000000256".getBytes()); check("marker over 16 bytes falls back to 256", G7CloneBoot.readJitMarker(priv) == 256);
           Files.delete(mp.toPath()); }
         // JIT exact stats (research/g7-hjit3): default OFF, G7_STATS_EXACT is absent when OFF (an inherited value is removed), only the one validated value is passed when ON, logged in the gpu note, run-info and the log header
         { check("exact stats default OFF and the only value is 2048", !G7CloneBoot.statsExact && "2048".equals(G7CloneBoot.STATS_EXACT_VALUE));
@@ -201,11 +201,11 @@ public class G7CloneBootTest {
           Fake xf = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
           G7CloneBoot.statsExact = true; G7CloneBoot.Start xs = G7CloneBoot.startWith(sp(xf), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); G7CloneBoot.statsExact = false; waitDone(xs.run);
           String xl = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, xs.run.logName()).toPath()), StandardCharsets.UTF_8);
-          check("exact ON: the log header says jit_exact=ON in g7-jit-config and lists the engine diagnostics; the command line is unchanged (no new option)", xs.started && xl.contains(" jit_exact=ON") && xl.contains("g7-engine-diag: stats_lines=ON") && xl.contains("exact_seen_set=ON") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 64 --usb-mode 0") && !String.join(" ", lastCmd).contains("exact"));
+          check("exact ON: the log header says jit_exact=ON in g7-jit-config and lists the engine diagnostics; the command line is unchanged (no new option)", xs.started && xl.contains(" jit_exact=ON") && xl.contains("g7-engine-diag: stats_lines=ON") && xl.contains("exact_seen_set=ON") && String.join(" ", lastCmd).contains("--ram-mb 2048 --cpus 2 --jit-mb 256 --usb-mode 0") && !String.join(" ", lastCmd).contains("exact"));
           Fake xg = new Fake("ui_runner_vm_clone RESULT: stopped, confirmed (time limit), ignored input lines 0\n", 0, false);
           G7CloneBoot.Start xo = G7CloneBoot.startWith(sp(xg), ROMS, true, () -> false, lib, ext, priv, files, clone, true, none, 0, 0); waitDone(xo.run);
           String xl0 = new String(Files.readAllBytes(G7ExecLauncher.logFile(files, xo.run.logName()).toPath()), StandardCharsets.UTF_8);
-          check("exact OFF (default): the header says jit_exact=OFF and exact_seen_set=OFF", xo.started && xl0.contains("g7-jit-config: jit_mb=64 (default) jit_exact=OFF") && xl0.contains("exact_seen_set=OFF"));
+          check("exact OFF (default): the header says jit_exact=OFF and exact_seen_set=OFF", xo.started && xl0.contains("g7-jit-config: jit_mb=256 (default) jit_exact=OFF") && xl0.contains("exact_seen_set=OFF"));
           File xm = new File(priv, "jit_exact");
           check("no marker: exact preselect OFF", !G7CloneBoot.readStatsExactMarker(priv));
           Files.write(xm.toPath(), "1\n".getBytes()); check("marker 1 preselects ON", G7CloneBoot.readStatsExactMarker(priv));

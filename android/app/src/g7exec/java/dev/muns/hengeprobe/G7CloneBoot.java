@@ -31,11 +31,11 @@ public final class G7CloneBoot {
     static boolean validSeconds(int seconds) { for (int c : RUN_SECONDS_CHOICES) if (c == seconds) return true; return false; }
     /** JIT code region sizes (MiB) a person may choose for the runner's --jit-mb (the runner itself accepts 16..768). The default 64 is what every earlier build passed; anything outside this set is refused here and never reaches the command line. */
     public static final int[] JIT_MB_CHOICES = {64, 128, 256, 384, 512, 768};
-    public static final int JIT_MB_DEFAULT = 64;
+    public static final int JIT_MB_DEFAULT = 256;
     static boolean validJitMb(int mb) { for (int c : JIT_MB_CHOICES) if (c == mb) return true; return false; }
     /** Chosen on the start dialog; read once per start. */
     static volatile int jitMb = JIT_MB_DEFAULT;
-    /** Test hook (no Intent input exists in this build): a one-line marker file "jit_mb" next to vm_ecid.txt, e.g. adb shell run-as <pkg> sh -c 'echo 256 > files/vm/jit_mb' (same folder as nvram_preseed). It only PRESELECTS the dialog's spinner; the person still starts the run. Missing, unreadable, larger than 16 bytes, a link, or a value outside JIT_MB_CHOICES = 64. */
+    /** Test hook (no Intent input exists in this build): a one-line marker file "jit_mb" next to vm_ecid.txt, e.g. adb shell run-as <pkg> sh -c 'echo 256 > files/vm/jit_mb' (same folder as nvram_preseed). It only PRESELECTS the dialog's spinner; the person still starts the run. Missing, unreadable, larger than 16 bytes, a link, or a value outside JIT_MB_CHOICES = JIT_MB_DEFAULT (256). */
     public static int readJitMarker(File priv) {
         try {
             java.nio.file.Path p = new File(priv, "jit_mb").toPath();
@@ -420,7 +420,7 @@ public final class G7CloneBoot {
             cmd.add("--clone-dir"); cmd.add(cdir.getPath());
             cmd.add("--ecid-dir"); cmd.add(pdir.getPath());   // plain canonical paths: the runner refuses anything else
             cmd.add("--seconds"); cmd.add(String.valueOf(seconds));   // 0 = no limit (the runner then waits for the stop request, a guest end or a fatal error)
-            cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));   // validated against JIT_MB_CHOICES above; default 64
+            cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));   // validated against JIT_MB_CHOICES above; default 256
             cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode));
             lastRunConfig = "clone=" + cloneDir.getName() + "; usb_mode=" + usbMode;   // log text only: lets the export read the run's own options
             Process p;

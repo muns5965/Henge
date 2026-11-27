@@ -140,9 +140,9 @@ l1=$(grep -n 'g7nv_preseed_guarded(ad' $R | head -1 | cut -d: -f1); l2=$(grep -n
 grep -q 'if (!src) return NULL;' $N || bad "$N: with nothing requested the pre-seed must stay off"
 grep -q 'NO valid v3' $N && grep -q 'NOTHING WRITTEN' $N || bad "$N: no store found must write nothing and say so"
 [ "$(grep -c 'g7nv_summary(&g_nv)' $R)" = 1 ] || bad "$R: one g7-nvram summary at stop"
-# JIT size (research/g7-hjit2): the runner gets --jit-mb only from the validated set {64,128,256,384,512,768}; default 64 (what every earlier build passed); the spinner offers exactly that set, selects index 0 (64) unless the Intent extra names a member, and is never remembered
+# JIT size (research/g7-hjit2): the runner gets --jit-mb only from the validated set {64,128,256,384,512,768}; default 256 (research/g7-integ7d: the 64 MiB region flushed 13x in 10 s and 45x in 20 s on the boot phase, 256 MiB 3-4x; earlier builds passed 64); the spinner offers exactly that set, selects the default (256) unless the Intent extra names a member, and is never remembered
 grep -q 'JIT_MB_CHOICES = {64, 128, 256, 384, 512, 768};' "$CB" || bad "G7CloneBoot.JIT_MB_CHOICES must be exactly {64, 128, 256, 384, 512, 768}"
-grep -q 'JIT_MB_DEFAULT = 64;' "$CB" && grep -q 'static volatile int jitMb = JIT_MB_DEFAULT;' "$CB" || bad "the JIT size default must be 64"
+grep -q 'JIT_MB_DEFAULT = 256;' "$CB" && grep -q 'static volatile int jitMb = JIT_MB_DEFAULT;' "$CB" || bad "the JIT size default must be 256"
 grep -q 'if (!validJitMb(jit)) return new Start(false' "$CB" || bad "G7CloneBoot must refuse a JIT size outside the set before anything starts"
 grep -q 'cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));' "$CB" && ! grep -qE 'cmd\.add\("--jit-mb"\); cmd\.add\("[0-9]' "$CB" || bad "--jit-mb must come only from the validated value, never a literal"
 [ "$(grep -c '"--jit-mb"' "$CB")" = 2 ] || bad "G7CloneBoot names --jit-mb in exactly two places (command, log-note lookup)"
@@ -152,7 +152,7 @@ grep -q 'new android.widget.Spinner(this); jitSp.setAdapter(new android.widget.A
 grep -q 'String\[\] jm = new String\[G7CloneBoot.JIT_MB_CHOICES.length\]' "$A" || bad "the JIT spinner values must come from JIT_MB_CHOICES (no values of its own)"
 grep -q 'G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES\[' "$A" || bad "the dialog must set jitMb only to a member of JIT_MB_CHOICES"
 [ "$(grep -c 'G7CloneBoot.jitMb' "$A")" = 1 ] || bad "jitMb is set in exactly one place in the activity"
-grep -q 'jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)))' "$A" && grep -q 'return validJitMb(v) ? v : JIT_MB_DEFAULT;' "$CB" || bad "the test marker may only preselect the spinner, and an unknown value must fall back to 64 (no Intent input is allowed)"
+grep -q 'jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)))' "$A" && grep -q 'return validJitMb(v) ? v : JIT_MB_DEFAULT;' "$CB" || bad "the test marker may only preselect the spinner, and an unknown value must fall back to the default 256 (no Intent input is allowed)"
 x=$(grep -nE 'jitSp.*(KEY_|opts\.)' "$A"); [ -z "$x" ] || { bad "the JIT size must not be remembered between starts:"; echo "$x"; }
 # JIT exact stats (research/g7-hjit3): default OFF, not remembered, one validated value, never an HV_ name, the marker only preselects, recorded like jit_mb
 grep -q 'static volatile boolean statsExact = false;' "$CB" || bad "G7CloneBoot: statsExact must default to OFF"

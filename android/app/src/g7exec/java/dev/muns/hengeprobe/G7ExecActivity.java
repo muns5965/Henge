@@ -496,7 +496,7 @@ public class G7ExecActivity extends Activity {
         final String[] jm = new String[G7CloneBoot.JIT_MB_CHOICES.length];
         for (int i = 0; i < jm.length; i++) jm[i] = G7CloneBoot.JIT_MB_CHOICES[i] + " MiB" + (G7CloneBoot.JIT_MB_CHOICES[i] == G7CloneBoot.JIT_MB_DEFAULT ? " (기본)" : "");
         final android.widget.Spinner jitSp = new android.widget.Spinner(this); jitSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, jm));
-        jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)));   // default 64 (index 0); the test marker file jit_mb only preselects, anything else falls back to 64; never remembered by the app
+        jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)));   // default 256 (JIT_MB_DEFAULT); the test marker file jit_mb only preselects, anything else falls back to 256; never remembered by the app
         final android.widget.RadioGroup gw = new android.widget.RadioGroup(this); gw.setOrientation(android.widget.RadioGroup.HORIZONTAL);
         final String[] gwl = {"끔", "즉시", "지연"};
         for (int i = 0; i < gwl.length; i++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setText(gwl[i]); rb.setId(3000 + i); rb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); gw.addView(rb); }
@@ -585,7 +585,7 @@ public class G7ExecActivity extends Activity {
     static final String OPTS_PREFS = "g7exec_boot_options", KEY_GPU_EXEC = "gpu_exec", KEY_REPLAY = "render_replay", KEY_DRAW_DIAG = "draw_diag";   // the write consent is NOT here: it is ticked by hand for every run
 
     /** The activity takes no Intent input (a source rule), so the test hook is a marker file; see G7CloneBoot.readJitMarker. */
-    static int jitIndexFor(int mb) { for (int i = 0; i < G7CloneBoot.JIT_MB_CHOICES.length; i++) if (G7CloneBoot.JIT_MB_CHOICES[i] == mb) return i; return 0; }
+    static int jitIndexFor(int mb) { int def = 0; for (int i = 0; i < G7CloneBoot.JIT_MB_CHOICES.length; i++) { if (G7CloneBoot.JIT_MB_CHOICES[i] == mb) return i; if (G7CloneBoot.JIT_MB_CHOICES[i] == G7CloneBoot.JIT_MB_DEFAULT) def = i; } return def; }
     static int peakIndexFor(int mib) { for (int i = 0; i < G7CloneBoot.STATS_EXACT_PEAK_CHOICES.length; i++) if (G7CloneBoot.STATS_EXACT_PEAK_CHOICES[i] == mib) return i; return 0; }
     private CheckBox shortBox(String text) { CheckBox c = new CheckBox(this); c.setText(text); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14); return c; }
     private TextView sectionLabel(String text) { TextView t = new TextView(this); t.setText(text); t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); t.setTypeface(null, android.graphics.Typeface.BOLD); t.setPadding(0, (int) (10 * getResources().getDisplayMetrics().density), 0, 0); return t; }

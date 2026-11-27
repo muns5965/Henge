@@ -114,6 +114,8 @@ void hv_vm_flush_disks(void);
 int hv_vm_flush_disks_checked(void);   /* 0 when both flushes succeeded, -1 otherwise */
 /* Writes the devices asked for on the root disk and the auxiliary storage (calls, and those refused). */
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused);
+/* The same, split: the root disk and the auxiliary storage separately, with bytes written, failed writes and the flush results (counts and file size/mtime only; no contents). */
+void hv_vm_disk_stats(HvDiskStats *root, HvDiskStats *aux);
 const char *hv_vm_reason_name(int reason);
 /* Which PSCI call halted the machine (SYSTEM_OFF 0x84000008 or SYSTEM_RESET 0x84000009), and the CPU/PC/LR
    captured at that call (core/exception.c's psci(), core/machine.h's psci_halt_* fields) -- not reconstructed

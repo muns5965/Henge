@@ -75,6 +75,7 @@ int hv_vm_flush_disks_checked(void) { return 0; }
 int hv_vm_quiesced_ok(void) { return 1; }
 int hv_vm_quiesce(void) { return 0; }
 void hv_vm_disk_write_stats(uint64_t *calls, uint64_t *refused) { *calls = 0; *refused = 0; }
+void hv_vm_disk_stats(HvDiskStats *root, HvDiskStats *aux) { memset(root, 0, sizeof *root); memset(aux, 0, sizeof *aux); root->flush_last = aux->flush_last = HV_FLUSH_NEVER; }
 const char *hv_vm_reason_name(int reason) { (void)reason; return "fake machine stopped"; }
 /* The fake machine never runs guest code, so it never takes a PSCI call either: always "no halt record". */
 int hv_vm_psci_halt_info(uint32_t *fn, uint32_t *cpu_index, uint64_t *pc, uint64_t *lr) {

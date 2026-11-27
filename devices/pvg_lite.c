@@ -1218,9 +1218,9 @@ static void vbl_diag_tick(HvPvgLite *p, uint8_t *d, uint32_t en, uint32_t bits, 
 }
 /* Totals plus the GIC's view of the gfx SPI, every ~5 s, at most 24 times (about 2 minutes), flag on or off (so an OFF run gives the baseline). */
 static void vbl_diag_summary(HvPvgLite *p, uint64_t now) {
-    static uint64_t last; static unsigned lines;
-    if (lines >= 24 || now - last < 5000000000ull) return;
-    last = now; lines++;
+    HvVblDiag *v = &p->vbl;   /* per device, not static: a second device (a test) gets its own first line */
+    if (v->sum_lines >= 24 || (v->sum_last_ns && now - v->sum_last_ns < 5000000000ull)) return;
+    v->sum_last_ns = now; v->sum_lines++;
     char buf[900];
     hv_vbldiag_summary(&p->vbl, now, buf, sizeof buf);
     fprintf(stderr, "%s\n", buf);

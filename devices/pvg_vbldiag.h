@@ -36,6 +36,7 @@ typedef struct HvVblDiag {
     uint32_t p100_seen_at_1014;              /* +0x100 as the last 0x1014 read saw it (ISR entry) */
     uint32_t read_logged[VBL_REGS], tick_logged;
     uint32_t p100_union_at_1014;             /* OR of every +0x100 value seen at an ISR entry */
+    uint64_t sum_last_ns; uint32_t sum_lines;   /* the caller's summary pacing (pvg_lite.c) */
     uint32_t cause_union;                    /* OR of every 0x1014 value returned */
 } HvVblDiag;
 

@@ -9,8 +9,15 @@
      (probability about 1 - exp(-distinct/2^24), no false negatives);
    - the exact set (HV_STATS_EXACT or G7_STATS_EXACT = <max entries in thousands>, default 2048): every (VA, PA, flags)
      with the page generation and flush epoch of its last translation. Open addressing, grows by
-     doubling, 24 bytes a slot, at most 2^22 slots (96 MiB); beyond 70% load of the largest table it
-     stops inserting and counts the overflow. Phone memory is tight: leave it off unless asked.
+     doubling, 24 bytes a slot, at most 2^22 slots (96 MiB) holding at most 2,936,012 keys (70%); beyond that
+     it stops inserting and counts the overflow. Growth allocates the new table while the old one is still
+     alive (the entries are moved, then the old one is freed), so the PEAK while growing is old + new: the
+     last doubling takes 48 + 96 = 144 MiB for a moment and then stays at 96 MiB (the default of 2048
+     thousand entries needs the 2^22 table). The table sizes and the peak are measured (cur_bytes, peak_bytes)
+     and shown in the stats line. An optional budget (HV_STATS_EXACT_PEAK_MIB / G7_STATS_EXACT_PEAK_MIB,
+     default none) refuses a growth whose old + new would pass it, before allocating, and counts the overflow
+     like a full table: e.g. 100 stops at the 2^21-slot table (48 MiB, peak 72, 1.47 M keys). With no budget
+     the results are what they were. Phone memory is tight: leave it off unless asked.
    Both are touched only under the translation lock. */
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,6 +50,8 @@ typedef struct {
     HvJstatSlot *slot;
     uint64_t nslots, count, overflow;
     uint64_t max_slots; /* power of two */
+    uint64_t cur_bytes, peak_bytes; /* the table now; the most held at once (old + new while growing) */
+    uint64_t budget_bytes;          /* 0: none; else a growth whose old + new would pass it is refused */
 } HvJstatExact;
 
 static inline uint64_t hv_jstat_mix(uint64_t va, uint64_t pa_flags) {
@@ -60,11 +69,17 @@ static inline void hv_jstat_exact_init(HvJstatExact *s, uint64_t max_entries) {
     s->max_slots = n;
 }
 
+/* Call after init: peak (old + new) memory allowed while growing, in bytes; 0 for none. */
+static inline void hv_jstat_exact_set_budget(HvJstatExact *s, uint64_t bytes) { s->budget_bytes = bytes; }
+
 static inline int hv_jstat_exact_grow(HvJstatExact *s) {
     uint64_t nn = s->nslots ? s->nslots * 2 : (1u << 12);
     if (nn > s->max_slots) return -1;
+    uint64_t both = s->cur_bytes + nn * sizeof(HvJstatSlot); /* old and new are alive together */
+    if (s->budget_bytes && both > s->budget_bytes) return -1; /* refused before allocating */
     HvJstatSlot *ns = (HvJstatSlot *)calloc(nn, sizeof *ns);
     if (!ns) return -1;
+    if (both > s->peak_bytes) s->peak_bytes = both;
     for (uint64_t i = 0; i < s->nslots; i++) {
         HvJstatSlot *o = &s->slot[i];
         if (!o->epoch1) continue;
@@ -75,6 +90,7 @@ static inline int hv_jstat_exact_grow(HvJstatExact *s) {
     free(s->slot);
     s->slot = ns;
     s->nslots = nn;
+    s->cur_bytes = nn * sizeof(HvJstatSlot);
     return 0;
 }
 

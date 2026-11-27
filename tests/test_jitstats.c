@@ -175,7 +175,49 @@ static void t_cycle(void) {
     free(s.slot), free(bm), free(in);
 }
 
+/* Peak memory while growing: old and new tables are alive together (g7-jit3). The default (2048 thousand entries) ends at
+   2^22 slots = 96 MiB; the last doubling holds 48 + 96 = 144 MiB. A budget refuses the growth before allocating. */
+static void t_peak(void) {
+    HvJstatExact s;
+    hv_jstat_exact_init(&s, 2048000);
+    CHECK(s.max_slots == (1ull << 22), "default max slots %llu", (unsigned long long)s.max_slots);
+    uint64_t mib = 1 << 20, last_n = 0;
+    uint32_t og, oe;
+    uint64_t k = 0;
+    for (;; k++) { /* distinct keys until the table says full */
+        int r = hv_jstat_exact_note(&s, 0x100000000ull + k * 4, 0x800000000ull + k * 64, 0, 1, 0, &og, &oe);
+        if (r < 0) break;
+        if (s.nslots != last_n) {
+            /* at every growth the peak was old + new */
+            CHECK(s.peak_bytes == (last_n ? s.nslots + s.nslots / 2 : s.nslots) * sizeof(HvJstatSlot), "peak %llu at %llu slots", (unsigned long long)s.peak_bytes, (unsigned long long)s.nslots);
+            last_n = s.nslots;
+        }
+    }
+    printf("exact set to the default maximum: %llu keys, table %llu MiB, peak while growing %llu MiB, overflow %llu\n", (unsigned long long)s.count,
+           (unsigned long long)(s.cur_bytes / mib), (unsigned long long)(s.peak_bytes / mib), (unsigned long long)s.overflow);
+    CHECK(sizeof(HvJstatSlot) == 24, "slot is %zu bytes", sizeof(HvJstatSlot));
+    CHECK(s.cur_bytes == 96 * mib && s.peak_bytes == 144 * mib, "table %llu, peak %llu", (unsigned long long)s.cur_bytes, (unsigned long long)s.peak_bytes);
+    CHECK(s.count == 2936012 && s.overflow == 1, "keys held %llu, overflow %llu (70%% of 2^22 = 2936012)", (unsigned long long)s.count, (unsigned long long)s.overflow);
+    free(s.slot);
+
+    /* a budget of 100 MiB stops at 2^21 slots (48 MiB; peak 24 + 48 = 72) and counts the rest like a full table; keys it holds are still found */
+    hv_jstat_exact_init(&s, 2048000);
+    hv_jstat_exact_set_budget(&s, 100 * mib);
+    uint64_t held = 0, over = 0;
+    for (uint64_t i = 0; i < 2000000; i++) {
+        int r = hv_jstat_exact_note(&s, 0x100000000ull + i * 4, 0x800000000ull + i * 64, 0, 1, 0, &og, &oe);
+        if (r < 0) over++; else held += r == 0;
+    }
+    CHECK(s.cur_bytes == 48 * mib && s.peak_bytes == 72 * mib, "budget: table %llu, peak %llu", (unsigned long long)s.cur_bytes, (unsigned long long)s.peak_bytes);
+    CHECK(held == s.count && held == 1468006 && over == 2000000 - held, "budget: held %llu, over %llu", (unsigned long long)held, (unsigned long long)over);
+    CHECK(hv_jstat_exact_note(&s, 0x100000000ull, 0x800000000ull, 0, 1, 1, &og, &oe) == 1, "a held key is still found when full");
+    printf("exact set with a 100 MiB budget: table %llu MiB, peak %llu MiB, %llu keys held, %llu not recorded\n", (unsigned long long)(s.cur_bytes / mib),
+           (unsigned long long)(s.peak_bytes / mib), (unsigned long long)held, (unsigned long long)over);
+    free(s.slot);
+}
+
 int main(void) {
+    t_peak();
     t_hash_same();
     t_bitmap_fp();
     t_qualify_table();

@@ -95,6 +95,12 @@ $(B)/test_devices: tests/test_devices.c tests/devices_programs.S tests/harness.S
 $(B)/test_%: tests/test_%.c tests/%_programs.S tests/harness.S tests/harness.h $(ENGINE)
 	$(CC) $(CFLAGS) -Itests tests/test_$*.c tests/$*_programs.S tests/harness.S $(ENGINE) -o $@
 
+# Host tests of the diagnostics and the emit-failure policy (any CPU; the JIT itself needs arm64).
+$(B)/test_emitfail: tests/test_emitfail.c core/emitfail.h | $(B)
+	$(CC) $(CFLAGS) tests/test_emitfail.c -o $@
+test-emitfail: $(B)/test_emitfail
+	$(B)/test_emitfail
+
 test: all
 	@ulimit -s 65520; for t in $(TESTS); do echo "== $$t"; $$t || exit 1; done # a test keeps a whole HvCpu (2 MB of TLB and more) on its stack
 

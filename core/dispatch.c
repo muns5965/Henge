@@ -1,4 +1,5 @@
 #include "dispatch.h"
+#include "emitfail.h"
 
 #include "../host/platform.h"
 #include <sched.h>
@@ -144,6 +145,11 @@ static void note_flush_request(HvMachine *m, uint64_t *cause) {
 static HvJstatExact jstat_exact;
 static int jstat_exact_on = -1;
 
+/* Per CPU thread: the block whose emit failed last, and how often (core/emitfail.h). The limit is a variable only so a test can set it (-1: the old behaviour). */
+static __thread HvEmitFailState emit_fail_state;
+int hv_emit_fail_max_flushes = HV_EMIT_FAIL_MAX_FLUSHES;
+#define emit_fail_max_flushes hv_emit_fail_max_flushes
+
 static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail) {
     HvMachine *m = cpu->m;
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
@@ -178,11 +184,25 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     /* Translate without the lock, into this thread's buffer... */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
-    if (hv_translate_emit(m, &nb, code, avail) != 0) {
+    int emit_rc = hv_translate_emit(m, &nb, code, avail);
+    if (emit_rc != 0) {
+        /* A failed emit belongs to the block, not the region: the same block fails again after a flush. One flush is
+           tried (as before); a second failure of the same key gives up instead of flushing forever (core/emitfail.h). */
+        __atomic_add_fetch(&m->stats.emit_fail_deterministic, 1, __ATOMIC_RELAXED);
+        if (hv_emitfail_note(&emit_fail_state, va, pa, flags, gen, emit_fail_max_flushes) == HV_EMITFAIL_GIVE_UP) {
+            __atomic_add_fetch(&m->stats.emit_fail_retry_exhausted, 1, __ATOMIC_RELAXED);
+            if (!emit_fail_state.logged) {
+                emit_fail_state.logged = 1;
+                fprintf(stderr, "hengevm: cpu %u: cannot translate block va %llx pa %llx flags %x gen %u: %s (%d); still failing after %u flush(es), giving up on this CPU\n",
+                        cpu->index, (unsigned long long)va, (unsigned long long)pa, flags, gen, hv_translate_err_name(emit_rc), emit_rc, emit_fail_state.flushes);
+            }
+            return NULL; /* nothing pending: run_loop reports the block and parks the CPU */
+        }
         __atomic_add_fetch(&m->stats.flush_emit_fail, 1, __ATOMIC_RELAXED);
         note_flush_request(m, NULL); /* flush_emit_fail is its own cause counter, bumped just above */
         goto flush_unlocked;
     }
+    hv_emitfail_clear(&emit_fail_state);
     uint64_t emit_ticks = 0;
     if (m->stats_interval) { /* wall ticks of this thread inside hv_translate_emit (not CPU time; place, publish and lock waits are not in it) */
         emit_ticks = mach_absolute_time() - t0;
@@ -194,6 +214,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     if (hv_translate_place(m, &nb) != 0) { /* JIT region full: start over */
         pthread_mutex_lock(&m->tr_mu);
         m->stats.flush_full++;
+        m->stats.emit_fail_region++; /* under tr_mu */
         note_flush_request(m, &m->stats.flush_code_region_full);
         if (m->stats_interval) {
             m->stats.discarded_place_count++;
@@ -266,7 +287,12 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
             if (!e) e = getenv("G7_STATS_EXACT"); /* the Android clone runner scrubs every HV_* variable; a name outside HV_* gets through (the launcher does not set it yet) */
             long k = e ? atol(e) : 0;
             jstat_exact_on = e != NULL && *e != '0';
-            if (jstat_exact_on) hv_jstat_exact_init(&jstat_exact, (uint64_t)(k > 1 ? k : 2048) * 1000);
+            if (jstat_exact_on) {
+                hv_jstat_exact_init(&jstat_exact, (uint64_t)(k > 1 ? k : 2048) * 1000);
+                const char *pk = getenv("HV_STATS_EXACT_PEAK_MIB");
+                if (!pk) pk = getenv("G7_STATS_EXACT_PEAK_MIB"); /* optional cap on old + new while the table grows (core/jitstats.h) */
+                if (pk && atol(pk) > 0) hv_jstat_exact_set_budget(&jstat_exact, (uint64_t)atol(pk) << 20);
+            }
         }
         if (jstat_exact_on) {
             uint32_t og = 0, oe = 0, epoch = (uint32_t)m->stats.block_flushes;
@@ -739,6 +765,8 @@ static void print_stats(HvCpu *cpu, int force) {
                     (unsigned long long)s->block_flushes, (double)s->flushed_words * mb / nf, (double)s->live_words_at_flush_sum * mb / nf, (double)s->live_words_at_flush_max * mb,
                     (double)s->dup_words_at_flush_sum * mb / nf, (double)s->unpub_words_at_flush_sum * mb / nf,
                     ((double)s->flushed_words - (double)s->live_words_at_flush_sum - (double)s->dup_words_at_flush_sum - (double)s->unpub_words_at_flush_sum) * mb / nf);
+            fprintf(stderr, "  emit/place failures (g7-jit3): region full %llu (flush, retry as before), block cannot be emitted %llu (up to %d flush per block), gave up on a block %llu (CPU parked)\n",
+                    (unsigned long long)s->emit_fail_region, (unsigned long long)s->emit_fail_deterministic, hv_emit_fail_max_flushes, (unsigned long long)s->emit_fail_retry_exhausted);
             double wall = (double)(now - last_t);
             fprintf(stderr, "  translate wall time (emit only, summed over CPUs, share of the interval): first %.1f%% retranslated %.1f%% (bitmap), exact first %.1f%% retranslated %.1f%%; duplicates %.1f%%; total %.1f%%; cumulative first %.2f s retranslated %.2f s\n",
                     100.0 * (double)(s->first_translation_ticks - last.first_translation_ticks) / wall, 100.0 * (double)(s->retranslation_ticks - last.retranslation_ticks) / wall,
@@ -746,8 +774,8 @@ static void print_stats(HvCpu *cpu, int force) {
                     100.0 * (double)(s->duplicate_translation_ticks - last.duplicate_translation_ticks) / wall, 100.0 * (double)(s->translate_ticks - last.translate_ticks) / wall,
                     (double)s->first_translation_ticks / 24e6, (double)s->retranslation_ticks / 24e6);
             if (jstat_exact_on > 0)
-                fprintf(stderr, "  exact seen-set (%llu keys, %llu not recorded): new %llu, again %llu (page unchanged: dropped by a flush %llu, page changed %llu), bitmap said again for a new key %llu; epochs since last translation 0:%llu 1:%llu 2:%llu 3-4:%llu 5+:%llu\n",
-                        (unsigned long long)jstat_exact.count, (unsigned long long)s->exact_overflow, (unsigned long long)s->exact_new, (unsigned long long)(s->exact_again_same_gen + s->exact_again_new_gen),
+                fprintf(stderr, "  exact seen-set (%llu keys, %llu not recorded; table %llu MiB, peak while growing %llu MiB): new %llu, again %llu (page unchanged: dropped by a flush %llu, page changed %llu), bitmap said again for a new key %llu; epochs since last translation 0:%llu 1:%llu 2:%llu 3-4:%llu 5+:%llu\n",
+                        (unsigned long long)jstat_exact.count, (unsigned long long)s->exact_overflow, (unsigned long long)(jstat_exact.cur_bytes >> 20), (unsigned long long)(jstat_exact.peak_bytes >> 20), (unsigned long long)s->exact_new, (unsigned long long)(s->exact_again_same_gen + s->exact_again_new_gen),
                         (unsigned long long)s->exact_again_same_gen, (unsigned long long)s->exact_again_new_gen, (unsigned long long)s->exact_bitmap_false,
                         (unsigned long long)s->exact_gap[0], (unsigned long long)s->exact_gap[1], (unsigned long long)s->exact_gap[2], (unsigned long long)s->exact_gap[3], (unsigned long long)s->exact_gap[4]);
         }

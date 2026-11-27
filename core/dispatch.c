@@ -263,6 +263,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         else m->stats.first_translation_ticks += emit_ticks;
         if (jstat_exact_on < 0) { /* HV_STATS_EXACT=<max entries in thousands> (default 2048 with any value that is not a number) */
             const char *e = getenv("HV_STATS_EXACT");
+            if (!e) e = getenv("G7_STATS_EXACT"); /* the Android clone runner scrubs every HV_* variable; a name outside HV_* gets through (the launcher does not set it yet) */
             long k = e ? atol(e) : 0;
             jstat_exact_on = e != NULL && *e != '0';
             if (jstat_exact_on) hv_jstat_exact_init(&jstat_exact, (uint64_t)(k > 1 ? k : 2048) * 1000);

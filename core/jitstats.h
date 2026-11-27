@@ -7,7 +7,7 @@
    - the hashed bitmaps (2^24 bits each, 2 MiB): cheap, always on with --stats, approximate: a block
      never seen before is reported as seen when its hash collides with an earlier one
      (probability about 1 - exp(-distinct/2^24), no false negatives);
-   - the exact set (HV_STATS_EXACT=<max entries in thousands>, default 2048): every (VA, PA, flags)
+   - the exact set (HV_STATS_EXACT or G7_STATS_EXACT = <max entries in thousands>, default 2048): every (VA, PA, flags)
      with the page generation and flush epoch of its last translation. Open addressing, grows by
      doubling, 24 bytes a slot, at most 2^22 slots (96 MiB); beyond 70% load of the largest table it
      stops inserting and counts the overflow. Phone memory is tight: leave it off unless asked.

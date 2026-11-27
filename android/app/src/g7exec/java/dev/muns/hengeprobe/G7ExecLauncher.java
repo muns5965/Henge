@@ -160,12 +160,13 @@ public final class G7ExecLauncher {
                 boolean ended;
                 try { ended = proc.waitFor(graceSeconds(), TimeUnit.SECONDS); } catch (InterruptedException e) { ended = false; }
                 if (ended) return;
-                killSent = true;
+                // The log line goes in BEFORE the flag is raised: whoever sees the flag (the screen, a test) can then rely on the line being in the log (research/g7-hjit3: the other order let a poller read the log in between).
                 note("g7-kill: SIGKILL sent after " + graceSeconds() + " s without an end");
+                killSent = true;
                 proc.destroyForcibly();
                 boolean gone;
                 try { gone = proc.waitFor(forceConfirmSeconds, TimeUnit.SECONDS); } catch (InterruptedException e) { gone = false; }
-                if (!gone) { killUnconfirmed = true; note("g7-kill-unconfirmed: the process did not end within " + forceConfirmSeconds + " s after SIGKILL (no g7-exit is written for it)"); }
+                if (!gone) { note("g7-kill-unconfirmed: the process did not end within " + forceConfirmSeconds + " s after SIGKILL (no g7-exit is written for it)"); killUnconfirmed = true; }
             });
             t.setDaemon(true);
             t.start();

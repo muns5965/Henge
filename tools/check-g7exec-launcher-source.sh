@@ -154,6 +154,18 @@ grep -q 'G7CloneBoot.jitMb = G7CloneBoot.JIT_MB_CHOICES\[' "$A" || bad "the dial
 [ "$(grep -c 'G7CloneBoot.jitMb' "$A")" = 1 ] || bad "jitMb is set in exactly one place in the activity"
 grep -q 'jitSp.setSelection(jitIndexFor(G7CloneBoot.readJitMarker(privDir)))' "$A" && grep -q 'return validJitMb(v) ? v : JIT_MB_DEFAULT;' "$CB" || bad "the test marker may only preselect the spinner, and an unknown value must fall back to 64 (no Intent input is allowed)"
 x=$(grep -nE 'jitSp.*(KEY_|opts\.)' "$A"); [ -z "$x" ] || { bad "the JIT size must not be remembered between starts:"; echo "$x"; }
+# JIT exact stats (research/g7-hjit3): default OFF, not remembered, one validated value, never an HV_ name, the marker only preselects, recorded like jit_mb
+grep -q 'static volatile boolean statsExact = false;' "$CB" || bad "G7CloneBoot: statsExact must default to OFF"
+grep -q 'STATS_EXACT_VALUE = "2048";' "$CB" || bad "G7CloneBoot: the one value passed for G7_STATS_EXACT must be 2048"
+[ "$(grep -c 'env.put("G7_STATS_EXACT"' "$CB")" = 1 ] && grep -q 'if (exact) env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);' "$CB" || bad "G7_STATS_EXACT must be set in exactly one place, only when ON, only to STATS_EXACT_VALUE"
+grep -q 'env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB");' "$CB" || bad "an inherited G7_STATS_EXACT / PEAK value must be removed first"
+! grep -qE 'env\.put\("(HV_STATS_EXACT|G7_STATS_EXACT_PEAK_MIB|HV_STATS_EXACT_PEAK_MIB)"' "$CB" || bad "no HV_ name (the runner scrubs them) and no peak override may be set by the launcher"
+grep -q 'return "1".equals(new String(Files.readAllBytes(p), StandardCharsets.US_ASCII).trim());' "$CB" && grep -q 'jex.setChecked(G7CloneBoot.readStatsExactMarker(privDir))' "$A" || bad "the jit_exact marker may only preselect the checkbox, and only for the content 1"
+[ "$(grep -c 'G7CloneBoot.statsExact' "$A")" = 1 ] && grep -q 'G7CloneBoot.statsExact = jex.isChecked();' "$A" || bad "statsExact is set in exactly one place in the activity, from the checkbox"
+! grep -qE 'jex.*(KEY_|opts\.)' "$A" || bad "the exact-stats checkbox must not be remembered"
+grep -q 'jit_exact=' "$CB" && grep -q 'g7-engine-diag:' "$CB" || bad "jit_exact and the engine diagnostics must be written to the run log header and run-info.txt"
+grep -q 'run_jit_exact=' $XJ/G7ExecDumpExport.java || bad "the export manifest must record the run's exact-stats state"
+
 # F1 early framebuffer observation: default ON in the dialog (not remembered), always an explicit G7_FB0 value, the runner side only starts it on G7_FB0=1
 grep -q 'static volatile boolean fb0 = true;' "$CB" && grep -q 'env.put("G7_FB0", fb0 ? "1" : "0")' "$CB" || bad "G7CloneBoot: fb0 must default to ON and always send an explicit G7_FB0 value"
 grep -q 'fb0c.setChecked(true)' "$A" && ! grep -qE 'fb0c.*(KEY_|opts\.)' "$A" || bad "the fb0 checkbox must default to checked and must not be remembered"

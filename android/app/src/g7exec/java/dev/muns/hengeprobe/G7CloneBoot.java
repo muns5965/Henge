@@ -46,6 +46,23 @@ public final class G7CloneBoot {
             return validJitMb(v) ? v : JIT_MB_DEFAULT;
         } catch (IOException | RuntimeException e) { return JIT_MB_DEFAULT; }
     }
+    /** Exact "translated before" set of the engine's stats (core/jitstats.h; env G7_STATS_EXACT = max keys in thousands). Default OFF, never remembered. It costs memory (up to a 96 MiB table, 144 MiB while it grows) and a little time under the translation lock, so it is OFF for general A/B runs; the plan is jit-mb 64 (J0) against 256 (J1) with it OFF, J2 = 128, J3 = 512, J4 = exact ON. Only the one validated value STATS_EXACT_VALUE is ever passed (no other number, no HV_ name: the runner scrubs HV_*). */
+    public static final String STATS_EXACT_VALUE = "2048";
+    static volatile boolean statsExact = false;
+    /** Test hook, same shape as jit_mb: a one-line marker file "jit_exact" next to vm_ecid.txt whose content is exactly 1 PRESELECTS the dialog's checkbox (adb shell run-as <pkg> sh -c 'echo 1 > files/vm/jit_exact'). Missing, unreadable, larger than 16 bytes, a link, or any other content = OFF. The person still starts the run. */
+    public static boolean readStatsExactMarker(File priv) {
+        try {
+            java.nio.file.Path p = new File(priv, "jit_exact").toPath();
+            if (!Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.size(p) > 16) return false;
+            return "1".equals(new String(Files.readAllBytes(p), StandardCharsets.US_ASCII).trim());
+        } catch (IOException | RuntimeException e) { return false; }
+    }
+    static String statsExactText(boolean on) { return on ? "ON (G7_STATS_EXACT=" + STATS_EXACT_VALUE + ", extra memory up to 96 MiB, 144 MiB peak while the table grows)" : "OFF"; }
+    /** One line at the top of the run log: which engine diagnostics are on in this run (the engine's own --stats lines every 10 s are always on in the clone runner). */
+    static String engineDiagLine(boolean exact) {
+        return "g7-engine-diag: stats_lines=ON (every 10 s, always); exact_seen_set=" + statsExactText(exact) + "; draw_diag=" + (drawDiag ? "ON" : "OFF") + "; fb0=" + (fb0 ? "ON" : "OFF") + "; display_events=" + (displayEvents ? "ON" : "OFF")
+                + "; vbl_exp=" + (validVblExp(vblExp) ? vblExp : "?") + "; gpu_exec=" + (gpuExec ? "ON" : "OFF") + "; gpu_dump=" + (gpuDumpDir != null ? "ON" : "OFF") + "; render_replay=" + (captureData ? "REQUESTED" : "OFF") + "\n";
+    }
     static final String LOG_PREFIX = "g7_cboot_", LOG_SUFFIX = ".txt";
     static final int MAX_LOG_BYTES = 2 * 1024 * 1024;
     static final long STATUS_EVERY_MS = 30_000, STOP_WAIT_MS = 15_000;
@@ -91,8 +108,11 @@ public final class G7CloneBoot {
         int ji = cmd.indexOf("--jit-mb"); String jitArg = ji >= 0 && ji + 1 < cmd.size() ? cmd.get(ji + 1) : "?";
         note.append("gpu_exec=" + (gpuExec ? "ON" : "OFF") + " (start dialog checkbox: GPU 실제 실행); ");   // first item on purpose: the state of the one switch that changes what the library does
         note.append("jit_mb=" + jitArg + "; ");
+        final boolean exact = statsExact;   // read once for the note, the environment and run-info.txt
+        note.append("jit_exact=" + statsExactText(exact) + "; ");
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
+        if (exact) env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);   // the only place it is set; absent (not "0") when OFF
         if (drawDiag) { env.put("LAGFX_PIPELINE_MATRIX", "1"); note.append("pipeline_matrix=ON (LAGFX_PIPELINE_MATRIX=1, with draw diag; runs on pipeline creation failure only); "); } env.put("G7_DRAW_DIAG", drawDiag ? "1" : "0"); note.append("draw_diag=" + (drawDiag ? "ON" : "OFF") + " (G7_DRAW_DIAG=" + (drawDiag ? "1" : "0") + "); ");
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
         env.put("G7_FB0", fb0 ? "1" : "0"); note.append("fb0=" + (fb0 ? "ON" : "OFF") + " (G7_FB0=" + (fb0 ? "1" : "0") + ", early framebuffer observation, g7-fb0: lines); ");
@@ -108,7 +128,7 @@ public final class G7CloneBoot {
                 env.put("LAGFX_ARM64_DUMP_DIR", runDir.getPath());
                 if (captureData && gpuExec) { env.put("LAGFX_ARM64_DUMP_DATA", "1"); note.append("render_replay=ON (LAGFX_ARM64_DUMP_DATA=1, library caps: 256 draws / 128 MiB); "); }
                 try {   // ties this dump to its lagfx log and to the build (the export reads it; older dumps have none and are matched by time)
-                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\njit_mb=" + jitArg + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
+                    String info = "run_id=" + runDir.getName().substring(4) + "\nlagfx_log=" + lagfxLog.getName() + "\nvm_log=" + vmLogName + "\ngpu_exec=" + gpuExec + "\njit_mb=" + jitArg + "\njit_exact=" + (exact ? "ON" : "OFF") + "\nhenge_commit=" + G7ExecLauncher.HENGE_SHA + "\nlagfx_commit=" + G7ExecLauncher.LAGFX_SHA + "\n";
                     java.nio.file.Files.write(new File(runDir, G7ExecDumpExport.INFO).toPath(), info.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
                 } catch (java.io.IOException | RuntimeException e) { note.append("(run-info.txt not written: ").append(e.getClass().getSimpleName()).append(") "); }
                 note.append("GPU data dump ON, folder ").append(runDir.getPath()).append(" (limits: the library's own defaults, set by LAGFX_ARM64_DUMP_MAX_FILE / _MAX_TOTAL)");
@@ -323,6 +343,7 @@ public final class G7CloneBoot {
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
         if (!validSeconds(seconds)) return new Start(false, "허용되지 않은 실행 시간 제한이라 시작하지 않았습니다.", null);
+        final boolean exactNow = statsExact;   // the log header; lagfxEnv reads the same switch when the process is spawned
         final int jit = jitMb;   // one read: the check, the command line and the log header all use this value
         if (!validJitMb(jit)) return new Start(false, "허용되지 않은 JIT 크기(" + jit + " MiB)라 시작하지 않았습니다.", null);
         if (usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
@@ -361,17 +382,18 @@ public final class G7CloneBoot {
             run.log = logOut;
             G7ExecLauncher.OTHER_LIVE = G7CloneBoot::hasLive;
             CURRENT = run;
-            watch(run, p, ecid, jit);
+            watch(run, p, ecid, jit, exactNow);
             return new Start(true, "복제본(" + cloneDir.getName() + ") 부팅을 시작했습니다. 원본 설치 쌍은 사용하지 않습니다.", run);
         }
     }
 
-    private static void watch(final Run run, final Process p, final long ecid, final int jit) {
+    private static void watch(final Run run, final Process p, final long ecid, final int jit, final boolean exact) {
         final Thread reader = new Thread(() -> {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 run.put("g7-cboot-start: " + System.currentTimeMillis() + "\n", true);
                 run.put("g7-gpu-options: " + lastGpuNote + "\n", true);
-                run.put("g7-jit-config: jit_mb=" + jit + (jit == JIT_MB_DEFAULT ? " (default)" : " (chosen on the start dialog; runner --jit-mb " + jit + ")") + "\n", true);
+                run.put("g7-jit-config: jit_mb=" + jit + (jit == JIT_MB_DEFAULT ? " (default)" : " (chosen on the start dialog; runner --jit-mb " + jit + ")") + " jit_exact=" + (exact ? "ON" : "OFF") + "\n", true);
+                run.put(engineDiagLine(exact), true);
                 String line;
                 while ((line = r.readLine()) != null) {
                     line = G7ExecLauncher.mask(line, ecid);

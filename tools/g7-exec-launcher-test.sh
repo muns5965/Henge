@@ -51,4 +51,7 @@ java -cp "$O9" dev.muns.hengeprobe.G7ExecDumpExportTest || R10=1
 # the pipeline-repro ladder (G7PipeRepro) against a fake runner script; AssetManager is a stub, no Android classes
 javac -encoding UTF-8 -d "$O9" $X/G7PipeRepro.java $X/G7ExecLauncher.java $X/G7Isolation.java $X/G7Storage.java $J/G7ProbeLauncher.java $J/VmRomCheck.java $J/RomSlice.java $J/VmEcid.java $J/VmRunnerInstalledLauncher.java tests/java/android-stub/android/content/res/AssetManager.java tests/java/G7PipeReproTest.java tests/java/dev/muns/hengeprobe/BuildConfig.java 2>> "$O9/javac.log" || { echo "FAILED javac (piperepro)"; head -30 "$O9/javac.log"; exit 1; }
 java -cp "$O9" dev.muns.hengeprobe.G7PipeReproTest || R10=1
+# the VERDICT line parser: old formats and the new optional root/AUX disk counters (also reads the runner's real printf format from host/ui_runner_vm_clone.c)
+javac -encoding UTF-8 -d "$O9" $X/G7RunVerdict.java tests/java/G7RunVerdictTest.java 2>> "$O9/javac.log" || { echo "FAILED javac (runverdict)"; head -30 "$O9/javac.log"; exit 1; }
+java -cp "$O9" dev.muns.hengeprobe.G7RunVerdictTest || R10=1
 [ $R1 = 0 ] && [ $R2 = 0 ] && [ $R3 = 0 ] && [ $R4 = 0 ] && [ $R5 = 0 ] && [ $R6 = 0 ] && [ $R7 = 0 ] && [ $R8 = 0 ] && [ $R9 = 0 ] && [ $R10 = 0 ]

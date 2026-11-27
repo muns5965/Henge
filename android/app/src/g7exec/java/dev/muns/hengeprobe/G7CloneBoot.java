@@ -244,6 +244,7 @@ public final class G7CloneBoot {
                 String oc = rv.isRestart() ? "게스트가 재시작을 요청함(SYSTEM_RESET)" : rv.outcome.equals("shutdown") ? "게스트가 종료를 요청함(SYSTEM_OFF)" : rv.outcome.equals("halt-other") ? "PSCI 기록 없는 정지(정지 주소 등, 원인 미확인)" : rv.outcome.equals("host-stop") ? "호스트가 멈춤" : "종료 미확인";
                 more = " 결과: " + oc + ", 가동 " + rv.uptimeS + "초, CPU 스레드·디스크 작업자 정리: " + (rv.quiesced == 1 ? "완료" : rv.quiesced == 0 ? "일부 미종료" : "미보고") + ", 디스크 쓰기 " + rv.diskWrites + "건 중 거부 " + rv.diskWriteRefused + "건.";
             }
+            if (rv != null && rv.structured && !rv.diskSplitText().isEmpty()) more += " " + rv.diskSplitText();   // root and AUX counted apart (new runners only); counts, not a persistence claim
             return "VM 종료 확인: " + (m.group(1).equals("1") ? "예" : "아니오(강제 종료)") + ", 디스크 flush: " + fl + "(종료 확인과 별개), 종료 계기: " + who + "." + more + " macOS 부팅 성공 여부는 판정하지 않았습니다(추정 단계: " + stages.summary() + ").";
         }
         private static final java.util.regex.Pattern PID = java.util.regex.Pattern.compile("g7-process: runner_pid=(\\d{1,10})");

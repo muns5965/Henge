@@ -146,7 +146,7 @@ public final class G7CloneBoot {
         { String vx = vblExp; if (validVblExp(vx) && !"0".equals(vx)) { env.put("LAGFX_VBL_EXP", vx); note.append("vbl_exp=" + vx + " (LAGFX_VBL_EXP, device experiment; needs display events ON to matter except swap_no_or2); "); } else note.append("vbl_exp=off; "); }
         if (gpuReadback) env.put("LAGFX_GPU_READBACK", "1");
         if (wbVerify) env.put("LAGFX_WB_VERIFY", "1");
-        note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; wb_verify=" + WBV_MARK + "; ");   // the effective value is filled in at the end from the environment actually built (the write-back mode also sets it)
+        note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; " + WBV_MARK + "; ");   // the effective value is filled in at the end from the environment actually built (the write-back mode also sets it)
         if (fb0) env.put("G7_FB0", "1"); note.append("fb0=" + (fb0 ? "ON (G7_FB0=1" : "OFF (G7_FB0 unset") + ", early framebuffer observation, g7-fb0: lines; default OFF: enable only in the dedicated F0 run, keep OFF in J0/J1 timing comparisons); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
         File dd = gpuDumpDir;
@@ -173,12 +173,11 @@ public final class G7CloneBoot {
     }
 
     private static final String WBV_MARK = "@WBV@";
-    /** Effective LAGFX_WB_VERIFY for the g7-gpu-options note: the value really put in the environment and why (checkbox and/or write-back mode). Text only. */
+    /** wb_verify for the g7-gpu-options note: what the checkbox requested, what the environment actually got (LAGFX_WB_VERIFY) and why. Text only. */
     static String wbVerifyText(String envValue, boolean checkbox, int wbMode) {
-        if (!"1".equals(envValue)) return "OFF (unset)";
-        String wb = wbMode == 1 ? "immediate write-back mode" : wbMode == 2 ? "deferred write-back mode" : null;
-        String via = checkbox && wb != null ? "checkbox and " + wb : checkbox ? "checkbox" : wb != null ? wb : "unknown";
-        return "ON (LAGFX_WB_VERIFY=1 via " + via + ")";
+        boolean eff = "1".equals(envValue), wb = wbMode == 1 || wbMode == 2;
+        String reason = !eff ? "none" : checkbox && wb ? "checkbox+" + (wbMode == 1 ? "immediate" : "deferred") + "_writeback" : checkbox ? "checkbox" : wb ? (wbMode == 1 ? "immediate" : "deferred") + "_writeback" : "unknown";
+        return "wb_verify_requested=" + (checkbox ? "ON(checkbox)" : "OFF") + "; wb_verify_effective=" + (eff ? "ON (LAGFX_WB_VERIFY=1)" : "OFF (unset)") + "; wb_verify_reason=" + reason;
     }
 
     /** What lagfxEnv decided about the GPU switches, written at the top of the run log so a missing dump can be explained. */

@@ -90,6 +90,18 @@ final class G7ExecDumpExport {
         return null;
     }
 
+    /** First match of a regex anywhere in the first 64 KiB of the VM log (for lines the runner itself prints, which older logs already have); null if none. */
+    static String logScan(File cboot, String regex) {
+        if (cboot == null || !cboot.isFile()) return null;
+        try (InputStream in = Files.newInputStream(cboot.toPath())) {
+            byte[] b = new byte[64 * 1024]; int n = in.read(b); if (n <= 0) return null;
+            Matcher m = Pattern.compile(regex).matcher(new String(b, 0, n, StandardCharsets.UTF_8));
+            return m.find() ? m.group(1).trim() : null;
+        } catch (IOException | RuntimeException e) { return null; }
+    }
+
+    private static String first(String a, String b) { return a != null ? a : b; }
+
     private static String opt(String v, String why) { return v == null ? "UNKNOWN (" + why + ")" : v; }
 
     static long parseId(String id) {
@@ -199,9 +211,12 @@ final class G7ExecDumpExport {
         m.append("run_gpu_exec=").append(opt(logOpt(cboot, "g7-gpu-options:", "gpu_exec=(ON|OFF)"), why)).append('\n');
         m.append("run_vbl_exp=").append(opt(logOpt(cboot, "g7-gpu-options:", "vbl_exp=([A-Za-z0-9_]+)"), why)).append('\n');
         m.append("run_display_events=").append(opt(ev, why)).append('\n');
-        m.append("run_wb_verify=").append(opt(logOpt(cboot, "g7-gpu-options:", "wb_verify=([^;]*);"), why)).append('\n');
-        m.append("run_usb_mode=").append(opt(logOpt(cboot, "g7-run-config:", "usb_mode=(\\d+)"), why)).append('\n');
-        m.append("run_clone=").append(opt(logOpt(cboot, "g7-run-config:", "clone=([^;]+)"), why)).append('\n');
+        String wbOld = logOpt(cboot, "g7-gpu-options:", "wb_verify=(ON|OFF)");
+        m.append("wb_verify_requested=").append(opt(logOpt(cboot, "g7-gpu-options:", "wb_verify_requested=([^;]*);"), why)).append('\n');
+        m.append("wb_verify_effective=").append(opt(logOpt(cboot, "g7-gpu-options:", "wb_verify_effective=([^;]*);"), wbOld != null ? "older log: only 'wb_verify=" + wbOld + "', which did not show the write-back mode's own setting" : why)).append('\n');
+        m.append("wb_verify_reason=").append(opt(logOpt(cboot, "g7-gpu-options:", "wb_verify_reason=([^;]*)"), why)).append('\n');
+        m.append("run_usb_mode=").append(opt(first(logOpt(cboot, "g7-run-config:", "usb_mode=(\\d+)"), logScan(cboot, "ui_runner_vm_clone usb mode (\\d+)")), why)).append('\n');
+        m.append("run_clone=").append(opt(first(logOpt(cboot, "g7-run-config:", "clone=([^;]+)"), logScan(cboot, "ui_runner_vm_clone: clone folder (?:\\S*/)?([^/\\s]+) verified")), why)).append('\n');
         m.append("exporter_henge_commit=").append(hengeSha).append("   (the build that made this ZIP; may differ from the run's)\n");
         m.append("exporter_libapplegfx_vulkan_commit=").append(lagfxSha).append('\n');
         m.append("app_version=").append(appVersion).append('\n');

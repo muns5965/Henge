@@ -57,7 +57,7 @@ public class G7ExecDumpExportTest {
         Files.write(new File(runA, G7ExecDumpExport.INFO).toPath(), ("run_id=" + idA + "\nlagfx_log=" + String.format("g7_lagfx_%013d.txt", tA + 3000) + "\nvm_log=" + String.format("g7_cboot_%013d.txt", tA) + "\njit_mb=64\nhenge_commit=OLDH\nlagfx_commit=OLDL\n").getBytes());
         Files.write(new File(fd2, String.format("g7_cboot_%013d.txt", tA)).toPath(), "OLDCBOOT".getBytes());
         Files.write(new File(fd2, String.format("g7_lagfx_%013d.txt", tA + 3000)).toPath(), "OLDLAGFX".getBytes());
-        Files.write(new File(fd2, String.format("g7_cboot_%013d.txt", tB)).toPath(), ("g7-cboot-start: 1\ng7-gpu-options: gpu_exec=ON (x); jit_mb=256; jit_exact=OFF; vbl_exp=tick_none (LAGFX_VBL_EXP); gpu_readback=OFF (unset); wb_verify=ON (LAGFX_WB_VERIFY=1 via immediate write-back mode); display events experiment ON (G7_PVG_DISPLAY_EVENTS=1); GPU data dump off\ng7-run-config: clone=clone-002; usb_mode=2\ng7-jit-config: jit_mb=256 (chosen)\n").getBytes());
+        Files.write(new File(fd2, String.format("g7_cboot_%013d.txt", tB)).toPath(), ("g7-cboot-start: 1\ng7-gpu-options: gpu_exec=ON (x); jit_mb=256; jit_exact=OFF; vbl_exp=tick_none (LAGFX_VBL_EXP); gpu_readback=OFF (unset); wb_verify_requested=OFF; wb_verify_effective=ON (LAGFX_WB_VERIFY=1); wb_verify_reason=immediate_writeback; display events experiment ON (G7_PVG_DISPLAY_EVENTS=1); GPU data dump off\ng7-run-config: clone=clone-002; usb_mode=2\ng7-jit-config: jit_mb=256 (chosen)\n").getBytes());
         Files.write(new File(fd2, String.format("g7_lagfx_%013d.txt", tB + 2000)).toPath(), "NEWLAGFX".getBytes());
         List<G7ExecDumpExport.DumpRun> ch = G7ExecDumpExport.choices(fd2, root2);
         check("selection: the latest clone boot has no dump dir -> element 0 is a logs-only entry of THAT run, the stale dump is only offered as older", ch.size() == 2 && ch.get(0).noDump() && ch.get(0).cboot.getName().equals(String.format("g7_cboot_%013d.txt", tB)) && ch.get(1).id.equals(idA) && !ch.get(1).noDump());
@@ -69,7 +69,7 @@ public class G7ExecDumpExportTest {
         }
         check("no-dump run: only its own two logs + manifest, nothing of the old run (no dump/, no old logs, no PNG)", nn.equals(new TreeSet<>(Arrays.asList("export-info.txt", String.format("logs/g7_cboot_%013d.txt", tB), String.format("logs/g7_lagfx_%013d.txt", tB + 2000)))));
         check("no-dump run: first line of export-info.txt says current run + 'this run has no GPU dump (GPU data dump was OFF); logs only'", first1.startsWith("export_of=CURRENT RUN ") && first1.contains("this run has no GPU dump (GPU data dump was OFF); logs only") && rn.message.contains("GPU data dump was OFF") && !in1.contains(idA) && !in1.contains("OLDH") && !in1.contains(String.format("%013d", tA)));
-        check("no-dump run: its own options are read from its VM log, not UNKNOWN and not invented", in1.contains("run_jit_mb=256") && in1.contains("run_vbl_exp=tick_none") && in1.contains("run_display_events=ON") && in1.contains("run_usb_mode=2") && in1.contains("run_clone=clone-002") && in1.contains("run_gpu_exec=ON") && in1.contains("run_wb_verify=ON (LAGFX_WB_VERIFY=1 via immediate write-back mode)") && !in1.contains("run_jit_mb=UNKNOWN"));
+        check("no-dump run: its own options are read from its VM log, not UNKNOWN and not invented", in1.contains("run_jit_mb=256") && in1.contains("run_vbl_exp=tick_none") && in1.contains("run_display_events=ON") && in1.contains("run_usb_mode=2") && in1.contains("run_clone=clone-002") && in1.contains("run_gpu_exec=ON") && in1.contains("wb_verify_requested=OFF") && in1.contains("wb_verify_effective=ON (LAGFX_WB_VERIFY=1)") && in1.contains("wb_verify_reason=immediate_writeback") && !in1.contains("run_jit_mb=UNKNOWN"));
         // the user explicitly picks the older run: labelled older, run id + date, on the first line
         G7ExecDumpExport.Result ro = G7ExecDumpExport.export(fd2, ch.get(1), "v", "h", "l", "d");
         String first2;
@@ -85,6 +85,16 @@ public class G7ExecDumpExportTest {
         // an old-APK stale dump (no run-info) that precedes the newest boot by far is not matched to it either
         Files.delete(new File(runA, G7ExecDumpExport.INFO).toPath());
         check("old dump without run-info: matched to its own time window only, not to a later boot", !G7ExecDumpExport.belongsTo(G7ExecDumpExport.listRuns(root2).get(1), new File(fd2, String.format("g7_cboot_%013d.txt", tB))) && G7ExecDumpExport.belongsTo(G7ExecDumpExport.listRuns(root2).get(1), new File(fd2, String.format("g7_cboot_%013d.txt", tA))));
+        // older cboot logs (no g7-run-config line): clone and usb mode come from the runner's own lines
+        File oldLog = new File(fd2, String.format("g7_cboot_%013d.txt", tC + 5000));
+        Files.write(oldLog.toPath(), ("g7-cboot-start: 1\ng7-gpu-options: gpu_exec=OFF (x); jit_mb=64; wb_verify=OFF (unset); GPU data dump off\nui_runner_vm_clone: clone folder /data/user/0/x/files/g7_clones/clones/clone-003 verified (ecid ok)\nui_runner_vm_clone usb mode 0 (A none): no virtual USB device\n").getBytes());
+        G7ExecDumpExport.Result rl = G7ExecDumpExport.export(fd2, new G7ExecDumpExport.DumpRun(null, G7ExecDumpExport.newId(tC + 5000), tC + 5000, 0, 0, oldLog), "v", "h", "l", "d");
+        try (ZipFile z = new ZipFile(rl.zip)) { String il = new String(z.getInputStream(z.getEntry("export-info.txt")).readAllBytes(), "UTF-8");
+            check("older log: clone and usb mode are read from the runner's existing lines, not UNKNOWN", il.contains("run_clone=clone-003") && il.contains("run_usb_mode=0") && il.contains("wb_verify_effective=UNKNOWN (older log: only 'wb_verify=OFF'")); }
+        File bothLog = new File(fd2, String.format("g7_cboot_%013d.txt", tC + 6000));
+        Files.write(bothLog.toPath(), ("g7-run-config: clone=clone-009; usb_mode=2\nui_runner_vm_clone: clone folder /x/clones/clone-003 verified\nui_runner_vm_clone usb mode 0 (A none): x\n").getBytes());
+        try (ZipFile z = new ZipFile(G7ExecDumpExport.export(fd2, new G7ExecDumpExport.DumpRun(null, G7ExecDumpExport.newId(tC + 6000), tC + 6000, 0, 0, bothLog), "v", "h", "l", "d").zip)) { String ib = new String(z.getInputStream(z.getEntry("export-info.txt")).readAllBytes(), "UTF-8");
+            check("g7-run-config is preferred over the old runner lines", ib.contains("run_clone=clone-009") && ib.contains("run_usb_mode=2")); }
         check("no clone-boot log at all: the old listing (newest dump first) is returned", G7ExecDumpExport.choices(Files.createTempDirectory("exp3").toFile(), root2).size() == 2);
         System.out.println(failed == 0 ? "G7DUMPEXPORT OK" : "G7DUMPEXPORT FAILED " + failed);
         System.exit(failed == 0 ? 0 : 1);

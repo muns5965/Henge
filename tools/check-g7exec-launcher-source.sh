@@ -48,6 +48,8 @@ PR=android/app/src/g7exec/java/dev/muns/hengeprobe/G7PipeRepro.java
 [ "$(grep -c 'new ProcessBuilder' "$PR")" = 1 ] || bad "exactly one ProcessBuilder in G7PipeRepro"
 grep -q 'LIB_NAME = "libg7pipelinerepro.so"' "$PR" || bad "G7PipeRepro LIB_NAME must be libg7pipelinerepro.so"
 grep -qE 'Runtime\.getRuntime|\.exec\(|delete\(|renameTo|Files\.(delete|move)' "$PR" && bad "G7PipeRepro must not delete, move or use Runtime.exec"
+grep -q 'G7PipeRepro.cancelActive(' "$A" || bad "the activity must kill a running reproduction (child process tree) in onDestroy"
+grep -q 'static String killTree(Process p)' "$PR" && grep -q 'ROW_GEN_VERSION' "$PR" && grep -q 'countsAsDone' "$PR" || bad "G7PipeRepro lost the verified tree kill, the row-generator version or the resume rule"
 grep -q 'return startWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun,' "$CB" || bad "G7CloneBoot.start() must pass the START_ENABLED constant and the live-run check"
 [ "$(grep -c 'startWith(REAL' "$CB")" = 1 ] || bad "G7CloneBoot: REAL spawner is used in more than one place"
 grep -q 'LIB_NAME = "libg7cloneboot.so"' "$CB" || bad "G7CloneBoot LIB_NAME must be libg7cloneboot.so"

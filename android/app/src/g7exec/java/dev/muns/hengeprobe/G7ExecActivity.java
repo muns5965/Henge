@@ -51,7 +51,7 @@ public class G7ExecActivity extends Activity {
     // No run state lives in this Activity: G7ExecLauncher.current() is the one source, so a recreated screen (rotation, back and forth) sees and can cancel the same process.
 
     @Override
-    protected void onDestroy() { if (cloneDlg != null) { try { cloneDlg.dismiss(); } catch (RuntimeException ignored) { } cloneDlg = null; } super.onDestroy(); }
+    protected void onDestroy() { G7PipeRepro.cancelActive("activity destroyed"); if (cloneDlg != null) { try { cloneDlg.dismiss(); } catch (RuntimeException ignored) { } cloneDlg = null; } super.onDestroy(); }
 
     @Override
     protected void onCreate(Bundle b) {
@@ -739,21 +739,78 @@ public class G7ExecActivity extends Activity {
         new android.app.AlertDialog.Builder(this).setTitle("재현할 실패 번들").setSingleChoiceItems(names, 0, (d, w) -> pick[0] = w).setView(opts)
             .setNegativeButton("취소", null).setPositiveButton("재현 시작", (d, w) -> {
                 final File b = bundles.get(pick[0]); final boolean matrix = mx.isChecked(); final boolean reduce = rd.isChecked();
-                status.setText("재현 중: " + b.getName() + (matrix ? " (Matrix 포함)" : "") + (reduce ? " (Reduce 포함)" : "") + " …(최대 " + (reduce ? "15" : "3") + "분)");
+                if (!reduce) { startPipeRepro(b, matrix, false, null, false); return; }
+                // ladder: list the rows once (a few seconds), then let the person pick row groups and (when the run identity matches) resume. Check boxes only, nothing is typed.
+                status.setText("행 목록을 읽는 중: " + b.getName() + " …");
                 new Thread(() -> {
-                    G7PipeRepro.Result rr;
-                    try { rr = G7PipeRepro.run(nativeDirRef, b, matrix, reduce, getAssets(), getFilesDir()); }
-                    catch (Throwable t) { rr = new G7PipeRepro.Result(false, -4, "재현 실행 중 오류: " + t + "\n(앱은 계속 실행 중입니다. 이 문구를 복사해 알려 주세요.)", null); }
-                    final G7PipeRepro.Result r = rr;
+                    G7PipeRepro.Preview pv = null; String err = null;
+                    try { File red = new File(getFilesDir(), "red-assets"); G7PipeRepro.stageRedAssets(getAssets(), red);   // staged first: the run identity includes the ladder input files
+                          pv = G7PipeRepro.preview(nativeDirRef, b, red, false, getFilesDir(), pipeOptions()); }
+                    catch (Throwable t) { err = String.valueOf(t); }
+                    final G7PipeRepro.Preview pvf = pv; final String errf = err;
                     runOnUiThread(() -> {
-                        status.setText("재현 종료(코드 " + r.exitCode + ")" + (r.file != null ? ", 저장: " + r.file.getName() : ""));
-                        android.widget.TextView tv = new android.widget.TextView(this); tv.setText(r.text); tv.setTextIsSelectable(true); tv.setTextSize(11); tv.setTypeface(android.graphics.Typeface.MONOSPACE);
-                        ScrollView sv = new ScrollView(this); sv.addView(tv);
-                        new android.app.AlertDialog.Builder(this).setTitle("GPU 파이프라인 재현 결과").setView(sv).setPositiveButton("닫기", null)
-                            .setNeutralButton("복사", (dd, ww) -> { android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE); if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("pipelinerepro", r.text)); }).show();
+                        if (pvf == null || pvf.listing.ids.isEmpty()) { status.setText("행 목록을 얻지 못했습니다" + (errf != null ? ": " + errf : "(--list-rows 결과 없음)") + ". 전체 사다리로 바로 실행하려면 다시 시도하세요."); return; }
+                        chooseLadderGroups(b, matrix, pvf);
                     });
-                }, "g7-pipe-repro").start();
+                }, "g7-pipe-list").start();
             }).show();
+    }
+
+    private G7PipeRepro.Options pipeOptions() {
+        String vk = "";
+        try { for (android.content.pm.FeatureInfo fi : getPackageManager().getSystemAvailableFeatures()) if (android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION.equals(fi.name)) vk = " vkhw=0x" + Integer.toHexString(fi.version); } catch (RuntimeException ignored) {}
+        String dev = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + " " + android.os.Build.FINGERPRINT + " sdk=" + android.os.Build.VERSION.SDK_INT + vk;
+        return new G7PipeRepro.Options().ids(dev, G7ExecLauncher.LAGFX_SHA);
+    }
+
+    /** Group check boxes with the row count of each, a resume box (only when the saved partial file has the SAME run identity; otherwise the reason is shown and the run starts fresh). */
+    private void chooseLadderGroups(final File b, final boolean matrix, final G7PipeRepro.Preview pv) {
+        final android.widget.LinearLayout col = new android.widget.LinearLayout(this); col.setOrientation(android.widget.LinearLayout.VERTICAL);
+        final java.util.Map<String, android.widget.CheckBox> boxes = new java.util.LinkedHashMap<>();
+        final android.widget.TextView hdr = new android.widget.TextView(this); hdr.setText("실행할 행 그룹(R0, R0V는 항상 실행). 전체 " + pv.listing.ids.size() + "행, 행마다 최대 40초, 전체 최대 14분."); col.addView(hdr);
+        for (String[] g : G7PipeRepro.GROUPS) {
+            int n = pv.groupCounts.containsKey(g[0]) ? pv.groupCounts.get(g[0]) : 0;
+            android.widget.CheckBox cb = new android.widget.CheckBox(this); cb.setText(g[1] + " [" + n + "행]"); cb.setChecked(true); cb.setEnabled(n > 0); boxes.put(g[0], cb); col.addView(cb);
+        }
+        final android.widget.CheckBox rs = new android.widget.CheckBox(this);
+        if (pv.resume.usable) { rs.setText("이어서 실행: 같은 실행 조건의 이전 부분 결과 " + pv.resume.done.size() + "행은 건너뜀, 시간 초과·충돌·행 없음 " + pv.resume.retry + "행은 다시 실행"); rs.setChecked(true); }
+        else { rs.setText("이어서 실행 불가(처음부터 실행): " + pv.resume.reason); rs.setChecked(false); rs.setEnabled(false); }
+        col.addView(rs);
+        ScrollView sv = new ScrollView(this); sv.addView(col);
+        new android.app.AlertDialog.Builder(this).setTitle("축소 사다리 행 선택").setView(sv).setNegativeButton("취소", null).setPositiveButton("실행", (d, w) -> {
+            java.util.Set<String> sel = new java.util.HashSet<>();
+            for (java.util.Map.Entry<String, android.widget.CheckBox> e : boxes.entrySet()) if (e.getValue().isChecked() && e.getValue().isEnabled()) sel.add(e.getKey());
+            int enabled = 0; for (android.widget.CheckBox c : boxes.values()) if (c.isEnabled()) enabled++;
+            boolean all = sel.size() == enabled;   // every non-empty group ticked = the old behaviour (all rows)
+            startPipeRepro(b, matrix, true, all ? null : sel, rs.isChecked());
+        }).show();
+    }
+
+    private void startPipeRepro(final File b, final boolean matrix, final boolean reduce, final java.util.Set<String> groups, final boolean resume) {
+        final G7PipeRepro.Cancel cancel = new G7PipeRepro.Cancel();
+        final android.widget.TextView prog = new android.widget.TextView(this); prog.setTextSize(13); prog.setPadding(32, 24, 32, 8);
+        prog.setText(reduce ? "시작하는 중…" : "재현 중(최대 3분)…");
+        final android.app.AlertDialog pd = new android.app.AlertDialog.Builder(this).setTitle("GPU 파이프라인 재현 중: " + b.getName()).setView(prog).setCancelable(false)
+            .setNegativeButton("취소(자식 프로세스 종료)", null).create();
+        pd.show();
+        pd.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> { cancel.cancel("user"); prog.setText("취소하는 중: 자식 프로세스 트리를 종료하고 확인합니다…"); v.setEnabled(false); });
+        status.setText("재현 중: " + b.getName() + (matrix ? " (Matrix 포함)" : "") + (reduce ? " (Reduce)" : ""));
+        final G7PipeRepro.Options opt = pipeOptions().cancel(cancel).groups(groups).resume(resume).listener(p -> { final String t = "진행: 완료 " + p.done + "/" + p.selected + " (이어받음 " + p.resumed + ", BUILT " + p.built + ", 실패 " + p.failed + ", n/a " + p.na + "), 남음 " + p.remaining + (p.current.isEmpty() ? "" : "\n지금: " + p.current); runOnUiThread(() -> { if (!cancel.isCancelled()) prog.setText(t); }); });
+        new Thread(() -> {
+            G7PipeRepro.Result rr;
+            try { rr = G7PipeRepro.run(nativeDirRef, b, matrix, reduce, getAssets(), getFilesDir(), opt); }
+            catch (Throwable t) { rr = new G7PipeRepro.Result(false, -4, "재현 실행 중 오류: " + t + "\n(앱은 계속 실행 중입니다. 이 문구를 복사해 알려 주세요.)", null); }
+            final G7PipeRepro.Result r = rr;
+            runOnUiThread(() -> {
+                try { pd.dismiss(); } catch (RuntimeException ignored) {}
+                if (isFinishing() || isDestroyed()) return;
+                status.setText("재현 종료(코드 " + r.exitCode + ")" + (r.file != null ? ", 저장: " + r.file.getName() : ""));
+                android.widget.TextView tv = new android.widget.TextView(this); tv.setText(r.text); tv.setTextIsSelectable(true); tv.setTextSize(11); tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+                ScrollView sv = new ScrollView(this); sv.addView(tv);
+                new android.app.AlertDialog.Builder(this).setTitle("GPU 파이프라인 재현 결과").setView(sv).setPositiveButton("닫기", null)
+                    .setNeutralButton("복사", (dd, ww) -> { android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE); if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("pipelinerepro", r.text)); }).show();
+            });
+        }, "g7-pipe-repro").start();
     }
 
     /** Lists the dump runs (newest first, the newest preselected) and builds the ZIP of the chosen one: its dump files plus the VM log and the lagfx log of that run. Only after the run has ended; nothing is deleted. */

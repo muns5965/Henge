@@ -1033,6 +1033,8 @@ public class G7ExecActivity extends Activity {
         Button hd = new Button(this); hd.setText("Macintosh HD 클릭 (960,397)"); hd.setAllCaps(false); hd.setOnClickListener(v -> injSend("Macintosh HD", G7InputMap.click(G7InputMap.HD_X, G7InputMap.HD_Y), true)); row.addView(hd, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         Button rs = new Button(this); rs.setText("Restart 클릭 (1190,550)"); rs.setAllCaps(false); rs.setOnClickListener(v -> injSend("Restart", G7InputMap.click(G7InputMap.RESTART_X, G7InputMap.RESTART_Y), true)); row.addView(rs, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         injPreviewClick = new CheckBox(this); injPreviewClick.setText("위 미리보기 이미지를 탭하면 그 게스트 위치를 클릭(끄면 좌표만 표시)"); root.addView(injPreviewClick);
+        CheckBox injStrict = new CheckBox(this); injStrict.setText("엄격 클릭: 좌표 지정 클릭은 게스트 포인터 피드백으로 도달이 확인될 때만(좌표 없는 '현재 위치' 클릭은 해당 없음, 기본 꺼짐)"); root.addView(injStrict);
+        injStrict.setOnCheckedChangeListener((cb, on) -> { G7CloneBoot.Run r = G7CloneBoot.current(); if (r == null || r.finished()) { injNote("실행 중인 복제본 부팅이 없습니다(엄격 클릭 설정은 실행 중에만 보냅니다)."); return; } String why = r.sendInject(G7InputMap.strict(on)); injNote(why == null ? "엄격 클릭 " + (on ? "켬" : "끔") + " 명령을 러너 입력에 썼습니다(적용 여부는 입력 로그의 'strict click mode' 줄로 확인)." : "엄격 클릭 보내기 실패: " + why); });
         injCoord = new TextView(this); injCoord.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); injCoord.setText("미리보기 터치: 아직 없음"); root.addView(injCoord);
         cbImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
         cbImage.setOnTouchListener((v, e) -> {

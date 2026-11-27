@@ -27,6 +27,7 @@ public class G7InputMapTest {
         // commands
         check(G7InputMap.allowed(G7InputMap.key("shift+tab")) && G7InputMap.allowed(G7InputMap.key("enter")) && G7InputMap.allowed(G7InputMap.click(960, 397)) && G7InputMap.allowed(G7InputMap.dclick(1190, 550))
             && G7InputMap.allowed("inject click") && G7InputMap.allowed("inject dclick") && G7InputMap.allowed("inject abort") && G7InputMap.allowed(G7InputMap.display(1920, 1080)), "the command builders make lines the runner accepts");
+        check(G7InputMap.allowed(G7InputMap.strict(true)) && G7InputMap.allowed(G7InputMap.strict(false)) && G7InputMap.strict(true).equals("inject strict on") && !G7InputMap.allowed("inject strict maybe") && !G7InputMap.allowed("inject strict on\nquit"), "strict on/off builders make lines the runner accepts, anything else is refused");
         check(!G7InputMap.allowed("quit") && !G7InputMap.allowed("inject key enter\nquit") && !G7InputMap.allowed("inject key ../x") && !G7InputMap.allowed("inject click 1") && !G7InputMap.allowed(null) && !G7InputMap.allowed("inject key a+b+c+d+e"), "anything else is refused (no quit, no newline, no path)");
         // the run object: what it writes to the runner and what it keeps as the trail
         final java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();

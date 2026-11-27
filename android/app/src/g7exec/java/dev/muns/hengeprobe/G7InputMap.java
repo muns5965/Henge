@@ -45,10 +45,12 @@ public final class G7InputMap {
     public static String key(String name) { return "inject key " + name; }
     public static String click(int x, int y) { return "inject click " + x + " " + y; }
     public static String dclick(int x, int y) { return "inject dclick " + x + " " + y; }
+    /** "strict on|off": a click with coordinates only happens after the guest's own pointer feedback shows the target reached (default off). A click WITHOUT coordinates is "click here" and is not covered. */
+    public static String strict(boolean on) { return "inject strict " + (on ? "on" : "off"); }
     public static String display(int w, int h) { return "inject display " + w + " " + h; }
 
     /** The only lines the runner is sent: anything else is refused here, before it reaches the process. */
     private static final java.util.regex.Pattern OK = java.util.regex.Pattern.compile(
-        "^inject (key [a-z]{1,8}(\\+[a-z]{1,8}){0,3}|click( [0-9]{1,5} [0-9]{1,5})?|dclick( [0-9]{1,5} [0-9]{1,5})?|display [0-9]{2,5} [0-9]{2,5}|abort)$");
+        "^inject (key [a-z]{1,8}(\\+[a-z]{1,8}){0,3}|click( [0-9]{1,5} [0-9]{1,5})?|dclick( [0-9]{1,5} [0-9]{1,5})?|display [0-9]{2,5} [0-9]{2,5}|strict (on|off)|abort)$");
     public static boolean allowed(String line) { return line != null && OK.matcher(line).matches(); }
 }

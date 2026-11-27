@@ -360,6 +360,16 @@ static void g7_boot_fb_tick(void) {
         hv_fbp_boot_args_line(line, sizeof line, found, (const uint16_t *)(ram + found), q, VMAPPLE_MEM, size);
         g7_fbp_say(line);
     }
+    {   /* log only: the kernel command line and device-tree words of that page (at most 4 lines: once, again if the text changes) */
+        static uint64_t cl_hash; static int cl_lines;
+        uint64_t hsh = 1469598103934665603ull;
+        for (unsigned i = 0; i < 1132u; i++) hsh = (hsh ^ ram[found + i]) * 1099511628211ull;
+        if (cl_lines < 4 && hsh != cl_hash && size - found >= 0x1000) {
+            char cl[900]; cl_hash = hsh; cl_lines++;
+            hv_fbp_cmdline_line(cl, sizeof cl, ram + found, 0x1000);
+            g7_fbp_say(cl);
+        }
+    }
     uint64_t base = q[5], row = q[7], w = q[8], hh = q[9];
     if (strcmp(hv_fbp_video_check(q, VMAPPLE_MEM, size), "ok") != 0 || row > 0xffffffffu) return;
     const uint8_t *px = ram + (base - VMAPPLE_MEM);

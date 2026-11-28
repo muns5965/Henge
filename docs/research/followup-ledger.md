@@ -529,3 +529,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 보류(근거): Half4→Float4 정점 데이터 변환 대체 — R16G16B16A16_SFLOAT의 VERTEX_BUFFER_BIT는 Vulkan 필수 기능이라 적합한 장치에서는 발동하지 않는 죽은 코드가 되며, Half4가 원인이라는 증거도 없음(M12 기기 결과 대기). M12가 BUILT일 때 데이터 변환 구현.
 - 효과는 기기에서 검증되지 않음: unused capability가 S8의 -13 원인인지는 M13 결과/이 변형의 pipe_fallback_built로 확인.
 - 핀 → c85628a.
+
+## follow-up 17 (lagfx 8103b48 — 호스트 검증만, 기기 미검증)
+- Pipeline 대체 생성: 재시도 대상을 제한 — 직전 vkCreateGraphicsPipelines 결과가 UNKNOWN / FEATURE_NOT_PRESENT / INITIALIZATION_FAILED / INVALID_SHADER_NV일 때만. 장치 손실·메모리 부족·Vulkan 호출 전 실패(정점 입력/프로토콜)는 재시도하지 않음(시험: 시도 카운터 불변). 대체 성공 로그/카운터는 유지.
+- 공통 Compute 기반 보강: 지원 descriptor type 화이트리스트(그 외 생성 거부), 장치 한계(workgroup count, push constant) 검사(lagfx_cx_set_limits), 버퍼 null/오프셋 정렬·이미지 view·sampler 널 검사. Descriptor 세트 재사용은 호출자가 GPU 완료 후 recycle(계약 명시). 이미지 레이아웃 전환은 호출자 책임(문서화).
+- 미완료(리뷰 지적, 인정): 대체 Pipeline으로 실제 Draw를 실행해 원본과 픽셀 동등성을 비교하는 시험은 아직 없음(원본 빌드를 실패시키는 호스트 방법이 주입 훅뿐). 게스트 compute 연결/Threadgroup 메모리/Int64/Storage Image/Texture View 미구현. Half4→Float4는 M12 결과 대기 조건부 보류(장치 미지원과 드라이버 조합 결함을 구분해 구현).
+- 핀 → 8103b48.

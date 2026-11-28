@@ -357,3 +357,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - lagfx f7352e7 (호스트 검증만, 진단·시험 보강): g7-gpu-run 로그에 limbo[parked reclaimed leaked live] 출력 추가, 주입 시험이 실행 중 flush에 의한 limbo_reclaimed 증가·limbo_live 0 및 프레임버퍼 파기를 직접 확인(종료 시 회수와 분리). realloc 실패 누수 로그 문구 정정. 12db077 APK(CI 46117492870)는 기능상 동일하며 limbo 로그 출력만 없음. meson test 188/0/1.
 
 - 화면 출력 분석 1단계 (코드·기존 S8 로그 4a772f6 기준, 기기 재검증 아님): 로그에서 passes=3507, no_target=1498(렌더패스 begin 실패), mapped_written_back=3507. Write-back 대상은 exec 리소스 플래그(flags 2/4)로 정해지며 패스 성공 여부와 무관하므로, begin 실패 패스의 대상도 clear/draw 없이 이전 내용 그대로 게스트에 기록됨 → 검은/낡은 화면의 유력 후보(프레임버퍼 캐시 고갈 수정으로 사라질 가능성, 미검증). lagfx 4c48db4에 wb_after_refused_pass 카운터(g7-wb-sync) 추가해 구분 가능하게 함. 커서 좌상단 문제와 RGBA16F 변환·Swap 단계 픽셀 비교는 미착수. 12db077 APK 외에 f7352e7(limbo 로그)·4c48db4 핀 갱신.
+
+- 화면 출력 분석 2단계 (코드·기존 S8 로그 4a772f6, 기기 재검증 아님; 리뷰어 f7352e7/4c48db4 검토 반영):
+  - 정정: wb_after_refused_pass는 "실패 패스와 같은 exec에서 같은 서피스의 복사가 기록된 횟수"일 뿐 손상 화면 전송 횟수가 아님(같은 exec의 다른 패스 성공, 제출 실패는 구분 못 함). 검은 화면 원인으로 단정하지 않음 — 캐시 고갈 이전에도 draw 2,250회 이상 실행됐으므로 no_target만으로 전체를 설명할 수 없음.
+  - 기존 호스트 시험 범위 확인(tests/arm64-mapped-unit.c): clear+draw → RGhA(RGBA16F) 서피스 → half-float 그대로 게스트 Write-back 정확 일치, 6색×4채널 binary16 수치, 65536 패턴 왕복, swap 모드 Write-back, 유실·재매핑 처리. 즉 "GPU 이미지 → Write-back" 구간은 호스트에서 이미 검증됨. 아직 없는 것: 셰이더로 계산한 삼각형/프래그먼트 값의 정확 비교(축소 ON/OFF), blend/resolve 전후, 커서 합성.
+  - 커서: S8 로그 c1d5c57a에 g7-pvg-cursor/[cursor] 줄이 0건 → 해당 실행에서 게스트가 커서 glyph/move를 보낸 기록이 없음. 호스트 커서 위치 초기값이 (0,0)이므로(display.c) "좌측 상단 커서"는 게스트 커서 명령 미수신 가설과 부합(가설, 미검증).
+  - 미착수: Depth/Stencil Resolve S8 적용 검증, Shader Demote EXT, Subgroup Size Control, Int64 ON/OFF 실행 결과 비교, 정적 Depth/Stencil 보완.

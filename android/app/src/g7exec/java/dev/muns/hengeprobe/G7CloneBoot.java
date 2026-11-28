@@ -120,6 +120,7 @@ public final class G7CloneBoot {
     static volatile String vblExp = "0";
     static volatile boolean displayEvents = false;   // HV_PVG_DISPLAY_EVENTS: VBL + display cause bit (experiment)
     static volatile File gpuDumpDir = null;
+    static volatile File airCaptureBase = null;   // LAGFX_AIR_CAPTURE_DIR parent: rejected-AIR + pipeline-failure bundles only (not the full dump), on whenever GPU execution is on
 
     static void lagfxEnv(java.util.Map<String, String> env, List<String> cmd) {
         int i = cmd.indexOf("--shm");
@@ -136,7 +137,7 @@ public final class G7CloneBoot {
         final boolean exact = statsExact;   // read once for the note, the environment and run-info.txt
         note.append("jit_exact=" + statsExactText(exact) + "; ");
         note.append("build henge=" + G7ExecLauncher.HENGE_SHA + " lagfx=" + G7ExecLauncher.LAGFX_SHA + "; ");   // ties every log to the exact commits (integration-APK traceability)
-        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_VK_LEGACY_RENDERPASS_GPU"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("LAGFX_GPU_READBACK"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
+        env.remove("LAGFX_ARM64_EXEC"); env.remove("LAGFX_AIR_CAPTURE_DIR"); env.remove("LAGFX_VK_LEGACY_RENDERPASS_GPU"); env.remove("LAGFX_ARM64_MAPPED_WRITEBACK"); env.remove("HV_PVG_DISPLAY_EVENTS"); env.remove("G7_PVG_DISPLAY_EVENTS"); env.remove("LAGFX_ARM64_DUMP_DATA"); env.remove("G7_DRAW_DIAG"); env.remove("G7_FB0"); env.remove("LAGFX_VBL_EXP"); env.remove("LAGFX_PIPELINE_MATRIX"); env.remove("LAGFX_WB_VERIFY"); env.remove("LAGFX_GPU_READBACK"); env.remove("G7_STATS_EXACT"); env.remove("G7_STATS_EXACT_PEAK_MIB"); env.remove("HV_STATS_EXACT"); env.remove("HV_STATS_EXACT_PEAK_MIB");   // never inherit these from the parent environment: the start dialog alone decides
         if (exact) {   // the only place it is set; absent (not "0") when OFF
             env.put("G7_STATS_EXACT", STATS_EXACT_VALUE);
             int pk = statsExactPeakMib;   // one validated value; unlimited (0) = the variable stays unset
@@ -153,6 +154,12 @@ public final class G7CloneBoot {
         note.append("gpu_readback=" + (gpuReadback ? "ON (LAGFX_GPU_READBACK=1)" : "OFF (unset)") + "; " + WBV_MARK + "; ");   // the effective value is filled in at the end from the environment actually built (the write-back mode also sets it)
         if (fb0) env.put("G7_FB0", "1"); note.append("fb0=" + (fb0 ? "ON (G7_FB0=1" : "OFF (G7_FB0 unset") + ", early framebuffer observation, g7-fb0: lines; default OFF: enable only in the dedicated F0 run, keep OFF in J0/J1 timing comparisons); ");
         if (displayEvents) { env.put("G7_PVG_DISPLAY_EVENTS", "1"); note.append("display events experiment ON (G7_PVG_DISPLAY_EVENTS=1, read by the runner after its HV_* scrub); "); } if (gpuExec) { env.put("LAGFX_ARM64_EXEC", "1"); env.put("LAGFX_VK_LEGACY_RENDERPASS_GPU", "1"); note.append("GPU execution ON (LAGFX_ARM64_EXEC=1; LAGFX_VK_LEGACY_RENDERPASS_GPU=1: a GPU without dynamic rendering, e.g. the Tab S8, tries the legacy render-pass path instead of the built-in graphics; no effect on a GPU that has it); "); if (gpuWritebackMode == 1) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "1"); note.append("write-back experiment ON, immediate (LAGFX_ARM64_MAPPED_WRITEBACK=1: a rendered display surface is written to the guest after each exec); "); } else if (gpuWritebackMode == 2) { env.put("LAGFX_ARM64_MAPPED_WRITEBACK", "swap"); note.append("write-back experiment ON, deferred (LAGFX_ARM64_MAPPED_WRITEBACK=swap: owed surfaces are written before each display command); "); } else note.append("write-back experiment off; "); if (gpuWritebackMode != 0) { env.put("LAGFX_WB_VERIFY", "1"); note.append("write-back verify ON (LAGFX_WB_VERIFY=1, read-only, max 8 compares, 10 s apart); "); } } else note.append("GPU execution off; ");
+        File cap = airCaptureBase;
+        if (gpuExec && cap != null && gpuDumpDir == null) {   // selective capture without the full dump: the dump folder (if any) already receives the same files
+            File capRun = new File(cap, "run-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS", java.util.Locale.US).format(new java.util.Date()));
+            try { java.nio.file.Files.createDirectories(capRun.toPath()); env.put("LAGFX_AIR_CAPTURE_DIR", capRun.getPath()); note.append("air_capture=ON (LAGFX_AIR_CAPTURE_DIR=").append(capRun.getPath()).append("); "); }
+            catch (java.io.IOException | RuntimeException e) { note.append("air_capture=off (").append(e.getClass().getSimpleName()).append("); "); }
+        }
         File dd = gpuDumpDir;
         if (dd == null) note.append("GPU data dump off");
         else {

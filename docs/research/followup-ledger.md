@@ -421,3 +421,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - UberCompositeFragment: air.sample_texture_1d_array.v4f32 미구현(typed undef 6회) + i64 상수 축소 거부. 1D array 는 소스에 처리 없음 → 신규 구현 필요(커널 kind 7 급: translate.c 인자 메타, translate_function 이미지 타입/핸들러, 리소스 1D_ARRAY 뷰). operand 순서는 실제 AIR 없이 추정 → AIR 캡처 필요. 미구현.
 - i64 거부: 상수 값(0x…)을 거부 사유에 포함하도록 변경 → 다음 기기 실행에서 용도 판단 가능. 의미 보존 처리 경로는 미구현.
 - g7-gpu-image 에 brightest/bright>=0.25 추가(커서가 실제로 어두운지 구분).
+
+## 2026-11-28 (후속) 리뷰 반영 — 기능 구현
+- 밝기 진단: 음수 half 를 0 으로 취급(pvg_half.h 클램프와 동일). 이전 brightest/bright 는 절댓값이었음(오류 수정).
+- AIR 선별 캡처: lagfx LAGFX_AIR_CAPTURE_DIR — 번역 거부 AIR(xlatereject_<hash>.air.bc) + 파이프라인 실패 번들(SPIR-V, 상태, AIR)만 저장, 전체 덤프 아님. Henge G7CloneBoot: GPU 실행 ON 이면 항상 켬(덤프 체크 불필요), 폴더 g7_aircapture/run-*. 호스트 단위시험: LAGFX_AIR_CAPTURE_DIR 만으로 번들 디렉터리 선택. 기기 미검증.
+- texture1d_array: 번역기가 air.sample_texture_1d_array 를 2D ARRAY 경로(높이 1, 좌표 (u,0.5,layer))로 낮춤. 인자 메타(texture1d_array)/struct 이름으로 kind 6 판정, MTLTextureType 1 을 레이어 이미지로 미러. lavapipe 기대 픽셀: 8x1x4 64픽셀 전부 일치, texture1d(비배열) 대조는 typed undef 유지, type 1 = type 3 동일 출력. operand 순서는 INFER(실제 AIR 미확보), offset/pixel sampler 미적용(경고). 기기 미검증.
+- 파이프라인 실패 테스트에 legacy_renderpass 경로 추가. -13 원인(MRT 2 attachment 등)은 소스 정독으로 확정 못 함 → 다음 실행의 번들을 호스트 검증레이어 재생으로 분석 예정.
+- Int64: 상수 용도 미확정 → AIR 캡처 후 데이터 흐름 분석. 미구현.

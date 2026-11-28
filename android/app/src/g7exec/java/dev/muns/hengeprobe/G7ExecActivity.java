@@ -595,6 +595,7 @@ public class G7ExecActivity extends Activity {
                     opts.edit().putBoolean(KEY_REPLAY, cdc.isChecked()).apply();
                     G7CloneBoot.gpuWritebackMode = Math.max(0, Math.min(2, gw.getCheckedRadioButtonId() - 3000));
                     File xd = getExternalFilesDir(null);
+                    G7CloneBoot.airCaptureBase = new File(xd != null ? xd : getFilesDir(), "g7_aircapture");
                     G7CloneBoot.gpuDumpDir = gd.isChecked() ? new File(xd != null ? xd : getFilesDir(), "g7_gpudump") : null;
                     G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), clones.get(pick[0]), ok.isChecked(), runnerSt(), mode, seconds);
                     status.setText(st.message);

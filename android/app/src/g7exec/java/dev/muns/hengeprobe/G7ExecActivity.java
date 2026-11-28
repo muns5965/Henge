@@ -32,7 +32,7 @@ public class G7ExecActivity extends Activity {
     private TextView status, log, summary;
     private CheckBox consent, isoConsent, netConsent;
     private android.widget.ProgressBar cloneBar;
-    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, delClone, cloneBtn, cloneFromBtn, cbtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy, cbDump;
+    private Button start, cancel, refresh, share, copy, isolate, netStart, netStop, netShare, delSel, delAll, delCur, delClone, cloneBtn, cloneFromBtn, cbtn, directBtn, cbStop, cbShare, cbLagfx, cbFrame, auxBtn, cbCopy, cbDump;
     private File pendingExport;   // the ZIP the user is about to save with the system file picker
     private static final int REQ_SAVE_ZIP = 77;
     private TextView cbMon; private ScrollView cbScroll;
@@ -144,6 +144,7 @@ public class G7ExecActivity extends Activity {
         cloneFromBtn.setOnClickListener(v -> confirmCloneFrom());
         add(root, "[복제본 부팅] 검증된 복제본(vm/clones/)을 설치 단계가 아닌 일반 부팅으로 시험합니다. 이 복제본의 디스크·AUX만 쓰며 원본 설치 쌍은 사용하지 않습니다(최대 15분, 취소 가능). 화면이 나왔는지는 이 앱에서 '화면 프레임 수'와 부팅 단계 추정으로만 보입니다(실측 아님).", 13);
         cbtn = new Button(this); cbtn.setText("복제본 부팅 시작"); root.addView(cbtn);
+        directBtn = new Button(this); directBtn.setText("원본 직접 부팅 (복제 없음 · 원본에 기록)"); root.addView(directBtn);
         cbStop = new Button(this); cbStop.setText("복제본 부팅 중지"); cbStop.setEnabled(false); root.addView(cbStop);
         cbShare = new Button(this); cbShare.setText("복제본 부팅 로그 공유(전체 파일)"); root.addView(cbShare);
         cbLagfx = new Button(this); cbLagfx.setText("lagfx(GPU) 로그 공유(전체 파일)"); root.addView(cbLagfx);
@@ -197,11 +198,12 @@ public class G7ExecActivity extends Activity {
             }, "g7-aux-compare").start();
         });
         cbtn.setOnClickListener(v -> confirmCloneBoot());
+        directBtn.setOnClickListener(v -> confirmDirectBoot());
         cbStop.setOnClickListener(v -> {
             boolean wasPending = restartPending;
             restartPending = false; restartClone = null; restartGen++;
             G7CloneBoot.Run r = G7CloneBoot.current();
-            if (wasPending) { cbtn.setEnabled(true); cbStop.setEnabled(false); G7RunService.stop(this); status.setText("예약된 자동 재시작을 취소했습니다."); }
+            if (wasPending) { cbtn.setEnabled(true); directBtn.setEnabled(true); cbStop.setEnabled(false); G7RunService.stop(this); status.setText("예약된 자동 재시작을 취소했습니다."); }
             else if (r != null) { r.cancel(); status.setText("복제본 부팅 중지를 요청했습니다."); }
         });
         cbShare.setOnClickListener(v -> {   // the file on disk, not the Run object: still works after the app was restarted
@@ -441,6 +443,28 @@ public class G7ExecActivity extends Activity {
         }
     }
 
+    /** Boot the restored ORIGINAL install pair itself, for a device with no room for a copy. Its own explanation and its own consent; one of the two (copy or original) at a time, never alongside a running machine. */
+    private void confirmDirectBoot() {
+        final String why = G7Clone.validateOriginal(privDir, G7ProbeLauncher.readEcid(privDir));
+        if (why != null) { status.setText("원본 설치 쌍은 직접 부팅할 수 없습니다: " + why); return; }
+        final String[] lm = new String[G7CloneBoot.RUN_SECONDS_CHOICES.length];
+        for (int i = 0; i < lm.length; i++) { int sec = G7CloneBoot.RUN_SECONDS_CHOICES[i]; lm[i] = sec == 0 ? "제한 없음" : (sec % 60 == 0 ? (sec / 60) + "분" : sec + "초"); }
+        final android.widget.Spinner limSp = new android.widget.Spinner(this); limSp.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, lm));
+        limSp.setSelection(1);
+        final TextView info = new TextView(this); info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        info.setText("복원이 끝난 원본 디스크·AUX(state=done)를 복사본 없이 그대로 부팅합니다. macOS는 일반 부팅에서도 디스크와 AUX에 기록하므로, 이 실행은 원본을 바꿉니다. 되돌릴 깨끗한 복사본은 없습니다(저장공간이 부족한 기기용). 같은 시간에 다른 실행·복제·복원은 시작되지 않고, 러너가 파일을 잠가 두 번째 실행도 막습니다. 아직 검증되지 않은 기능입니다.");
+        final CheckBox ok = shortBox("원본 디스크·AUX에 기록되고 되돌릴 복사본이 없다는 점을 이해하고 동의합니다");
+        final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); int pad = (int) (8 * getResources().getDisplayMetrics().density); box.setPadding(pad * 2, pad, pad * 2, pad);
+        box.addView(info); box.addView(labelRow("실행 시간", limSp)); box.addView(ok);
+        new AlertDialog.Builder(this).setTitle("원본 직접 부팅").setView(box).setNegativeButton("취소", null)
+                .setPositiveButton("부팅 시작", (d, w) -> {
+                    int seconds = G7CloneBoot.RUN_SECONDS_CHOICES[Math.max(0, Math.min(G7CloneBoot.RUN_SECONDS_CHOICES.length - 1, limSp.getSelectedItemPosition()))];
+                    G7CloneBoot.Start st = G7CloneBoot.startDirect(nativeDirRef, extDirRef, privDir, getFilesDir(), ok.isChecked(), runnerSt(), G7CloneBoot.USB_NONE, seconds);
+                    status.setText(st.message);
+                    if (st.started) { restartPolicy.reset(); restartGen++; restartClone = null; restartPending = false; cbtn.setEnabled(false); directBtn.setEnabled(false); cbStop.setEnabled(true); startRunService(); cbootPoll(); }
+                }).show();
+    }
+
     private void confirmCloneFrom() {
         final List<File> clones = G7CloneBoot.listValid(privDir);
         if (clones.isEmpty()) { status.setText("복제 원본으로 쓸 검증된 복제본이 없습니다."); return; }
@@ -644,7 +668,7 @@ public class G7ExecActivity extends Activity {
         G7CloneBoot.Start st = G7CloneBoot.start(nativeDirRef, extDirRef, privDir, getFilesDir(), restartClone, true, runnerSt(), restartUsb, restartSeconds);
         status.setText("자동 재시작: " + st.message);
         if (st.started) { cbtn.setEnabled(false); cbStop.setEnabled(true); startRunService(); cbootPoll(); }
-        else { restartClone = null; cbtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
+        else { restartClone = null; cbtn.setEnabled(true); directBtn.setEnabled(true); cbStop.setEnabled(false); }   // the restart did not start: the person can start by hand again
     }
 
     /** The live monitor box and the picture/note. Not called while the person has paused the refresh (it is called once on resume and when the run has finished). */
@@ -666,7 +690,7 @@ public class G7ExecActivity extends Activity {
         if (r == null) return;
         if (!uiPaused || r.finished()) refreshCloneView(r);   // paused: the run state below is still polled, only the text and picture stay frozen
         if (r.finished()) {
-            cbtn.setEnabled(true); cbStop.setEnabled(false);
+            cbtn.setEnabled(true); directBtn.setEnabled(true); cbStop.setEnabled(false);
             String msg = "복제본 부팅이 끝났습니다(종료 코드 " + r.exitCode() + "). " + r.verdict();
             if (restartClone != null && !restartPending) {
                 G7RestartPolicy.Decision d = restartPolicy.decide(r.parsedVerdict(), r.wasCancelled() || r.exitCode() != 0, System.currentTimeMillis());

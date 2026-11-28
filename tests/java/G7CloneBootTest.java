@@ -277,6 +277,36 @@ public class G7CloneBootTest {
         s.run.cancel(); waitDone(s.run);
         check("cancel: runner asked to quit, run ended, marked cancelled", hang.quitSeen && s.run.finished() && new String(Files.readAllBytes(new File(files, s.run.logName()).toPath())).contains("(cancelled)"));
         check("the original pair and the clone marker are unchanged by all of this", G7CloneTest.snapshot(priv).equals(before));
+        // ---- direct boot of the restored original pair (no copy) ----
+        {
+            File dp = G7CloneTest.pair("done"), dip = G7CloneTest.pair("in_progress");
+            for (File q : new File[] {dp, dip}) Files.write(new File(q, "vm_ecid.txt").toPath(), ("ecid=0x" + Long.toHexString(G7CloneTest.ECID) + "\n").getBytes());
+            File dpC = dp.getCanonicalFile();
+            int n0 = spawned;
+            check("direct: switch off, no consent, a G7 run live, a runner present or unknown: each refused, nothing spawned",
+                !G7CloneBoot.startDirectWith(sp(f0), ROMS, false, () -> false, lib, ext, dpC, files, true, none, 0, 900).started
+                && !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, false, none, 0, 900).started
+                && !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> true, lib, ext, dpC, files, true, none, 0, 900).started
+                && !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, true, () -> 1, 0, 900).started
+                && !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, true, () -> -1, 0, 900).started && spawned == n0);
+            check("direct: usb mode E and an unknown run time are refused", !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, true, none, G7CloneBoot.USB_AUTOBOOT_FIX, 900).started
+                && !G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, true, none, 0, 77).started && spawned == n0);
+            File dipC = dip.getCanonicalFile();
+            G7CloneBoot.Start bs = G7CloneBoot.startDirectWith(sp(f0), ROMS, true, () -> false, lib, ext, dipC, files, true, none, 0, 900);
+            check("direct: a pair that is not state=done (an unfinished restore) is never booted", !bs.started && bs.message.contains("state=done") && spawned == n0);
+            check("direct: validateOriginal says why (done pair ok, wrong ECID refused, no tag refused)", G7Clone.validateOriginal(dpC, G7CloneTest.ECID) == null && G7Clone.validateOriginal(dpC, G7CloneTest.ECID + 1) != null
+                && G7Clone.validateOriginal(dpC, 0) != null);
+            File noTag = G7CloneTest.pair("done"); Files.write(new File(noTag, "g7_state.txt").toPath(), "state=done\n".getBytes());
+            check("direct: state=done without an ECID tag is refused", G7Clone.validateOriginal(noTag.getCanonicalFile(), G7CloneTest.ECID) != null);
+            File ln = G7CloneTest.pair("done"); File aux = new File(ln, "macos_aux.img"), real = new File(ln, "aux_real"); aux.renameTo(real); Files.createSymbolicLink(aux.toPath(), real.toPath());
+            check("direct: a linked AUX is refused", G7Clone.validateOriginal(ln.getCanonicalFile(), G7CloneTest.ECID) != null);
+            Fake okp = new Fake("", 0, false);
+            G7CloneBoot.Start ds = G7CloneBoot.startDirectWith(sp(okp), ROMS, true, () -> false, lib, ext, dpC, files, true, none, 0, 900);
+            check("direct: a done pair with consent starts, and the command line has --direct, no --clone-dir, the plain folder as --ecid-dir", ds.started && spawned == n0 + 1 && lastCmd.contains("--direct") && !lastCmd.contains("--clone-dir")
+                && lastCmd.get(lastCmd.indexOf("--ecid-dir") + 1).equals(dpC.getPath()));
+            if (ds.run != null) waitDone(ds.run);
+            check("direct: the ordinary clone start still refuses a missing clone folder (it never falls back to the original)", !G7CloneBoot.startWith(sp(f0), ROMS, true, () -> false, lib, ext, dpC, files, null, true, none).started && spawned == n0 + 1);
+        }
         System.out.println(fails == 0 ? "G7CLONEBOOT OK" : "G7CLONEBOOT FAILED " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

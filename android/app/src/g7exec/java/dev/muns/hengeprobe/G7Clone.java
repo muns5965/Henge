@@ -261,6 +261,24 @@ public final class G7Clone {
         } catch (IOException | RuntimeException e) { return "복제본을 검증하지 못했습니다: " + e.getMessage(); }
     }
 
+    /** The same kind of check for a boot of the restored ORIGINAL pair itself (no copy): the app's folder, a finished restore (g7_state.txt starts with exactly "state=done"), the tag of THIS ECID, and
+     *  plain, non-linked disk and AUX files. The runner re-checks all of it (hv_direct_open) and locks the files. null = may boot. */
+    public static String validateOriginal(File priv, long ecid) {
+        try {
+            if (priv == null || !priv.getAbsoluteFile().equals(priv.getCanonicalFile())) return "앱 폴더 경로가 일반 경로가 아닙니다(링크나 상대 경로 포함)";
+            if (Files.isSymbolicLink(priv.toPath()) || !Files.isDirectory(priv.toPath(), LinkOption.NOFOLLOW_LINKS)) return "앱 폴더가 일반 폴더가 아닙니다";
+            File disk = new File(priv, "macos_disk.img"), aux = new File(priv, "macos_aux.img"), st = new File(priv, "g7_state.txt");
+            if (!regular(disk.toPath()) || !regular(aux.toPath()) || !regular(st.toPath())) return "디스크, AUX 또는 상태 파일이 없거나 일반 파일이 아닙니다";
+            if (disk.length() <= 0 || aux.length() <= 0) return "디스크 또는 AUX가 비어 있습니다";
+            String text = new String(Files.readAllBytes(st.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            if (!text.startsWith("state=done\n")) return "설치가 완료(state=done)로 표시되지 않았습니다(끝나지 않은 복원은 부팅하지 않습니다)";
+            String fileTag = tagOf(st);
+            if (fileTag == null || fileTag.equals("none")) return "설치 쌍이 ECID에 묶여 있지 않습니다(태그 없음)";
+            if (ecid <= 0 || !fileTag.equals(ecidTag(ecid))) return "현재 ECID가 이 설치를 만든 복원의 ECID와 다릅니다";
+            return null;
+        } catch (IOException | RuntimeException e) { return "원본 설치 쌍을 검증하지 못했습니다: " + e.getMessage(); }
+    }
+
     static final class Cancelled extends IOException { Cancelled() { super("cancelled"); } }
 
     /** Removes only the files of this call (the .partial files and any already renamed or written) and the folder when it is then empty. */

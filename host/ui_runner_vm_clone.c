@@ -67,6 +67,55 @@ static const HvRunnerApi REAL_API = {
 static atomic_int g_exited, g_exit_reason = -1, g_sig;
 static void on_exit_cb(int reason) { atomic_store(&g_exit_reason, reason); atomic_store(&g_exited, 1); }
 static void on_signal(int s) { atomic_store(&g_sig, s); }
+/* A crash report for a fatal signal (the engine runs in this process; exit 139 alone says nothing about where). Async-signal-safe: only write(), open(), read() and integer formatting. It prints the signal,
+   the fault address and, on AArch64, pc / lr / sp / fp of the faulting thread, the address of main (one anchor), and the executable mappings of /proc/self/maps, so that pc can be turned into
+   "library + offset" and resolved against the unstripped library offline. It then restores the default action and re-raises, so the exit status and Android's own tombstone are unchanged. */
+#include <ucontext.h>
+int main(int argc, char **argv);
+static void crash_put(const char *s) { size_t n = 0; while (s[n]) n++; while (n) { ssize_t w = write(1, s, n); if (w <= 0) break; s += w; n -= (size_t)w; } }
+static void crash_hex(const char *label, unsigned long v) {
+    char b[48]; int i = 0; const char *x = "0123456789abcdef";
+    while (label[i] && i < 24) { b[i] = label[i]; i++; }
+    b[i++] = '0'; b[i++] = 'x';
+    for (int sh = (int)sizeof v * 8 - 4; sh >= 0; sh -= 4) b[i++] = x[(v >> sh) & 15];
+    b[i++] = ' '; b[i] = 0; crash_put(b);
+}
+static void on_crash(int sig, siginfo_t *si, void *uc_) {
+    static volatile int once;
+    if (!once) {
+        once = 1;
+        crash_put("\ng7-crash: ");
+        crash_hex("sig=", (unsigned long)sig); crash_hex("code=", (unsigned long)(si ? si->si_code : 0)); crash_hex("fault_addr=", (unsigned long)(si ? si->si_addr : 0));
+#if defined(__aarch64__)
+        { ucontext_t *uc = uc_; if (uc) { crash_hex("pc=", (unsigned long)uc->uc_mcontext.pc); crash_hex("lr=", (unsigned long)uc->uc_mcontext.regs[30]); crash_hex("sp=", (unsigned long)uc->uc_mcontext.sp); crash_hex("fp=", (unsigned long)uc->uc_mcontext.regs[29]); } }
+#else
+        (void)uc_;
+#endif
+        crash_hex("main=", (unsigned long)(void *)&main);
+        crash_put("\n");
+        int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            static char buf[1 << 15]; ssize_t n; size_t have = 0;
+            while ((n = read(fd, buf + have, sizeof buf - 1 - have)) > 0) have += (size_t)n;   /* a mapping list that does not fit is cut: the executable ones that matter come early or are repeated per library */
+            close(fd); buf[have] = 0;
+            for (char *l = buf; *l; ) {
+                char *e = l; while (*e && *e != '\n') e++;
+                char keep = *e; *e = 0;
+                int xp = 0; for (char *q = l; *q; q++) if (q[0] == ' ' && q[1] == 'r' && q[3] == 'x') { xp = 1; break; }
+                if (xp && strstr(l, ".so")) { crash_put("g7-crash-map: "); crash_put(l); crash_put("\n"); }
+                *e = keep; l = keep ? e + 1 : e;
+            }
+        }
+    }
+    signal(sig, SIG_DFL); raise(sig);
+}
+static void install_crash_reports(void) {
+    static char alt[1 << 16];   /* its own stack, so that a stack overflow is reported too */
+    stack_t ss; memset(&ss, 0, sizeof ss); ss.ss_sp = alt; ss.ss_size = sizeof alt; sigaltstack(&ss, NULL);
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_crash; sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND; sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGFPE, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
+}
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 
 /* The config check of this binary. Writable storage is allowed only with clone_verified (clone_dir_ok passed); every other guarantee of hv_runner_config_ok stays. */
@@ -207,6 +256,7 @@ static void frame_line(void) {
 
 int main(int argc, char **argv) {
     const char *shm_path = NULL, *rom = NULL, *clone_dir = NULL, *ecid_dir = NULL; HvClone cl;
+    int direct = 0;   /* --direct: boot the restored ORIGINAL pair (no copy), see hv_direct_open */
     long ram_mb = 2048, cpus = 2, jit_mb = 256, seconds = 0, stop_wait_ms = 5000, usb_mode = 0;   /* usb_mode: 0 = A none, 1 = B device port only, 2 = C port + enumeration (the same two flags host/ui_runner_vm.c sets) */
     
     for (int i = 1; i < argc; i++) {
@@ -215,6 +265,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--rom") && more) rom = argv[++i];
         else if (!strcmp(argv[i], "--clone-dir") && more) clone_dir = argv[++i];
         else if (!strcmp(argv[i], "--ecid-dir") && more) ecid_dir = argv[++i];
+        else if (!strcmp(argv[i], "--direct")) direct = 1;
         else if (!strcmp(argv[i], "--usb-mode") && more) { usb_mode = atol(argv[++i]); if (usb_mode < 0 || usb_mode > 4) { fprintf(stderr, "ui_runner_vm_clone: --usb-mode must be 0, 1, 2, 3 or 4\n"); return 2; } }
         else if (!strcmp(argv[i], "--ram-mb") && more) ram_mb = atol(argv[++i]);
         else if (!strcmp(argv[i], "--cpus") && more) cpus = atol(argv[++i]);
@@ -222,15 +273,17 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--seconds") && more) seconds = atol(argv[++i]);
         else if (!strcmp(argv[i], "--stop-wait-ms") && more) stop_wait_ms = atol(argv[++i]);
         else {
-            fprintf(stderr, "ui_runner_vm_clone: unknown or incomplete argument '%s' (accepted: --shm --rom --clone-dir --ecid-dir --ram-mb --cpus --jit-mb --seconds --stop-wait-ms --usb-mode)\n", argv[i]);
+            fprintf(stderr, "ui_runner_vm_clone: unknown or incomplete argument '%s' (accepted: --shm --rom --clone-dir --direct --ecid-dir --ram-mb --cpus --jit-mb --seconds --stop-wait-ms --usb-mode)\n", argv[i]);
             return 2;
         }
     }
-    if (!shm_path || !rom || !clone_dir || !ecid_dir || seconds < 0 || stop_wait_ms < 0 || stop_wait_ms > 600000) {
+    if (direct ? clone_dir != NULL : !clone_dir) { fprintf(stderr, "ui_runner_vm_clone: give exactly one of --clone-dir (a verified copy) or --direct (the restored original pair)\n"); return 2; }
+    if (!shm_path || !rom || !ecid_dir || seconds < 0 || stop_wait_ms < 0 || stop_wait_ms > 600000) {
         fprintf(stderr, "ui_runner_vm_clone: --shm --rom --clone-dir --ecid-dir are required and the numbers must be sensible\n");
         return 2;
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
+    install_crash_reports();
 
     char names[512], left[512];
     int scrubbed = hv_runner_scrub_env(names, sizeof names, left, sizeof left);
@@ -243,18 +296,19 @@ int main(int argc, char **argv) {
     char cwhy[200] = "";
     uint64_t ecid = hv_clone_read_ecid(ecid_dir);
     /* checked AND opened in one step: the machine below is given /proc/self/fd paths of the very files that passed, so a swap after this point changes nothing */
-    if (hv_clone_open(clone_dir, ecid_dir, ecid, &cl, cwhy, sizeof cwhy) != 0) {
-        fprintf(stderr, "ui_runner_vm_clone: the clone was refused: %s\n", cwhy);
-        printf("ui_runner_vm_clone RESULT: FAILED, the clone was refused (%s)\n", cwhy);
+    if ((direct ? hv_direct_open(ecid_dir, ecid, &cl, cwhy, sizeof cwhy) : hv_clone_open(clone_dir, ecid_dir, ecid, &cl, cwhy, sizeof cwhy)) != 0) {
+        fprintf(stderr, "ui_runner_vm_clone: the %s was refused: %s\n", direct ? "original pair" : "clone", cwhy);
+        printf("ui_runner_vm_clone RESULT: FAILED, the %s was refused (%s)\n", direct ? "original pair" : "clone", cwhy);
         return 1;
     }
-    printf("ui_runner_vm_clone: clone folder %s verified (same vm folder, ECID tag equal, marker complete, files opened and locked)\n", cl.real);
+    if (direct) printf("ui_runner_vm_clone: DIRECT BOOT of the original install pair in %s verified (state=done, ECID tag equal, plain single-link files opened and locked); the original disk and AUX are written by this run\n", cl.real);
+    else printf("ui_runner_vm_clone: clone folder %s verified (same vm folder, ECID tag equal, marker complete, files opened and locked)\n", cl.real);
     HvVmConfig cfg;
     hv_runner_make_config(&cfg, rom, cl.disk, cl.aux, (uint64_t)(ram_mb < 0 ? 0 : ram_mb), (int)cpus, (size_t)(jit_mb < 0 ? 0 : jit_mb));
     /* [this binary's whole point, reviewed and explicitly approved] hv_runner_make_config leaves these at 0/0
        (host/runner_vm_core.c is unchanged); this binary alone sets them, after every other guarantee that
        function makes (readonly storage, no network, installer=0 -- all untouched above) is already built. */
-    cfg.readonly_storage = 0;   /* the clone's disk and AUX are writable, and only because clone_dir_ok passed above; the original install pair is a different folder this binary never names */
+    cfg.readonly_storage = 0;   /* the disk and AUX are writable, and only because hv_clone_open (a verified copy) or hv_direct_open (the restored original, state=done, explicit consent in the launcher) passed above */
     cfg.ecid = ecid;
     cfg.seed = 0;
     /* USB test modes (explicitly approved): 0 = none, 1 = the guest-facing virtual USB device port only, 2 = port plus hv_usb_probe_start's non-destructive enumeration -- exactly what host/ui_runner_vm.c

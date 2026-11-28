@@ -83,6 +83,38 @@ int main(void) {
       CHECK(strstr(cur, "macos_disk.img") != NULL && strstr(cur, "(deleted)") != NULL, "after the swap, the held descriptor still points at the file that was checked (now unlinked): %s", cur); }
     hv_clone_close(&c);
 
+    /* ---- direct boot of the restored original pair ---- */
+    {
+        char dv[PATH_MAX], st[200]; snprintf(dv, sizeof dv, "%s/direct", root); mkdir(dv, 0700);
+        wr(dv, "macos_disk.img", "", 1 << 20); wr(dv, "macos_aux.img", "x", 0);
+        snprintf(st, sizeof st, "state=done\necid_tag=%s\n", tag); wr(dv, "g7_state.txt", st, 0);
+        wr(dv, "vm_ecid.txt", "ecid=0x12345678901\n", 0); wr(dv, "some_other_file.bin", "z", 0);   /* the VM folder holds other things: they are not listed or touched */
+        HvClone d1, d2;
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) == 0 && !strncmp(d1.disk, "/proc/self/fd/", 14) && !strcmp(d1.real, dv), "direct: a pair with state=done and this ECID's tag is accepted: %s", why);
+        CHECK(hv_direct_open(dv, ECID, &d2, why, sizeof why) != 0 && strstr(why, "in use"), "direct: a second runner on the same pair is refused: %s", why);
+        hv_clone_close(&d1);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) == 0, "direct: after closing, the pair can be opened again"); hv_clone_close(&d1);
+        CHECK(hv_direct_open(dv, ECID + 1, &d1, why, sizeof why) != 0 && strstr(why, "another machine identity"), "direct: another ECID is refused: %s", why);
+        CHECK(hv_direct_open(dv, 0, &d1, why, sizeof why) != 0, "direct: no ECID is refused");
+        CHECK(hv_direct_open("direct", ECID, &d1, why, sizeof why) != 0, "direct: a relative path is refused");
+        snprintf(odd, sizeof odd, "%s/../direct", clones); CHECK(hv_direct_open(odd, ECID, &d1, why, sizeof why) != 0, "direct: a path with .. is refused: %s", why);
+        snprintf(st, sizeof st, "state=in_progress\necid_tag=%s\n", tag); wr(dv, "g7_state.txt", st, 0);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && strstr(why, "not marked done"), "direct: an unfinished restore (in_progress) is never booted: %s", why);
+        wr(dv, "g7_state.txt", "state=done\n", 0);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && strstr(why, "ecid_tag"), "direct: state=done without a tag is refused: %s", why);
+        snprintf(st, sizeof st, "state=done\necid_tag=0000000000000000\n"); wr(dv, "g7_state.txt", st, 0);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && strstr(why, "another machine identity"), "direct: a pair tied to another machine is refused: %s", why);
+        snprintf(st, sizeof st, "state=done\necid_tag=%s\n", tag); wr(dv, "g7_state.txt", st, 0);
+        char lp[PATH_MAX], tg[PATH_MAX]; snprintf(lp, sizeof lp, "%s/macos_aux.img", dv); snprintf(tg, sizeof tg, "%s/aux_target", dv); rename(lp, tg); if (symlink(tg, lp)) {}
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0, "direct: a linked AUX is refused: %s", why);
+        remove(lp); rename(tg, lp);
+        snprintf(tg, sizeof tg, "%s/aux_hard", dv); if (link(lp, tg)) {}
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && strstr(why, "another link"), "direct: a hard-linked AUX is refused: %s", why);
+        remove(tg);
+        snprintf(lp, sizeof lp, "%s/macos_disk.img", dv); remove(lp);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && strstr(why, "missing"), "direct: a missing disk is refused: %s", why);
+        CHECK(hv_direct_open(dv, ECID, &d1, why, sizeof why) != 0 && d1.disk_fd < 0 && d1.aux_fd < 0 && d1.dirfd < 0, "direct: a refusal leaves nothing open");
+    }
     wr(root, "vm_ecid.txt", "ecid=0x12345678901\n", 0);
     CHECK(hv_clone_read_ecid(root) == ECID, "a valid ECID file is read");
     wr(root, "vm_ecid.txt", "ecid=0x1\n", 0); CHECK(hv_clone_read_ecid(root) == 0, "a value below 2^40 is refused");

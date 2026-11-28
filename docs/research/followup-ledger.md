@@ -281,3 +281,14 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - 검증 수준: 호스트 모의 Range 서버 테스트 107 항목 통과(기존 단일 경로 전부 + 병렬 신규). TLS(mbedtls 심) 다중 스레드는 호스트 http 로만 확인, 실제 Apple CDN/기기 미검증.
 - 미결(기기 측정): 1/2/4/8 속도·CPU·발열·저장소 부하 → 측정 전에는 기본값 1 유지. Apple CDN 이 이미 단일 연결로 포화될 수 있음. UI 선택지/총 속도 표시는 아직 앱에 연결 안 함(PROGRESS 형식은 그대로, SPEED 줄은 앱 로그에서 숨김).
 - 항목 20 완료율은 변경 없음(기기 확인 전).
+
+## S8(Adreno 730, Vulkan 1.1.128) 초기화 충돌 및 원본 직접 부팅 — 기존 항목(GPU 호환성/Android 실행 안정성) 내 처리
+
+상태: 호스트 검증까지만. 기기(S8) 검증 없음.
+
+- 로그: `vk_init` 장치/큐, `cmd_pool_create` 성공 직후 `FATAL signal 11 fault_addr=0xe8`(exit 139). 정확한 충돌 함수는 호출 스택이 없어 **확정하지 못함**.
+- 가설(미확정): 패스스루/커서 파이프라인이 `VkPipelineRenderingCreateInfo` + `renderPass=NULL`(동적 렌더링 전제)로 만들어지는데 S8 드라이버는 동적 렌더링 미지원.
+- 조치(lagfx 5bc6083, 4a67260): (1) 동적 렌더링 미지원 시 command pool/파이프라인 생성 전에 `LAGFX_ERR_VULKAN_INIT`으로 깨끗이 거부 → `lagfx_device_new` NULL → Henge 내장 gfx 장치로 폴백. (2) bufferDeviceAddress는 API>=1.2에서만 보고(1.1에서 코어 `vkGetBufferDeviceAddress`는 사용 불가). (3) `g7-stage:` 단계 로그, 런너 `g7-crash:` 보고 추가.
+- 미해결: 기존 Render Pass 렌더링 경로(S8 GPU 가속)는 미구현. 로그의 "지원 0/활성화 1" 불일치는 원인 미확정(활성화 값은 probe 결과로 제한되나 1.1 드라이버가 1.2/1.3 구조체를 무시할 수 있음).
+- lagfx meson: 176 OK / 1 FAIL(`shader translate (unit)`, 수정 전에도 동일 — 이 환경의 llc가 SPIR-V 타깃을 못 찾음).
+- 원본 직접 부팅(`hv_direct_open`/`--direct`/`startDirect`/`validateOriginal`): state=done + ECID 태그 + 단일 링크 일반 파일 + flock(동시 실행 거부) + 별도 사용자 동의. 호스트 C/Java 테스트 통과. 제한: 직접 부팅 후 원본은 변경되므로 "깨끗한 복원 직후 원본"과 구분하는 별도 상태 표시는 아직 없음(미구현); 비정상 종료 후 디스크 무결성 검사 없음.

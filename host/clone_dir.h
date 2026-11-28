@@ -159,6 +159,39 @@ static inline int hv_clone_open(const char *dir, const char *ecid_dir, uint64_t 
 #undef BAD
 }
 
+/* Direct boot of the ORIGINAL install pair (the restored disk and AUX in the VM folder itself), for a device that has no room for a copy. It is a separate, stricter-in-its-own-way door than hv_clone_open:
+   the folder must be the plain VM folder that holds the machine identity; g7_state.txt must say exactly "state=done" (a finished restore, never in_progress) with the tag of THIS ECID; macos_disk.img and
+   macos_aux.img are plain single-link files that are not links; both are locked (flock, non-blocking) so a second runner, a clone being made or a restore on the same pair is refused; and the files
+   that passed are kept open, the machine gets their /proc/self/fd paths. Nothing else in the folder is listed or touched. 0 and a filled HvClone (real = the VM folder), or -1 with a reason. */
+static inline int hv_direct_open(const char *ecid_dir, uint64_t ecid, HvClone *c, char *why, size_t wcap) {
+#define BADD(...) do { snprintf(why, wcap, __VA_ARGS__); hv_clone_close(c); return -1; } while (0)
+    c->dirfd = c->disk_fd = c->aux_fd = -1; c->has_initial = 0;
+    char ereal[PATH_MAX], tag[17];
+    if (ecid == 0) BADD("no machine identity (ECID) to tie the pair to");
+    hv_clone_ecid_tag(ecid, tag);
+    if (!ecid_dir || ecid_dir[0] != '/' || !realpath(ecid_dir, ereal) || strcmp(ereal, ecid_dir)) BADD("--ecid-dir is not a plain absolute path");
+    c->dirfd = open(ereal, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (c->dirfd < 0) BADD("cannot open the VM folder: %s", strerror(errno));
+    char sf[4096], tv[64]; struct stat ss, sd, sa;
+    int fs = openat(c->dirfd, "g7_state.txt", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fs < 0 || fstat(fs, &ss) || !S_ISREG(ss.st_mode) || hv_cd_read_all(fs, sf, sizeof sf) < 0) { if (fs >= 0) close(fs); BADD("g7_state.txt is missing, not a plain file or unreadable"); }
+    close(fs);
+    if (strncmp(sf, "state=done\n", 11)) BADD("the install pair is not marked done (a restore that has not finished is never booted)");
+    if (!hv_cd_line(sf, "ecid_tag", tv, sizeof tv)) BADD("the pair is not tied to an ECID (no ecid_tag line)");
+    if (strcmp(tv, tag)) BADD("the pair belongs to another machine identity (ECID tag differs)");
+    c->disk_fd = openat(c->dirfd, "macos_disk.img", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    c->aux_fd = openat(c->dirfd, "macos_aux.img", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (c->disk_fd < 0 || c->aux_fd < 0) BADD("macos_disk.img or macos_aux.img is missing or is a link");
+    if (fstat(c->disk_fd, &sd) || !S_ISREG(sd.st_mode) || sd.st_nlink != 1) BADD("macos_disk.img is not a plain file or has another link");
+    if (fstat(c->aux_fd, &sa) || !S_ISREG(sa.st_mode) || sa.st_nlink != 1) BADD("macos_aux.img is not a plain file or has another link");
+    if (sd.st_size <= 0 || sa.st_size <= 0) BADD("the disk or the AUX is empty");
+    if (flock(c->disk_fd, LOCK_EX | LOCK_NB) != 0 || flock(c->aux_fd, LOCK_EX | LOCK_NB) != 0) BADD("the install pair is in use by another runner (or cannot be locked)");
+    snprintf(c->disk, sizeof c->disk, "/proc/self/fd/%d", c->disk_fd); snprintf(c->aux, sizeof c->aux, "/proc/self/fd/%d", c->aux_fd);
+    snprintf(c->real, sizeof c->real, "%s", ereal);
+    return 0;
+#undef BADD
+}
+
 /* "ecid=0x<hex>" in <dir>/vm_ecid.txt, 2^40 <= value < 2^62. 0 on any problem (the value is never printed). */
 static inline uint64_t hv_clone_read_ecid(const char *dir) {
     char path[PATH_MAX], t[64];

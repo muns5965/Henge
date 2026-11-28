@@ -391,6 +391,21 @@ public final class G7CloneBoot {
     }
 
     static Start startWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
+        if (cloneDir == null) return new Start(false, "복제본 폴더가 지정되지 않아 시작하지 않았습니다. (원본 직접 부팅은 별도 버튼과 별도 동의가 필요합니다.)", null);
+        return startCore(sp, roms, enabled, g7Live, nativeLibDir, extVmDir, priv, filesDir, cloneDir, false, consent, runnerStatus, usbMode, seconds);
+    }
+
+    /** Boots the RESTORED ORIGINAL install pair (state=done) itself, with no copy: for a device whose free space cannot hold one. It writes the original disk and AUX, so it has its own typed consent
+     *  (the caller passes true only after the person confirmed that this run changes the original and that there is no clean copy to go back to), is refused while anything else is running, and never uses USB mode E. */
+    public static Start startDirect(File nativeLibDir, File extVmDir, File priv, File filesDir, boolean directConsent, IntSupplier runnerStatus, int usbMode, int seconds) {
+        return startDirectWith(REAL, G7ProbeLauncher::usableRomFile, G7ExecLauncher.START_ENABLED, G7ExecLauncher::hasLiveRun, nativeLibDir, extVmDir, priv, filesDir, directConsent, runnerStatus, usbMode, seconds);
+    }
+    static Start startDirectWith(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, boolean directConsent, IntSupplier runnerStatus, int usbMode, int seconds) {
+        if (usbMode == USB_AUTOBOOT_FIX) return new Start(false, "E 모드(auto-boot 켜기)는 원본 직접 부팅에서 허용되지 않습니다. 시작하지 않았습니다.", null);
+        return startCore(sp, roms, enabled, g7Live, nativeLibDir, extVmDir, priv, filesDir, null, true, directConsent, runnerStatus, usbMode, seconds);
+    }
+
+    private static Start startCore(Spawner sp, G7ExecLauncher.RomFinder roms, boolean enabled, BooleanSupplier g7Live, File nativeLibDir, File extVmDir, File priv, File filesDir, File cloneDir, boolean direct, boolean consent, IntSupplier runnerStatus, int usbMode, int seconds) {
         if (!validSeconds(seconds)) return new Start(false, "허용되지 않은 실행 시간 제한이라 시작하지 않았습니다.", null);
         final boolean exactNow = statsExact;   // the log header; lagfxEnv reads the same switch when the process is spawned
         final int peakNow = statsExactPeakMib;   // same: the log header and the environment use this value
@@ -398,20 +413,20 @@ public final class G7CloneBoot {
         final int jit = jitMb;   // one read: the check, the command line and the log header all use this value
         if (!validJitMb(jit)) return new Start(false, "허용되지 않은 JIT 크기(" + jit + " MiB)라 시작하지 않았습니다.", null);
         if (usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX) return new Start(false, "알 수 없는 USB 모드라 시작하지 않았습니다.", null);
-        if (usbMode == USB_AUTOBOOT_FIX && (cloneDir == null || !"clone-001".equals(cloneDir.getName()))) return new Start(false, "E 모드(auto-boot 켜기)는 clone-001에서만 허용됩니다. 시작하지 않았습니다.", null);
+        if (usbMode == USB_AUTOBOOT_FIX && (direct || cloneDir == null || !"clone-001".equals(cloneDir.getName()))) return new Start(false, "E 모드(auto-boot 켜기)는 clone-001에서만 허용됩니다. 시작하지 않았습니다.", null);
         synchronized (G7ExecLauncher.START_LOCK) {
             String g = G7Isolation.gate(enabled, g7Live, runnerStatus);
             if (g != null) return new Start(false, g.replace("격리하지", "부팅하지").replace("아무것도 옮기지", "아무것도 시작하지"), null);
-            if (!consent) return new Start(false, "동의가 체크되지 않아 복제본 부팅을 시작하지 않았습니다.", null);
+            if (!consent) return new Start(false, direct ? "원본 직접 부팅 동의가 체크되지 않아 시작하지 않았습니다." : "동의가 체크되지 않아 복제본 부팅을 시작하지 않았습니다.", null);
             if (G7Isolation.pending(priv)) return new Start(false, "끝나지 않은 격리가 있어 부팅하지 않았습니다.", null);
             if (!isPackaged(nativeLibDir)) return new Start(false, "복제본 부팅 실행 파일(" + LIB_NAME + ")이 이 빌드에 없어 시작하지 않았습니다.", null);
             File rom = roms.find(extVmDir, priv);
             long ecid = G7ProbeLauncher.readEcid(priv);
             if (rom == null || ecid <= 0) return new Start(false, "ROM 또는 ECID를 확인하지 못해 시작하지 않았습니다.", null);
-            File cdir, pdir;
-            try { cdir = cloneDir.getCanonicalFile(); pdir = priv.getCanonicalFile(); } catch (IOException e) { return new Start(false, "경로를 확인하지 못해 시작하지 않았습니다.", null); }
-            String bad = G7Clone.validate(cdir, pdir, ecid);
-            if (bad != null) return new Start(false, "이 복제본으로 부팅하지 않았습니다: " + bad, null);
+            File cdir = null, pdir;
+            try { cdir = direct ? null : cloneDir.getCanonicalFile(); pdir = priv.getCanonicalFile(); } catch (IOException e) { return new Start(false, "경로를 확인하지 못해 시작하지 않았습니다.", null); }
+            String bad = direct ? G7Clone.validateOriginal(pdir, ecid) : G7Clone.validate(cdir, pdir, ecid);
+            if (bad != null) return new Start(false, (direct ? "원본 설치 쌍으로 부팅하지 않았습니다: " : "이 복제본으로 부팅하지 않았습니다: ") + bad, null);
             File log = new File(filesDir, LOG_PREFIX + String.format("%013d", System.currentTimeMillis()) + LOG_SUFFIX);
             vmLogName = log.getName();
             OutputStream logOut;
@@ -421,12 +436,12 @@ public final class G7CloneBoot {
             cmd.add(new File(nativeLibDir, LIB_NAME).getPath());
             cmd.add("--shm"); cmd.add(new File(filesDir, "g7_cloneboot.shm").getPath());
             cmd.add("--rom"); cmd.add(rom.getPath());
-            cmd.add("--clone-dir"); cmd.add(cdir.getPath());
+            if (direct) cmd.add("--direct"); else { cmd.add("--clone-dir"); cmd.add(cdir.getPath()); }
             cmd.add("--ecid-dir"); cmd.add(pdir.getPath());   // plain canonical paths: the runner refuses anything else
             cmd.add("--seconds"); cmd.add(String.valueOf(seconds));   // 0 = no limit (the runner then waits for the stop request, a guest end or a fatal error)
             cmd.add("--ram-mb"); cmd.add("2048"); cmd.add("--cpus"); cmd.add("2"); cmd.add("--jit-mb"); cmd.add(String.valueOf(jit));   // validated against JIT_MB_CHOICES above; default 256
             cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode));
-            lastRunConfig = "clone=" + cloneDir.getName() + "; usb_mode=" + usbMode;   // log text only: lets the export read the run's own options
+            lastRunConfig = (direct ? "direct=original" : "clone=" + cloneDir.getName()) + "; usb_mode=" + usbMode;   // log text only: lets the export read the run's own options
             Process p;
             try { p = sp.spawn(cmd); }
             catch (IOException e) { try { logOut.close(); } catch (IOException ignored) { } return new Start(false, "실행 파일을 시작하지 못했습니다: " + G7ExecLauncher.mask(String.valueOf(e.getMessage()), ecid), null); }
@@ -435,7 +450,7 @@ public final class G7CloneBoot {
             G7ExecLauncher.OTHER_LIVE = G7CloneBoot::hasLive;
             CURRENT = run;
             watch(run, p, ecid, jit, exactNow, peakNow);
-            return new Start(true, "복제본(" + cloneDir.getName() + ") 부팅을 시작했습니다. 원본 설치 쌍은 사용하지 않습니다.", run);
+            return new Start(true, direct ? "원본 설치 쌍을 직접 부팅하기 시작했습니다. 이 실행은 원본 디스크와 AUX에 기록합니다." : "복제본(" + cloneDir.getName() + ") 부팅을 시작했습니다. 원본 설치 쌍은 사용하지 않습니다.", run);
         }
     }
 

@@ -59,7 +59,9 @@ grep -q 'synchronized (G7ExecLauncher.START_LOCK)' "$CB" || bad "G7CloneBoot mus
 x=$(grep -nE '"--ecid"|--ecid |"--installer|"--seed|macos_disk|macos_aux|"--readonly|\.delete\(|renameTo|Files\.(delete|move|copy)|FileOutputStream|FileWriter|RandomAccessFile' "$CB"); [ -z "$x" ] || { bad "G7CloneBoot: a forbidden option or file operation:"; echo "$x"; }
 grep -q 'cmd.add("--usb-mode"); cmd.add(String.valueOf(usbMode))' "$CB" || bad "G7CloneBoot must pass the validated usb mode to the runner"
 grep -q 'usbMode < USB_NONE || usbMode > USB_AUTOBOOT_FIX' "$CB" || bad "G7CloneBoot must reject an unknown usb mode before anything starts"
-grep -q 'usbMode == USB_AUTOBOOT_FIX && (cloneDir == null || !"clone-001".equals(cloneDir.getName()))' "$CB" || bad "G7CloneBoot must limit mode E to clone-001"
+grep -q 'G7Clone.validateOriginal(pdir, ecid)' "$CB" && grep -q 'if (cloneDir == null) return new Start(false' "$CB" || bad "the direct boot must be validated by G7Clone.validateOriginal and the clone start must never fall back to the original when no clone is named"
+grep -q 'strncmp(sf, "state=done' host/clone_dir.h && grep -q 'hv_direct_open(ecid_dir, ecid, &cl' host/ui_runner_vm_clone.c || bad "the runner's direct boot must go through hv_direct_open (state=done, ECID tag, plain single-link files, locked)"
+grep -q 'usbMode == USB_AUTOBOOT_FIX && (direct || cloneDir == null || !"clone-001".equals(cloneDir.getName()))' "$CB" || bad "G7CloneBoot must limit mode E to clone-001 (and never to a direct boot)"
 grep -q 'getCanonicalFile()' "$CB" || bad "G7CloneBoot must pass canonical paths to the runner"
 grep -q 'mask(' "$CB" || bad "G7CloneBoot output must pass through mask()"
 [ "$(grep -c 'Files.newOutputStream' "$CB")" = 1 ] && grep -q 'Files.newOutputStream(log.toPath(), StandardOpenOption.CREATE_NEW' "$CB" || bad "G7CloneBoot: exactly one output stream, the run log, CREATE_NEW"

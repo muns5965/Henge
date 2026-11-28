@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "g7_restore.h"
+#include "g7_phase.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -82,8 +83,11 @@ HvG7Conclusion hv_g7_conclude(const char *dir, HvG7RestoreOutcome outcome, char 
 
 /* ---------------------------------------------------------------- limits, trace, summary */
 static atomic_int g_tr_step, g_tr_pct, g_tr_seen;
-void hv_g7_trace_reset(void) { atomic_store(&g_tr_step, -1); atomic_store(&g_tr_pct, -1); atomic_store(&g_tr_seen, 0); }
+static G7Ph g_ph;   /* timing lines (host/g7_phase.h); written by the restore tool's progress thread, reset before it starts */
+void hv_g7_trace_times(char *buf, size_t cap) { g7ph_times(&g_ph, buf, cap); }
+void hv_g7_trace_reset(void) { g7ph_reset(&g_ph); atomic_store(&g_tr_step, -1); atomic_store(&g_tr_pct, -1); atomic_store(&g_tr_seen, 0); }
 void hv_g7_trace_step(int step, double progress) {
+    g7ph_step(&g_ph, step, progress);
     int pct = progress < 0 ? -1 : progress > 1 ? 100 : (int)(progress * 100.0 + 0.5);
     if (atomic_exchange(&g_tr_step, step) != step) atomic_fetch_add(&g_tr_seen, 1);
     atomic_store(&g_tr_pct, pct);

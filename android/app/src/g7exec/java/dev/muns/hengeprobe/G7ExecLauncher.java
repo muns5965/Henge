@@ -128,7 +128,8 @@ public final class G7ExecLauncher {
         private long written; private boolean truncated; private String lastResult = "";   // guarded by logLock
         private final long ecid;
         volatile String logName = "";
-        Run(Process p, long ecid) { this.proc = p; this.ecid = ecid; }
+        final G7Progress progress = new G7Progress();   // live banner from the runner's g7-step / g7-phase lines
+        Run(Process p, long ecid) { this.proc = p; this.ecid = ecid; progress.begin(System.currentTimeMillis()); }
         public String logName() { return logName; }
         public boolean finished() { return exit != Integer.MIN_VALUE; }
         public int exitCode() { return exit; }
@@ -381,6 +382,7 @@ public final class G7ExecLauncher {
     private static void keep(Run run, DiagFilter filter, ByteArrayOutputStream lb, long ecid) throws IOException {
         String line = mask(new String(lb.toByteArray(), StandardCharsets.UTF_8), ecid);
         if (line.startsWith("g7-result:")) { synchronized (run.logLock) { run.lastResult = line.length() > 1024 ? line.substring(0, 1024) : line; } }   // remembered even when the log is full
+        if (line.startsWith("g7-")) run.progress.feed(line, System.currentTimeMillis());   // only the three timing line kinds are used; others are ignored there
         run.put(filter.accept(line));
     }
 
@@ -489,6 +491,7 @@ public final class G7ExecLauncher {
         File f = newestLog(filesDir);
         StringBuilder s = new StringBuilder();
         if (r != null && !r.finished()) {
+            { String bn = r.progress.banner(System.currentTimeMillis()); if (!bn.isEmpty()) s.append(bn).append("\n"); }
             s.append("상태: 실행 중");
             if (r.killUnconfirmed) s.append(" (강제 종료(SIGKILL)를 보냈으나 종료가 확인되지 않음 — 앱을 강제 종료하고, 그래도 남으면 휴대폰을 재시작하세요)");
             else if (r.killRequested) s.append(" (취소 후 강제 종료(SIGKILL)를 요청함 — 종료 확인 중)");

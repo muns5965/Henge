@@ -79,6 +79,8 @@ void hv_g7_trace_reset(void);
 void hv_g7_trace_step(int step, double progress);
 typedef struct { int last_step, last_percent, steps_seen; } HvG7Trace;
 void hv_g7_trace_get(HvG7Trace *t);
+/* "UPLOAD_FS=398.1 VERIFY_FS=..." seconds per restore step seen (host/g7_phase.h); empty when none was reported. */
+void hv_g7_trace_times(char *buf, size_t cap);
 int hv_g7_summary(const char *dir, HvG7RestoreOutcome outcome, int refused_destinations, const HvG7RestoreLimits *lim, char *out, int cap);   /* length written (0 on a bad argument) */
 
 #endif

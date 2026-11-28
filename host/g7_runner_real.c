@@ -10,6 +10,7 @@
    (GPT header, allocated size, AUX header) have never been compared with a real restore; (4) timing: the default limits and their bounds (--timeout-min 10..720, --grace-s 10..600) are guesses; the end of every run prints one "g7-result:" line (outcome, last step, pair state, refusals; no ECID/URL/path); (5) what a full restore does after the restore
    options (restored_start_restore and later) has never run on this engine. */
 #define _GNU_SOURCE
+#include "g7_phase.h"
 #include "g7_runner_real.h"
 #include "net_guard.h"
 #include "g7_watch.h"
@@ -79,12 +80,15 @@ static int ipsw_same_file(void) {
 }
 
 /* ---- the table */
-static int real_pair(const char *dir, uint64_t ecid, char *note, int cap) { return hv_g7_pair_begin(dir, ecid, hv_install_disk_create, note, cap); }
+static G7Ph g_ph;   /* start-up phase timing (host/g7_phase.h); lines are numbers only */
+static int real_pair(const char *dir, uint64_t ecid, char *note, int cap) { int64_t t = g7ph_now(&g_ph); int r = hv_g7_pair_begin(dir, ecid, hv_install_disk_create, note, cap); g7ph_phase_line(&g_ph, "pair-create", t, 0); return r; }
 
 static void on_machine_exit(int reason) { (void)reason; }
 
 static int real_create_vm(const HvVmConfig *cfg, char *err, size_t errlen) {
+    int64_t t = g7ph_now(&g_ph);
     if (hv_vm_create(cfg, err, errlen) != 0) return -1;
+    g7ph_phase_line(&g_ph, "vm-create", t, 0);
     hv_vm_start(1, on_machine_exit);
     if (hv_vm_start_failed()) { if (err && errlen) snprintf(err, errlen, "the machine could not start all its threads"); return -1; }
     return 0;
@@ -191,7 +195,10 @@ static int real_restore(void) {
     tss_set_attempt_hook(tss_attempt_line);   /* one g7-tss-try line per TSS attempt: numbers only (host/g7_tssdiag.h) */
     hv_stage_hook = stage_cb;   /* from here the start-up stages report their memory */
     pthread_t wd; int wd_on = pthread_create(&wd, NULL, watch_main, S.dir) == 0;   /* failure only means no watchdog lines */
+    int64_t rt0 = g7ph_now(&g_ph);
     HvG7RestoreOutcome o = hv_g7_restore_run(&req, &ops, &lim);
+    g7ph_phase_line(&g_ph, "restore-run", rt0, 0);
+    { char tm[400]; hv_g7_trace_times(tm, sizeof tm); if (tm[0]) printf("g7-steptimes: %s\n", tm); }
     if (wd_on) { __atomic_store_n(&g_watch_stop, 1, __ATOMIC_RELAXED); pthread_join(wd, NULL); }
     printf("g7: restore outcome %s\n", hv_g7_restore_outcome_name(o));
     { char dl[1024]; if (hv_net_guard_denied_log(dl, sizeof dl)) printf("g7: refused destinations (name/address:port reason):\n%s", dl); }   /* what was missing from the allow-list: names and ports only */
@@ -214,7 +221,9 @@ int g7_real_setup(const HvG7Request *r, const char *workdir, const char *ipsw_sh
     if (snprintf(S.dir, sizeof S.dir, "%s", r->dir) >= (int)sizeof S.dir || snprintf(S.workdir, sizeof S.workdir, "%s", workdir) >= (int)sizeof S.workdir
         || snprintf(S.ipsw, sizeof S.ipsw, "%s/%s", r->ipsw_dir, HV_G7_IPSW_NAME) >= (int)sizeof S.ipsw) return -1;
     S.ecid = r->ecid;
+    int64_t h0 = g7ph_now(&g_ph); struct stat ist;
     { int h = ipsw_hash_ok(S.ipsw, ipsw_sha256, &S.ipsw_id);
+      g7ph_phase_line(&g_ph, "ipsw-sha256", h0, stat(S.ipsw, &ist) == 0 ? (int64_t)ist.st_size : 0);
       if (h < 0) { printf("g7: the IPSW cannot be read (not hashed)\n"); return -1; }
       if (h == 0) { printf("g7: the IPSW's SHA-256 is not the expected one: REFUSED, nothing was created\n"); return -1; } }
     S.set = 1;

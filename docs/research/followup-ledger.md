@@ -474,3 +474,11 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - GPU 원본이 드디어 비검정: swap1~2 포인터(299px), swap8~128 20x20 휠(344px), swap256 24.9% 비검정 bbox (0,0)-(959,539), swap512 99.875% 비검정 전체화면. swap512 (0,0) raw=66ae66ae66ae003c → 메모리순 half (-0.1,-0.1,-0.1,1.0) 로 해석(바이트순 해석은 003c=1.0 규약과 동일): 배경이 균일한 약한 음수(표시상 검정), brightest 1.0 at (924,996) = 화면 하단 중앙. 사용자 사진의 하단 중앙 작은 아이콘+글자 위치와 일치.
 - 감마: op8 desc 는 첫 swap 한 번만 table(off 0x118000 count 257 checksum match, ramp_maxdev 0 = 항등), 이후 63건은 zero descriptor. 일부 lut-probe 의 ramp_maxdev=1.0 은 task=3(잘못된 task) 읽기라 무의미. 감마 페이드/적용 문제의 증거 없음.
 - 요청: 기기 폴더 Android/data/dev.muns.hengeprobe/files/g7_aircapture/run-20261128-192949-542/ (xlatereject_*.air.bc, pipefail_* 8개) 전체.
+
+## 2026-11-28 (후속 9) 리뷰 2건 반영: 정정 + Subgroup 32 (AIR 비의존)
+- 정정 1: "배경이 균일한 약한 음수" 는 과했음. 확정 가능한 것은 swap512 의 (0,0) 한 픽셀이 약 (-0.1,-0.1,-0.1,1.0) 이라는 것뿐. 비검정 서로 다른 값 16종 이상, 전체가 균일하다는 근거 없음. 또 g7-gpu-image 는 mapping=4, 최종 swap 은 mapping=2 → 같은 surface 의 연속 변화로 단정 불가. 사진과 같은 프레임인지도 미확인.
+- 정정 2: "array index operand is not an integer value -- layer 0" 경고는 1D 가 아니라 sample_texture_2d_array 경로(translate_function.c 6165행)에서 6회(셰이더 2회 번역 × 3 호출). 1d_array 호출 자체는 STRTAB 에 선언만 확인(경고 없음, 번역은 i64 거부로 도달 전 실패). 경고 조건은 layer operand 의 AIR 타입이 INTEGER 로 조회되지 않을 때이며, 실제로 정수가 아닌지 / 타입 조회 한계인지는 AIR 없이 구분 불가. 코드는 경고 후에도 operand 를 변환해 사용(강제 layer 0 아님: 값이 undef 일 때만 실질 0). AIR 필요.
+- 정정 3: 카운터 구분 — build_failed=12(생성 실패 횟수), 실패 번들 8개(키별 1회), 상세 진단 6조합, 번역 거부 4회/3종. 같은 수가 아님.
+- 미지원 카운터: storage_img_unsupported=18, mapped_unsupported=120, seg_unsupported=306 — 장부 항목으로 추가(영향 미분석).
+- Subgroup 32(g7-gpu-tile: pipes=6 dispatches=0 no_sg32=1220, sg[pinned32=0 override=0 emulated=0]): 원인 확인. S8 은 subgroup 64, 범위 64..128, subgroupSizeControl=1. 기존 코드는 (a) 32 고정/핀(min<=32 필요) 또는 (b) 고정 폭(min==max)만 에뮬레이션 → 범위(64..128)는 둘 다 해당 없어 skip. 수정: lagfx_vk_wide_pin_subgroup()(범위, control 가능, min 이 32 의 2제곱 배수이면 min 반환) → 커널은 논리 32-lane 로 번역(t_simd_emul=32), 파이프라인은 requiredSubgroupSize=64 로 생성. 호스트: 결정표 시험(tile-simd-plan-unit) + 기존 W=16 에뮬 시험 통과, meson 192 통과/0 실패. 기기 미검증(Adreno 가 requiredSubgroupSize=64 를 받아들이는지, 에뮬레이션 결과 픽셀 정확도 모두 미확인). 에뮬레이션이 지원하지 않는 simd 연산을 쓰는 커널은 기존대로 pipe_unsupported_simd 로 계수됨.
+- APK: 이 변경은 lagfx 커밋만(pin 미변경). AIR 기반 수정과 묶어서 한 번에 APK 를 만들 예정(반복 설치 방지).

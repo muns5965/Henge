@@ -1,0 +1,180 @@
+ 1/177 libapplegfx-vulkan:header syntax OK 0.01s
+ 2/177 libapplegfx-vulkan:memory task OK 0.01s
+ 3/177 libapplegfx-vulkan:memory coherence OK 0.00s
+ 4/177 libapplegfx-vulkan:lifecycle smoke OK 0.06s
+ 5/177 libapplegfx-vulkan:resource registry (unit) OK 0.01s
+ 6/177 libapplegfx-vulkan:object-resolver scan (unit) OK 0.00s
+ 7/177 libapplegfx-vulkan:stamp helpers (unit) OK 0.00s
+ 8/177 libapplegfx-vulkan:deadlock detection OK 0.00s
+ 9/177 libapplegfx-vulkan:gpu cores OK 0.16s
+ 10/177 libapplegfx-vulkan:render opcode draw OK 0.33s
+ 11/177 libapplegfx-vulkan:execindirect2 parser OK 0.01s
+ 12/177 libapplegfx-vulkan:shader catalog OK 0.01s
+ 13/177 libapplegfx-vulkan:render opcode pipeline OK 0.31s
+ 14/177 libapplegfx-vulkan:vulkan init OK 0.07s
+ 15/177 libapplegfx-vulkan:vulkan render OK 0.06s
+ 16/177 libapplegfx-vulkan:shader catalog OK 0.01s
+ 17/177 libapplegfx-vulkan:vulkan command OK 0.09s
+ 18/177 libapplegfx-vulkan:apple stock shaders OK 0.06s
+ 19/177 libapplegfx-vulkan:stock shaders OK 0.07s
+ 20/177 libapplegfx-vulkan:triangle lavapipe e2e OK 0.08s
+ 21/177 libapplegfx-vulkan:translate render OK 0.09s
+ 22/177 libapplegfx-vulkan:air2spirv OK 0.01s
+ 23/177 libapplegfx-vulkan:page-walked translation regression (unit) OK 0.01s
+ 24/177 libapplegfx-vulkan:InfoDecoder replies (unit) OK 0.01s
+ 25/177 libapplegfx-vulkan:Render inner ops (unit) OK 0.01s
+ 26/177 libapplegfx-vulkan:Blit inner ops (unit) OK 0.01s
+ 27/177 libapplegfx-vulkan:shader translate (unit) FAIL 0.04s exit status 1
+ 28/177 libapplegfx-vulkan:shader cache (unit) OK 0.01s
+ 29/177 libapplegfx-vulkan:air bitcode reader (unit) OK 0.01s
+ 30/177 libapplegfx-vulkan:air bitcode reader metadata (unit) OK 0.01s
+ 31/177 libapplegfx-vulkan:air2spv position emit (unit) OK 0.01s
+ 32/177 libapplegfx-vulkan:air2spv vertex_id emit (unit) OK 0.01s
+ 33/177 libapplegfx-vulkan:air2spv render_target emit (unit) OK 0.01s
+ 34/177 libapplegfx-vulkan:air2spv fragment_input emit (unit) OK 0.01s
+ 35/177 libapplegfx-vulkan:air2spv buffer_load emit (unit) OK 0.01s
+ 36/177 libapplegfx-vulkan:air2spv alu_binops emit (unit) OK 0.01s
+ 37/177 libapplegfx-vulkan:air2spv constant_float emit (unit) OK 0.01s
+ 38/177 libapplegfx-vulkan:air2spv texture_sample emit (unit) OK 0.01s
+ 39/177 libapplegfx-vulkan:air2spv extinst_glsl emit (unit) OK 0.01s
+ 40/177 libapplegfx-vulkan:air2spv unop emit (unit) OK 0.01s
+ 41/177 libapplegfx-vulkan:air2spv vector_shuffle emit (unit) OK 0.00s
+ 42/177 libapplegfx-vulkan:air2spv control_flow emit (unit) OK 0.01s
+ 43/177 libapplegfx-vulkan:air2spv loop emit (unit) OK 0.00s
+ 44/177 libapplegfx-vulkan:air2spv translate module (unit) OK 0.01s
+ 45/177 libapplegfx-vulkan:air2spv translate function binop unop (unit) OK 0.01s
+ 46/177 libapplegfx-vulkan:air2spv relational opcode pinning (unit) OK 0.01s
+ 47/177 libapplegfx-vulkan:air2spv non-void CALL value-numbering (unit) OK 0.02s
+ 48/177 libapplegfx-vulkan:air2spv structured loop (unit) OK 0.01s
+ 49/177 libapplegfx-vulkan:air2spv guarded loop (unit) OK 0.01s
+ 50/177 libapplegfx-vulkan:air2spv type/constant section ordering (unit) OK 0.01s
+ 51/177 libapplegfx-vulkan:air2spv login-screen shader corpus (unit) OK 0.15s
+ 52/177 libapplegfx-vulkan:air2spv local-const operand type (unit) OK 0.01s
+ 53/177 libapplegfx-vulkan:air2spv vertex attribute input (unit) OK 0.01s
+ 54/177 libapplegfx-vulkan:air2spv CALL_FMF operand skip (unit) OK 0.01s
+ 55/177 libapplegfx-vulkan:air2spv fragment colour-output store (unit) OK 0.01s
+ 56/177 libapplegfx-vulkan:air2spv air.convert uitofp lowering (unit) OK 0.01s
+ 57/177 libapplegfx-vulkan:air2spv real-Apple math intrinsics (unit) OK 0.01s
+ 58/177 libapplegfx-vulkan:pipeline build (unit) OK 0.45s
+ 59/177 libapplegfx-vulkan:air2spv vector result-type consistency (unit) OK 0.01s
+ 60/177 libapplegfx-vulkan:air2spv fragment stage_in inputs (unit) OK 0.01s
+ 61/177 libapplegfx-vulkan:air2spv stage linker (unit) OK 0.04s
+ 62/177 libapplegfx-vulkan:dump pso pair derivation (python) OK 0.06s
+ 63/177 libapplegfx-vulkan:air2spv texture sample translate (unit) OK 0.01s
+ 64/177 libapplegfx-vulkan:air2spv texture3d translate (unit) OK 0.02s
+ 65/177 libapplegfx-vulkan:air2spv buffer arg storage block (unit) OK 0.01s
+ 66/177 libapplegfx-vulkan:air2spv nested block offset layout (unit) OK 0.01s
+ 67/177 libapplegfx-vulkan:air2spv non-struct buffer storage class (unit) OK 0.01s
+ 68/177 libapplegfx-vulkan:air2spv call globalvar base + frag output type (unit) OK 0.01s
+ 69/177 libapplegfx-vulkan:air2spv multi render target (unit) OK 0.01s
+ 70/177 libapplegfx-vulkan:air2spv spv reflect bindings (unit) OK 0.01s
+ 71/177 libapplegfx-vulkan:air2spv storage_image emit (unit) OK 0.00s
+ 72/177 libapplegfx-vulkan:air2spv half type (unit) OK 0.01s
+ 73/177 libapplegfx-vulkan:spv interface audit (python) OK 0.20s
+ 74/177 libapplegfx-vulkan:air2spv bool to float (unit) OK 0.01s
+ 75/177 libapplegfx-vulkan:air2spv bitcast as_type (unit) OK 0.01s
+ 76/177 libapplegfx-vulkan:ring-wrap header read (unit) OK 0.01s
+ 77/177 libapplegfx-vulkan:PFN shift 12/14 (unit) OK 0.01s
+ 78/177 libapplegfx-vulkan:compute task define 0x38/0x44 (unit) OK 0.01s
+ 79/177 libapplegfx-vulkan:command diagnostics (unit) OK 0.02s
+ 80/177 libapplegfx-vulkan:GLSL.std.450 instruction numbers vs Khronos header (unit) OK 0.01s
+ 81/177 libapplegfx-vulkan:bounded per-draw diagnostics (unit) OK 0.03s
+ 82/177 libapplegfx-vulkan:air2spv GLSL.std.450 intrinsic table audit (unit) OK 0.02s
+ 83/177 libapplegfx-vulkan:Metal pixel / vertex format tables (unit) OK 0.01s
+ 84/177 libapplegfx-vulkan:vertex input_ unknown Metal format is per-attribute (unit) OK 0.01s
+ 85/177 libapplegfx-vulkan:vertex fetch wrapper_ source offsets pair stage-in inputs with PSO attributes (unit) OK 0.01s
+ 86/177 libapplegfx-vulkan:arm64 vertex descriptor_ real device-captured PSOs -> attributes / stride / Vulkan input (unit) OK 0.01s
+ 87/177 libapplegfx-vulkan:vtx float plausibility (unit) OK 0.01s
+ 88/177 libapplegfx-vulkan:air2spv arg-metadata metal-index map (unit) OK 0.01s
+ 89/177 libapplegfx-vulkan:PGCmdSetBufferOffset field order (unit) OK 0.01s
+ 90/177 libapplegfx-vulkan:protocol mode x86/arm64 compute semantics (unit) OK 0.01s
+ 91/177 libapplegfx-vulkan:arm64 legacy translator guard_ op 0x37 / root 0x20 rejected, no identity access (unit) OK 0.01s
+ 92/177 libapplegfx-vulkan:arm64 exec 0x43/0x45 decode (unit) OK 0.01s
+ 93/177 libapplegfx-vulkan:arm64 hold ledger (unit) OK 0.02s
+ 94/177 libapplegfx-vulkan:arm64 completion fence + guest surface writeback (lavapipe) OK 0.12s
+ 95/177 libapplegfx-vulkan:display diagnostics_ op 0x0a classification + gamma region task (unit) OK 0.01s
+ 96/177 libapplegfx-vulkan:arm64 writeback verify diagnostic (unit) OK 0.01s
+ 97/177 libapplegfx-vulkan:arm64 deferred stamp completion (unit) OK 0.21s
+ 98/177 libapplegfx-vulkan:arm64 exec render execution (unit, lavapipe) OK 0.32s
+ 99/177 libapplegfx-vulkan:arm64 exec render, local read forced off (unit, lavapipe) OK 0.31s
+100/177 libapplegfx-vulkan:arm64 draw record + sampler decoding (unit) OK 0.01s
+101/177 libapplegfx-vulkan:arm64 exec render extensions (unit, lavapipe) OK 0.22s
+102/177 libapplegfx-vulkan:arm64 exec render, raster order forced off (unit, lavapipe) OK 0.37s
+103/177 libapplegfx-vulkan:arm64 exec sRGB render target numeric (unit, lavapipe) OK 0.17s
+104/177 libapplegfx-vulkan:arm64 exec blit + resource flags on lavapipe (unit) OK 0.14s
+105/177 libapplegfx-vulkan:arm64 vertex fetch / index handling vs CPU model (unit, lavapipe) OK 0.28s
+106/177 libapplegfx-vulkan:arm64 exec render+blit integration (lavapipe, validation) OK 0.22s
+107/177 libapplegfx-vulkan:arm64 mapped textures (type 11) over guest surfaces (lavapipe, validation) OK 0.17s
+108/177 libapplegfx-vulkan:pipeline build failure diagnostics + SPIR-V capture (lavapipe) OK 0.07s
+109/177 libapplegfx-vulkan:gpu readback A/B/C compare + negative controls (lavapipe, validation) OK 0.17s
+110/177 libapplegfx-vulkan:arm64 tile shader pipeline + dispatch between render pass halves (lavapipe) OK 0.43s
+111/177 libapplegfx-vulkan:arm64 tile + graphics gathers share the exec scratch slots (lavapipe) OK 0.31s
+112/177 libapplegfx-vulkan:arm64 pipeline resolver / bindings / invalidation / capture (lavapipe) OK 0.82s
+113/177 libapplegfx-vulkan:arm64 depth/stencil state object decoder (unit) OK 0.01s
+114/177 libapplegfx-vulkan:air2spv compute stage + simd + f16 math (unit) OK 0.01s
+115/177 libapplegfx-vulkan:air2spv translated tile kernel on lavapipe OK 0.09s
+116/177 libapplegfx-vulkan:air2spv SIMD-group semantics vs Metal reference (lavapipe) OK 0.23s
+117/177 libapplegfx-vulkan:arm64 exec storage images + vertex textures + unnormalized samplers (unit, lavapipe) OK 0.24s
+118/177 libapplegfx-vulkan:opt-in cubic filter_ decision table + sampler mapping (unit) OK 0.01s
+119/177 libapplegfx-vulkan:arm64 framebuffer-fetch binding check OK 0.01s
+120/177 libapplegfx-vulkan:arm64 exec sampled views_ mip chain + array layers (unit, lavapipe) OK 0.26s
+121/177 libapplegfx-vulkan:render-replay self tests (unit; scenes need LAGFX_TEST_DUMP) OK 0.01s
+122/177 libapplegfx-vulkan:arm64 render replay capture (unit, lavapipe) OK 0.21s
+123/177 libapplegfx-vulkan:air2spv i1 constants + any/all on lavapipe OK 0.07s
+124/177 libapplegfx-vulkan:air2spv unlowered calls (unit) OK 0.01s
+125/177 libapplegfx-vulkan:air2spv texture sample options (unit) OK 0.02s
+126/177 libapplegfx-vulkan:air2spv constant-expression casts (unit) OK 0.01s
+127/177 libapplegfx-vulkan:air2spv integer intrinsics (unit) OK 0.10s
+128/177 libapplegfx-vulkan:air2spv atomics on lavapipe OK 0.09s
+129/177 libapplegfx-vulkan:air2spv atomics strict operand grammar (unit) OK 0.04s
+130/177 libapplegfx-vulkan:air2spv atomics LAGFX_ATOMIC_LENIENT=1 (unit) OK 0.01s
+131/177 libapplegfx-vulkan:air2spv integer intrinsics on lavapipe OK 0.18s
+132/177 libapplegfx-vulkan:air2spv texture sample options on lavapipe OK 0.11s
+133/177 libapplegfx-vulkan:air2spv atomics SPIR-V consistency + spirv-val (unit) OK 0.19s
+134/177 libapplegfx-vulkan:air2spv discard robustness on lavapipe OK 0.11s
+135/177 libapplegfx-vulkan:air2spv sampler state + texture3d on lavapipe OK 0.30s
+136/177 libapplegfx-vulkan:air2spv unnormalized sampler per-use rewrite on lavapipe OK 0.30s
+137/177 libapplegfx-vulkan:air2spv undef report + fail closed (unit) OK 0.01s
+138/177 libapplegfx-vulkan:pipeline spv hash (unit) OK 0.01s
+139/177 libapplegfx-vulkan:pipeline failure bundle (unit, lavapipe) OK 0.10s
+140/177 libapplegfx-vulkan:pipeline layout vs SPIR-V descriptor check (unit; with LAGFX_PIPEFAIL_CHECK_DIR also real bundles, which FAIL on a collision) OK 0.01s
+141/177 libapplegfx-vulkan:pipefail bundles_ pipeline creation replay with validation layers (needs LAGFX_PIPEFAIL_CHECK_DIR; skips otherwise) SKIP 0.01s exit status 77
+142/177 libapplegfx-vulkan:spv diagnostic variants (unit) OK 0.08s
+143/177 libapplegfx-vulkan:texture compat (sampler accuracy + 3D) on lavapipe OK 0.34s
+144/177 libapplegfx-vulkan:pipeline -13 matrix (unit, lavapipe) OK 0.09s
+145/177 libapplegfx-vulkan:pipeline repro (unit, lavapipe) OK 0.24s
+146/177 libapplegfx-vulkan:VK_QCOM_tile_shading opt-in probe / decision / fallback (unit, lavapipe + injected records) OK 0.54s
+147/177 libapplegfx-vulkan:atomic device capabilities (unit, injected features, lavapipe) OK 0.31s
+148/177 libapplegfx-vulkan:device diagnostic g7-vkdev (unit, lavapipe) OK 0.07s
+149/177 libapplegfx-vulkan:air2spv constexpr sampler (unit) OK 0.01s
+150/177 libapplegfx-vulkan:descriptor binding allocator (unit) OK 0.02s
+151/177 libapplegfx-vulkan:air2spv descriptor bindings (translated modules, unit) OK 0.02s
+152/177 libapplegfx-vulkan:vulkan descriptor binding layout (lavapipe, validation) OK 0.14s
+153/177 libapplegfx-vulkan:vulkan sampler cache (unit) OK 0.07s
+154/177 libapplegfx-vulkan:vulkan sampler mapping + fidelity counters (unit) OK 0.01s
+155/177 libapplegfx-vulkan:air2spv fragment [[position]] binding (unit) OK 0.02s
+156/177 libapplegfx-vulkan:display diagnostics helpers (unit) OK 0.01s
+157/177 libapplegfx-vulkan:display diagnostics_ gamma region read prefers the mapping owner task (unit) OK 0.01s
+158/177 libapplegfx-vulkan:display diagnostics_ gamma descriptor 16 KiB reads, counters, layout (unit) OK 0.04s
+159/177 libapplegfx-vulkan:gamma LUT address-space selection (unit) OK 0.03s
+160/177 libapplegfx-vulkan:display diagnostics_ the pvg-ops clock starts at the first command (unit) OK 0.21s
+161/177 libapplegfx-vulkan:vulkan format / usage / blend / sample-count capabilities (unit, lavapipe + injected devices) OK 0.13s
+162/177 libapplegfx-vulkan:arm64 render compat (unit, lavapipe) OK 0.69s
+163/177 libapplegfx-vulkan:arm64 render compat, raster order forced off (unit, lavapipe) OK 0.70s
+164/177 libapplegfx-vulkan:blit fill texture color (0x141) region / layout / level / format (unit, lavapipe + validation) OK 0.16s
+165/177 libapplegfx-vulkan:vulkan msaa colour path (unit, lavapipe + injected devices) OK 0.17s
+166/177 libapplegfx-vulkan:air2spv spec-audit regressions (unit) OK 0.07s
+167/177 libapplegfx-vulkan:idle-gap diagnostics (unit) OK 0.01s
+168/177 libapplegfx-vulkan:vulkan msaa coverage vs CPU reference (lavapipe + validation) OK 0.18s
+169/177 libapplegfx-vulkan:arm64 msaa guest path (unit, lavapipe + validation) OK 0.38s
+170/177 libapplegfx-vulkan:vulkan msaa host machinery vs CPU reference (lavapipe + validation) OK 0.22s
+171/177 libapplegfx-vulkan:pipeline reduction ladder (unit, lavapipe) OK 4.58s
+172/177 libapplegfx-vulkan:qcom-tile-probe (selftest, spirv-val, lavapipe run_ E1-E5 UNSUPPORTED, exit 0) OK 0.84s
+173/177 libapplegfx-vulkan:blit mip-chain generation (standalone recorder) vs CPU box filter + refusals (unit, lavapipe + validation) OK 0.17s
+174/177 libapplegfx-vulkan:tier-1 runner_ evaluates a recorded log (A / B reading, absent rows never CRASH) OK 0.05s
+175/177 libapplegfx-vulkan:spv msfetch rewrite (unit, spirv-val) OK 0.07s
+176/177 libapplegfx-vulkan:gamma LUT application (unit) OK 0.01s
+177/177 libapplegfx-vulkan:spv ssa promotion (unit + lavapipe equivalence) OK 3.38s
+Ok: 175 
+Fail: 1 
+Skipped: 1 

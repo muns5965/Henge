@@ -1,0 +1,46 @@
+g7-gpu-feat: local_read_enabled=1 raster_order_enabled=1 independentBlend=1 dynamicRenderingLocalRead=1(core1.4=1 ext=1) rasterOrderColorAttachmentAccess=1(ext_EXT=1 ext_ARM=1) rasterOrderDepthAccess=1 rasterOrderStencilAccess=1
+g7-gpu-qcomtile: flag=0 inject=0 ext[tile_shading=0 tile_properties=0 tile_memory_heap=0] feat[tileShading=0 fragment=0 color=0 depth=0 stencil=0 input=0 sampled=0 perTileDraw=0 perTileDispatch=0 dispatchTile=0 apron=0 anisoApron=0 atomics=0 imageProc=0 tileProperties=0 tileMemoryHeap=0] props[granularity=0x0 maxRate=0x0 maxApron=0 preferNonCoherent=0 heap_submit_boundary=0 heap_buffer_xfer=0] decision=flag_off enable_mask=0x0 enabled=0 create_result=0 chosen_path=compute_emulation qcom_native_path=not_implemented fallback=none
+g7-gpu-feat: subgroup size=8 min=8 max=8 subgroupSizeControl=1 requiredSubgroupSizeStages=0x30 computeFullSubgroups=1 pin32=no(lane-mapped tile kernels are skipped)
+g7-gpu-caps: enabled=[int64,int16,int8,float16,sb8,ub8,pc8,sb16,ub16,pc16,varptr_sb,varptr,spirv14,subgroup,sg_shuffle,sg_shuffle_rel,demote,atomic64_buf,atomic64_shared,atomic_f32_buf,atomic_f32_buf_add,atomic_f32_shared,atomic_f32_shared_add,atomic_f32_image] missing=[io16] (shaders needing a missing capability are not built; their draws are skipped, stub_missing_cap_<name>)
+PASS device-info reply (arm64 and x86 table): MSAASamples = largest exact-mode count of the common colour + depth formats, ceiling 4: 1|4 -> 4 (2x gap counted devinfo_gap), 1|2|4 -> 4, 1|2|4|8 -> 4, 1 -> 1, 1|2 -> 2, colour 1|2|4 + depth 1|2 -> 2, colour 1|4 + depth 1|2 -> 1
+PASS alpha-to-coverage / sample-shading injection: the exec path's pipelines carry the flags (a2c_pipes / sample_shading_pipes counted, 0 without the hook), alpha 0.5 lowers the resolved red on edge/interior pixels (never raises it), a device without sampleRateShading refuses (sample_shading_refused) instead of building without it
+PASS BGRA8 4x store action 2: resolved image == CPU coverage reference (orientation y-flipped, 35 partial pixels), images=1 attach=1 resolves=1 pipes_ms=1 draws_ms=1, validation 0
+PASS BGRA8 4x store action 3: resolved image == CPU coverage reference (orientation y-flipped, 35 partial pixels), images=1 attach=1 resolves=1 pipes_ms=1 draws_ms=1, validation 0
+PASS RGBA16F 4x store action 2: resolved image == CPU coverage reference (orientation y-flipped, 35 partial pixels), images=1 attach=1 resolves=1 pipes_ms=1 draws_ms=1, validation 0
+PASS RGBA16F 4x store action 3: resolved image == CPU coverage reference (orientation y-flipped, 35 partial pixels), images=1 attach=1 resolves=1 pipes_ms=1 draws_ms=1, validation 0
+PASS store action 1 with a resolve texture: not resolved, the resolve target is untouched
+PASS exact: resolve action without a resolve texture: whole pass rejected (ms_pass_refused, reason resolve0: resolve_texture_none), no draw, target untouched
+PASS exact: resolve texture of another format: whole pass rejected (resolve0: resolve_shape_mismatch), no draw, target untouched
+  deferred: tags=2 resolves=1 store_unknown=0
+PASS deferred store action / resolve texture tags (layout UNVERIFIED on ARM64) resolve; without them action 4 is counted store_unknown and nothing is resolved
+PASS resolve action on a 1x texture: treated as Store, resolve_on_1x counted, no multisample state
+PASS exact: 8 samples asked, device offers 1|4: texture refused (ms_exact_refused), pass attachment skipped (ms_pass_refused), no draw, resolve target untouched
+PASS exact: 2 samples asked, device has no 2x: refused (no 1x fallback, no resolve-by-copy), no draw
+PASS exact: 3 samples asked: refused (compat would take 2)
+PASS exact: injected 1-sample-only device, 4x asked: refused
+PASS compat: 8 samples asked, device offers 1|4: clamped to 4 (ms_compat_clamped), result equals the 4x reference
+PASS compat: 2 samples asked, device has no 2x: counted fallback to 1x (ms_compat_1x), resolved by a copy, only 0 / full-coverage values (no partial pixel)
+PASS compat: injected 1-sample-only device: 4x asked -> compat_1x counted, copy resolve, renders
+PASS exact-mode pass over a texture made in compat mode: whole pass rejected (ms_pass_refused), nothing drawn
+PASS bad shapes (type 4 with 1 sample, type 8, 4 samples on type 2): refused with ms_tex_bad_shape, no draw
+PASS multisampled fetch rewrite: valid SPIR-V (1 / 2 reads), a shader without a SubpassData is untouched
+PASS negative: device without multisampled local read -> multisampled fetch refused (fbfetch_ms_no_local_read_ms), draw skipped, no shader variant built
+PASS framebuffer fetch in a multisampled pass: per-sample read (fbfetch_ms_variants/reads counted), resolve equals the coverage reference, no validation message
+PASS negative: no sample-rate shading -> multisampled fetch refused (fbfetch_ms_refused, sample_shading_refused), draw skipped
+PASS per-sample distinct start values (draw 1 covers some samples of an edge pixel, draw 2 fetches): resolve = per-sample sum, so each invocation read its own sample
+PASS negative control: SampleId forced to 0 in the rewrite -> the same scene no longer matches (the test discriminates the sample choice)
+PASS exact: mixed sample counts in one pass: whole pass rejected (colour1: mixed_sample_counts), no draw, the first attachment's resolve target untouched
+PASS compat: mixed sample counts in one pass: the other attachment is ignored (attach_mixed_ignored), the pass still draws
+PASS compat: resolve action without / with a wrong-shape resolve texture: stored, resolve_no_target counted, the pass still draws
+PASS store actions: 3 keeps the multisampled contents (a later Load pass resolves to the same image), 2 resolves correctly (DONT_CARE store op chosen, MS contents after it are not relied on); negative control (Clear instead of Load) differs
+PASS pipeline cache: same shader / format at 1x and 4x -> 2 pipelines (pipes_built=2, pipes_ms=1), 1x again is a hit; validation: no message in the window
+PASS compat: depth resolve (store action 3 on a 4x depth attachment): not implemented, counted ds_resolve_unsupported and printed under unsupported[], pass stored-only
+PASS exact: 2 colour attachments, the second refused: whole pass rejected (colour1: multisample_texture_refused), no draw, no pipeline, first attachment's resolve target untouched
+PASS exact: after a rejected pass the next plain pass draws normally (1 draw), the rejected pass's resolve target is still untouched
+PASS exact: depth attachment refused (8x depth not offered): whole pass rejected (depth: multisample_texture_refused), the 4x colour attachment is not rendered or resolved
+PASS exact: resolve target refused (wrong format / none / missing ref) and a mixed-sample second attachment: whole pass rejected with the specific reason, no draw, nothing written
+PASS exact: depth store action 3 (resolve) on a 4x depth attachment: whole pass rejected (depth_stencil_resolve_unsupported), counted ds_resolve_unsupported
+PASS g7-gpu-msaa line: mode=exact|compat (only the string "1" selects compat), unsupported[ds_resolve sampled_ms fbfetch_ms tile_ms blit_ms capture_ms air_ms_ops air_sample_id_mask]
+g7-gpu-msaa: mode=exact images[ms_created=1 exact_refused=0 compat_clamped=0 compat_1x=0 refused=0 bad_shape=0] passes[ms=1 attach=1 resolves=1 by_copy=0 store_unknown=0 resolve_no_target=0 resolve_on_1x=0 deferred_tags=0 mixed_ignored=0 ds_mismatch=0 pass_refused=0] draws[pipes_ms=1 draws_ms=1] unsupported[ds_resolve=0 sampled_ms=0 fbfetch_ms=0 tile_ms=0 blit_ms=0 capture_ms=0 air_ms_ops=0 air_sample_id_mask=0] devinfo_clamped=0 devinfo_gap=0 host[a2c=0 sample_shading=0 sample_shading_refused=0 msfetch_views=0 msfetch_refused=0 dsres_refused=0] fbfetch_ms[variants=0 reads=0 no_local_read_ms=0]
+g7-gpu-msaa: mode=exact images[ms_created=1 exact_refused=0 compat_clamped=0 compat_1x=0 refused=0 bad_shape=0] passes[ms=1 attach=1 resolves=1 by_copy=0 store_unknown=0 resolve_no_target=0 resolve_on_1x=0 deferred_tags=0 mixed_ignored=0 ds_mismatch=0 pass_refused=0] draws[pipes_ms=1 draws_ms=1] unsupported[ds_resolve=0 sampled_ms=0 fbfetch_ms=0 tile_ms=0 blit_ms=0 capture_ms=0 air_ms_ops=0 air_sample_id_mask=0] devinfo_clamped=0 devinfo_gap=0 host[a2c=0 sample_shading=0 sample_shading_refused=0 msfetch_views=0 msfetch_refused=0 dsres_refused=0] fbfetch_ms[variants=0 reads=0 no_local_read_ms=0]
+PASS g7-gpu-msaa line carries the counts

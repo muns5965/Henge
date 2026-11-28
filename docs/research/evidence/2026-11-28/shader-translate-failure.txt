@@ -1,0 +1,4 @@
+/usr/bin/llc: error: /usr/bin/llc: /tmp/lagfx-translate-O8mSAC.bc: error: Malformed block
+/usr/bin/llc: error: unable to get target for 'spirv64-unknown-vulkan1.3', see --version and --triple.translate vertex: status=-4
+FAIL: translate vertex returns LAGFX_OK
+exit=1

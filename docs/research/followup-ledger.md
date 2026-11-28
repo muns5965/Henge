@@ -256,3 +256,12 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - Balloon: 구현은 있으나 `HV_BALLOON` 이 설정된 때만 생성되고 안드로이드 실행 경로에는 설정이 없다. 기본값은 변경하지 않았다. 효과는 게스트의 balloon 드라이버 지원과 반환 실적을 먼저 확인해야 한다(미확인).
 - 새 APK: Henge 935b440, 라이브러리 핀 e3ae150 그대로(Henge 본체 변경만). 수동 실행 46092222288.
 - APK 4 (입력 수정 포함): Henge 935b440 / 라이브러리 e3ae150 / 실행 46092222288 / sha256 1a0d56de4a3b8f825d83d4f26c5f9cee07efc4a9f0134f40a04674bc8a5a1303 / 서명 인증서 SHA-256 eb9cad5e…1fec(앞 세 APK와 동일). 빌드·정적 검사만 통과, 기기 미검증. 아티팩트는 30일 보관(약 2026-12-28까지); 앞의 두 APK 보관 기한(약 12-05)이 먼저 지난다.
+
+## 2026-11-28 신규 기기 설치 APK (Galaxy Tab S8 "libipswdl.so가 이 APK에 없습니다")
+- 원인 [V 코드/워크플로]: libipswdl.so·libromextract.so·libcurltool.so 는 일반 APK 워크플로(android-apk.yml)만 jniLibs/main 에 넣는다. G7 워크플로(android-g7exec.yml, android-g7lagfx.yml)는 g7exec jniLibs 에 libg7runner / libg7cloneboot / libg7pipelinerepro / libnetprobe 만 넣어서, G7 APK 는 설정 버튼이 부르는 다운로더·ROM 추출기를 갖지 않았다. 기기 호환성 문제가 아니라 패키징 누락. 이미 IPSW·ROM 을 받아 둔 기기에서는 드러나지 않았다.
+- 수정 (커밋 c802414): tools/g7-install-libs-build.sh 신규(공유): libromextract.so(필수; build-engine/romextract 복사), libipswdl.so(필수; tools/ipswdl-build.sh 출하 설정, 시험 스위치 없음), libcurltool.so(선택). 두 G7 워크플로에 단계 추가. tools/check-g7exec-apk.sh(exec/start)가 두 파일의 존재, AArch64, 최소 크기, 프로그램 식별 문자열("romextract: cannot read" / "dl: RESULT")을 검사. tools/g7exec-apk-check-test.sh 에 부정 사례 6건 추가(누락 2, x86, 엉뚱한 프로그램, 너무 작음 등), 통과.
+- 빌드 확인 [CI]: 실행 46092873941, Henge c802414 / 라이브러리 e3ae150, 단계 로그에 libromextract.so·libipswdl.so 생성(AArch64) 및 APK 검사 통과. sha256 0b6524ebfe9056d7ea04216f449f954c2dee69fad1fcd6406909f9d77c1dcec4, 서명 인증서 eb9cad5e…1fec(동일). 키보드 수정(17408be) 포함. 기기 설치·실행 미검증.
+- 아직 확인하지 못한 것: 이 APK 하나로 ROM·IPSW·ECID 준비 → 설치 → 부팅이 끝까지 되는지(실기기). 설정 단계가 쓰는 나머지 네이티브 파일(G0~G6 진단 프로그램 libvmrung*.so, libvmrun*.so, libuirunner*.so, libbmprobe.so)은 진단 버튼용이며 G7 설치 경로에서 쓰지 않으므로 넣지 않았다(필요하면 목록에서 추가). 20번 항목은 검토 의견대로 신규 설치 가능 여부가 실기기로 확인될 때까지 올리지 않는다.
+- xHCI 이벤트 링 [V 코드, 미수정]: ERDP 는 저장만 하고(devices/xhci.c 660대) 이벤트 생성 쪽이 읽지 않는다 → 게스트가 아직 읽지 않은 이벤트를 덮어쓸 수 있고 규격의 Event Ring Full 처리도 없다. 앞 시험의 "17번째가 첫 항목을 덮어씀"은 이 구현의 현재 동작을 적은 것이지 올바른 동작이 아니다(내 표현이 부정확했다). 큐 크기를 넘기는 상황이 실제로 생기는지는 미확인; 수정은 ERDP 추적 + 가득 참 처리가 필요해 근거(게스트의 링 크기, 소비 속도) 확보 후 별도 변경으로 한다.
+- IOC [규격 대조 미완]: 현재 IN 전송은 항상 이벤트를 만든다. 규격상 이벤트는 IOC, ISP 단축 패킷, 오류 등 여러 조건이 있어 IOC 만 보는 수정은 하지 않는다. macOS 가 IOC 를 항상 켠다는 근거는 없다 → 가정하지 않음.
+- 마우스 큐 포화: 위험(잠재). 실제 포화 증거 없음, 입력 오류의 확정 원인으로 분류하지 않는다.

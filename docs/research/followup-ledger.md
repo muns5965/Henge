@@ -465,3 +465,12 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 공백 구간의 호스트 상태(cboot g7-gpu/g7-gpu-sync 10 s 간격): mmio_reads 30(50~100 s) → 57(110~170 s) → 1395(178 s), compute_commands 6 → 15 → 587, cq_pending=0, barrier/timeout/vk_wait_timeouts=0. 공백 동안 호스트는 미완료 작업·보류 채널이 없고 게스트가 PVG 에 아무것도 보내지 않음. 게스트 CPU 는 busy(idle 0~8%, wfi≈0). 따라서 "호스트 completion 을 기다리는 hang" 증거는 없음. 두 공백이 비슷한 길이(~68/70 s)인 점은 게스트 내부 타임아웃/긴 작업일 가능성을 시사하나 근거 약함(가설).
 - 이후 7 s 에 587 compute / 116 display submit: 게스트가 풀리면 호스트 GPU 는 병목이 아님.
 - 판단 보류: 게스트 안에서 무엇을 하는지(PC 샘플/예외 종류) 로그 없음. 900 s+ 실행 결과 후 필요하면 게스트 PC 샘플 진단을 추가.
+
+## 2026-11-28 (후속 8) S8 로그 1795861789541/2 (74eca3b / a9c3194, VBL OFF, 360 s) 분석
+- 조건: 360 s(900 s 아님), display_events=OFF, vbl ticks=0, AIR 캡처 ON(run-20261128-192949-542). 실행은 verdict 줄 없이 끝남(로그 잘림 가능).
+- 진행: 첫 swap 64.8 s, 90 s 166, 120 s 550, 150 s 755, 200 s 757 이후 360 s 까지 757 에서 정지(약 160 s 동안 swap 없음). op22 1295.
+- 핵심 수치(g7-gpu-run 최종): draws=3821, draws_skipped=10526, no_pipeline=10508, seg_unsupported=306, pipeline_unresolved=4. draw 의 73% 가 파이프라인 없음으로 건너뜀. 원인 후보 2종: (a) 번역 거부 — A2Xghfc, TimgA2Xhfcn_IsrcCcl, UberCompositeFragment(i64 상수 0x807bff0000080092 / 0x807bff0000080a49), (b) vkCreateGraphicsPipelines -13 8건(번들 pipefail_* 8개 기기에 저장됨).
+- i64 상수의 정체(추론): 두 값 모두 constexpr sampler 상태 word 와 같은 형태(bit63 + 0x807bff… = 기존 4개 captured word 와 동일 계열, constexpr_sampler.h 디코드: 0x…92 → s,t=repeat r=clamp_zero; 0x…a49 → s,t,r=clamp_to_edge, mag/min=linear). 즉 "64비트 데이터 연산"이 아니라 샘플러 상태 값이 데이터로 취급되어 거부되었을 가능성이 높음. 실제 사용 형태는 xlatereject AIR 필요. 무조건 해제는 하지 않음.
+- GPU 원본이 드디어 비검정: swap1~2 포인터(299px), swap8~128 20x20 휠(344px), swap256 24.9% 비검정 bbox (0,0)-(959,539), swap512 99.875% 비검정 전체화면. swap512 (0,0) raw=66ae66ae66ae003c → 메모리순 half (-0.1,-0.1,-0.1,1.0) 로 해석(바이트순 해석은 003c=1.0 규약과 동일): 배경이 균일한 약한 음수(표시상 검정), brightest 1.0 at (924,996) = 화면 하단 중앙. 사용자 사진의 하단 중앙 작은 아이콘+글자 위치와 일치.
+- 감마: op8 desc 는 첫 swap 한 번만 table(off 0x118000 count 257 checksum match, ramp_maxdev 0 = 항등), 이후 63건은 zero descriptor. 일부 lut-probe 의 ramp_maxdev=1.0 은 task=3(잘못된 task) 읽기라 무의미. 감마 페이드/적용 문제의 증거 없음.
+- 요청: 기기 폴더 Android/data/dev.muns.hengeprobe/files/g7_aircapture/run-20261128-192949-542/ (xlatereject_*.air.bc, pipefail_* 8개) 전체.

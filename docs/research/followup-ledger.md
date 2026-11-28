@@ -401,3 +401,12 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 
 - [분류 정정] lagfx 14e621e의 두 서피스 시험은 "서피스별 렌더·write-back 독립성 + swap 해석 카운터" 검증이다. SWAP_NAME은 lagfx_a64_display_count()만 호출하고 surface_resolved/gpu_content 카운터를 보므로, swap이 실제로 고른 서피스가 지명된 서피스와 같다는 직접 증명은 아님(리뷰어 지적 수용).
 - [시험, 호스트] Henge tests/test_pvg.c s_scanout_select (신규, tools/pvg-test.sh plain+ASan 모두 통과, 227→245 checks): 서피스 A(mapping 3)/B(mapping 4)를 각자의 페이지 목록·데이터 페이지로 만들고 swap이 지명한 mapping 기준으로 hv_pvg_lite_live_surface_bgra 출력 픽셀을 비교. BGRA와 RGhA(RGBA16Float) 둘 다: A/B/A/B 교대(파랑/초록) 전 픽셀 일치, 보이지 않는 쪽을 다시 써도(A→빨강, B→파랑) 지명 전에는 출력 불변, 지명 후 새 내용 표시, 미매핑 id 지명은 프레임 없음(이전 서피스를 보여주지 않음). 비교 기준은 마지막 렌더 대상이 아니라 swap이 지명한 서피스. 한계: Henge pvg_lite는 lagfx와 별개 구현이라 lagfx 렌더 → Henge 표시의 실제 연결 시험은 아님; Android 최종 화면(공유 프레임 버퍼) 단계 미검증; 프레임 해시 연결 미구현.
+
+- [S8 실기기 로그 분석: 신규 APK(lagfx 14e621e 이전 pin 포함) g7_lagfx_1795851359451 / g7_cboot_1795851359450, 180초 시한 실행; 기기 결과 — S26 아님]
+  - 확인된 개선: framebuffer cache full 0건(이전 ERROR 반복), passes=3716 draws=3716 draws_skipped=0 no_target=0(pass_events=0 draw_skipped=0), fb_cache created=1861 destroyed=1860 live=1 peak=3 full=0 forget_deferred=0, limbo parked=0, submit_failed=0, pipeline resolved=3 failed=0 air2spv=6. 즉 캐시 고갈·draw 누락은 사라졌음.
+  - 그럼에도 화면은 여전히 거의 검정(1920x1080 nonzero_pixels≈1324~1327, first x=13 y=0) → 캐시 고갈은 검은 화면의 원인이 아니었음(앞선 가설 반증).
+  - 새 사실: 매 swap(1857회)마다 BLITOP 0x12c CopyFromBufferToTexture가 동일 인자(48x48, row 0xc0, 0x2400바이트)로 1회, 패스 2/swap, 패스당 draw 1개 → 게스트가 GPU로 그리는 것은 48x48 BGRA 이미지(커서 크기) 한 장뿐. 비검정 픽셀 수(≈1.3k, 48x48=2304 중)와 일치. 따라서 좌상단 "무지개"는 게스트가 GPU 경로로 그리는 커서 스프라이트(게스트 소프트웨어 합성)일 가능성이 높음(미확정: 48x48 내용 덤프 필요). cursor ops_show/glyph=0이므로 호스트 커서 합성과 무관.
+  - 데스크톱/윈도우 내용 draw가 없음: 실행이 180초 시한(stop_kind=time-limit, macos_boot=not-determined, 마지막 샘플 user 단계, 첫 GPU swap +58s)에서 끝났으므로 게스트가 아직 데스크톱을 그리기 전일 가능성을 배제 못 함. 검정이 렌더 오류인지 게스트의 실제 상태인지는 더 긴 실행(앱 선택지 900/1800/3600/0초)으로 확인 필요.
+  - Subgroup 실측(S8 Adreno 730): via=EXT, size=64 min=64 max=128 subgroupSizeControl=1 requiredSubgroupSizeStages=0x20(COMPUTE) computeFullSubgroups(supported)=1(enabled)=0 → 32는 [min,max] 밖이라 pin32 불가가 이제 측정으로 확정(EXT를 켠 상태의 값). lane-mapped tile 커널은 skip(범위여서 tile_simd_emul_width의 고정폭 에뮬레이션 조건 min==max에도 해당 안 됨 → 64 또는 가변폭 대응은 미구현).
+  - Demote: caps enabled에 demote 포함(확인됨). EDS1: g7-vkdev에 확장 노출 확인; 활성/실행 여부는 이번 로그에서 draw에 depth/stencil 사용이 없어 미확인.
+  - 입력: ui_runner status cursor doorbells 2, pointer last (0,0) flag 0 — 이번 실행에서도 포인터 이동 없음(터치 여부 불명).

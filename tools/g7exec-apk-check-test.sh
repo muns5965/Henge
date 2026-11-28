@@ -14,6 +14,10 @@ def apk(name, files):
     with zipfile.ZipFile(f"{o}/{name}.apk", "w") as z:
         z.writestr("AndroidManifest.xml", "x")
         for k, v in files.items(): z.writestr(k, v)
+PAD = b"\0" * 30000
+RX = "lib/arm64-v8a/libromextract.so"; DL = "lib/arm64-v8a/libipswdl.so"
+rx = elf(183, b"romextract: cannot read" + PAD); dl = elf(183, b"dl: RESULT" + PAD)
+SETUP = {RX: rx, DL: dl}
 good = elf(183, b"G7RUN RESULT g7-result: ")
 cb = elf(183, b"ui_runner_vm_clone")
 cb_old = elf(183, b"ui_runner_vm_clone")   # a runner without the frame-file writer
@@ -24,8 +28,15 @@ apk("general", {"classes.dex": b"dex\nMainActivity G7ProbeLauncher", "lib/arm64-
 apk("general_lib", {"classes.dex": b"dex", "lib/arm64-v8a/libg7runner.so": good})
 apk("general_cls", {"classes.dex": b"dex G7ExecLauncher"})
 OFF = b" G7-BUILD-KIND:EXEC-OFF"; ON = b" G7-BUILD-KIND:START-ON"
-apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr})
-apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr})
+apk("exec", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr, **SETUP})
+apk("start", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr, **SETUP})
+S0 = {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb, PR: pr}
+apk("start_no_ipswdl", {**S0, RX: rx})
+apk("start_no_romextract", {**S0, DL: dl})
+apk("start_ipswdl_x86", {**S0, RX: rx, DL: elf(62, b"dl: RESULT" + PAD)})
+apk("start_ipswdl_wrong", {**S0, RX: rx, DL: elf(183, b"hello" + PAD)})
+apk("start_ipswdl_tiny", {**S0, RX: rx, DL: elf(183, b"dl: RESULT")})
+apk("start_romextract_wrong", {**S0, RX: elf(183, b"hello" + PAD), DL: dl})
 apk("exec_with_on", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + ON, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
 apk("exec_nomarker", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity", "lib/arm64-v8a/libg7runner.so": good, CB: cb})
 apk("start_with_off", {"classes.dex": b"dex G7ExecLauncher G7ExecActivity" + OFF, "lib/arm64-v8a/libg7runner.so": good, CB: cb})
@@ -61,6 +72,12 @@ t bad exec exec_nocb
 t bad exec exec_cb_x86
 t bad exec exec_cb_wrong
 t bad exec exec_cb_noframes
+t bad start start_no_ipswdl
+t bad start start_no_romextract
+t bad start start_ipswdl_x86
+t bad start start_ipswdl_wrong
+t bad start start_ipswdl_tiny
+t bad start start_romextract_wrong
 t bad exec exec_nolib
 t bad exec exec_x86
 t bad exec exec_notrunner

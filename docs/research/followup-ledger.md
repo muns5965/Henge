@@ -585,3 +585,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - OpSwitch(opcode 251) 거부의 원인: 64비트 switch가 아니라, 번역기의 블록 dispatch switch(32비트 인덱스, case 리터럴 1..N)의 리터럴이 64비트 상수의 id와 같으면 lowering이 64비트 피연산자로 오인. 리터럴/레이블은 피연산자에서 제외(selector만 값), OpExtInst 명령 번호도 제외. 단위 재현 시험: 수정 없이 기기와 같은 메시지('unsupported 64-bit integer operation (SPIR-V opcode 251)'), 수정 후 통과. 실제 64비트 selector는 여전히 거부. 기기 미검증.
 - 정정: 처음 구현했던 64비트 selector OpSwitch lowering은 번역기가 그런 switch를 만들지 않아 도달 불가능한 코드였고(변이 시험이 잡지 못해 발견) 제거함.
 - 미해결: Pipeline -13(VS ade84f52, 번들 pipefail_* 필요), 독립 compute/Information segment 153건, Mapped Resource 120건, Linear Texture, Texture View mip/layer. 핀 → d2ec3ad.
+
+## follow-up 26 (lagfx a8cce14 — 호스트 검증만, 기기 미검증)
+- 리뷰(7eefe1fb) 수용. 보완: (1) tile BGRA8 대체 부분 영역 시험에 영역 안(CPU 모델 ±1)/바깥(clear 색 정확 일치) 픽셀 비교와 resume_failed/submit_failed 검사를 추가. 이전 장부의 '전체/영역 바이트 일치'는 부분 영역에 대해서는 과장이었음(그때는 dispatch 횟수·캐시만 확인). 전체 영역 시험은 unorm8 반올림으로 ±1 허용. (2) OpExtInst 명령 번호 vs i64 id 충돌 회귀 시험 추가(수정 전 소스에서는 switch 쪽이 먼저 실패해 ExtInst 단독의 변별력은 따로 확인하지 못함).
+- Linear Texture: 코드 점검 결과 pull/push, 행 pitch/offset, wgen 기반 stale 판정이 이미 있고, 최신 기기 로그에서 linear_stale=0, storage 거부 why[linear]=0 으로 실패 근거가 없음. 새로 구현할 것이 확인되지 않아 이번에는 변경하지 않음(기기에서 linear 텍스처 사용 자체의 증거도 로그에 없음).
+- Mapped Resource 120건(site 0): 전부 한 종류 — 'guest surface: fourcc 34323266 refused (only BGRA / RGhA)'. 공개 자료로 이 fourcc의 형식을 확정하지 못함(추측으로 구현하지 않음). 거부 시 descriptor 헤더(크기/row/alloc/원시 워드)를 distinct 별로 1회 로그하도록 변경 → 새 APK 로그에서 형식 확정 후 구현. 이 변경 자체는 진단이며 기능이 아님.
+- 미해결: 독립 compute / Information segment 153건씩(segdump_*.bin 필요), Pipeline -13(pipefail_* 필요), Texture View mip/layer. 핀 → a8cce14.

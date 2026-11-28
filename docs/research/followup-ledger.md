@@ -591,3 +591,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - Linear Texture: 코드 점검 결과 pull/push, 행 pitch/offset, wgen 기반 stale 판정이 이미 있고, 최신 기기 로그에서 linear_stale=0, storage 거부 why[linear]=0 으로 실패 근거가 없음. 새로 구현할 것이 확인되지 않아 이번에는 변경하지 않음(기기에서 linear 텍스처 사용 자체의 증거도 로그에 없음).
 - Mapped Resource 120건(site 0): 전부 한 종류 — 'guest surface: fourcc 34323266 refused (only BGRA / RGhA)'. 공개 자료로 이 fourcc의 형식을 확정하지 못함(추측으로 구현하지 않음). 거부 시 descriptor 헤더(크기/row/alloc/원시 워드)를 distinct 별로 1회 로그하도록 변경 → 새 APK 로그에서 형식 확정 후 구현. 이 변경 자체는 진단이며 기능이 아님.
 - 미해결: 독립 compute / Information segment 153건씩(segdump_*.bin 필요), Pipeline -13(pipefail_* 필요), Texture View mip/layer. 핀 → a8cce14.
+
+## follow-up 27 (문서 정정 + 설계, 코드 변경 없음)
+- 리뷰(67198801) 수용. 정정: follow-up 26의 'fourcc 34323266 형식을 공개 자료로 확정하지 못함'은 틀림. 0x34323266을 상위 바이트부터 읽으면 '422f' = kCVPixelFormatType_422YpCbCr8BiPlanarFullRange(8비트 YCbCr 4:2:2 2-plane full range). 로그의 'f224'는 리틀엔디안 바이트 순서 읽기였음. 형식은 확정, 미확정은 게스트 descriptor의 plane별 offset/pitch 위치뿐.
+- 근거 있는 설계(구현 전): 같은 로그에 게스트 컴포지터 셰이더의 ycbcr_to_rgb 헬퍼와 ColorFillYCbCr류 plane_y/plane_uv 다중 렌더타깃 출력이 있음 → 게스트가 YCbCr<->RGB 변환을 셰이더에서 직접 하고 plane을 각각 별도 텍스처(Y=R8, CbCr=RG8, 가로 절반)로 다룰 가능성이 큼. 그렇다면 Vulkan YCbCr Conversion은 불필요하고, 422f surface를 plane별 R8 / RG8 기기 이미지 2장 + plane별 guest page 범위 업/다운로드로 처리하는 별도 경로가 맞음(BGRA/RGhA 분기에 bpp=2를 넣는 방식은 폐기). Vulkan 쪽 VK_KHR_sampler_ycbcr_conversion 확장은 기기 로그에 노출되어 있으나 G8_B8R8_2PLANE_422 샘플링 지원 여부는 미확인. 구현에는 descriptor의 plane offset/pitch 필요 → 새 APK 로그의 헤더 워드 기록으로 확보.
+- Linear Texture: '기존 구현 존재, 기기 실행 미검증'으로 분류(완료 아님; linear_stale=0은 경로가 호출되지 않았을 가능성과 구분 불가).
+- Texture View mip/layer: 코드 점검 결과 descriptor의 mip chain / array layer를 샘플 view로 쓰는 경로와 호스트 시험(arm64-exec-texview-unit)은 있음(g7-texview). 게스트가 만드는 '텍스처 view 객체'(타입 7, 8(linear 별칭), 0x1b)는 census O05 기준 0건 관측, obj_unsupported=0 이라 필요성 증거가 없고 레코드 형식도 코드/문서에 없어 추측 구현하지 않음. 기기에서 view 객체가 나타나면 그때 착수.
+- 이번 단계는 신규 GPU 기능 구현으로 집계하지 않음. 독립 compute/Information segment/Pipeline -13은 각 자료(segdump_*.bin, pipefail_*) 대기이며 별도 관리.

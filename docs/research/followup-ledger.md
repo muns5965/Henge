@@ -510,3 +510,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - g7-seg-census SUMMARY/PAIR 줄을 g7-gpu-unsup과 함께 주기 출력.
 - Storage Image: 원인 4분류(linear / usage_missing_format_unsupported / usage_missing_format_supported / view_failed) — 장치 포맷 기능(STORAGE_IMAGE)과 usage 누락을 구분. 로그 조합 한도 16, 초과는 log_overflow 카운트.
 - 워크플로 핀 → 4dd2300 (이전 c2a5e96 빌드는 대체). 기능 구현 아님: 독립 Compute 실행/Storage Image 지원은 미구현 유지.
+
+## follow-up 14 (lagfx 824716b — 호스트 검증만, 기기 미검증)
+- 리뷰 정정 수용: Depth/Stencil Resolve는 구현됨(render_pass.c vkCreateRenderPass2, arm64_exec_run.c:1249). 매트릭스 문서 정정(신규 성과로 계산하지 않음). "소스만으로 진행 가능한 것 없음" 결론도 정정.
+- Pipeline -13 로그 재분석(소스+로그, 번들 없음): 실패 6조합 공통 VS ade84f52(2312B, 속성 4: f32x4@0, f32x2@16, f32x2@24, half4@32, stride 48). S8 caps: io16·ub16·pc16 미지원이지만 인터페이스는 항상 32비트(translate_function.c ~1036)라 해당 없음; DrawParameters 사용 없음; Float16/SB16/Int8 feature는 활성. 기존 M0..M10은 정점 입력/스테이지 분리/capability 선언을 변화시키지 않았음 → 원인 후보 미배제.
+- 온디바이스 매트릭스에 행 추가(진단이 아닌 -13 국소화, 같은 로그에서 결과): M11a 실제 VS+스텁 FS, M11b 스텁 VS+실제 FS, M12 Half4 속성→Float4 선언, M13 미사용 Int8/16/Float16/Int64 capability 제거, M14 64비트 동적 인덱스→32비트. 어느 행이 BUILT가 되면 해당 단계/원인이 확정되고 수정으로 이어짐.
+- 워크플로 핀 4dd2300 → 824716b. 게시(workflow_dispatch publish_start=true)는 권한 분류기가 거부 → 우회 안 함. 경로: GitHub Actions > "Android G7 lagfx APK" > Run workflow > branch research/g7-integ-apk > publish_start 체크.

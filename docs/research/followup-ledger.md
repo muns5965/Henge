@@ -198,3 +198,12 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - The two APK artifacts (baseline run 46087153739, comparison run 46089125408) have `retention-days: 7` (expire about 2026-12-05) and no checksum was logged. This environment cannot download them (artifact host blocked by the agent proxy), so **no file or sha256 for these two exists here**. Action for the person with the phone / a browser: download both zips from the run pages before they expire and record `sha256sum`.
 - Workflow now logs the APK sha256 + Henge / library SHAs in the job summary and keeps artifacts 30 days (next runs only; not retroactive).
 - Both test APKs are signed with a TEMPORARY key unless the project keystore secret is set (the log warns): two builds may not install over one another; uninstall before switching, which also loses app data. Check this before the J0/J2/J1 runs.
+
+## 2026-11-28 (review of the Blit direction): classification of the 24 blit ops
+- Library `docs/blit-coverage.md`, branch `research/g7-blit-census`, merged into `research/g7-integration` (3978fd6). Full suite 176 ok / 1 fail (shader translate, llc environmental) / 1 skip.
+- Executed and CPU-compared on lavapipe (device-verified: none): 300 buf->tex, 301 buf->buf, 302 tex->buf, 303 tex->tex, 306 fill buffer, 319 fill pattern. No-ops by design: hints, sync, fences, invalidate-compressed.
+- **Implemented but not wired, blocked on an unknown ARM64 payload:** 307 generate mipmaps (`lagfx_mipgen_record`, 2D only) and 321 fill texture with colour (x86-era lowering). Wiring them needs a real record; guessing the layout would write wrong texels, so not done.
+- **No implementation, payload unknown:** 320, 304, 318, 305/312/313.
+- Added only diagnostics: per-tag unexecuted/refused counters and the first 4 raw payloads per tag (warn log). It raises no coverage. Next device run: look for `blit tag NNN ... NOT EXECUTED` lines to get the layouts.
+- The "sibling bug" of 0x12f listed earlier could not be identified by reading `blit_303` (format/type equality, bounds, overlap and lin pull/push checks are present and tested); it needs a failing capture. Recorded as unreproduced, not fixed.
+- Reviewer's 8-step request: item 1 (classify) done; items 2, 5-7 only partially: no defect found without a capture, no new operation implemented, so no APK/20-item update beyond the census. The percentage scores in the review are the reviewer's estimates; coverage here did not change.

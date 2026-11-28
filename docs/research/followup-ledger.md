@@ -502,3 +502,11 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - Storage Image: `ext_storage_img_unsupported`를 원인별(linear / format_no_storage / view_failed)로 분리, 첫 (원인,VkFormat)마다 `g7-storage-img:` 로그. 소스상 원인: 포맷이 STORAGE_IMAGE 기능을 갖지 않으면 create_image가 STORAGE usage를 제거(fmt.dropped[0], 로그의 333). 실제 포맷은 다음 로그로 확인.
 - Compute 사전 분석: src/handlers/compute/compute_inner_ops.c는 x86 경로 inner-op 표이며(내용은 Render 계열 opcode) ARM64 type-1 세그먼트 레코드 포맷과 무관 → 포맷 근거 없음. 재사용 가능 기반은 arm64_tile.c(파이프라인 resolve/scan_bindings, 버퍼·텍스처 슬롯 바인딩, 디스크립터 풀, gather, 배리어+vkCmdDispatchBase). 독립 실행에 추가로 필요: dispatch 종류(threadgroups/threads), 파이프라인 지정 태그, TGMEM 크기, 렌더패스 종료·메모리 동기화 — 모두 태그 번호 미확인.
 - Henge 워크플로 lagfx 핀 a9c3194 → c2a5e96 (2곳). push는 빌드·정적검사만, APK 게시는 수동 승인.
+
+## follow-up 13 (lagfx 4dd2300 — 호스트 검증만, 기기 미검증)
+- Census를 src/protocol/seg_census.c로 분리(Vulkan 무관, 단위 테스트 seg-census-unit 추가: 정상/size<8/본문 초과/잔여 바이트/잘린 본문/24바이트 헤더/테이블 초과/덤프 성공·중복·쓰기 실패 재시도·256KiB 초과·파일 수 한도).
+- 덤프: fopen/fwrite/fflush/fclose 모두 검사, 성공 후에만 해시 등록(실패 시 재시도), declared_len/captured_len/truncated 기록(잘린 경우 파일명 _trunc), 종류당 32개·256KiB 한도 초과는 dump_limit/dump_too_big 카운트 + 최초 1회 로그.
+- overflow_records는 "고유 조합 수"가 아닌 "표에 못 든 레코드 횟수"임을 명시. STOP은 사유별 전체 누계를 SUMMARY(stops)에 출력, 로그는 사유별 처음 4회.
+- g7-seg-census SUMMARY/PAIR 줄을 g7-gpu-unsup과 함께 주기 출력.
+- Storage Image: 원인 4분류(linear / usage_missing_format_unsupported / usage_missing_format_supported / view_failed) — 장치 포맷 기능(STORAGE_IMAGE)과 usage 누락을 구분. 로그 조합 한도 16, 초과는 log_overflow 카운트.
+- 워크플로 핀 → 4dd2300 (이전 c2a5e96 빌드는 대체). 기능 구현 아님: 독립 Compute 실행/Storage Image 지원은 미구현 유지.

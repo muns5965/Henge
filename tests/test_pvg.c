@@ -1019,6 +1019,65 @@ static void s_live(void) {
     hv_pvg_lite_set_mode(1920, 1080);
 }
 
+/* ---- scanout selection: the surface a swap NAMES is the one the display path shows (Henge side of the A/B check; the lagfx side is arm64-mapped-unit.c "two surfaces") ----
+   Two surfaces with their own page lists and data pages (mapping 3 = A, mapping 4 = B), swapped A/B/A/B by NAME. The comparison is against the named surface's own
+   pixels, not against the last one anything rendered to. Both 'BGRA' and 'RGhA' (RGBA16Float) forms; rewriting the surface that is not shown must not change the output. */
+static uint32_t g_ss_stamp;
+static void ss_swap(uint32_t mapping) { uint32_t sw[10] = {0, 0, mapping, 0x5, 0, 0, 0, 0, 3, 0xabcd}; chan_cmd(4, 8, ++g_ss_stamp, sw, 40); ring_bell(4); }
+static void ss_fill_bgra(uint8_t *page, int w, int h, int row, const uint8_t c[4]) { for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) memcpy(page + y * row + x * 4, c, 4); }
+static void ss_fill_half(uint8_t *page, int w, int h, int row, const uint16_t c[4]) { for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) memcpy(page + y * row + x * 8, c, 8); }
+static int ss_shows(const uint8_t want[4], int w, int h) {   /* every pixel of the live frame is want (B,G,R,A) */
+    uint32_t gw = 0, gh = 0; size_t need = 0;
+    memset(g_out, 0x77, sizeof g_out);
+    if (hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &gw, &gh, &need) != 0 || (int)gw != w || (int)gh != h) return 0;
+    for (int i = 0; i < w * h; i++) if (memcmp(g_out + i * 4, want, 4)) return 0;
+    return 1;
+}
+static void s_scanout_select(void) {
+    const uint32_t BG = 0x42475241u, HA = 0x52476841u;
+    const uint8_t blue[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, red[4] = {0, 0, 255, 255};
+    const uint16_t hblue[4] = {0, 0, 0x3c00, 0x3c00}, hgreen[4] = {0, 0x3c00, 0, 0x3c00}, hred[4] = {0x3c00, 0, 0, 0x3c00};
+    for (int fmt = 0; fmt < 2; fmt++) {
+        hv_pvg_lite_set_mode(800, 600);
+        dev_new(1);
+        chan_setup(4, 1);
+        g_ss_stamp = 40;
+        uint32_t dpn = alloc_page();
+        uint32_t a1[2] = {0, dpn};
+        chan_cmd(4, 1, ++g_ss_stamp, a1, 8); ring_bell(4);
+        uint32_t tabp = alloc_page(), descp = alloc_page(), lista = alloc_page(), listb = alloc_page(), da = alloc_page(), db = alloc_page();
+        ((uint32_t *)pgp(tabp))[0] = (uint32_t)((((uint64_t)descp << 14) >> 12) | 1);
+        ios_w(ios_o, 0x1010, (uint64_t)tabp << 14, 8);
+        ((uint32_t *)pgp(lista))[0] = (da << 2) | 1;
+        ((uint32_t *)pgp(listb))[0] = (db << 2) | 1;
+        const int W = 4, H = 2, bpp = fmt ? 8 : 4, row = 64;
+        put_desc(pgp(descp) + 0x400 * 3, lista, fmt ? HA : BG, (uint64_t)row * H, W, H, row, 0);
+        put_desc(pgp(descp) + 0x400 * 4, listb, fmt ? HA : BG, (uint64_t)row * H, W, H, row, 0);
+        (void)bpp;
+        if (fmt) { ss_fill_half(pgp(da), W, H, row, hblue); ss_fill_half(pgp(db), W, H, row, hgreen); }
+        else     { ss_fill_bgra(pgp(da), W, H, row, blue);  ss_fill_bgra(pgp(db), W, H, row, green); }
+        const char *nm = fmt ? "RGhA" : "BGRA";
+        for (int i = 0; i < 4; i++) {   /* A, B, A, B */
+            ss_swap(i % 2 ? 4 : 3);
+            EXPECT(ss_shows(i % 2 ? green : blue, W, H), "scanout %s: swap %d names mapping %d -> the display shows %s", nm, i, i % 2 ? 4 : 3, i % 2 ? "B (green)" : "A (blue)");
+        }
+        /* B is shown; A is rewritten (red) behind it: the output stays B until a swap names A again */
+        ss_swap(4);
+        if (fmt) ss_fill_half(pgp(da), W, H, row, hred); else ss_fill_bgra(pgp(da), W, H, row, red);
+        EXPECT(ss_shows(green, W, H), "scanout %s: rewriting the surface that is not named leaves the shown one (B) unchanged", nm);
+        ss_swap(3);
+        EXPECT(ss_shows(red, W, H), "scanout %s: naming A after its rewrite shows the new A (red)", nm);
+        if (fmt) ss_fill_half(pgp(db), W, H, row, hblue); else ss_fill_bgra(pgp(db), W, H, row, blue);
+        EXPECT(ss_shows(red, W, H), "scanout %s: rewriting B while A is named leaves A shown", nm);
+        ss_swap(4);
+        EXPECT(ss_shows(blue, W, H), "scanout %s: naming B after its rewrite shows the new B (blue)", nm);
+        /* an unknown mapping id names no surface: the display must not silently keep showing a surface the swap did not ask for as if it were that one */
+        uint32_t gw = 0, gh = 0; size_t need = 0; ss_swap(9);
+        EXPECT(hv_pvg_lite_live_surface_bgra(dev, g_out, sizeof g_out, &gw, &gh, &need) != 0, "scanout %s: a swap naming an unmapped id yields no frame (not the previous surface)", nm);
+    }
+    hv_pvg_lite_set_mode(1920, 1080);
+}
+
 static void s_rgha(void) {
     setenv("HV_PVG_TALLY", "1", 1);
     hv_pvg_lite_set_mode(800, 600);
@@ -1300,6 +1359,7 @@ int main(int argc, char **argv) {
     if (all || !strcmp(sc, "swap")) s_swap();
     if (all || !strcmp(sc, "vblexp")) s_vblexp();
     if (all || !strcmp(sc, "rgha")) s_rgha();
+    if (all || !strcmp(sc, "scanout")) s_scanout_select();
     if (all || !strcmp(sc, "live")) s_live();
     if (all || !strcmp(sc, "vbldiag")) s_vbldiag();
     printf("%s test_pvg %s\n", bad ? "FAIL" : "PASS", sc);

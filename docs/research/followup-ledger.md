@@ -516,3 +516,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - Pipeline -13 로그 재분석(소스+로그, 번들 없음): 실패 6조합 공통 VS ade84f52(2312B, 속성 4: f32x4@0, f32x2@16, f32x2@24, half4@32, stride 48). S8 caps: io16·ub16·pc16 미지원이지만 인터페이스는 항상 32비트(translate_function.c ~1036)라 해당 없음; DrawParameters 사용 없음; Float16/SB16/Int8 feature는 활성. 기존 M0..M10은 정점 입력/스테이지 분리/capability 선언을 변화시키지 않았음 → 원인 후보 미배제.
 - 온디바이스 매트릭스에 행 추가(진단이 아닌 -13 국소화, 같은 로그에서 결과): M11a 실제 VS+스텁 FS, M11b 스텁 VS+실제 FS, M12 Half4 속성→Float4 선언, M13 미사용 Int8/16/Float16/Int64 capability 제거, M14 64비트 동적 인덱스→32비트. 어느 행이 BUILT가 되면 해당 단계/원인이 확정되고 수정으로 이어짐.
 - 워크플로 핀 4dd2300 → 824716b. 게시(workflow_dispatch publish_start=true)는 권한 분류기가 거부 → 우회 안 함. 경로: GitHub Actions > "Android G7 lagfx APK" > Run workflow > branch research/g7-integ-apk > publish_start 체크.
+
+## follow-up 15 (lagfx 443e3b8 — 호스트(lavapipe) 검증만, 기기 미검증)
+- 리뷰 반영: M11b는 스텁 VS가 FS varying을 공급 못 하므로 FAIL은 비결정적(BUILT만 유의), M12는 선언만 바꾼 생성 시험(수정 아님)임을 로그 행 설명에 명시. 어느 행의 BUILT도 근본 원인 확정이 아님.
+- 실제 구현(진단 아님): 공통 Compute 실행 기반 src/protocol/compute_exec.{c,h} — 임의 SPIR-V 커널의 compute 파이프라인(바인딩 명시, push constant), 버퍼/이미지/샘플러 디스크립터 바인딩(바인딩 번호로 매칭, 누락·중복·미지 바인딩 거부), vkCmdDispatch, 전후 메모리 배리어, 디스크립터 세트 재활용, dispatchThreads→그룹 수(비균일 격자 표시). 게스트 레코드 형식과 무관.
+- 시험(compute-exec-lavapipe, CPU 기준값 비교): 균일/비균일 격자 1000스레드, 연속 두 dispatch 순서(배리어), 격자 밖 센티널 미변경, 거부 경로, 세트 풀 소진·재활용. 194 통과/0 실패/1 건너뜀. 아직 실제 게스트 compute 세그먼트에 연결되지 않음(태그 형식 미확인) → 독립 Compute 실행은 여전히 0/153, 미구현으로 유지.
+- 워크플로 핀 → 443e3b8.

@@ -200,9 +200,11 @@ test-display-routing: $(B)/test_display_targets $(B)/test_display_router $(B)/te
 $(B)/test_jit_advice: ios/Henge/JIT/JITNetworkAdvice.swift tests/test_jit_advice.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
-test-xhci-keys: tests/test_xhci_keys.c devices/xhci.c devices/xhci.h | $(B)
+test-xhci-keys: tests/test_xhci_keys.c tests/test_virtio_input_events.c devices/xhci.c devices/xhci.h devices/virtio_input.c | $(B)
 	$(CC) $(CFLAGS) tests/test_xhci_keys.c -o $(B)/test_xhci_keys -lpthread
 	$(B)/test_xhci_keys
+	$(CC) $(CFLAGS) tests/test_virtio_input_events.c -o $(B)/test_virtio_input_events -lpthread
+	$(B)/test_virtio_input_events
 .PHONY: test-xhci-keys
 
 test-jit-advice: $(B)/test_jit_advice

@@ -542,3 +542,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 한계: g_last_vr 복원 자체를 판별하는 호스트 시험은 만들지 못함 — 복원 줄을 제거해도 시험이 통과(lavapipe에서 이 실패에 대해 성공으로 끝나는 matrix 행이 없음). 시험은 '가드'로만 표시. 복원은 코드 읽기로만 검증. 장치 손실·OOM 개별 거부 시험도 없음. 카운터 fallback_tries는 '대체 경로 진입 + 모듈 재작성 후' 증가(재호출 횟수 아님).
 - 미완료: Threadgroup 메모리, 일반 Int64, Storage Image/Linear 대체, Texture View mip/layer, 게스트 compute 연결, Pipeline -13 원인(M11a–M14 결과/번들 필요).
 - 핀 → eac6e41.
+
+## follow-up 19 (lagfx 0d6cc2e — 호스트 검증만, 기기 미검증)
+- 리뷰(89dd4d7f) 수용: Pipeline Fallback 내부 검증은 종료, 새 기능으로 이동. 이번 기능 = Threadgroup 메모리 인자.
+- 구현: kernel 인자 key "air.threadgroup_buffer" → Workgroup T[N] 변수, N은 SpecConstant(SpecId 3+k, 단위=요소 수, 기본 1024, OpName lagfx.tgarg.<k>.<요소 바이트>). 인덱스 GEP로만 접근 허용; 요소 타입이 32/64비트 정수·float가 아니거나, 직접 역참조·접근 타입 불일치면 번역 실패(조용히 undefined 포인터로 두지 않음).
+- 시험: air2spv-threadgroup-arg-lavapipe — i32/f32 커널(scratch[lid] 저장→barrier→이웃 읽기)을 4그룹×64로 실제 실행해 CPU 모델과 전 워드 일치(길이 지정 64 / 기본값 모두), 직접 역참조 fixture는 거부. 호스트 196 통과/0 실패/1 건너뜀(시험 수는 성과로 집계하지 않음).
+- 한계(명시): metadata key 철자는 Apple AIR에 대한 해석이고 실제 캡처 모듈에서 아직 못 봄; fixture는 llvm-as 손작성(불투명 포인터). helper 함수의 threadgroup 포인터 인자, 64비트 요소의 실기기 Int64 요구, 디스패처가 setThreadgroupMemoryLength를 SpecId에 넣는 연결은 미구현(게스트 compute 레코드 형식 대기). 이 기능이 S8 화면/Pipeline -13에 영향을 준다는 증거 없음.
+- 핀 → 0d6cc2e.

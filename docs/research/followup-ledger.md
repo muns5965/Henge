@@ -490,3 +490,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 마지막 gap 직전 pass(g7-gap-pass): colour attachment 2, slot0 load=clear (0,0,0,0), viewport/scissor 0x0(게스트가 설정 안 함), render_area 1920x1080.
 - lagfx 진단 추가(기능 변경 아님): g7-gpu-unsup 줄 — seg_unsupported 의 type 별(1 compute / 4 information) 과 mapped_unsupported 의 거부 지점(12곳) 별 카운트. 현재 로그에는 분해값이 없어 306/120 의 구성은 미확인. 이 줄은 pin 미변경이라 기존 APK 에는 없음.
 - 소스상 의미(코드 확인): seg_unsupported = exec segment type≠0(render) 이고 ≠2(blit) 인 것, 즉 compute(1)/information(4) segment 는 이 exec 경로에서 실행하지 않고 계수만 함(arm64_exec_run.c:1908). storage_img_unsupported = storage image 바인딩 대상 미러 텍스처가 linear(버퍼) 이거나 storage 불가 포맷(view 없음)일 때 descriptor 구성이 실패(arm64_exec_run.c:874). mapped_unsupported 는 12개 지점(디스크립터 미해석·surface 재생성 시 크기/포맷 불일치·payload 읽기 실패·너무 큼·테이블 가득·이미지 생성 실패·usage 부족 등)의 합.
+
+## follow-up 11 (lagfx 커밋 참조 — 호스트(lavapipe) 검증만, 기기 미검증)
+- seg_unsup_type 인덱스 `& 7` 에일리어싱 수정(type≥7 → 버킷 7). seg_t1=153/seg_t4=153은 기존 로그에 이미 존재(리뷰어 지적 타당).
+- 컴퓨트(1)/정보(4) 세그먼트 본문 `[tag][size]` 레코드 census 추가: `g7-seg-census: FIRST/COUNT` 로그(tag별 크기 min/max, 첫 페이로드 64바이트). 상태 변경 없음. 목적: 캡처가 없는 컴퓨트 레코드 포맷 확보 → 다음 APK 로그로 구현 근거 마련.
+- 회귀 테스트: mapped_unsupported == mapped_unsup_site[0..11] 합 (arm64-mapped-unit). 호스트 192 pass / 0 fail / 1 skip.
+- 미구현: 독립 컴퓨트 세그먼트 실행(포맷 미확인), storage_img_unsupported=18 원인 분석, AIR 의존 항목(보류).

@@ -438,3 +438,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 입력(Henge): 좌표 변환·탭/드래그 순서 시험은 기존 test_touch_transform/display/input_inject 에 이미 있음(plain+ASan 통과). 화면 밖 좌표(음수/아주 큰 값) 추가 → 게스트 모서리로 클램프. 기기 미검증(실제 hv_vm_mouse_move 도달·포인터 이동은 여전히 로그에서 0).
 - 커서(lagfx): tests/cursor-composite-unit.c 신규(시험용 glyph, Apple glyph 형식 무관). 실제 버그 2건 발견·수정: (1) 셰이더 uv 가 상하 반전(음수 높이 viewport 가정, cursor.c 는 양수 viewport) → 64x64 glyph 이미지보다 작은 glyph 가 뒤집혀 quad 하단에 그려짐, (2) 반투명 픽셀이 target alpha 를 191 로 낮춤(srcAlpha=SRC_ALPHA) → ONE. 시험: 핫스팟 이동, 알파 블렌드, 좌상단/우하단 클리핑, 완전 화면 밖, glyph 없음 — dynamic·legacy 모두 통과. 단, 실제 Henge 경로에서 glyph 를 캡처(display_cursor_glyph captured_len=0)하지 않으므로 기기에서는 여전히 커서가 합성되지 않음.
 - 텍스처: 1D/2D array 혼합 셰이더(각 호출이 자기 텍스처에 결합, 샘플 2개, spirv-val), texture1d 대조군은 OpImageSample 0개 + OpUndef(typed undef) 직접 확인. pin lagfx a9c31949eb172e8ec539d7d8a16f108697866752.
+
+## 2026-11-28 (후속 4) 리뷰 2건(검증 범위 지적, 게스트 GUI·VBL 분석 요구) 반영
+- 정정: 직전 (후속 3)의 "각 호출이 자기 텍스처에 결합" 은 당시 검증 범위(배열 이미지 바인딩 2개 + 샘플 2개 + spirv-val)를 넘은 표현이었음. 이번에 lagfx tests 에서 각 OpImageSample 이 SampledImage→Load→Variable 로 추적되어 서로 다른 이미지 변수·다른 Binding 을 읽는지 직접 검사(lagfx 커밋, 호스트 191 통과). 기대 픽셀 비교는 여전히 없음(혼합 셰이더 렌더 하니스 미작성).
+- 게스트 GUI/VBL (S8 로그 7건 cboot 전수, 모두 180 s 종료): 전 실행에서 display_events=OFF, vbl ticks=0, db_nonzero=0(0x1014 읽기 4085회 전부 0), swap_events=0. 즉 호스트가 게스트에 VBL(0x8)·표시 원인 비트를 한 번도 전달한 적이 없음(oss-display-events.md 의 추정: 게스트는 mask +0x104=0xC 로 0x8 을 기대). 이 가설은 기기에서 검증된 적 없음.
+- 첫 swap(op08) 시각이 실행마다 13 s / 58 s / 95 s / 98 s / 116 s 로 크게 다르고 전 실행이 180 s 에서 끝나 → "GUI 미진입"과 "렌더 오류"를 구분하려면 더 긴 실행이 필요. 이번 로그: 116 s 에 첫 swap, 이후 177 s 까지 1029회(≈17/s), 1920x1080 RGBA16Float.
+- 다음 기기 실험(코드 변경 불필요, 기존 APK 옵션): "디스플레이 이벤트(VBL)" 체크 + 실행 시간 900 s 이상. 비교 지표: swap 수/초, 첫 swap 시각, g7-gpu-image 의 비검정 비율, vbl ticks, 0x1014 nonzero. 기기 미검증.

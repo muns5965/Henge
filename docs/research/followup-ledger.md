@@ -299,3 +299,4 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - 이번 빌드에 `g7-probe:` 줄 추가: API 버전, Vulkan11/12/13 조회값, KHR 확장(dynamic_rendering/BDA/sync2) 존재를 한 줄로 출력 → "지원 0/활성화 1" 불일치가 조회 구조체 쪽인지 진단 쪽인지 S8 로그로 구분.
 - 미구현(순서): (1) 확장 기반 판단(KHR dynamic_rendering/BDA/sync2: 확장+기능+함수 포인터 확인, 호출은 KHR 포인터), (2) 기존 Render Pass 경로(RenderPass/Framebuffer/파이프라인 분기/레이아웃/MSAA/커서/캐시/수명), (3) 원본 직접 부팅의 변경 상태 표시·비정상 종료 후 검사. 직접 부팅은 상태 관리 전까지 복제본 부팅을 우선 사용.
 - `shader translate (unit)`은 SPIR-V 타깃 지원 llc 환경에서 재검증 필요(이 환경에서는 수정 전에도 실패).
+- S8 로그 재분석: 1.1 장치에서 shaderFloat16/Int8, 8/16비트 저장소, variable pointers를 Vulkan11/12 구조체로 켜면서 대응 KHR 확장(shader_float16_int8, 8bit/16bit_storage, variable_pointers)은 활성화하지 않았음(로그의 enabled_exts 3개뿐) → 유효하지 않은 사용. API<1.2에서만 해당 확장을 활성화하도록 수정(>=1.2 경로 불변). "supported 0"은 확장 미활성 상태에서 진단 쪽 조회가 0을 반환한 것으로 보이나 `g7-probe:` 로그로 확인 필요. 이 로그(빌드 01:45)는 수정 전 APK의 것.

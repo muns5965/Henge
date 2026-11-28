@@ -535,3 +535,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 공통 Compute 기반 보강: 지원 descriptor type 화이트리스트(그 외 생성 거부), 장치 한계(workgroup count, push constant) 검사(lagfx_cx_set_limits), 버퍼 null/오프셋 정렬·이미지 view·sampler 널 검사. Descriptor 세트 재사용은 호출자가 GPU 완료 후 recycle(계약 명시). 이미지 레이아웃 전환은 호출자 책임(문서화).
 - 미완료(리뷰 지적, 인정): 대체 Pipeline으로 실제 Draw를 실행해 원본과 픽셀 동등성을 비교하는 시험은 아직 없음(원본 빌드를 실패시키는 호스트 방법이 주입 훅뿐). 게스트 compute 연결/Threadgroup 메모리/Int64/Storage Image/Texture View 미구현. Half4→Float4는 M12 결과 대기 조건부 보류(장치 미지원과 드라이버 조합 결함을 구분해 구현).
 - 핀 → 8103b48.
+
+## follow-up 18 (lagfx eac6e41 — 호스트 검증만, 기기 미검증)
+- 리뷰(65d2560d) 지적 수용: (1) Matrix/Reduce 진단이 같은 함수로 다른 Pipeline을 만들며 thread-local g_last_vr을 덮어쓸 수 있었음(소스 확인) → 진단 종료 후 이 빌드의 VkResult 복원. (2) arm64-pipefail-unit이 파괴된 ShaderModule 핸들로 대체 시험을 하던 수명 오류 → 파괴를 마지막 사용 이후로 이동. (3) 대체 빌드 함수가 Vulkan 활성 블록 밖에 있던 구조 → 활성/비활성 분리, 비활성은 stub. 비활성 빌드는 실제 헤더 없는 환경에서 컴파일하지 못해 pipeline_build.c 자체의 오류가 없는지만 확인(헤더 충돌은 기존 문제).
+- 실제 Draw 동등성 시험 추가(tests/pipeline-fallback-draw-lavapipe.c): 정상 Pipeline과 강제 대체(unused 능력 선언 제거) Pipeline로 같은 삼각형을 그려 16x16 BGRA8 전체 픽셀이 동일함을 legacy VkRenderPass 경로와 dynamic rendering 경로 모두에서 확인(삼각형 52px / 배경 204px, 전부 clear가 아님도 검사).
+- 한계: g_last_vr 복원 자체를 판별하는 호스트 시험은 만들지 못함 — 복원 줄을 제거해도 시험이 통과(lavapipe에서 이 실패에 대해 성공으로 끝나는 matrix 행이 없음). 시험은 '가드'로만 표시. 복원은 코드 읽기로만 검증. 장치 손실·OOM 개별 거부 시험도 없음. 카운터 fallback_tries는 '대체 경로 진입 + 모듈 재작성 후' 증가(재호출 횟수 아님).
+- 미완료: Threadgroup 메모리, 일반 Int64, Storage Image/Linear 대체, Texture View mip/layer, 게스트 compute 연결, Pipeline -13 원인(M11a–M14 결과/번들 필요).
+- 핀 → eac6e41.

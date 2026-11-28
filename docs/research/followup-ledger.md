@@ -241,7 +241,7 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 
 ### 3. ARM64 JIT — [소스 분석, 미측정]
 - 캐시는 전체 flush 방식이다: 부분 퇴출(LRU 등) 없음. flush 요청 원인은 코드 영역 가득 참 / 블록 표 가득 참 / emit 실패 / 대기 중 발견 / 기타로 분류되어 이미 세어진다(stats.flush_*). 중복 번역은 dup_* 카운터. 따라서 "캐시 크기 실험"(64/128/256 MiB)과 "엔진 개선"은 별개이며, 엔진 변경은 g7-jit 줄의 req_*, dup_mb 수치가 나온 뒤에만 한다. 근거 없는 알고리즘 변경은 하지 않았다.
-- 소스에서 보이는 비효율 후보(미측정): flush 시 전체 재번역(first_s/retrans_s로 측정 가능), TLBI 계열 flush 요청 경로(core/sysreg.c)의 빈도. 실기기 측정 필요.
+- 소스에서 보이는 비효율 후보(미측정): flush 시 전체 재번역(first_s/retrans_s로 측정 가능), core/sysreg.c 의 IC(명령 캐시) 무효화는 HV_IC_FLUSH 환경변수가 있을 때만 전체 flush 를 요청한다(기본 꺼짐, 정정: 앞서 TLBI 로 적은 것은 틀림). 나머지 원인별 빈도는 실기기 측정 필요.
 
 ### 4. RAM / Swap — [소스 분석]
 - 게스트 RAM: memfd MAP_SHARED(실패 시 익명). JIT: memfd 이중 매핑. 풍선(balloon): 장치와 구멍 뚫기(punch hole/madvise)는 구현돼 있으나 `HV_BALLOON` 환경변수가 있을 때만 생성된다(devices/vmapple.c). Android 실행기에서 이 변수를 설정하는 곳은 소스에 없다 → 실제 연결되지 않음(구현 있음 / 안드로이드 미연결). 이를 켜는 것은 기능 변경이므로 측정 없이 하지 않는다.

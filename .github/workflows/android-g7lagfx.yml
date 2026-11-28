@@ -28,7 +28,7 @@ on:
 env:
   NDK_VERSION: r27c
   LAGFX_REPO: https://github.com/muns5965/libapplegfx-vulkan
-  LAGFX_SHA: a9c31949eb172e8ec539d7d8a16f108697866752
+  LAGFX_SHA: c2a5e964d2a087759b3c8e89042ae20d5f04739d
 
 jobs:
   apk:
@@ -149,7 +149,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           G7_HENGE_SHA: ${{ github.sha }}
-          G7_LAGFX_SHA: a9c31949eb172e8ec539d7d8a16f108697866752
+          G7_LAGFX_SHA: c2a5e964d2a087759b3c8e89042ae20d5f04739d
         run: gradle -p android assembleG7start --no-daemon --stacktrace
       - name: Check the APK (runner present as AArch64, launcher present)
         run: |

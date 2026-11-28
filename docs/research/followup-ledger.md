@@ -496,3 +496,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 컴퓨트(1)/정보(4) 세그먼트 본문 `[tag][size]` 레코드 census 추가: `g7-seg-census: FIRST/COUNT` 로그(tag별 크기 min/max, 첫 페이로드 64바이트). 상태 변경 없음. 목적: 캡처가 없는 컴퓨트 레코드 포맷 확보 → 다음 APK 로그로 구현 근거 마련.
 - 회귀 테스트: mapped_unsupported == mapped_unsup_site[0..11] 합 (arm64-mapped-unit). 호스트 192 pass / 0 fail / 1 skip.
 - 미구현: 독립 컴퓨트 세그먼트 실행(포맷 미확인), storage_img_unsupported=18 원인 분석, AIR 의존 항목(보류).
+
+## follow-up 12 (lagfx c2a5e96 — 호스트 검증만, 기기 미검증)
+- Census 보완: 파싱 중단 사유(size<8 / size-past-body / inner-limit / trailing) 로그 `g7-seg-census: STOP`(오프셋·32바이트), 64항목 초과 카운트(table_overflow), 대표 세그먼트 전체를 `LAGFX_AIR_CAPTURE_DIR/segdump_t<type>_<fnv>.bin`으로 저장(내용 해시 중복제거, 종류당 ≤12개, ≤256KiB). 단위 테스트는 없음(실기기 로그로만 확인 가능).
+- Storage Image: `ext_storage_img_unsupported`를 원인별(linear / format_no_storage / view_failed)로 분리, 첫 (원인,VkFormat)마다 `g7-storage-img:` 로그. 소스상 원인: 포맷이 STORAGE_IMAGE 기능을 갖지 않으면 create_image가 STORAGE usage를 제거(fmt.dropped[0], 로그의 333). 실제 포맷은 다음 로그로 확인.
+- Compute 사전 분석: src/handlers/compute/compute_inner_ops.c는 x86 경로 inner-op 표이며(내용은 Render 계열 opcode) ARM64 type-1 세그먼트 레코드 포맷과 무관 → 포맷 근거 없음. 재사용 가능 기반은 arm64_tile.c(파이프라인 resolve/scan_bindings, 버퍼·텍스처 슬롯 바인딩, 디스크립터 풀, gather, 배리어+vkCmdDispatchBase). 독립 실행에 추가로 필요: dispatch 종류(threadgroups/threads), 파이프라인 지정 태그, TGMEM 크기, 렌더패스 종료·메모리 동기화 — 모두 태그 번호 미확인.
+- Henge 워크플로 lagfx 핀 a9c3194 → c2a5e96 (2곳). push는 빌드·정적검사만, APK 게시는 수동 승인.

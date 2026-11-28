@@ -207,6 +207,11 @@ test-xhci-keys: tests/test_xhci_keys.c tests/test_virtio_input_events.c devices/
 	$(B)/test_virtio_input_events
 .PHONY: test-xhci-keys
 
+test-aux-persist: tests/test_aux_persist.c host/disk.c | $(B)
+	$(CC) -std=gnu11 -D_GNU_SOURCE -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Icore -Ihost -Idevices tests/test_aux_persist.c host/disk.c -o $(B)/test_aux_persist
+	$(B)/test_aux_persist
+.PHONY: test-aux-persist
+
 test-jit-advice: $(B)/test_jit_advice
 	$(B)/test_jit_advice
 .PHONY: test-jit-advice

@@ -562,3 +562,8 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - narrowing이 거부되면 translate.c가 i64를 넓게 유지해 다시 번역한 뒤 lowering(원 거부 사유는 lowering까지 실패하면 보존). 기존 'narrowing 스위프' 시험: spirv-val narrowing-only 실패 0.
 - 시험(lavapipe, shaderInt64 끔): int64_ops fixture(25종 결과 × 256 스레드)가 CPU uint64_t 모델과 일치 — 직접 lowering 경로와 translate_module 경로 둘 다. Threadgroup fixture는 원래의 `mul i64 gid,64` 형태로 복원, 두 모드 모두 통과. 전체 호스트 197 통과 / 0 실패 / 1 스킵.
 - 한계: 실제 기기(Adreno 730) 미검증; 장치가 shaderInt64 없는 Int64 모듈을 거부하는지는 lavapipe로 확인 못 함; Div/Rem·Atomic64 미구현(스위프 기준 narrowing 거부 63건 중 대부분 잔존); i64 요소 threadgroup 실행 시험 없음. 핀 → 9ab409d.
+
+## follow-up 22 (lagfx 1bc4416 — 호스트 검증만, 기기 미검증)
+- 리뷰(f6d89225) 수용: (1) Int64 lowering의 GEP/동적 벡터 인덱스가 상위 워드를 버리던 문제 수정 — 상위 워드≠0이면 0xFFFFFFFF(범위 밖 유지)로 보냄. 구조 시험(인덱스가 Select로 보호됨) 추가. (2) 공유메모리 오버플로: 이전 보고(follow-up 21)는 오류였음 — 실제로는 검사가 없었음. 이번에 곱셈·합산·정렬 올림 모두 checked 산술(2^40 상한)로 교체, 배열 stride를 요소 정렬로 올림(vec3→16). 단 u32 길이 × 요소 크기로는 오버플로 경로를 직접 유발하기 어려워 오버플로 분기 자체는 시험하지 못함. (3) i64 입력 Load→연산→Store 시험(상위 워드 포함) 추가; 혼합 구조체·ArrayStride·Uniform·Threadgroup i64 배열은 여전히 미검증.
+- narrowing 거부 63건 분류(스위프, 거부 시점의 lowering 사유): 55건이 OpVectorExtractDynamic, 1건 OpVectorInsertDynamic의 i64 인덱스 → 구현 후 거부 63→13(strict 기준; lenient 15). 잔존: Atomic64 3, i64 벡터 2, OpSwitch(251) 2, 그 외 단건(비트 연산/변환/mul-extended 등). 'narrowed' 집계는 이제 lowering 성공 포함.
+- 계약 변경: narrowing 모드의 번역은 '거부 또는 Int64 capability 없는 lowering 결과'. 이에 맞춰 기존 시험 2곳 갱신(스텁 폴백 금지는 크기 비교로 유지). 호스트 197 통과/0 실패. 핀 → 1bc4416.

@@ -433,3 +433,8 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 높이: MTLTextureType 1 은 높이 1 일 때만 미러(높이 0 → 1, 2 이상 → 거부·계수 c_dims). 시험: 8x8 type 1 거부, 1행 type 1 + 4 레이어 수용(array view, draw 유지).
 - use_arr: 샘플 명령이 가리키는 텍스처 operand 의 리소스 변수로 array 여부 판정(엔트리 인자와 매칭 안 될 때만 기존 함수 전체 스캔). 혼합 셰이더 전용 시험은 미작성.
 - 미해결 유지: offset/pixel 좌표 미적용(경고), typed-undef 대조군은 arrayed 이미지 부재만 검사, 실제 AIR operand 미검증, 기기 미검증. pin lagfx 9523a113fb1c9f9c13ac384d36d98deca3f6728f.
+
+## 2026-11-28 (후속 3) 입력·커서·텍스처 시험 (AIR 비의존 작업)
+- 입력(Henge): 좌표 변환·탭/드래그 순서 시험은 기존 test_touch_transform/display/input_inject 에 이미 있음(plain+ASan 통과). 화면 밖 좌표(음수/아주 큰 값) 추가 → 게스트 모서리로 클램프. 기기 미검증(실제 hv_vm_mouse_move 도달·포인터 이동은 여전히 로그에서 0).
+- 커서(lagfx): tests/cursor-composite-unit.c 신규(시험용 glyph, Apple glyph 형식 무관). 실제 버그 2건 발견·수정: (1) 셰이더 uv 가 상하 반전(음수 높이 viewport 가정, cursor.c 는 양수 viewport) → 64x64 glyph 이미지보다 작은 glyph 가 뒤집혀 quad 하단에 그려짐, (2) 반투명 픽셀이 target alpha 를 191 로 낮춤(srcAlpha=SRC_ALPHA) → ONE. 시험: 핫스팟 이동, 알파 블렌드, 좌상단/우하단 클리핑, 완전 화면 밖, glyph 없음 — dynamic·legacy 모두 통과. 단, 실제 Henge 경로에서 glyph 를 캡처(display_cursor_glyph captured_len=0)하지 않으므로 기기에서는 여전히 커서가 합성되지 않음.
+- 텍스처: 1D/2D array 혼합 셰이더(각 호출이 자기 텍스처에 결합, 샘플 2개, spirv-val), texture1d 대조군은 OpImageSample 0개 + OpUndef(typed undef) 직접 확인. pin lagfx a9c31949eb172e8ec539d7d8a16f108697866752.

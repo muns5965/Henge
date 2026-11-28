@@ -46,6 +46,12 @@ int main(void) {
     now += 50; hv_touch_event(&t, HV_TOUCH_DOWN, 0, 500, 500, now); for (int i = 0; i < 4; i++) { hv_touch_pointer(&t, 1, gx, gy); hv_touch_tick(&t, now); now += 5; }
     hv_touch_event(&t, HV_TOUCH_MOVE, 0, 700, 600, now); settle(&t, &now); hv_touch_event(&t, HV_TOUCH_UP, 0, 700, 600, now); settle(&t, &now);
     EXPECT(!strcmp(ev, "D0;U0;D0;U0;") && abs(gx - 700) <= 3 && abs(gy - 600) <= 3, "tap then tap-and-drag: down/up, then down ... up with the pointer carried to 700,600 (%s) at %d,%d", ev, gx, gy);
+    /* coordinates far outside the view (negative, beyond the right / bottom edge, huge): the pointer is clamped to the guest display, never beyond it and never negative */
+    hv_touch_init(&t, &SK); hv_touch_set_display(&t, 1920, 1080); hv_touch_set_view(&t, 0, 0, 1080, 607.5f); gx = gy = 500; now = 9000;
+    touch_at(&t, -500, -300, &now); EXPECT(gx >= 0 && gx <= 3 && gy >= 0 && gy <= 3, "far outside the top-left -> guest top-left corner (%d,%d)", gx, gy);
+    lift(&t, -500, -300, &now);
+    touch_at(&t, 5000, 4000, &now); EXPECT(gx >= gw - 4 && gx <= gw - 1 && gy >= gh - 4 && gy <= gh - 1, "far outside the bottom-right -> guest bottom-right corner (%d,%d)", gx, gy);
+    lift(&t, 5000, 4000, &now);
     printf("%s test_touch_transform\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

@@ -377,3 +377,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - [시험] vulkan-render-desc-unit 시뮬레이트 1.1: demote ⇔ 확장, have_eds ⇔ EDS1 확장 확인(LAGFX_REQUIRE_DEMOTE_EXT=1). meson test 189 통과/0 실패/1 skip.
 - [S8 로그 4a772f6 사실, 재검증 아님] subgroup size=64 min=64 max=64, subgroupSizeControl=0 → Adreno 730에서는 32 lane 고정이 불가능. 32 lane 가정 tile 커널은 에뮬레이션 또는 skip 문서화 필요(미구현).
 - 미착수: 정적 Depth/Stencil(EDS 없는 기기), Depth/Stencil Resolve S8 검증, 화면 첫 검은 단계 비교(D), 커서 이미지 출처(E), 실번역 vs stub 분리 집계.
+
+- [정정] Subgroup 결론 철회(리뷰어 지적 수용): 이전 "Adreno 730에서 32 lane 고정 불가"는 근거 부족이었음. 기존 코드가 min/max/제어 속성을 Vulkan 1.3 core 조건(core13p)에서만 읽었고 S8(1.1.128)은 확장을 켜지 않은 상태라 min=max=64는 1.1 고정값(sgp.subgroupSize)의 복사였음. 실제 EXT 조회 결과는 아직 없음.
+- [기능] lagfx 6e51254 (호스트 lavapipe 검증만): 1.3 미만에서 VK_EXT_subgroup_size_control 조회(VkPhysicalDeviceSubgroupSizeControl{Properties,Features}EXT)·활성화(feat13.pNext 체인, 레거시 체인 꼬리 포함)·min/max/requiredSubgroupSizeStages 반영. 로그 g7-gpu-feat에 via=EXT|core13|none 추가(LAGFX_VK_NO_SGC_EXT=1로 끔). 컴퓨트 파이프라인의 requiredSubgroupSize 지정은 기존 arm64_tile.c(lagfx_vk_can_pin_subgroup32 조건) 그대로 사용. S8에서 min≤32≤max가 실제로 나오는지는 새 APK 로그(via=EXT, min/max)로 확인 필요.
+- [시험] vulkan-render-desc-unit 시뮬레이트 1.1: sg_control ⇔ 확장 활성, EXT min/max 읽음 확인(lavapipe: size=8 min=8 max=8 control=1 via EXT). 
+- [시험] lagfx 7c32ce9e1393b47b32575cb61198d2670085098d: depth/stencil/depth-bias 픽셀 시험(arm64-exec-run-unit: 깊이 포맷 4종·비교·쓰기·스텐실 Replace/IncrementClamp/Equal·depth bias)을 시뮬레이트 1.1 + 레거시 RenderPass + EDS1 조합으로 추가 실행(검증 레이어 clean, 통과). EDS1 끄면(LAGFX_VK_NO_EDS1=1) 같은 시험은 실패 = EDS 없는 기기에서는 상태 무시(정적 상태 미구현)임을 재확인.
+- A 판단: S8은 EDS1 확장을 노출하므로(체인 수정 후) 정적 Depth/Stencil 구현은 EDS1 활성 여부를 새 로그로 확인한 뒤 필요 시 착수. 미착수: Depth/Stencil Resolve S8 검증, D(화면 첫 검은 단계), E(커서).

@@ -522,3 +522,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 실제 구현(진단 아님): 공통 Compute 실행 기반 src/protocol/compute_exec.{c,h} — 임의 SPIR-V 커널의 compute 파이프라인(바인딩 명시, push constant), 버퍼/이미지/샘플러 디스크립터 바인딩(바인딩 번호로 매칭, 누락·중복·미지 바인딩 거부), vkCmdDispatch, 전후 메모리 배리어, 디스크립터 세트 재활용, dispatchThreads→그룹 수(비균일 격자 표시). 게스트 레코드 형식과 무관.
 - 시험(compute-exec-lavapipe, CPU 기준값 비교): 균일/비균일 격자 1000스레드, 연속 두 dispatch 순서(배리어), 격자 밖 센티널 미변경, 거부 경로, 세트 풀 소진·재활용. 194 통과/0 실패/1 건너뜀. 아직 실제 게스트 compute 세그먼트에 연결되지 않음(태그 형식 미확인) → 독립 Compute 실행은 여전히 0/153, 미구현으로 유지.
 - 워크플로 핀 → 443e3b8.
+
+## follow-up 16 (lagfx c85628a — 호스트(lavapipe) 검증만, 기기 미검증)
+- 적용(리뷰 B/C 부분): lagfx_pipeline_build_fallback — 기본 Pipeline 생성 실패 시 의미 보존 변형(양 스테이지에서 사용되지 않는 Int8/16/Float16/Int64 capability 선언 제거, lagfx_spv_variant_strip_caps)으로 재생성, 성공 시 캐시·실행(ARM64 draw 경로 pipeline_for 연결). 원래 실패의 로그·번들은 그대로, 성공 시 'pipeline-fallback:' 1줄 + 카운터 pipe_fallback_built(g7-gpu-unsup 줄). 스텁 셰이더/feature 제거/포맷 변경은 포함하지 않음. 시험: 원본 실패 주입 → 변형 빌드 성공(variant=1), 제거할 것 없으면 실패 유지, 실패 없으면 원본 사용(variant=0). 194 통과/0 실패/1 건너뜀.
+- 의도적 미적용: 64비트 index32 변형은 M14 결과(기기)와 의미 보존 검증 전에는 일반 경로에 넣지 않음(리뷰의 "입증된 변환만" 기준). 
+- 보류(근거): Half4→Float4 정점 데이터 변환 대체 — R16G16B16A16_SFLOAT의 VERTEX_BUFFER_BIT는 Vulkan 필수 기능이라 적합한 장치에서는 발동하지 않는 죽은 코드가 되며, Half4가 원인이라는 증거도 없음(M12 기기 결과 대기). M12가 BUILT일 때 데이터 변환 구현.
+- 효과는 기기에서 검증되지 않음: unused capability가 S8의 -13 원인인지는 M13 결과/이 변형의 pipe_fallback_built로 확인.
+- 핀 → c85628a.

@@ -451,3 +451,11 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - VBL ON 은 tick + swap 의 cause 신호를 함께 바꿈 → 개선 시 LAGFX_VBL_EXP(tick_none/bit3_once/swap_no_or2/bit3_on_enable)로 분리.
 - 시험 설계: 180 s OFF 와 900 s ON 만으로는 시간 효과가 섞임 → 동일 APK(74eca3b), 동일 900 s 의 OFF 대조 실행 필요. 비교 지표: 최초 swap 시각, tick 수, 0x1014 nonzero, 게스트 이벤트 소비(+0x100 clear), GPU 원본 비검정률, 신규 pipeline/shader 종류, GUI 진입.
 - 혼합 배열 시험: Binding 이 서로 바뀐 경우는 여전히 통과 가능(AIR 인자별 대응 미검사). 기기 시험 우선, 보완 보류.
+
+## 2026-11-28 (후속 6) S8 로그 1795861388558 (Henge 74eca3b / lagfx a9c3194, VBL OFF, 180 s) 분석
+- 조건: 요청한 900 s 가 아니라 180 s(시험 시간 제한), display_events=OFF, vbl ticks=0. 즉 VBL OFF/ON 비교 자료 아님. AIR 캡처 켜짐(run-20261128-192308-559), 이번엔 번역 거부·pipeline 실패가 없어 저장된 AIR 가 없을 가능성이 높음(폴더 내용 미확인).
+- 재현 확인(cboot g7-pvg-ops 10 s 간격): swap 0 (≤100 s) → 첫 swap 100.4 s → swap 2 (110~170 s) → 172 s 에 op22(ch3) 첫 등장 후 178 s 까지 114. execs 는 3 에 머물다 마지막에 343. 리뷰어의 두 공백(약 68 s, 70 s) 수치와 일치.
+- 공백 동안 게스트 CPU 상태(cboot stats): 34~136 s idle 0~2%, wfi≈0/s, exc 20~30k/s, translated 7~43k/s. 즉 70 s 공백 동안 게스트는 이벤트를 기다리며 WFI 로 쉬는 것이 아니라 CPU 를 계속 쓰고 있음(11 s 시점만 idle 89%). "VBL/이벤트 대기로 멈춤" 가설에 불리, "느린 에뮬레이션 또는 게스트 내부 스핀/폴링"에 부합. 어느 쪽인지는 이 로그로 미확정(게스트 PC 샘플·프로세스 정보 없음).
+- GPU 쪽: submit_failed=0, 최대 drain 225 ms → 공백은 호스트 GPU 처리 지연이 아님. draws_skipped=0, pipeline 실패 0 (이전에 실패한 셰이더 단계까지 못 간 것으로 추정, 해결 아님).
+- GPU 원본: swap1~2 비검정 299px(24x38 부근, brightest raw=003c003c003c003c=흰색), swap4~64 1324px(40x40). 리뷰어의 "일반 포인터→대기 커서" 해석은 사진 기반 가설. 호스트 cursor ops=0/glyph=0 이므로 포인터는 게스트가 GPU surface 에 직접 그린 것으로 일관. 이는 WindowServer 가 합성 중이라는 근거이기도 하나, 배경이 검은 이유(미진행 vs 합성 실패)는 구분 불가.
+- 다음: 900 s 이상(권장 1800 s)으로 VBL OFF / ON 각 1회. 추가로 공백 구간의 게스트 활동(PC 샘플/예외 종류)을 보는 진단이 필요할지 로그 후 판단.

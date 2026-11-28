@@ -50,6 +50,7 @@ typedef struct HvXhci {
     uint32_t rhead, rtail;
     uint8_t state[8];      /* modifiers, reserved, six keys: the current report */
     uint64_t delivered;
+    uint64_t coalesced;   /* reports that did not fit the full queue and were folded into the newest queued one (the final key state is never dropped) */
 } HvXhci;
 
 HvXhci *hv_xhci_create(HvMachine *m, HvPcie *bus);

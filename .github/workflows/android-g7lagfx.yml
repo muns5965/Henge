@@ -70,6 +70,7 @@ jobs:
           grep -c "LAGFX_NO_PROCESS" ../build-lagfx/compile_commands.json | sed 's/^/compile commands with LAGFX_NO_PROCESS: /'
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
+          tools/check-g7-native-manifest.sh
           bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-diag-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh tools/lagfx-clone-build.sh tools/check-runner-vm-clone-lagfx-safe.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
@@ -106,12 +107,12 @@ jobs:
           "$T/aarch64-linux-android30-clang" -std=gnu11 -O2 -pie -DLAGFX_NO_PROCESS -I"$LAGFX_DIR/include" "$LAGFX_DIR/examples/pipeline-repro.c" "$LAGFX_A" -L"$VULKAN_LIBDIR" -lvulkan -llog -lm -o "$D/libg7pipelinerepro.so"
           "$T/llvm-readelf" -d "$D/libg7pipelinerepro.so" | grep NEEDED
           echo "- pipeline repro tool (libg7pipelinerepro.so): libapplegfx-vulkan $LAGFX_SHA, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
-      - name: Build the first-time setup programs (ROM extractor, IPSW downloader, HTTPS check) so one APK can do the whole setup
+      - name: Build the first-time setup programs (vmrun for the ROM test and ECID, ROM extractor, IPSW downloader, HTTPS check) so one APK can do the whole setup
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
           CC="$T/aarch64-linux-android30-clang" tools/g7-install-libs-build.sh build-engine android/app/src/g7exec/jniLibs/arm64-v8a
-          for f in libromextract.so libipswdl.so; do "$T/llvm-readelf" -h android/app/src/g7exec/jniLibs/arm64-v8a/$f | grep -E "Machine"; done
-          echo "- first-time setup programs: libromextract.so, libipswdl.so (and libcurltool.so if it built), shipped configuration, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
+          for f in libvmrun.so libromextract.so libipswdl.so; do "$T/llvm-readelf" -h android/app/src/g7exec/jniLibs/arm64-v8a/$f | grep -E "Machine"; done
+          echo "- first-time setup programs: libvmrun.so, libromextract.so, libipswdl.so (and libcurltool.so if it built), shipped configuration, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"

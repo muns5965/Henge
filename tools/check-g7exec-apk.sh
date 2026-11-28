@@ -30,13 +30,14 @@ case $M in
     # the pipeline repro tool is linked with libapplegfx-vulkan: only the lagfx workflow builds it (G7_REQUIRE_PIPEREPRO=1); the plain g7exec workflow has no library
     if [ "${G7_REQUIRE_PIPEREPRO:-0}" = 1 ]; then echo "$L" | grep -q "lib/arm64-v8a/libg7pipelinerepro.so" || bad "the execution APK does not contain libg7pipelinerepro.so"; fi
     # first-time setup on a device with nothing installed: the ROM extractor and the IPSW downloader must ship in the SAME APK (a missing one only shows up as "libipswdl.so is not in this APK" on a new device)
-    for nl in libromextract.so libipswdl.so; do
+    for nl in libvmrun.so libromextract.so libipswdl.so; do
       if echo "$L" | grep -q "lib/arm64-v8a/$nl"; then
         unzip -q -o "$APK" "lib/arm64-v8a/$nl" -d "$D"
         "$READELF" -h "$D/lib/arm64-v8a/$nl" 2>/dev/null | grep -q "AArch64" || bad "$nl is not AArch64"
         [ "$(stat -c %s "$D/lib/arm64-v8a/$nl")" -gt 20000 ] || bad "$nl is too small to be the real program"
       else bad "the execution APK does not contain $nl (first-time setup needs it)"; fi
     done
+    grep -a -q "usage: vmrun --rom" "$D/lib/arm64-v8a/libvmrun.so" 2>/dev/null || bad "libvmrun.so is not vmrun"
     grep -a -q "romextract: cannot read" "$D/lib/arm64-v8a/libromextract.so" 2>/dev/null || bad "libromextract.so is not the ROM extractor"
     grep -a -q "dl: RESULT" "$D/lib/arm64-v8a/libipswdl.so" 2>/dev/null || bad "libipswdl.so is not the IPSW downloader"
     if [ "$has_cb" = 1 ]; then

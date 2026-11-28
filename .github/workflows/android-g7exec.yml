@@ -80,6 +80,7 @@ jobs:
           echo "NDK_ROOT=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Source rules and launcher tests (plain JVM, fake processes; nothing is started)
         run: |
+          tools/check-g7-native-manifest.sh
           bash -n tools/check-g7exec-launcher-source.sh tools/check-g7exec-apk.sh tools/check-g7exec-runner-stdout.sh tools/g7-watch-test.sh tools/g7-mem-test.sh tools/g7-diag-test.sh tools/g7-tssdiag-test.sh tools/net-probe-test.sh tools/clone-dir-test.sh tools/check-runner-vm-clone-safe.sh tools/ui-runner-vm-clone-build.sh
           tools/check-g7exec-launcher-source.sh
           tools/check-g7exec-runner-stdout.sh
@@ -105,12 +106,12 @@ jobs:
           # the clone-boot runner (host/ui_runner_vm_clone.c): a normal boot of a verified CLONE, storage writable only there; a separate binary so the installed runner stays read-only. Link + static check, NOT run.
           CC="$T/aarch64-linux-android30-clang" NM="$T/llvm-nm" READELF="$T/llvm-readelf" EXTRA_LIBS="-llog" PF_THREADLIB="" tools/ui-runner-vm-clone-build.sh build-engine
           cp build-engine/ui_runner_vm_clone android/app/src/g7exec/jniLibs/arm64-v8a/libg7cloneboot.so
-      - name: Build the first-time setup programs (ROM extractor, IPSW downloader, HTTPS check) so one APK can do the whole setup
+      - name: Build the first-time setup programs (vmrun for the ROM test and ECID, ROM extractor, IPSW downloader, HTTPS check) so one APK can do the whole setup
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
           CC="$T/aarch64-linux-android30-clang" tools/g7-install-libs-build.sh build-engine android/app/src/g7exec/jniLibs/arm64-v8a
-          for f in libromextract.so libipswdl.so; do "$T/llvm-readelf" -h android/app/src/g7exec/jniLibs/arm64-v8a/$f | grep -E "Machine"; done
-          echo "- first-time setup programs: libromextract.so, libipswdl.so (and libcurltool.so if it built), shipped configuration, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
+          for f in libvmrun.so libromextract.so libipswdl.so; do "$T/llvm-readelf" -h android/app/src/g7exec/jniLibs/arm64-v8a/$f | grep -E "Machine"; done
+          echo "- first-time setup programs: libvmrun.so, libromextract.so, libipswdl.so (and libcurltool.so if it built), shipped configuration, link only, NOT run" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the network probe program (handshake only, no restore, no request body; link, NOT run)
         run: |
           T="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"

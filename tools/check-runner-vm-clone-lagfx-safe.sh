@@ -103,7 +103,7 @@ l6=$(grep -n 'hv_vm_start(1' $R | head -1 | cut -d: -f1); l7=$(grep -n 'hv_vm_st
 grep -q 'hv_vm_flush_disks_checked()' $R || bad "$R: the disk flush result must be checked (hv_vm_flush_disks_checked)"
 # 7
 opts=$(grep -o '"--[a-z-]*"' $R | sort -u | tr -d '"' | tr '\n' ' ')
-[ "$opts" = "--clone-dir --cpus --ecid-dir --jit-mb --ram-mb --rom --seconds --shm --stop-wait-ms --usb-mode " ] || bad "$R: the accepted options are '$opts'"
+[ "$opts" = "--clone-dir --cpus --direct --ecid-dir --jit-mb --ram-mb --rom --seconds --shm --stop-wait-ms --usb-mode " ] || bad "$R: the accepted options are '$opts'"
 if grep -nE '(^|[^a-z_])(setenv|putenv)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' > /dev/null; then bad "$R / $C set an environment variable"; fi
 if grep -nE '\b(system|popen|fork|exec[a-z]*|socket|connect|dlopen)[[:space:]]*\(' $R $C | grep -v '^[^:]*:[0-9]*:[[:space:]]*/[*]' | grep -v '^[^:]*:[0-9]*:.*\*/' > /dev/null; then bad "$R / $C call a process-start or network function"; fi
 

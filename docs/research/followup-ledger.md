@@ -428,3 +428,8 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - texture1d_array: 번역기가 air.sample_texture_1d_array 를 2D ARRAY 경로(높이 1, 좌표 (u,0.5,layer))로 낮춤. 인자 메타(texture1d_array)/struct 이름으로 kind 6 판정, MTLTextureType 1 을 레이어 이미지로 미러. lavapipe 기대 픽셀: 8x1x4 64픽셀 전부 일치, texture1d(비배열) 대조는 typed undef 유지, type 1 = type 3 동일 출력. operand 순서는 INFER(실제 AIR 미확보), offset/pixel sampler 미적용(경고). 기기 미검증.
 - 파이프라인 실패 테스트에 legacy_renderpass 경로 추가. -13 원인(MRT 2 attachment 등)은 소스 정독으로 확정 못 함 → 다음 실행의 번들을 호스트 검증레이어 재생으로 분석 예정.
 - Int64: 상수 용도 미확정 → AIR 캡처 후 데이터 흐름 분석. 미구현.
+
+## 2026-11-28 (후속 2) 1D array 리뷰 지적 반영
+- 높이: MTLTextureType 1 은 높이 1 일 때만 미러(높이 0 → 1, 2 이상 → 거부·계수 c_dims). 시험: 8x8 type 1 거부, 1행 type 1 + 4 레이어 수용(array view, draw 유지).
+- use_arr: 샘플 명령이 가리키는 텍스처 operand 의 리소스 변수로 array 여부 판정(엔트리 인자와 매칭 안 될 때만 기존 함수 전체 스캔). 혼합 셰이더 전용 시험은 미작성.
+- 미해결 유지: offset/pixel 좌표 미적용(경고), typed-undef 대조군은 arrayed 이미지 부재만 검사, 실제 AIR operand 미검증, 기기 미검증. pin lagfx 9523a113fb1c9f9c13ac384d36d98deca3f6728f.

@@ -549,3 +549,9 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 시험: air2spv-threadgroup-arg-lavapipe — i32/f32 커널(scratch[lid] 저장→barrier→이웃 읽기)을 4그룹×64로 실제 실행해 CPU 모델과 전 워드 일치(길이 지정 64 / 기본값 모두), 직접 역참조 fixture는 거부. 호스트 196 통과/0 실패/1 건너뜀(시험 수는 성과로 집계하지 않음).
 - 한계(명시): metadata key 철자는 Apple AIR에 대한 해석이고 실제 캡처 모듈에서 아직 못 봄; fixture는 llvm-as 손작성(불투명 포인터). helper 함수의 threadgroup 포인터 인자, 64비트 요소의 실기기 Int64 요구, 디스패처가 setThreadgroupMemoryLength를 SpecId에 넣는 연결은 미구현(게스트 compute 레코드 형식 대기). 이 기능이 S8 화면/Pipeline -13에 영향을 준다는 증거 없음.
 - 핀 → 0d6cc2e.
+
+## follow-up 20 (lagfx 7a86763 — 호스트 검증만, 기기 미검증)
+- 리뷰(58dd42ec) 수용·반영: (a) SpecId를 인자 등장 순서가 아닌 Metal [[threadgroup(n)]] 인덱스(air.location_index)로 지정(SpecId = 3+n, n 0..30; 인덱스 없음/중복은 번역 거부; 스테이지 키에 loc[] 추가). (b) 선언된 요소 타입과 접근 타입이 다르거나 접근 타입이 섞이면 거부(opaque 포인터 fixture로는 접근 타입 혼합만 시험 가능; typed 포인터의 '선언≠접근' 경로는 llvm-as로 만들 수 없어 미시험). (c) 공통 compute 기반에 lagfx_cx_pipe_create_ex: SpecConstant(pSpecializationInfo) 전달, 중복 SpecId 거부, 커널의 모든 threadgroup 인자에 명시 길이가 없으면 생성 거부(기본값 1024를 조용히 쓰지 않음), 정적+동적 Workgroup 메모리 합계를 maxComputeSharedMemorySize와, workgroup 크기를 장치 한계와 대조(신규 SPIR-V reflect: lagfx_spv_reflect_threadgroup_args / _workgroup_bytes; 합계는 패딩 없는 하한값).
+- 시험: 두 인자(Metal 인덱스 5·2 → SpecId 8·5) 커널을 create_ex로 실행해 CPU 모델과 일치, 길이 누락/중복/공유메모리 초과/워크그룹 초과 거부. 같은 시험을 shaderInt64 없는 장치 + i64 narrowing 모드에서도 통과(S8 조건의 호스트 모의).
+- 발견: narrowing 모드에서 출력 인덱스를 i64 곱(gid*64)으로 계산한 fixture는 'i64 index that may exceed 32 bits'로 거부됨(번역기의 기존 보수적 규칙). fixture를 i32 곱 후 zext로 바꿔 통과시켰음 — 이는 우회가 아니라 Metal 컴파일러의 통상 형태(uint 산술 후 zext)를 따른 것이지만, i64 곱이 실제 AIR에 나오면 일반 Int64 lowering이 필요함 → 다음 구현 대상의 근거.
+- 미완료: i64 요소 threadgroup 실행 시험 없음, helper의 threadgroup 포인터 인자, 디스패처 연결(레코드 형식 대기), Apple 실제 AIR 확인. 핀 → 7a86763.

@@ -555,3 +555,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 시험: 두 인자(Metal 인덱스 5·2 → SpecId 8·5) 커널을 create_ex로 실행해 CPU 모델과 일치, 길이 누락/중복/공유메모리 초과/워크그룹 초과 거부. 같은 시험을 shaderInt64 없는 장치 + i64 narrowing 모드에서도 통과(S8 조건의 호스트 모의).
 - 발견: narrowing 모드에서 출력 인덱스를 i64 곱(gid*64)으로 계산한 fixture는 'i64 index that may exceed 32 bits'로 거부됨(번역기의 기존 보수적 규칙). fixture를 i32 곱 후 zext로 바꿔 통과시켰음 — 이는 우회가 아니라 Metal 컴파일러의 통상 형태(uint 산술 후 zext)를 따른 것이지만, i64 곱이 실제 AIR에 나오면 일반 Int64 lowering이 필요함 → 다음 구현 대상의 근거.
 - 미완료: i64 요소 threadgroup 실행 시험 없음, helper의 threadgroup 포인터 인자, 디스패처 연결(레코드 형식 대기), Apple 실제 AIR 확인. 핀 → 7a86763.
+
+## follow-up 21 (lagfx 9ab409d — 호스트 검증만, 기기 미검증)
+- 리뷰(134fcc90) 수용·반영: threadgroup 길이 0·workgroup 크기 0 거부, 공유메모리 크기를 정렬·오버플로 반영해 계산(분석 한도 초과 시 합계 대신 거부), 부분 specialization workgroup 크기는 SPIR-V 기본값으로 판단. 해당 거부 시험 추가(길이 0 / workgroup 0). Threadgroup 반복은 여기서 중단.
+- 일반 Int64 lowering 구현(src/air2spv/spv_lower_int64): i64를 {lo,hi} uvec2로 표현(메모리 배치 동일). 구현된 연산: 상수·Undef/Null, Add/Sub/Neg(carry/borrow), Mul(OpUMulExtended), Shl/Shr/Ashr(워드 교차, 양 low 6비트), 비트 연산·Not, 비교 10종, Select, Phi, Load/Store, GEP 인덱스(low word), 32↔64 변환(번역기가 내는 bool→i64 변환 포함). 거부: Div/Rem, 실수 변환, Bitcast, bit counting, Atomic64, i64 벡터, i64 SpecConstant — 일부만 lowering한 모듈은 내보내지 않음.
+- narrowing이 거부되면 translate.c가 i64를 넓게 유지해 다시 번역한 뒤 lowering(원 거부 사유는 lowering까지 실패하면 보존). 기존 'narrowing 스위프' 시험: spirv-val narrowing-only 실패 0.
+- 시험(lavapipe, shaderInt64 끔): int64_ops fixture(25종 결과 × 256 스레드)가 CPU uint64_t 모델과 일치 — 직접 lowering 경로와 translate_module 경로 둘 다. Threadgroup fixture는 원래의 `mul i64 gid,64` 형태로 복원, 두 모드 모두 통과. 전체 호스트 197 통과 / 0 실패 / 1 스킵.
+- 한계: 실제 기기(Adreno 730) 미검증; 장치가 shaderInt64 없는 Int64 모듈을 거부하는지는 lavapipe로 확인 못 함; Div/Rem·Atomic64 미구현(스위프 기준 narrowing 거부 63건 중 대부분 잔존); i64 요소 threadgroup 실행 시험 없음. 핀 → 9ab409d.

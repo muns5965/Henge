@@ -363,3 +363,7 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
   - 기존 호스트 시험 범위 확인(tests/arm64-mapped-unit.c): clear+draw → RGhA(RGBA16F) 서피스 → half-float 그대로 게스트 Write-back 정확 일치, 6색×4채널 binary16 수치, 65536 패턴 왕복, swap 모드 Write-back, 유실·재매핑 처리. 즉 "GPU 이미지 → Write-back" 구간은 호스트에서 이미 검증됨. 아직 없는 것: 셰이더로 계산한 삼각형/프래그먼트 값의 정확 비교(축소 ON/OFF), blend/resolve 전후, 커서 합성.
   - 커서: S8 로그 c1d5c57a에 g7-pvg-cursor/[cursor] 줄이 0건 → 해당 실행에서 게스트가 커서 glyph/move를 보낸 기록이 없음. 호스트 커서 위치 초기값이 (0,0)이므로(display.c) "좌측 상단 커서"는 게스트 커서 명령 미수신 가설과 부합(가설, 미검증).
   - 미착수: Depth/Stencil Resolve S8 적용 검증, Shader Demote EXT, Subgroup Size Control, Int64 ON/OFF 실행 결과 비교, 정적 Depth/Stencil 보완.
+
+- [기능/버그 수정] lagfx a369aaf (호스트 lavapipe 검증): Int64 축소가 64비트 데이터로 거부한 fragment/vertex 함수가 translate_module에서 flat-colour 기준 stub(빨강 (1,0,0,1))으로 조용히 대체되어 "축소 성공"처럼 보이던 문제 수정 — 이제 LAGFX_ERR_PROTOCOL로 실패. 영향: 4a772f6~12db077 APK의 S8 로그 "Int64 reject 19→0, built=3"은 stub이 섞였을 가능성이 있어 재해석 필요(미확인). 이번 APK부터 거부는 xlatereject 덤프·로그로 드러남.
+- [시험] 정수 intrinsic 실행 시험(38 픽스처)을 LAGFX_RUN_NARROW=1로 재실행하는 시험 추가: 축소 후 실행 14건 모두 CPU 기준값과 일치, 64비트 데이터 24건은 거부. 신규 i64 주소식 연산(mul/add/sub, signed·unsigned 비교, shl/and/or 상수) 픽스처 rt_i64idx + 음성 대조(부호 잃은 모델은 2110/4225 픽셀 상이) 추가. 축소 번역이 값 의미를 보존함을 이 범위(값 < 2^31, 비음수 가정)에서 실행으로 확인. 경계값(오버플로 ≥ 2^32, 음수 ashr)은 거부 정책이며 시험하지 않음. meson test 189 pass/0 fail/1 skip.
+- 미착수(변경 없음): Depth/Stencil Resolve S8 적용 검증, Shader Demote EXT, Subgroup Size Control, 정적 Depth/Stencil, 커서 이미지 출처 분석.

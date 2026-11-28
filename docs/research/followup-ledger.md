@@ -193,3 +193,8 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - Gamma status: host implementation done, **device verification pending**; no further feature work until a non-identity guest table exists. Follow-ups recorded: (a) two threads building different generations can store the cache out of order (next call compares generation and rebuilds, so a stale entry should not persist; not proven), (b) TSan not run.
 - Comparison APK built: Henge (this commit's parent) + pin 67839b7, run 46089125408, success. Compile/link only; **not device-verified**.
 - Gamma follow-up (b) done: `gamma-apply-unit` is ThreadSanitizer-clean (library one commit after 67839b7: test-only change, the pinned 67839b7 source is unchanged). Follow-up (a) (cache store order) still unproven.
+
+## 2026-11-28 (review of 08dca5e): APK preservation
+- The two APK artifacts (baseline run 46087153739, comparison run 46089125408) have `retention-days: 7` (expire about 2026-12-05) and no checksum was logged. This environment cannot download them (artifact host blocked by the agent proxy), so **no file or sha256 for these two exists here**. Action for the person with the phone / a browser: download both zips from the run pages before they expire and record `sha256sum`.
+- Workflow now logs the APK sha256 + Henge / library SHAs in the job summary and keeps artifacts 30 days (next runs only; not retroactive).
+- Both test APKs are signed with a TEMPORARY key unless the project keystore secret is set (the log warns): two builds may not install over one another; uninstall before switching, which also loses app data. Check this before the J0/J2/J1 runs.

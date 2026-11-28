@@ -154,6 +154,7 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/g7start/app-g7start.apk
           ls -l "$APK"
+          echo "- APK sha256 (app-g7start.apk): $(sha256sum "$APK" | cut -d" " -f1), Henge ${GITHUB_SHA}, libapplegfx-vulkan ${LAGFX_SHA}" | tee -a "$GITHUB_STEP_SUMMARY"
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | grep -E "^package:" | cut -c1-200
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ -z "${KEYSTORE_FILE:-}" ]; then echo "::warning::TEST APK signed with a temporary key: it will NOT install over the existing app"; echo "- TEST APK: TEMPORARY key (not installable over the existing app)" >> "$GITHUB_STEP_SUMMARY"; else echo "- TEST APK: signed with the project keystore" >> "$GITHUB_STEP_SUMMARY"; fi
@@ -161,7 +162,7 @@ jobs:
         with:
           name: henge-g7-lagfx-test-apk
           path: android/app/build/outputs/apk/g7start/app-g7start.apk
-          retention-days: 7
+          retention-days: 30
       - name: Show the start APK's package, versionCode and certificate (only when it is published)
         if: ${{ inputs.publish_start == true }}
         run: |

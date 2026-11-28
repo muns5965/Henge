@@ -353,3 +353,5 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - lagfx 6b2b643 (호스트 lavapipe 검증만): 프레임버퍼 캐시 forget이 DEFERRED일 때 obj_free가 Image/Memory를 해제하던 문제 수정 — 객체 전체를 누수 처리. forget_waits/forget_wait_ms/forget_deferred 카운터 추가, 실제 obj_free 경로에서 WaitIdle 실패 주입 테스트 추가. meson test 188 pass / 0 fail / 1 skip. 기기(S8/S26) 검증, CI/APK 상태, 검은 화면·커서 단계별 비교, Write-back/Swap 의미 검토는 미검증·미착수.
 
 - lagfx 12db077 (호스트 lavapipe 검증만): 리뷰어 지적 반영 — forget DEFERRED 시 객체를 free(o)로 버리지 않고 limbo 목록에 통째로 보관, 이후 dead_flush와 종료 시 재시도, 끝까지 idle 증명 불가일 때만 누수 집계(limbo_leaked). forget_wait_max_ms 추가. 주입 시험이 보관·회수(프레임버퍼 파기 증가)·검증 메시지 없음을 확인. meson test 188 pass/0 fail/1 skip. 미검증: 기기 동작, 장시간 반복 시 자원 증가, CI/APK 생성 여부, 화면 단계별 분석, Int64 연산 의미, Depth/Stencil Resolve.
+
+- lagfx f7352e7 (호스트 검증만, 진단·시험 보강): g7-gpu-run 로그에 limbo[parked reclaimed leaked live] 출력 추가, 주입 시험이 실행 중 flush에 의한 limbo_reclaimed 증가·limbo_live 0 및 프레임버퍼 파기를 직접 확인(종료 시 회수와 분리). realloc 실패 누수 로그 문구 정정. 12db077 APK(CI 46117492870)는 기능상 동일하며 limbo 로그 출력만 없음. meson test 188/0/1.

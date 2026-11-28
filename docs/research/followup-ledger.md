@@ -413,3 +413,11 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 
 - [뷰포트 확인, 코드+S8 로그] g7-gap-draw의 viewport/scissor 0x0은 "게스트가 그 인코더에서 설정하지 않음" 진단일 뿐: lagfx_vk_region_to_vk()는 m_vp_set/m_sc_set이 없으면 전체 렌더 타깃을 쓰고(draw_record.c:67,89), 로그의 viewport_degenerate=0·viewport_depth_set=3716이라 뷰포트 때문에 건너뛴 draw는 없음. 뷰포트는 검은 화면 원인 후보에서 낮춤(GPU 이미지 확인 전 단정은 아님).
 - [기능, 호스트 검증] lagfx 2e80507918ddd56f00a5cbbd4e17ce5152f6b61b g7-gpu-image: display swap이 지명한 서피스의 GPU 이미지를 Vulkan 이미지에서 직접 readback(기존 wbverify는 게스트 페이지 왕복만 비교; 기존 LAGFX_GPU_READBACK은 환경변수 켜야 하고 A↔B 동일성만 봄). swap 1,2,4,8,… 번째마다(약 11회/1857 swap, LAGFX_NO_GPU_IMAGE_PROBE=1로 끔) 비검정 픽셀 수·비율, bbox, 첫 비검정 픽셀 raw, 알파, 서로 다른 비검정 색 수(16+), 전체 해시를 "g7-gpu-image:" 줄로 출력. 시험: arm64-mapped-unit에서 파랑/초록 서피스 probe가 전 픽셀 비검정으로 읽힘 확인(image_probes>=1, unavail=0). 새 APK 로그의 이 줄이 "GPU 원본도 검은가"를 결정: 비검정≈1.3k·bbox 48x48 부근이면 렌더 내용 자체가 커서뿐(셰이더/텍스처/게스트 상태 조사), 비검정이 많은데 화면만 검다면 write-back/Scanout/표시 경로 조사.
+
+## 2026-11-28 S8 로그 1795853130054 (lagfx 2e80507) 분석 및 후속
+- GPU 원본(g7-gpu-image) 11회: 99.936% 검정, 좌상단 ~40x40만 비검정(≈5/255 근처, 매 프레임 변경). 검은 화면은 렌더 내용 단계에서 이미 발생 (Write-back/Scanout/변환 아님). 단, 로그가 180 s 에서 종료 → 게스트가 데스크톱까지 도달했는지 미확인.
+- 신규: draws_skipped=10 / 파이프라인 2건 vkCreateGraphicsPipelines -13 (VS ade84f52…, FS 107156c8…, BGRA8·RGBA16F, 2 colour attachment). LAGFX_PIPELINE_MATRIX 행 M0/M2/M4b/M9g-j 모두 -13 → 드라이버 측 원인으로 매트릭스 변형으로는 미해결. 원인 미확정.
+- 리뷰어 지적 "dynamic_rendering=1": 실패 로그의 해당 문구가 하드코딩 문자열이었음(코드 확인). 실제 경로는 use_rp(legacy) 로 결정. 진단 문구를 render_path=legacy_renderpass|dynamic_rendering 으로 수정 (pipeline_build.c). 호스트 단위시험 갱신. 기기 미검증.
+- UberCompositeFragment: air.sample_texture_1d_array.v4f32 미구현(typed undef 6회) + i64 상수 축소 거부. 1D array 는 소스에 처리 없음 → 신규 구현 필요(커널 kind 7 급: translate.c 인자 메타, translate_function 이미지 타입/핸들러, 리소스 1D_ARRAY 뷰). operand 순서는 실제 AIR 없이 추정 → AIR 캡처 필요. 미구현.
+- i64 거부: 상수 값(0x…)을 거부 사유에 포함하도록 변경 → 다음 기기 실행에서 용도 판단 가능. 의미 보존 처리 경로는 미구현.
+- g7-gpu-image 에 brightest/bright>=0.25 추가(커서가 실제로 어두운지 구분).

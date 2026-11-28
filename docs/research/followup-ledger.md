@@ -355,3 +355,5 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - lagfx 12db077 (호스트 lavapipe 검증만): 리뷰어 지적 반영 — forget DEFERRED 시 객체를 free(o)로 버리지 않고 limbo 목록에 통째로 보관, 이후 dead_flush와 종료 시 재시도, 끝까지 idle 증명 불가일 때만 누수 집계(limbo_leaked). forget_wait_max_ms 추가. 주입 시험이 보관·회수(프레임버퍼 파기 증가)·검증 메시지 없음을 확인. meson test 188 pass/0 fail/1 skip. 미검증: 기기 동작, 장시간 반복 시 자원 증가, CI/APK 생성 여부, 화면 단계별 분석, Int64 연산 의미, Depth/Stencil Resolve.
 
 - lagfx f7352e7 (호스트 검증만, 진단·시험 보강): g7-gpu-run 로그에 limbo[parked reclaimed leaked live] 출력 추가, 주입 시험이 실행 중 flush에 의한 limbo_reclaimed 증가·limbo_live 0 및 프레임버퍼 파기를 직접 확인(종료 시 회수와 분리). realloc 실패 누수 로그 문구 정정. 12db077 APK(CI 46117492870)는 기능상 동일하며 limbo 로그 출력만 없음. meson test 188/0/1.
+
+- 화면 출력 분석 1단계 (코드·기존 S8 로그 4a772f6 기준, 기기 재검증 아님): 로그에서 passes=3507, no_target=1498(렌더패스 begin 실패), mapped_written_back=3507. Write-back 대상은 exec 리소스 플래그(flags 2/4)로 정해지며 패스 성공 여부와 무관하므로, begin 실패 패스의 대상도 clear/draw 없이 이전 내용 그대로 게스트에 기록됨 → 검은/낡은 화면의 유력 후보(프레임버퍼 캐시 고갈 수정으로 사라질 가능성, 미검증). lagfx 4c48db4에 wb_after_refused_pass 카운터(g7-wb-sync) 추가해 구분 가능하게 함. 커서 좌상단 문제와 RGBA16F 변환·Swap 단계 픽셀 비교는 미착수. 12db077 APK 외에 f7352e7(limbo 로그)·4c48db4 핀 갱신.

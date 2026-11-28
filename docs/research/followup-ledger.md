@@ -444,3 +444,10 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - 게스트 GUI/VBL (S8 로그 7건 cboot 전수, 모두 180 s 종료): 전 실행에서 display_events=OFF, vbl ticks=0, db_nonzero=0(0x1014 읽기 4085회 전부 0), swap_events=0. 즉 호스트가 게스트에 VBL(0x8)·표시 원인 비트를 한 번도 전달한 적이 없음(oss-display-events.md 의 추정: 게스트는 mask +0x104=0xC 로 0x8 을 기대). 이 가설은 기기에서 검증된 적 없음.
 - 첫 swap(op08) 시각이 실행마다 13 s / 58 s / 95 s / 98 s / 116 s 로 크게 다르고 전 실행이 180 s 에서 끝나 → "GUI 미진입"과 "렌더 오류"를 구분하려면 더 긴 실행이 필요. 이번 로그: 116 s 에 첫 swap, 이후 177 s 까지 1029회(≈17/s), 1920x1080 RGBA16Float.
 - 다음 기기 실험(코드 변경 불필요, 기존 APK 옵션): "디스플레이 이벤트(VBL)" 체크 + 실행 시간 900 s 이상. 비교 지표: swap 수/초, 첫 swap 시각, g7-gpu-image 의 비검정 비율, vbl ticks, 0x1014 nonzero. 기기 미검증.
+
+## 2026-11-28 (후속 5) 리뷰 정정 3건 수용 (devices/pvg_lite.c 직접 대조, 모두 리뷰어가 맞음)
+- 비트 의미: 우리 소스(pvg_lite.c 1247행 주석)는 +0x104 enable 의 bit0=VBL, bit1=전환 완료, bit2=online, bit3=offline. 게스트 0xC 는 bit2+bit3 이며 bit0 은 한 번도 켜지지 않음. 후속 4 의 "게스트가 0x8(VBL)을 기대"는 외부 Henge 소스(oss-display-events.md, 0x8=refresh)의 추정을 우리 비트 정의에 그대로 옮긴 오류 → 게스트가 VBL 을 요청한다는 것은 미확정으로 정정. 현재 tick 은 bit0 과 bit3 중 게스트가 켠 것에 보냄(1380행 EXPERIMENT).
+- "표시 이벤트를 한 번도 전달하지 않았다" 정정: display_events=OFF 에서도 swap 은 +0x100 에 0x2 를 OR(721행, ev_bit[1]++). 정확한 표현: 주기적 tick 과 display cause(+0x1014) 신호가 비활성이었음.
+- VBL ON 은 tick + swap 의 cause 신호를 함께 바꿈 → 개선 시 LAGFX_VBL_EXP(tick_none/bit3_once/swap_no_or2/bit3_on_enable)로 분리.
+- 시험 설계: 180 s OFF 와 900 s ON 만으로는 시간 효과가 섞임 → 동일 APK(74eca3b), 동일 900 s 의 OFF 대조 실행 필요. 비교 지표: 최초 swap 시각, tick 수, 0x1014 nonzero, 게스트 이벤트 소비(+0x100 clear), GPU 원본 비검정률, 신규 pipeline/shader 종류, GUI 진입.
+- 혼합 배열 시험: Binding 이 서로 바뀐 경우는 여전히 통과 가능(AIR 인자별 대응 미검사). 기기 시험 우선, 보완 보류.

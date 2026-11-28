@@ -300,3 +300,9 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - 미구현(순서): (1) 확장 기반 판단(KHR dynamic_rendering/BDA/sync2: 확장+기능+함수 포인터 확인, 호출은 KHR 포인터), (2) 기존 Render Pass 경로(RenderPass/Framebuffer/파이프라인 분기/레이아웃/MSAA/커서/캐시/수명), (3) 원본 직접 부팅의 변경 상태 표시·비정상 종료 후 검사. 직접 부팅은 상태 관리 전까지 복제본 부팅을 우선 사용.
 - `shader translate (unit)`은 SPIR-V 타깃 지원 llc 환경에서 재검증 필요(이 환경에서는 수정 전에도 실패).
 - S8 로그 재분석: 1.1 장치에서 shaderFloat16/Int8, 8/16비트 저장소, variable pointers를 Vulkan11/12 구조체로 켜면서 대응 KHR 확장(shader_float16_int8, 8bit/16bit_storage, variable_pointers)은 활성화하지 않았음(로그의 enabled_exts 3개뿐) → 유효하지 않은 사용. API<1.2에서만 해당 확장을 활성화하도록 수정(>=1.2 경로 불변). "supported 0"은 확장 미활성 상태에서 진단 쪽 조회가 0을 반환한 것으로 보이나 `g7-probe:` 로그로 확인 필요. 이 로그(빌드 01:45)는 수정 전 APK의 것.
+
+### S8 Vulkan 1.1 호환 — 단계별 계획(기존 GPU 호환성 항목 내 세부 작업) 및 소스 확인
+
+소스 확인(lagfx 5d0bb8f 기준, 호스트 grep): `vkCmdBeginRendering` 직접 호출 15곳/14개 파일(display, draw_record, composite, render_target, render_encoder, arm64_exec_run, compute_inner_ops 등), `vkCmdBeginRenderPass` 0곳, `vkGetBufferDeviceAddress` 1곳(pipeline.c), `vkQueueSubmit2` 0곳. 즉 Render Pass 호환 경로는 신규 구현이며 렌더 시작/종료를 공통 함수로 모으는 작업이 선행. `fbf_split_plan()`(arm64_exec_run.c)은 raster-order 미지원 대응 분할 코드가 이미 있어 재사용 검토 대상이나, 기존 Render Pass에서의 순서 보존은 미검증.
+검토 의견 중 수용: 1.1 장치에서 Vulkan11/12/13 통합 구조체 대신 개별 KHR/EXT 기능 구조체로 조회(통합+개별 구조체를 vkCreateDevice 체인에 중복 연결 금지), BDA는 core/KHR 함수 포인터 선택, 렌더 시작/종료 공통화, `have_local_read`를 세분화, 색 초기화는 vkCmdClearColorImage 검토. Turnip/libadrenotools는 별도 연구로 분리(미검증, 본 경로와 혼합하지 않음).
+완료 기준(실기기): 1) 지원/활성화 값 일치 + 개별 확장 조회 출력 2) 폴백 없이 pipeline_init 전체 완료 3) Render Pass 경로로 테스트색/삼각형/텍스처/커서 출력 4) 게스트 GPU 명령 실행·write-back 5) Framebuffer Fetch/MSAA 6) S26 Ultra 동적 렌더링 회귀. 호스트 시험 통과나 내장 그래픽 폴백은 완료로 분류하지 않음. 현재 상태: 1단계 일부(KHR 확장 활성화)만 반영, 나머지 미구현.

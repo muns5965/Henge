@@ -221,3 +221,28 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - Known limits of the Blit diagnostics (NOT fixed now; to be folded into the next feature APK, no extra build for them): (a) `g7-gpu-blit:` prints only when something was unexecuted or refused, so a missing line cannot distinguish "no blit at all" / "only supported blits" / "log not exported" - print the totals also when both counts are 0 (final stats); (b) the payload sample is the first 4 records per tag, at most 16 words (64 bytes), and the log prints the body size but no "truncated" flag; (c) the stats line buffer is 640 bytes, so with many different tags the tail can be cut.
 - Sync/fence (314-317): order guaranteed by structure; CPU visibility and fence-value semantics when an exec is skipped are open, linked to item 16.
 - Test order for the next phone session (reviewer): newest diagnostic APK only, 64 MiB JIT, reach "Choose Startup Disk", try click / Tab / arrows / Space / Enter on Macintosh HD, see whether Restart enables, export logs (input, display, pipeline, blit), then JIT 128 / 256. Blit work is paused until a log shows an unexecuted tag. Next source work: guest consumption of mouse/keyboard, normal boot, NVRAM, JIT/RAM.
+
+## 2026-11-28 입력·NVRAM·JIT·RAM 구조 검토 (소스 읽기 + 호스트 시험; 실기기 미검증)
+
+구분: 이 항목은 진단/기록이 아니라 실제 코드 수정 1건 + 소스 분석 결과다. 20개 추적 항목의 완료 상태는 바뀌지 않는다(최종 완료 0/20).
+
+### 1. 키보드 경로 (devices/xhci.c, 커밋 17408be) — [implemented, host-verified]
+- 경로: Android 키 → linux 키코드 → hv_xhci_key_linux → linux_to_hid → hv_xhci_key(상태 8바이트 갱신, 큐에 보고서 1개) → hv_machine_wake → CPU 스레드 hv_xhci_poll → run_ep_in(게스트가 올린 전송 버퍼에 기록, delivered++).
+- 확인된 결함 1 (표): linux 111(KEY_DELETE)=0x00 이어서 Delete가 보고서를 만들지 않았다 → 0x4c. 86(KEY_102ND)→0x64, 99(SYSRQ)→0x46 도 같이 채움.
+- 확인된 결함 2 (큐): 보고서 큐(256)가 가득 차면 새 보고서를 버렸다. 키 뗌 보고서가 버려지면 게스트에서 키가 눌린 채로 남을 수 있다. 보고서는 키 "상태 전체"이므로 가득 찼을 때는 가장 최근 대기 보고서를 최신 상태로 덮어쓰고 `coalesced` 카운터를 올린다.
+- 합성 입력 시험 tests/test_xhci_keys.c (`make test-xhci-keys`, 11건 통과): Enter 누름/뗌 보고서, Shift+Tab 수정키 유지/해제 순서, 롤오버 간격 닫기, 중복 누름, 7번째 동시 키 무시, 큐 가득 참 + 합치기, Delete/102nd/SysRq, 자주 쓰는 22개 키 표 대조, 범위 밖 코드는 보고서 없음.
+- 아직 모르는 것 [실기기 필요]: 게스트가 전송 버퍼를 실제로 올리는지(= 보고서가 "소비"되는지). 과거 "249 reports"는 delivered 가 아니라 pending 이었을 수 있다(상태줄 형식이 둘 다 찍음). 큐 용량 256에 가까운 값이면 게스트가 버퍼를 올리지 않았다는 신호다. 다음 로그에서 delivered 와 pending 을 따로 읽는다.
+- 미검토(다음): virtio-input 마우스의 이동→버튼 순서와 좌표 변환(host/touch_input.h)은 기존 tests/test_input_inject.c 가 커버하는 범위 밖(게스트 쪽 소비)이 실기기 확인 대상.
+
+### 2. 일반 부팅 / NVRAM — [소스 분석, 미검증]
+- NVRAM 장치는 없다. NVRAM 은 보조 저장(aux) 이미지 안에 있고, 게스트의 NVRAM 쓰기 = aux 섹터 쓰기(hv_disk_write) + 동기화 = hv_disk_flush(fsync). 복제본(clone)의 aux 는 쓰기 가능으로 열린다. 저장/불러오기/재부팅 지속은 "aux 파일이 실제로 쓰이고 flush 되는가"로 환원된다. 기존 로그: aux_writes=10, flush 결과는 요약줄에 있음.
+- BaseSystem(rp0)으로 부팅하는 이유: 소스에서 확인되는 것은 호스트가 boot-volume 을 만들지 않는다는 점과, 설치 직후 복구 환경의 auto-boot 가 false 일 수 있어 host/usb_host.c 의 autoboot_fix(모드 4: getenv → setenv auto-boot true → getenv → saveenv)가 그것을 고치려고 존재한다는 점이다. 원인 확정은 아님 [I]. 이 수정이 일반 실행에서 켜지는지(usb 모드 ≥ 4)와 saveenv 후 다음 일반 부팅에서 유지되는지는 실기기 로그로만 확인된다.
+- 시동 디스크 선택 화면의 설정 저장(boot-volume)은 호스트 구현이 없다(게스트 펌웨어가 aux 에 쓰는 것에 의존). 미구현이라기보다 호스트 책임이 아니다; 쓰기가 aux 에 도달하는지가 확인 대상.
+
+### 3. ARM64 JIT — [소스 분석, 미측정]
+- 캐시는 전체 flush 방식이다: 부분 퇴출(LRU 등) 없음. flush 요청 원인은 코드 영역 가득 참 / 블록 표 가득 참 / emit 실패 / 대기 중 발견 / 기타로 분류되어 이미 세어진다(stats.flush_*). 중복 번역은 dup_* 카운터. 따라서 "캐시 크기 실험"(64/128/256 MiB)과 "엔진 개선"은 별개이며, 엔진 변경은 g7-jit 줄의 req_*, dup_mb 수치가 나온 뒤에만 한다. 근거 없는 알고리즘 변경은 하지 않았다.
+- 소스에서 보이는 비효율 후보(미측정): flush 시 전체 재번역(first_s/retrans_s로 측정 가능), TLBI 계열 flush 요청 경로(core/sysreg.c)의 빈도. 실기기 측정 필요.
+
+### 4. RAM / Swap — [소스 분석]
+- 게스트 RAM: memfd MAP_SHARED(실패 시 익명). JIT: memfd 이중 매핑. 풍선(balloon): 장치와 구멍 뚫기(punch hole/madvise)는 구현돼 있으나 `HV_BALLOON` 환경변수가 있을 때만 생성된다(devices/vmapple.c). Android 실행기에서 이 변수를 설정하는 곳은 소스에 없다 → 실제 연결되지 않음(구현 있음 / 안드로이드 미연결). 이를 켜는 것은 기능 변경이므로 측정 없이 하지 않는다.
+- GPU 이미지/스테이징/write-back/진단 메모리의 영역별 할당·해제 표는 아직 작성하지 않았다(다음 단계).

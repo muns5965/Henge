@@ -19,12 +19,27 @@
      change, 4xx) is never retried. The count of failures in a row is reset only when at least DL_MIN_PROGRESS (1 MiB, an empirical value, not from a standard) has
      arrived SINCE THE LAST RESET, summed over attempts, so a server that hands out a few bytes per connection cannot keep the run alive. Without that progress
      the run ends with exit 5 after max_retries reconnects; in any case after max_total reconnects in one run.
+   - parallel (parallel > 1, at least two segments left): the bytes from "committed" to the end (or to stop_after) are cut into segments of chunk_bytes. Up to
+     "parallel" worker threads each fetch one segment with its own Range request (bytes=a-b; the same 206 / Content-Range / ETag / If-Range checks, plus: the range
+     must end where we asked) and pwrite it straight into the single .part file at its place; there are no per-piece files. A segment that fails is retried from its
+     own last byte, by any worker. Only segments up to 2 x parallel ahead of the first unfinished one are started, so a stalled segment cannot leave a huge hole.
+     The SHA-256 stays incremental and in order: the coordinator (the calling thread) reads the contiguous prefix back from the file as it grows (page cache) and hashes
+     it; "committed" in the metadata is that prefix only, written with the same order (data -> fsync -> metadata). So the files on disk, the metadata and the resume
+     rules are the ones of the single stream: a .part file or metadata from either path resumes in either path, and bytes beyond the committed prefix are cut off.
+     The first request when the ETag is not known yet is a one-byte probe, so every segment is checked against one strong ETag. A server limit (429 / 5xx / 408, or a
+     connection that dies before delivering a byte) lowers the number of connections by one per such failure (never below 1); it is not raised again in that run and
+     such a failure does not count as a failure in a row. Everything else (200, wrong range, ETag change, 4xx, disk error) ends the run as in the single stream.
+     The log has "SPEED bytes_per_second conns=n allowed=m" once a second (also in the single stream) and "TIME wall=.. user=.. sys=.. (ms)" at the end.
    - cancel: *cancel != 0 ends the transfer (or a reconnect wait) at once; the state is flushed first; exit 8. */
 #ifndef HV_IPSW_DL_H
 #define HV_IPSW_DL_H
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#define DL_MAX_PARALLEL 16
+#define DL_CHUNK_DEFAULT (32ULL << 20)
+#define DL_CHUNK_MIN (256ULL << 10)
 
 typedef struct {
     const char *url;               /* https://... */
@@ -40,6 +55,8 @@ typedef struct {
     unsigned max_retries;          /* default 6: reconnects in a row WITHOUT progress before giving up (any progress resets the count); 0 = never reconnect */
     unsigned retry_base_ms;        /* default 2000: wait before a reconnect, doubled per failure in a row (at most x32, at most 60 s) */
     unsigned max_total;            /* default 50: reconnects in ONE run, however much progress there was (0 = the default); the next run starts the count again */
+    unsigned parallel;             /* default 1 = one stream (the old path). 2..16 = that many connections, each fetching its own Range segment; see below */
+    uint64_t chunk_bytes;          /* default 32 MiB: size of one segment in the parallel path (at least 256 KiB) */
     const volatile int *cancel;    /* optional */
     FILE *out;                     /* progress and log lines, prefixed "dl: " */
 } DlCfg;

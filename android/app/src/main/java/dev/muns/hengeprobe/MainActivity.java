@@ -2306,7 +2306,7 @@ public class MainActivity extends Activity {
                     show(head + String.format(java.util.Locale.US, "받은 양: %.2f GiB / 전체 %.2f GiB (%.2f%%)\n속도: %.1f MB/s   남은 시간: %s\n경과: %s\n",
                             done / 1073741824.0, total / 1073741824.0, 100.0 * done / total, ema[0] / 1048576.0, eta, hms((now - t0) / 1000.0)) + log);
                 }
-                @Override public void onLine(String line) { if (!line.startsWith("dl: PROGRESS")) log.append("   ").append(line).append('\n'); }
+                @Override public void onLine(String line) { if (!line.startsWith("dl: PROGRESS") && !line.startsWith("dl: SPEED")) log.append("   ").append(line).append('\n'); }
             });
             String verdict;
             switch (r.code) {

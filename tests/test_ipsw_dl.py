@@ -17,11 +17,22 @@ DATA = rnd.randbytes(N)
 SHA = hashlib.sha256(DATA).hexdigest()
 M = {}            # server behaviour, set per test
 REQS = []         # (path, range, if_range)
+LK = threading.Lock()
+ACT = [0, 0]      # connections being served now, the most at one time since fresh()
 
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
     def do_GET(self):
+        with LK: ACT[0] += 1; ACT[1] = max(ACT[1], ACT[0]); over = M.get("max_conc") and ACT[0] > M["max_conc"]
+        try:
+            if over:
+                REQS.append((self.path, self.headers.get("Range"), self.headers.get("If-Range")))
+                self.send_response(M.get("over_status", 429)); self.send_header("Content-Length", "0"); self.send_header("Connection", "close"); self.end_headers(); return
+            self.serve()
+        finally:
+            with LK: ACT[0] -= 1
+    def serve(self):
         rng, ifr = self.headers.get("Range"), self.headers.get("If-Range")
         REQS.append((self.path, rng, ifr))
         if M.get("status_seq"):
@@ -48,9 +59,10 @@ class H(http.server.BaseHTTPRequestHandler):
         if etag: self.send_header("ETag", etag)
         self.send_header("Content-Length", str(body_len)); self.send_header("Connection", "close"); self.end_headers()
         sent = 0; chunk = 256 * 1024
-        drop = M.pop("drop_once", None) if "drop_once" in M else None
-        if M.get("drop_seq"): drop = M["drop_seq"].pop(0)
-        elif M.get("drop_each") is not None: drop = M["drop_each"]
+        with LK:
+            drop = M.pop("drop_once", None) if "drop_once" in M else None
+            if M.get("drop_seq"): drop = M["drop_seq"].pop(0)
+            elif M.get("drop_each") is not None: drop = M["drop_each"]
         try:
             while sent < body_len:
                 n = min(chunk, body_len - sent)
@@ -60,7 +72,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(piece); sent += n
                 if drop is not None and sent >= drop:
                     self.wfile.flush(); self.connection.shutdown(socket.SHUT_RDWR); break
-                if M.get("slow"): time.sleep(0.1)
+                if M.get("slow") and sent < body_len: time.sleep(0.1)
         except OSError: pass
         self.close_connection = True
 
@@ -73,7 +85,7 @@ BIG_TOTAL = BIG_PRE + len(TAIL)
 BURL = f"http://127.0.0.1:{srv.server_address[1]}/big.ipsw"
 
 def fresh(name):
-    d = os.path.join(work, name); shutil.rmtree(d, ignore_errors=True); os.makedirs(d); M.clear(); del REQS[:]; return d
+    d = os.path.join(work, name); shutil.rmtree(d, ignore_errors=True); os.makedirs(d); M.clear(); del REQS[:]; ACT[1] = 0; return d
 def args(d, *extra, url=URL, size=N, sha=SHA, stop=None, cap=None, reserve=1 << 20, retries=0, base=20, extra_args=()):
     a = ["--dir", d, "--url", url, "--size", str(size), "--sha256", sha, "--name", "t.ipsw", "--reserve", str(reserve), "--commit-every", str(1 << 20),
          "--retries", str(retries), "--retry-base-ms", str(base)]
@@ -283,6 +295,104 @@ try: o, _ = p.communicate(timeout=10)
 except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
 check("SIGTERM during a reconnect wait: exit 8 within a second, no further request", p.returncode == 8 and time.time() - t0 < 2 and len(REQS) == 1, (p.returncode, time.time() - t0, len(REQS), o[-200:]))
 
+# ---- 12c. parallel segments ----
+CH = 1 << 20
+def pargs(d, par, **kw): return args(d, extra_args=["--parallel", str(par), "--chunk-size", str(CH)] + list(kw.pop("more", [])), **kw)
+def ranges(reqs): return [(int(m[1]), int(m[2])) for q in reqs for m in [re.match(r"bytes=(\d+)-(\d+)$", q[1] or "")] if m]
+for par in (2, 4, 8):
+    d = fresh(f"t15_{par}"); M["slow"] = 1
+    out, rc, _ = run(pargs(d, par, retries=3, base=20))
+    rg = ranges(REQS[1:])
+    cover = sorted(rg); ok_cover = cover and cover[0][0] == 0 and cover[-1][1] == N - 1 and all(cover[i][0] == cover[i - 1][1] + 1 for i in range(1, len(cover))) and all(b - a + 1 <= CH for a, b in cover)
+    check(f"parallel {par}: exit 0, file equals the original, SHA-256 verified, no .part/.meta left", rc == 0 and read(P(d)) == DATA and fsize(P(d, ".part")) is None and fsize(P(d, ".meta")) is None and "SHA256 computed " + SHA in out, (rc, out[-500:]))
+    check(f"  one 1-byte probe first (bytes=0-0), then every segment exactly once with If-Range, covering the file without a gap or overlap", REQS[0][1] == "bytes=0-0" and REQS[0][2] is None and ok_cover and len(REQS) == 1 + len(cover) and all(q[2] == '"e1"' for q in REQS[1:]), (REQS[:3], len(REQS), cover[:3]))
+    check(f"  really concurrent (at most {par} at once, more than one at a time), SPEED lines and a TIME line in the log", 1 < ACT[1] <= par and ("dl: SPEED " in out or par > 2) and "TIME wall=" in out and f"parallel={par}" in out, (ACT, out[-300:]))
+# a partial file made by the single stream continues in parallel (and the other way round)
+d = fresh("t16a"); run(args(d, stop=5000001))
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+rg = ranges(REQS[1:])
+check("single-stream .part (stopped at 5000001) continued in parallel: no probe (ETag known), segments start at 5000001, all with If-Range, file equals the original",
+      rc == 0 and read(P(d)) == DATA and all(q[2] == '"e1"' for q in REQS[1:]) and "re-reading 5000001" in out and min(a for a, b in ranges(REQS[1:])) == 5000001 and not any(a == b for a, b in ranges(REQS[1:])), (rc, REQS[:3], out[-400:]))
+d = fresh("t16b"); out, rc, _ = run(pargs(d, 4, stop=9000001, retries=3, base=20))
+ps = fsize(P(d, ".part"))
+check("parallel run paused at 9000001: exit 7, committed and .part are exactly 9000001 (segments end at the pause point), nothing installed", rc == 7 and committed(d) == 9000001 and ps == 9000001 and fsize(P(d)) is None, (rc, committed(d), ps, out[-300:]))
+out, rc, _ = run(args(d))
+check("  that .part continues in the single stream from 9000001 and verifies", rc == 0 and read(P(d)) == DATA and REQS[-1][1] == "bytes=9000001-", (rc, REQS[-1], out[-300:]))
+# SIGTERM during a parallel run: consistent state, resumes
+d = fresh("t17"); M["slow"] = 1
+p = subprocess.Popen([tool] + pargs(d, 4, retries=3, base=20), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+for _ in range(200):
+    if len(REQS) >= 4 and (committed(d) or 0) > 0: break
+    time.sleep(0.05)
+time.sleep(0.3); p.send_signal(signal.SIGTERM)
+try: o, _ = p.communicate(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); o = b"TIMEOUT"
+ps, cm = fsize(P(d, ".part")), committed(d)
+check("SIGTERM during a parallel run: exit 8, the metadata's committed bytes are a prefix that the .part file really holds (state consistent)", p.returncode == 8 and cm is not None and 0 < cm < N and ps >= cm and read(P(d, ".part"))[:cm] == DATA[:cm], (p.returncode, cm, ps, o[-300:]))
+M.clear(); out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("  and a new parallel run resumes from it and verifies; the bytes beyond the committed prefix were cut off first", rc == 0 and read(P(d)) == DATA and f"re-reading {cm}" in out, (rc, cm, out[-400:]))
+# a server that limits the number of connections
+d = fresh("t18"); M["max_conc"] = 2; M["slow"] = 1
+out, rc, _ = run(pargs(d, 8, retries=3, base=20))
+check("server answers 429 above 2 connections, 8 asked for: connections are lowered (THROTTLE), the download completes and verifies", rc == 0 and read(P(d)) == DATA and "THROTTLE connections lowered" in out and sum(1 for q in REQS) > 27, (rc, len(REQS), out[-500:]))
+d = fresh("t18b"); M["max_conc"] = 1; M["over_status"] = 503
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("server allows 1 connection and answers 503 to the others: ends with one connection, completes and verifies", rc == 0 and read(P(d)) == DATA and "THROTTLE connections lowered to 1" in out, (rc, out[-500:]))
+d = fresh("t18c"); M["status"] = 503
+out, rc, _ = run(pargs(d, 4, retries=2, base=20))
+check("503 on every request in parallel mode (even the probe): exit 5 after the retries, nothing written, nothing installed", rc == 5 and fsize(P(d)) is None and (fsize(P(d, ".part")) or 0) == 0, (rc, len(REQS), out[-300:]))
+# per-segment retry
+d = fresh("t19"); M["drop_seq"] = [999, 300000, 400000, 500000, 600000]; M["slow"] = 1
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("connections dropped inside segments: each segment is asked again from its own last byte (not from its start), the file still equals the original", rc == 0 and read(P(d)) == DATA and out.count("RECONNECT") >= 3, (rc, out.count("RECONNECT"), out[-500:]))
+st = [int(re.match(r"bytes=(\d+)-", q[1])[1]) for q in REQS[1:]]
+check("  the retries start inside a segment (some request starts at an offset that is not a multiple of the segment size)", any(x % CH for x in st), st[:12])
+d = fresh("t19b"); M["drop_each"] = 0
+out, rc, _ = run(pargs(d, 4, retries=2, base=20))
+check("a server that never delivers a byte, parallel: connections go down to 1, then gives up (exit 5), nothing installed", rc == 5 and "gave up" in out and fsize(P(d)) is None, (rc, len(REQS), out[-400:]))
+# untrustworthy replies
+for name, setting, want in [("Range ignored (200 to the probe)", {"ignore_range": True}, "200"),
+                            ("Content-Range ends one byte early", {"cr_end_add": -1}, "Content-Range"),
+                            ("weak ETag", {"etag": 'W/"w"'}, "weak"),
+                            ("no ETag", {"etag": None}, "no ETag"),
+                            ("Content-Range names another total", {"cr_total": N + 1}, "file size")]:
+    d = fresh("t20"); M.update(setting)
+    out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+    check(f"parallel, {name}: exit 4, nothing written, nothing installed, one request only", rc == 4 and want in out and (fsize(P(d, ".part")) or 0) == 0 and fsize(P(d)) is None and len(REQS) == 1, (rc, len(REQS), out[-300:]))
+d = fresh("t21"); run(args(d, stop=5 << 20)); before = (read(P(d, ".part")), read(P(d, ".meta"))); M["etag"] = '"e2"'
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("parallel resume, the file on the server changed (200 to If-Range): exit 4, .part and metadata untouched, nothing installed", rc == 4 and fsize(P(d)) is None and (read(P(d, ".part")), read(P(d, ".meta"))) == before, (rc, out[-300:]))
+d = fresh("t21b"); M["slow"] = 1
+def flip_etag():
+    for _ in range(400):
+        if len(REQS) >= 6: M["etag"] = '"e2"'; return
+        time.sleep(0.02)
+threading.Thread(target=flip_etag, daemon=True).start()
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+cm = committed(d)
+check("the ETag changes while segments are running: exit 4, no retry loop, state consistent (committed bytes are really on disk), nothing installed", rc == 4 and fsize(P(d)) is None and cm is not None and read(P(d, ".part"))[:cm] == DATA[:cm], (rc, cm, out[-400:]))
+# integrity
+d = fresh("t22"); run(args(d, stop=5 << 20)); f = open(P(d, ".part"), "r+b"); f.seek(1000); f.write(b"\xff"); f.close()
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("a damaged byte in the committed prefix, then a parallel resume: the final SHA-256 catches it (exit 6), nothing installed", rc == 6 and fsize(P(d)) is None and fsize(P(d, ".part")) == N, (rc, out[-300:]))
+d = fresh("t22b"); out, rc, _ = run(pargs(d, 4, retries=3, base=20, sha="0" * 64))
+check("parallel, wrong expected SHA-256: exit 6, the real hash printed, .part kept, nothing installed", rc == 6 and SHA in out and fsize(P(d)) is None and fsize(P(d, ".part")) == N, (rc, out[-300:]))
+d = fresh("t22c"); run(args(d, stop=5 << 20)); f = open(P(d, ".part"), "ab"); f.write(b"J" * 1000); f.close()
+out, rc, _ = run(pargs(d, 4, retries=3, base=20))
+check("a .part longer than its metadata (crash after the data): cut off, then the parallel download completes and verifies", rc == 0 and read(P(d)) == DATA and "cutting 1000 uncommitted" in out, (rc, out[-300:]))
+d = fresh("t22d"); run(args(d, stop=5 << 20)); os.truncate(P(d, ".part"), (5 << 20) - 10); n = len(REQS)
+out, rc, _ = run(pargs(d, 4))
+check("parallel, .part shorter than the metadata: exit 3, no request (same state rules)", rc == 3 and len(REQS) == n, (rc, out[-200:]))
+# options
+d = fresh("t23"); out, rc, _ = run(args(d, extra_args=["--parallel-any", "17"]))
+check("parallel above 16: refused (exit 2), nothing sent", rc == 2 and len(REQS) == 0 and "parallel must be" in out, (rc, out[-200:]))
+d = fresh("t23b"); out, rc, _ = run(args(d, extra_args=["--parallel", "3"]))
+check("--parallel 3 is not one of 1, 2, 4, 8: refused (exit 2), nothing sent", rc == 2 and len(REQS) == 0, (rc, out[-200:]))
+d = fresh("t23c"); out, rc, _ = run(pargs(d, 4, stop=3000, retries=3, base=20))
+check("fewer than two segments left (3000 bytes to go, 1 MiB segments): the single stream is used, no probe", rc == 7 and REQS[0][1] == "bytes=0-" and len(REQS) == 1 and committed(d) == 3000, (rc, REQS, out[-200:]))
+d = fresh("t23d"); out, rc, _ = run(pargs(d, 1))
+check("--parallel 1 is the old single stream", rc == 0 and len(REQS) == 1 and REQS[0][1] == "bytes=0-" and read(P(d)) == DATA, (rc, REQS, out[-200:]))
+
 # ---- 12b. status: lock probe and metadata age ----
 def status_line(d):
     out, _, _ = run(["--status", "--dir", d, "--name", "t.ipsw", "--size", str(N), "--url", URL, "--sha256", SHA]); return out
@@ -312,6 +422,12 @@ out, rc, _ = run(["--dir", d, "--full", "--stop-after", "1000"], t=shipped)
 check("shipped build: --full and --stop-after together are refused", rc == 2 and "exclude each other" in out, (rc, out))
 out, rc, _ = run(["--dir", d, "--stop-after", "1000", "--url", URL], t=shipped)
 check("shipped build has no --url (or any other test argument)", rc == 2 and "unknown argument" in out, (rc, out))
+out, rc, _ = run(["--dir", d, "--parallel", "3"], t=shipped)
+check("shipped build: --parallel takes 1, 2, 4 or 8 only", rc == 2 and "must be 1, 2, 4 or 8" in out, (rc, out))
+out, rc, _ = run(["--dir", d, "--parallel", "4"], t=shipped)
+check("shipped build: --parallel 4 is accepted as an option (then 'nothing to do' without --full)", rc == 2 and "nothing to do" in out, (rc, out))
+out, rc, _ = run(["--dir", d, "--stop-after", "1000", "--chunk-size", "1000"], t=shipped)
+check("shipped build has no --chunk-size (the segment size is fixed)", rc == 2 and "unknown argument" in out, (rc, out))
 out, rc, _ = run(["--dir", d, "--stop-after", "1000", "--retries", "9"], t=shipped)
 check("shipped build has no --retries / --retry-base-ms either", rc == 2 and "unknown argument" in out, (rc, out))
 st = subprocess.run(["strings", shipped], capture_output=True).stdout.decode()

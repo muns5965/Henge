@@ -272,3 +272,12 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - 수정(18d2b4c): libvmrun.so 추가(필수, build-engine/vmrun, AArch64 + "usage: vmrun --rom" 확인), 자바가 이름을 부르는 모든 네이티브 라이브러리를 SHIPPED / OPTIONAL / NOT_SHIPPED 로 분류하는 tools/check-g7-native-manifest.sh 를 두 워크플로에 추가(분류 안 된 새 이름이 생기면 CI 실패, SHIPPED 인데 빌드 단계나 APK 검사가 없어도 실패). APK 검사 시험 3건 추가.
 - NOT_SHIPPED(의도적으로 G7 APK에 없음; 해당 버튼은 "이 APK에 없습니다"라고 표시): G0~G6 진단용 vmrung*, vmrunirecv, vmruntss*, vmrunpreflight, restoreselftest, bmprobe, uirunner*, g7probe. 정지 스위치가 들어간 복원 스택이라 G7 APK 정책(검사 스크립트)과 맞지 않거나 진단 전용이다. 신규 설치 경로에는 쓰이지 않는다고 소스에서 확인했으나(위 경로), 기기에서 모든 버튼을 눌러 본 것은 아니다.
 - APK 5: 실행 46094635577, Henge 18d2b4c / 라이브러리 e3ae150, sha256 d0bd9b062e7f8b6e645c1724b5556c8ffdefd9ab242378a7432965e94ed7a3aa, 서명 인증서 동일(eb9cad5e…1fec). CI에서 libvmrun/libromextract/libipswdl AArch64 생성과 APK 검사 통과. 기기 미검증.
+
+## IPSW 병렬(Range) 다운로드 — 구현 및 호스트 검증 (기본값은 1 그대로)
+
+- 구현: host/ipsw_dl.c 에 `parallel`(1..16, 도구는 1/2/4/8만) · `chunk_bytes`(기본 32 MiB) 추가. 워커 스레드가 각자 Range(bytes=a-b) 구간을 받아 단일 .part 에 pwrite (조각 파일 없음). 조각 단위 재시도(자기 마지막 바이트부터), 429/5xx/408 또는 0바이트 실패 시 연결 수 1씩 감소(1 미만 안 됨, 같은 실행에서 재증가 없음). ETag 를 모를 때는 1바이트 probe 로 먼저 강한 ETag 확보. 206/Content-Range(요청 끝과 일치)/ETag/If-Range 검사는 단일 경로와 동일.
+- 호환: 메타데이터 형식(HENGE-DL 1)과 committed 의미(연속 prefix)는 그대로. 단일 경로 .part ↔ 병렬 경로 .part 상호 재개 테스트 있음. SHA-256 은 코디네이터가 연속 prefix 를 읽어 순서대로 증분 계산(중복 전체 재독 없음).
+- 로그: `SPEED bytes/s conns=n allowed=m` (1초마다, 단일 경로 포함), 종료 시 `TIME wall/user/sys(ms) parallel=N` — 1/2/4/8 측정용.
+- 검증 수준: 호스트 모의 Range 서버 테스트 107 항목 통과(기존 단일 경로 전부 + 병렬 신규). TLS(mbedtls 심) 다중 스레드는 호스트 http 로만 확인, 실제 Apple CDN/기기 미검증.
+- 미결(기기 측정): 1/2/4/8 속도·CPU·발열·저장소 부하 → 측정 전에는 기본값 1 유지. Apple CDN 이 이미 단일 연결로 포화될 수 있음. UI 선택지/총 속도 표시는 아직 앱에 연결 안 함(PROGRESS 형식은 그대로, SPEED 줄은 앱 로그에서 숨김).
+- 항목 20 완료율은 변경 없음(기기 확인 전).

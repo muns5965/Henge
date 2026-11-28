@@ -1,8 +1,8 @@
 /* Command line around host/ipsw_dl.c. Shipped in the APK as libipswdl.so and started by the app's button; also the program the local tests drive.
    The shipped build (no HV_DL_TEST) is fixed to the macOS 15.6.1 (24G90) IPSW: URL, size, SHA-256 and file name are compiled in, it cannot be pointed
    anywhere else. It downloads only when told how far: --full (to the end, then verify) or --stop-after BYTES (pause there). The app passes --full only after its
-   confirmation dialog. A test build (HV_DL_TEST, only tools/ipswdl-test.sh) also takes --url --size --sha256 --name --commit-every --reserve --retries --retry-base-ms.
-   Usage: ipsw_dl --dir DIR (--full | --stop-after BYTES) [--avail-cap BYTES] | --status --dir DIR | --delete-partial --dir DIR
+   confirmation dialog. A test build (HV_DL_TEST, only tools/ipswdl-test.sh) also takes --url --size --sha256 --name --commit-every --reserve --retries --retry-base-ms --max-total --chunk-size --parallel-any.
+   Usage: ipsw_dl --dir DIR (--full | --stop-after BYTES) [--avail-cap BYTES] [--parallel 1|2|4|8] | --status --dir DIR | --delete-partial --dir DIR
    Output lines start with "dl: "; the last one is "dl: RESULT <code> <text>". Exit code = the code (0 done, 2 refused, 3 state, 4 server, 5 interrupted,
    6 hash mismatch, 7 paused, 8 stopped on request). SIGTERM/SIGINT stop the transfer cleanly (state flushed, code 8). */
 #include <signal.h>
@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "--dir")) c.dir = NEXT();
         else if (!strcmp(a, "--stop-after")) c.stop_after = strtoull(NEXT(), NULL, 10);
         else if (!strcmp(a, "--avail-cap")) c.avail_cap = strtoull(NEXT(), NULL, 10);
+        else if (!strcmp(a, "--parallel")) { unsigned long v = strtoul(NEXT(), NULL, 10); if (v != 1 && v != 2 && v != 4 && v != 8) { printf("dl: RESULT 2 --parallel must be 1, 2, 4 or 8\n"); return 2; } c.parallel = (unsigned)v; }
         else if (!strcmp(a, "--full")) full = 1;
         else if (!strcmp(a, "--status")) status = 1;
         else if (!strcmp(a, "--delete-partial")) del = 1;
@@ -43,6 +44,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--retries")) c.max_retries = (unsigned)strtoul(NEXT(), NULL, 10);
         else if (!strcmp(a, "--retry-base-ms")) c.retry_base_ms = (unsigned)strtoul(NEXT(), NULL, 10);
         else if (!strcmp(a, "--max-total")) c.max_total = (unsigned)strtoul(NEXT(), NULL, 10);
+        else if (!strcmp(a, "--chunk-size")) c.chunk_bytes = strtoull(NEXT(), NULL, 10);
+        else if (!strcmp(a, "--parallel-any")) c.parallel = (unsigned)strtoul(NEXT(), NULL, 10);   /* test only: values the shipped option refuses */
 #endif
         else { printf("dl: RESULT 2 unknown argument %s\n", a); return 2; }
     }

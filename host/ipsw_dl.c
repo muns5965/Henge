@@ -2,11 +2,13 @@
 #include "ipsw_dl.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <time.h>
@@ -24,16 +26,23 @@ typedef struct {
     uint64_t durable;             /* "committed" as stored in the metadata */
     char etag[160];
     uint64_t commit_every, reserve;
-    long long last_prog_ns;
+    long long last_prog_ns, last_sp_ns;
+    uint64_t last_sp_bytes;
     int meta_broken;              /* a metadata write failed */
 } Dl;
 
 static long long now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (long long)t.tv_sec * 1000000000LL + t.tv_nsec; }
 static void lg(const Dl *d, const char *fmt, ...) {
     if (!d->c->out) return;
+    char line[700];   /* one write per line: the parallel workers log too */
+    int k = snprintf(line, sizeof line, "dl: ");
     va_list ap; va_start(ap, fmt);
-    fputs("dl: ", d->c->out); vfprintf(d->c->out, fmt, ap); fputc('\n', d->c->out); fflush(d->c->out);
+    int m = vsnprintf(line + k, sizeof line - (size_t)k - 2, fmt, ap);
     va_end(ap);
+    size_t n = (size_t)k + (m < 0 ? 0 : (size_t)m);
+    if (n > sizeof line - 2) n = sizeof line - 2;
+    line[n++] = '\n';
+    fwrite(line, 1, n, d->c->out); fflush(d->c->out);
 }
 static void setmsg(char *dst, size_t cap, const char *fmt, ...) {
     if (!cap) return;
@@ -44,6 +53,7 @@ static void setmsg(char *dst, size_t cap, const char *fmt, ...) {
 void dl_cfg_default(DlCfg *c) {
     memset(c, 0, sizeof *c);
     c->reserve = 512ULL << 20; c->commit_every = 16ULL << 20; c->connect_timeout_s = 20; c->max_retries = 6; c->retry_base_ms = 2000; c->max_total = 50;
+    c->parallel = 1; c->chunk_bytes = DL_CHUNK_DEFAULT;
 }
 
 static int url_ok(const char *u) {
@@ -119,25 +129,50 @@ static int commit(Dl *d) {   /* data first, then the metadata */
     return 0;
 }
 
-static int hash_prefix(Dl *d, int fd, uint64_t n) {   /* hashes bytes [0, n) of fd into d->sha */
+static int hash_range(Dl *d, int fd, uint64_t from, uint64_t n, int quiet) {   /* hashes bytes [from, n) of fd into d->sha (main thread only: static buffer) */
     static unsigned char buf[1 << 20];
-    uint64_t off = 0, last = 0;
+    uint64_t off = from, last = from;
     while (off < n) {
         size_t want = n - off > sizeof buf ? sizeof buf : (size_t)(n - off);
         ssize_t r = pread(fd, buf, want, (off_t)off);
+        if (r < 0 && errno == EINTR) continue;
         if (r <= 0) return -1;
         mbedtls_sha256_update(&d->sha, buf, (size_t)r);
         off += (uint64_t)r;
-        if (off - last >= (512ULL << 20)) { lg(d, "re-reading %llu of %llu bytes", LLU(off), LLU(n)); last = off; }
+        if (!quiet && off - last >= (512ULL << 20)) { lg(d, "re-reading %llu of %llu bytes", LLU(off), LLU(n)); last = off; }
     }
     return 0;
 }
+static int hash_prefix(Dl *d, int fd, uint64_t n) { return hash_range(d, fd, 0, n, 0); }   /* bytes [0, n) */
 static void to_hex(const unsigned char *h, char *o) { static const char x[] = "0123456789abcdef"; for (int i = 0; i < 32; i++) { o[2 * i] = x[h[i] >> 4]; o[2 * i + 1] = x[h[i] & 15]; } o[64] = 0; }
 
 /* ---- one transfer ---- */
+typedef struct Chunk Chunk;
+struct Chunk {
+    uint64_t start, end;           /* [start, end], end inclusive */
+    uint64_t got;                  /* absolute offset up to which the segment is on disk (atomic: the coordinator reads it) */
+    int state;                     /* CK_*, under the pool mutex */
+    unsigned fails;                /* failures in a row without enough progress */
+};
+enum { CK_PEND, CK_RUN, CK_DONE };
+static void chunk_set_got(Chunk *ck, uint64_t v) { __atomic_store_n(&ck->got, v, __ATOMIC_RELEASE); }
+static uint64_t chunk_get_got(Chunk *ck) { return __atomic_load_n(&ck->got, __ATOMIC_ACQUIRE); }
+/* One line per second: bytes per second since the last line, connections in use. Same line in the single stream (conns=1). */
+static void log_speed(Dl *d, long long t, uint64_t bytes, unsigned conns, unsigned allowed) {
+    if (d->last_sp_ns && t > d->last_sp_ns) {
+        uint64_t db = bytes >= d->last_sp_bytes ? bytes - d->last_sp_bytes : 0;
+        lg(d, "SPEED %llu conns=%u allowed=%u", LLU(db * 1000000000ULL / (uint64_t)(t - d->last_sp_ns)), conns, allowed);
+    }
+    d->last_sp_ns = t; d->last_sp_bytes = bytes;
+}
 typedef struct {
     Dl *d;
-    uint64_t start;
+    uint64_t start, end;           /* the bytes asked for: [start, end], end inclusive; single stream: end = size - 1 */
+    Chunk *ck;                     /* a parallel segment: the body goes to its place with pwrite and is not hashed here */
+    int probe;                     /* parallel start: one byte, only to learn the ETag; the body is dropped */
+    volatile int *stop;            /* another worker ended the run */
+    uint64_t *rx;                  /* bytes received by all workers in this run */
+    char tag[32];
     int status, headers_done, refused, transient, identity, weak;
     char reason[240];
     uint64_t cr_start, cr_end, cr_total; int have_cr;
@@ -166,7 +201,11 @@ static int finish_headers(Rq *r) {
     if (!r->have_cr) { refuse(r, 0, "206 without a usable Content-Range"); return -1; }
     if (r->cr_total != d->c->expect_size) { refuse(r, 0, "the server's file size is %llu, expected %llu", LLU(r->cr_total), LLU(d->c->expect_size)); return -1; }
     if (r->cr_start != r->start) { refuse(r, 0, "Content-Range starts at %llu, not at the requested %llu", LLU(r->cr_start), LLU(r->start)); return -1; }
-    if (r->cr_end != d->c->expect_size - 1) { refuse(r, 0, "Content-Range ends at %llu, not at the end of the file", LLU(r->cr_end)); return -1; }
+    if (r->cr_end != r->end) {
+        if (r->end == d->c->expect_size - 1) refuse(r, 0, "Content-Range ends at %llu, not at the end of the file", LLU(r->cr_end));
+        else refuse(r, 0, "Content-Range ends at %llu, not at the requested %llu", LLU(r->cr_end), LLU(r->end));
+        return -1;
+    }
     if (d->etag[0]) {
         if (strcmp(r->r_etag, d->etag)) { refuse(r, 0, "ETag changed: the file on the server is not the one we started with"); return -1; }
     } else {
@@ -175,8 +214,8 @@ static int finish_headers(Rq *r) {
         snprintf(d->etag, sizeof d->etag, "%s", r->r_etag);
         if (meta_write(d) != 0) { r->io_error = 1; r->io_errno = errno; refuse(r, 1, "cannot write the metadata"); return -1; }
     }
-    lg(d, "REPLY %d Content-Range bytes %llu-%llu/%llu accepted (starts where asked, ends at the end of the file, size as expected, %s)", r->status,
-       LLU(r->cr_start), LLU(r->cr_end), LLU(r->cr_total), r->start ? "strong ETag equals the stored one" : "strong ETag taken and stored");
+    lg(d, "REPLY %d Content-Range bytes %llu-%llu/%llu accepted (starts where asked, ends %s, size as expected, %s)", r->status,
+       LLU(r->cr_start), LLU(r->cr_end), LLU(r->cr_total), r->end == d->c->expect_size - 1 ? "at the end of the file" : "where asked", r->start ? "strong ETag equals the stored one" : "strong ETag taken and stored");
     return 0;
 }
 static size_t hdr_cb(char *p, size_t s, size_t n, void *ud) {
@@ -204,13 +243,29 @@ static size_t hdr_cb(char *p, size_t s, size_t n, void *ud) {
     }
     return tot;
 }
+static size_t chunk_body(Rq *r, char *p, size_t tot) {   /* parallel segment: straight to its place in the file */
+    Dl *d = r->d; Chunk *ck = r->ck;
+    if (r->probe) { r->body_got += tot; return tot; }   /* one byte, only the headers mattered */
+    size_t off = 0;
+    while (off < tot) {
+        ssize_t w = pwrite(d->fd, p + off, tot - off, (off_t)(r->start + r->body_got + off));
+        if (w < 0) { if (errno == EINTR) continue; r->io_error = 1; r->io_errno = errno; return 0; }
+        off += (size_t)w;
+    }
+    r->body_got += tot;
+    chunk_set_got(ck, r->start + r->body_got);
+    return tot;
+}
 static size_t body_cb(char *p, size_t s, size_t n, void *ud) {
     Rq *r = ud; Dl *d = r->d; size_t tot = s * n;
     r->wire += tot;
+    if (r->rx) __atomic_add_fetch(r->rx, tot, __ATOMIC_RELAXED);
     if (!r->headers_done) finish_headers(r);
     if (r->refused) return 0;      /* nothing of a refused reply is written */
     if (d->c->cancel && *d->c->cancel) { r->cancelled = 1; return 0; }
-    if (r->body_got + tot > d->c->expect_size - r->start) { refuse(r, 0, "more body than the Content-Range announced"); return 0; }
+    if (r->stop && *r->stop) { r->cancelled = 1; return 0; }
+    if (r->body_got + tot > r->end + 1 - r->start) { refuse(r, 0, "more body than the Content-Range announced"); return 0; }
+    if (r->ck || r->probe) return chunk_body(r, p, tot);
     size_t take = tot;
     if (d->c->stop_after) { uint64_t room = d->c->stop_after > d->committed ? d->c->stop_after - d->committed : 0; if (take > room) take = (size_t)room; }
     size_t off = 0;
@@ -224,13 +279,14 @@ static size_t body_cb(char *p, size_t s, size_t n, void *ud) {
     if (d->c->stop_after && d->committed >= d->c->stop_after && d->committed < d->c->expect_size) { r->paused = 1; return 0; }
     if (d->committed - d->durable >= d->commit_every) { if (commit(d) != 0) { r->io_error = 1; r->io_errno = errno; return 0; } }
     long long t = now_ns();
-    if (t - d->last_prog_ns >= 1000000000LL) { d->last_prog_ns = t; lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(d->c->expect_size)); }
+    if (t - d->last_prog_ns >= 1000000000LL) { d->last_prog_ns = t; lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(d->c->expect_size)); log_speed(d, t, d->committed, 1, 1); }
     return tot;
 }
 static int xfer_cb(void *ud, curl_off_t a, curl_off_t b, curl_off_t c, curl_off_t e) {
     (void)a; (void)b; (void)c; (void)e;
     Rq *r = ud;
     if (r->d->c->cancel && *r->d->c->cancel) { r->cancelled = 1; return 1; }
+    if (r->stop && *r->stop) { r->cancelled = 1; return 1; }
     return 0;
 }
 
@@ -252,6 +308,7 @@ static int init_paths(Dl *d, const DlCfg *c, char *msg, size_t cap) {
     if (strlen(c->url) > 400) { setmsg(msg, cap, "URL too long"); return DL_REFUSED; }
     if (!url_ok(c->url)) { setmsg(msg, cap, "refusing a URL that is not https"); return DL_REFUSED; }
     if (!c->expect_size) { setmsg(msg, cap, "no expected size"); return DL_REFUSED; }
+    if (c->parallel > DL_MAX_PARALLEL) { setmsg(msg, cap, "parallel must be 1..%d", DL_MAX_PARALLEL); return DL_REFUSED; }
     if (!is_hex64(c->expect_sha256)) { setmsg(msg, cap, "the expected SHA-256 must be 64 hex digits"); return DL_REFUSED; }
     struct stat st;
     if (stat(c->dir, &st) != 0 || !S_ISDIR(st.st_mode)) { setmsg(msg, cap, "the folder does not exist"); return DL_REFUSED; }
@@ -284,6 +341,41 @@ static int finalize(Dl *d, char *msg, size_t cap) {
 }
 
 enum { TR_COMPLETE, TR_PAUSED, TR_CANCEL, TR_SERVER, TR_RETRY, TR_FATAL };
+
+/* One HTTP request for [r->start, r->end] (open-ended "bytes=N-" when r->end is the last byte of the file and r->ck is not set: the single stream). Fills r; returns
+   0, or -1 when no handle could be made. *crc and errbuf are curl's. Thread-safe: everything it touches is its own or atomic. */
+static int perform(Dl *d, Rq *r, CURLcode *crc, char *errbuf) {
+    const DlCfg *c = d->c;
+    CURL *h = curl_easy_init();
+    if (!h) return -1;
+    char rng[96], ifr[220];
+    if (!r->ck && !r->probe) snprintf(rng, sizeof rng, "Range: bytes=%llu-", LLU(r->start));
+    else snprintf(rng, sizeof rng, "Range: bytes=%llu-%llu", LLU(r->start), LLU(r->end));
+    struct curl_slist *hd = curl_slist_append(NULL, rng);
+    hd = curl_slist_append(hd, "Accept-Encoding: identity");
+    if (d->etag[0]) { snprintf(ifr, sizeof ifr, "If-Range: %s", d->etag); hd = curl_slist_append(hd, ifr); }
+    lg(d, "REQUEST %s%s%s%s", rng + 7, d->etag[0] ? " (If-Range with the stored strong ETag)" : " (first request, ETag not yet known)", r->tag[0] ? " " : "", r->tag);
+    curl_easy_setopt(h, CURLOPT_URL, c->url);
+    curl_easy_setopt(h, CURLOPT_HTTPHEADER, hd);
+    curl_easy_setopt(h, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, (curl_write_callback)hdr_cb);
+    curl_easy_setopt(h, CURLOPT_HEADERDATA, r);
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, (curl_write_callback)body_cb);
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, r);
+    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)xfer_cb);
+    curl_easy_setopt(h, CURLOPT_XFERINFODATA, r);
+    curl_easy_setopt(h, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, c->connect_timeout_s ? c->connect_timeout_s : 20L);
+    curl_easy_setopt(h, CURLOPT_TIMEOUT, 0L);   /* no limit on the whole transfer; the stand-in's idle limit (60 s) applies */
+    curl_easy_setopt(h, CURLOPT_USERAGENT, "Henge-ipsw-dl/1");
+    *crc = curl_easy_perform(h);
+    curl_slist_free_all(hd); curl_easy_cleanup(h);
+    if (!r->refused && *crc == CURLE_OK && !r->headers_done) finish_headers(r);
+    return 0;
+}
+
 /* One request from d->committed on. msg = the reason. TR_RETRY: network trouble or a transient server answer; the state on disk is consistent and the next request may
    follow. TR_SERVER: the answer cannot be trusted (never retried). TR_FATAL: disk or internal problem (never retried). The hash keeps running across requests, so a
    reconnect does not read the file again. */
@@ -292,33 +384,9 @@ static int attempt(Dl *d, char *msg, size_t cap) {
     uint64_t committed = d->committed;
     if (lseek(d->fd, (off_t)committed, SEEK_SET) < 0) { setmsg(msg, cap, "cannot seek (%s)", strerror(errno)); return TR_FATAL; }
     Rq r; memset(&r, 0, sizeof r);
-    r.d = d; r.start = committed; r.identity = 1;
-    CURL *h = curl_easy_init();
-    if (!h) { setmsg(msg, cap, "curl init failed"); return TR_FATAL; }
-    char rng[64], ifr[220], errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0;
-    snprintf(rng, sizeof rng, "Range: bytes=%llu-", LLU(committed));
-    struct curl_slist *hd = curl_slist_append(NULL, rng);
-    hd = curl_slist_append(hd, "Accept-Encoding: identity");
-    if (d->etag[0]) { snprintf(ifr, sizeof ifr, "If-Range: %s", d->etag); hd = curl_slist_append(hd, ifr); }
-    lg(d, "REQUEST %s%s", rng + 7, d->etag[0] ? " (If-Range with the stored strong ETag)" : " (first request, ETag not yet known)");
-    curl_easy_setopt(h, CURLOPT_URL, c->url);
-    curl_easy_setopt(h, CURLOPT_HTTPHEADER, hd);
-    curl_easy_setopt(h, CURLOPT_HTTPGET, 1L);
-    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, (curl_write_callback)hdr_cb);
-    curl_easy_setopt(h, CURLOPT_HEADERDATA, &r);
-    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, (curl_write_callback)body_cb);
-    curl_easy_setopt(h, CURLOPT_WRITEDATA, &r);
-    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)xfer_cb);
-    curl_easy_setopt(h, CURLOPT_XFERINFODATA, &r);
-    curl_easy_setopt(h, CURLOPT_ERRORBUFFER, errbuf);
-    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, c->connect_timeout_s ? c->connect_timeout_s : 20L);
-    curl_easy_setopt(h, CURLOPT_TIMEOUT, 0L);   /* no limit on the whole transfer; the stand-in's idle limit (60 s) applies */
-    curl_easy_setopt(h, CURLOPT_USERAGENT, "Henge-ipsw-dl/1");
-    CURLcode crc = curl_easy_perform(h);
-    curl_slist_free_all(hd); curl_easy_cleanup(h);
-    if (!r.refused && crc == CURLE_OK && !r.headers_done) finish_headers(&r);
+    r.d = d; r.start = committed; r.end = c->expect_size - 1; r.identity = 1;
+    char errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0; CURLcode crc = CURLE_OK;
+    if (perform(d, &r, &crc, errbuf) != 0) { setmsg(msg, cap, "curl init failed"); return TR_FATAL; }
     if (d->etag[0]) commit(d);      /* leave a consistent state behind, whatever happened */
     lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(c->expect_size));
 
@@ -341,8 +409,210 @@ static int wait_ms(const Dl *d, long ms) {
     return d->c->cancel && *d->c->cancel;
 }
 
+/* ---- parallel segments (see ipsw_dl.h) ---- */
+typedef struct {
+    Dl *d;
+    Chunk *ck; size_t nck;
+    pthread_mutex_t mu; pthread_cond_t cv;
+    size_t front;                 /* first segment that is not DONE */
+    size_t window;                /* segments started at most this far beyond front */
+    unsigned allowed, active, running;   /* connections wanted, workers alive and not dropped, requests in flight */
+    unsigned reconnects;
+    volatile int stop;            /* something ended the run (first reason wins) */
+    int tr; char msg[300];        /* ... and what it was */
+    uint64_t rx;                  /* bytes received this run, all workers (atomic) */
+} Pool;
+typedef struct { Pool *p; unsigned id; } WArg;
+
+static void advance_front(Pool *p) { while (p->front < p->nck && p->ck[p->front].state == CK_DONE) p->front++; }
+/* under p->mu */
+static void pool_end(Pool *p, int tr, const char *fmt, ...) {
+    if (!p->stop) {
+        va_list ap; va_start(ap, fmt); vsnprintf(p->msg, sizeof p->msg, fmt, ap); va_end(ap);
+        p->tr = tr; p->stop = 1;
+    }
+    pthread_cond_broadcast(&p->cv);
+}
+/* sleeps in slices; 1 when the run is to end (cancel or another worker's end) */
+static int pool_wait(Pool *p, long ms) {
+    while (ms > 0) {
+        if (p->stop || (p->d->c->cancel && *p->d->c->cancel)) return 1;
+        long k = ms < 50 ? ms : 50;
+        usleep((useconds_t)k * 1000); ms -= k;
+    }
+    return p->stop || (p->d->c->cancel && *p->d->c->cancel);
+}
+
+/* One request for the rest of one segment. Returns TR_*; *busy = the server said 408/429/5xx; msg = the reason. */
+static int chunk_attempt(Pool *p, Chunk *ck, const char *tag, int *busy, char *msg, size_t cap) {
+    Dl *d = p->d;
+    Rq r; memset(&r, 0, sizeof r);
+    r.d = d; r.start = chunk_get_got(ck); r.end = ck->end; r.ck = ck; r.identity = 1; r.stop = &p->stop; r.rx = &p->rx;
+    snprintf(r.tag, sizeof r.tag, "%s", tag);
+    char errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0; CURLcode crc = CURLE_OK;
+    *busy = 0;
+    if (perform(d, &r, &crc, errbuf) != 0) { setmsg(msg, cap, "curl init failed"); return TR_FATAL; }
+    if (r.io_error) { setmsg(msg, cap, "disk write failed (%s): the partial download is kept", strerror(r.io_errno)); return TR_FATAL; }
+    if (r.refused) { setmsg(msg, cap, "%s", r.reason); *busy = r.transient && r.status != 0; return r.transient ? TR_RETRY : TR_SERVER; }
+    if (r.cancelled) { setmsg(msg, cap, "stopped on request"); return TR_CANCEL; }
+    if (crc != CURLE_OK) { setmsg(msg, cap, "transfer interrupted: %s", errbuf[0] ? errbuf : "network error"); return TR_RETRY; }
+    if (chunk_get_got(ck) != ck->end + 1) { setmsg(msg, cap, "the server closed the connection before the end of the segment"); return TR_RETRY; }
+    return TR_COMPLETE;
+}
+
+static void *worker(void *arg) {
+    WArg *wa = arg; Pool *p = wa->p; Dl *d = p->d; const DlCfg *c = d->c;
+    char m[300], tag[32];
+    pthread_mutex_lock(&p->mu);
+    for (;;) {
+        if (p->stop) break;
+        if (p->active > p->allowed) { p->active--; break; }   /* the server limit lowered the number of connections: this worker steps down */
+        advance_front(p);
+        if (p->front >= p->nck) break;
+        size_t pick = (size_t)-1, lim = p->front + p->window;
+        for (size_t i = p->front; i < p->nck && i < lim; i++) if (p->ck[i].state == CK_PEND) { pick = i; break; }
+        if (pick == (size_t)-1) { pthread_cond_wait(&p->cv, &p->mu); continue; }
+        Chunk *ck = &p->ck[pick];
+        ck->state = CK_RUN; p->running++;
+        uint64_t before = chunk_get_got(ck);
+        pthread_mutex_unlock(&p->mu);
+
+        int busy = 0, tr = TR_COMPLETE;
+        if (before != ck->end + 1) { snprintf(tag, sizeof tag, "[w%u seg %zu]", wa->id, pick); tr = chunk_attempt(p, ck, tag, &busy, m, sizeof m); }
+
+        pthread_mutex_lock(&p->mu);
+        p->running--;
+        if (tr == TR_COMPLETE) { ck->state = CK_DONE; ck->fails = 0; advance_front(p); pthread_cond_broadcast(&p->cv); continue; }
+        ck->state = CK_PEND;
+        pthread_cond_broadcast(&p->cv);
+        if (tr != TR_RETRY) { pool_end(p, tr, "%s", m); break; }
+
+        /* a failed request: the bytes it delivered stay, the next request (this worker's or another's) starts after them */
+        uint64_t gained = chunk_get_got(ck) - before;
+        p->reconnects++;
+        if (gained >= DL_MIN_PROGRESS) ck->fails = 0;
+        int lowered = 0;
+        if ((busy || gained == 0) && p->allowed > 1) {
+            p->allowed--; lowered = 1;
+            lg(d, "THROTTLE connections lowered to %u (%s)", p->allowed, m);
+        } else ck->fails++;
+        if (c->max_retries == 0 && !lowered) { pool_end(p, TR_FATAL, "%s", m); break; }
+        if (ck->fails > c->max_retries) { pool_end(p, TR_FATAL, "gave up after %u attempts in a row without progress on one segment; the partial download is kept (%s)", ck->fails, m); break; }
+        if (p->reconnects > (c->max_total ? c->max_total : 50)) { pool_end(p, TR_FATAL, "gave up after %u reconnects in this run; the partial download is kept, run again to continue (%s)", p->reconnects - 1, m); break; }
+        long base = c->retry_base_ms ? (long)c->retry_base_ms : 2000;
+        unsigned f = ck->fails > 0 ? ck->fails - 1 : 0; if (f > 5) f = 5;
+        long delay = base << f; if (delay > 60000 && base <= 60000) delay = 60000;
+        lg(d, "RECONNECT %u (segment %zu, %llu of %llu bytes): %s; next request in %ld ms", p->reconnects, pick, LLU(chunk_get_got(ck) - ck->start), LLU(ck->end + 1 - ck->start), m, delay);
+        pthread_mutex_unlock(&p->mu);
+        int ended = pool_wait(p, delay);
+        pthread_mutex_lock(&p->mu);
+        if (ended && !p->stop) pool_end(p, TR_CANCEL, "stopped on request");
+    }
+    pthread_cond_broadcast(&p->cv);
+    pthread_mutex_unlock(&p->mu);
+    return NULL;
+}
+
+/* the contiguous prefix on disk, in bytes (under p->mu) */
+static uint64_t prefix_end(Pool *p, uint64_t target) {
+    advance_front(p);
+    return p->front >= p->nck ? target : chunk_get_got(&p->ck[p->front]);
+}
+/* hashes what has become contiguous; commits when enough (or when force) */
+static int drain(Pool *p, uint64_t target, int force) {
+    Dl *d = p->d;
+    pthread_mutex_lock(&p->mu); uint64_t pre = prefix_end(p, target); pthread_mutex_unlock(&p->mu);
+    if (pre > d->committed) {
+        if (hash_range(d, d->fd, d->committed, pre, 1) != 0) return -1;
+        d->committed = pre;
+    }
+    if (d->committed > d->durable && (force || d->committed - d->durable >= d->commit_every)) { if (commit(d) != 0) return -1; }
+    return 0;
+}
+
+#define PAR_UNAVAILABLE (-1)
+/* The transfer from d->committed to the end (or to stop_after) in segments. TR_*; PAR_UNAVAILABLE: could not start, use the single stream. */
+static int parallel_run(Dl *d, char *msg, size_t cap) {
+    const DlCfg *c = d->c;
+    uint64_t target = c->stop_after && c->stop_after < c->expect_size ? c->stop_after : c->expect_size;
+    uint64_t chunk = c->chunk_bytes ? c->chunk_bytes : DL_CHUNK_DEFAULT; if (chunk < DL_CHUNK_MIN) chunk = DL_CHUNK_MIN;
+    uint64_t base = d->committed, rem = target - base;
+    size_t nck = (size_t)((rem + chunk - 1) / chunk);
+    if (nck < 2 || c->parallel < 2) return PAR_UNAVAILABLE;
+
+    if (!d->etag[0]) {   /* one byte to learn the strong ETag: every segment is then checked against it */
+        Rq r; memset(&r, 0, sizeof r);
+        r.d = d; r.start = base; r.end = base; r.identity = 1; r.probe = 1;
+        char errbuf[CURL_ERROR_SIZE]; errbuf[0] = 0; CURLcode crc = CURLE_OK;
+        if (perform(d, &r, &crc, errbuf) != 0) { setmsg(msg, cap, "curl init failed"); return TR_FATAL; }
+        if (r.io_error) { setmsg(msg, cap, "cannot write the metadata (%s)", strerror(r.io_errno)); return TR_FATAL; }
+        if (r.refused) { setmsg(msg, cap, "%s", r.reason); return r.transient ? TR_RETRY : TR_SERVER; }
+        if (r.cancelled || (d->c->cancel && *d->c->cancel)) { setmsg(msg, cap, "stopped on request at %llu bytes; run again to continue", LLU(d->committed)); return TR_CANCEL; }
+        if (crc != CURLE_OK || !d->etag[0]) { setmsg(msg, cap, "the first request failed: %s", errbuf[0] ? errbuf : "network error"); return TR_RETRY; }
+    }
+
+    Pool *p = calloc(1, sizeof *p); Chunk *cks = calloc(nck, sizeof *cks); WArg *was = calloc(c->parallel, sizeof *was); pthread_t *th = calloc(c->parallel, sizeof *th);
+    if (!p || !cks || !was || !th) { free(p); free(cks); free(was); free(th); return PAR_UNAVAILABLE; }
+    p->d = d; p->ck = cks; p->nck = nck;
+    for (size_t i = 0; i < nck; i++) {
+        cks[i].start = base + i * chunk; cks[i].end = (i + 1 == nck ? target : base + (i + 1) * chunk) - 1; cks[i].got = cks[i].start; cks[i].state = CK_PEND;
+    }
+    unsigned nw = c->parallel < nck ? c->parallel : (unsigned)nck;
+    p->allowed = p->active = nw; p->window = 2 * (size_t)c->parallel;
+    pthread_mutex_init(&p->mu, NULL); pthread_cond_init(&p->cv, NULL);
+    unsigned started = 0;
+    for (unsigned i = 0; i < nw; i++) {
+        was[i].p = p; was[i].id = i;
+        if (pthread_create(&th[i], NULL, worker, &was[i]) != 0) break;
+        started++;
+    }
+    int rc;
+    if (started == 0) { rc = PAR_UNAVAILABLE; goto done; }
+    if (started < nw) { pthread_mutex_lock(&p->mu); p->allowed = p->active = started; pthread_mutex_unlock(&p->mu); lg(d, "THROTTLE only %u of %u worker threads could be started", started, nw); }
+    lg(d, "PARALLEL %u connections, %zu segments of %llu bytes, from %llu to %llu", started, nck, LLU(chunk), LLU(base), LLU(target));
+
+    {
+        long long last = now_ns(); d->last_sp_ns = 0;
+        for (;;) {
+            uint64_t before = d->committed;
+            if (drain(p, target, 0) != 0) { pthread_mutex_lock(&p->mu); pool_end(p, TR_FATAL, "the .part file cannot be read back or the state cannot be saved"); pthread_mutex_unlock(&p->mu); break; }
+            pthread_mutex_lock(&p->mu);
+            if (!p->stop && d->c->cancel && *d->c->cancel) pool_end(p, TR_CANCEL, "stopped on request");
+            int fin = p->stop || d->committed >= target;
+            unsigned run = p->running, al = p->allowed;
+            pthread_mutex_unlock(&p->mu);
+            if (fin) break;
+            long long t = now_ns();
+            if (t - last >= 1000000000LL) {
+                last = t;
+                uint64_t got = __atomic_load_n(&p->rx, __ATOMIC_RELAXED);
+                lg(d, "PROGRESS %llu %llu", LLU(base + got), LLU(c->expect_size));
+                log_speed(d, t, got, run, al);
+            }
+            if (d->committed == before) usleep(10000);
+        }
+    }
+    for (unsigned i = 0; i < started; i++) pthread_join(th[i], NULL);   /* an unfinished workers' requests end at the next callback (stop flag) */
+    {
+        int ok = drain(p, target, 1) == 0;    /* what is contiguous now is kept, hashed and committed, whatever ended the run */
+        if (!ok) { pthread_mutex_lock(&p->mu); pool_end(p, TR_FATAL, "the .part file cannot be read back or the state cannot be saved"); pthread_mutex_unlock(&p->mu); }
+    }
+    lg(d, "PROGRESS %llu %llu", LLU(d->committed), LLU(c->expect_size));
+    if (d->meta_broken && !p->stop) { pthread_mutex_lock(&p->mu); pool_end(p, TR_FATAL, "the state could not be saved to disk: the partial download is kept"); pthread_mutex_unlock(&p->mu); }
+    if (p->stop) { setmsg(msg, cap, "%s", p->msg); rc = p->tr; if (rc == TR_CANCEL) setmsg(msg, cap, "stopped on request at %llu bytes; run again to continue", LLU(d->committed)); }
+    else if (d->committed >= target) {
+        if (target < c->expect_size) { setmsg(msg, cap, "paused at %llu bytes as planned; run again to continue", LLU(d->committed)); rc = TR_PAUSED; }
+        else rc = TR_COMPLETE;
+    } else { setmsg(msg, cap, "the download ended at %llu of %llu bytes", LLU(d->committed), LLU(target)); rc = TR_RETRY; }
+done:
+    if (p) { pthread_mutex_destroy(&p->mu); pthread_cond_destroy(&p->cv); }
+    free(p); free(cks); free(was); free(th);
+    return rc;
+}
+
 int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
     Dl dl, *d = &dl; int rc;
+    long long t_start = now_ns();
     if (msg && cap) msg[0] = 0;
     if ((rc = init_paths(d, c, msg, cap))) return rc;
     if ((rc = lock_dir(d, msg, cap))) return rc;
@@ -412,8 +682,11 @@ int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
         int fails = 0, total = 0;
         const int max_total = c->max_total ? (int)c->max_total : 50;
         uint64_t reset_at = d->committed;   /* committed bytes when the failure count was last reset */
+        int use_par = c->parallel > 1;
         for (;;) {
-            int tr = attempt(d, msg, cap);
+            int tr;
+            if (use_par) { tr = parallel_run(d, msg, cap); if (tr == PAR_UNAVAILABLE) { use_par = 0; continue; } }
+            else tr = attempt(d, msg, cap);
             if (tr == TR_COMPLETE) { rc = finalize(d, msg, cap); break; }
             if (tr == TR_PAUSED) { rc = DL_PAUSED; break; }
             if (tr == TR_CANCEL) { rc = DL_CANCELLED; break; }
@@ -439,6 +712,11 @@ int ipsw_dl_run(const DlCfg *c, char *msg, size_t cap) {
         }
     }
 out:
+    {   /* cost of this run: wall time and the CPU this process used (for choosing the number of connections) */
+        struct rusage ru; memset(&ru, 0, sizeof ru); getrusage(RUSAGE_SELF, &ru);
+        lg(d, "TIME wall=%lld user=%lld sys=%lld (ms) parallel=%u", (now_ns() - t_start) / 1000000LL,
+           (long long)ru.ru_utime.tv_sec * 1000 + ru.ru_utime.tv_usec / 1000, (long long)ru.ru_stime.tv_sec * 1000 + ru.ru_stime.tv_usec / 1000, c->parallel ? c->parallel : 1);
+    }
     mbedtls_sha256_free(&d->sha);
     cleanup(d);
     return rc;

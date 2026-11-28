@@ -265,3 +265,10 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - xHCI 이벤트 링 [V 코드, 미수정]: ERDP 는 저장만 하고(devices/xhci.c 660대) 이벤트 생성 쪽이 읽지 않는다 → 게스트가 아직 읽지 않은 이벤트를 덮어쓸 수 있고 규격의 Event Ring Full 처리도 없다. 앞 시험의 "17번째가 첫 항목을 덮어씀"은 이 구현의 현재 동작을 적은 것이지 올바른 동작이 아니다(내 표현이 부정확했다). 큐 크기를 넘기는 상황이 실제로 생기는지는 미확인; 수정은 ERDP 추적 + 가득 참 처리가 필요해 근거(게스트의 링 크기, 소비 속도) 확보 후 별도 변경으로 한다.
 - IOC [규격 대조 미완]: 현재 IN 전송은 항상 이벤트를 만든다. 규격상 이벤트는 IOC, ISP 단축 패킷, 오류 등 여러 조건이 있어 IOC 만 보는 수정은 하지 않는다. macOS 가 IOC 를 항상 켠다는 근거는 없다 → 가정하지 않음.
 - 마우스 큐 포화: 위험(잠재). 실제 포화 증거 없음, 입력 오류의 확정 원인으로 분류하지 않는다.
+
+## 2026-11-28 신규 기기 설치 경로 전체 점검 (libvmrun.so 누락)
+- 호출 경로 [V 소스]: IPSW 받기(libipswdl, 결과는 앱 files/vm 폴더) → ROM(findLocalRom/ensureRom, libromextract) → ROM 시험·ECID 파일(runVmrun이 먼저 libvmrun 존재를 검사한 뒤 ROM 준비, 설치기 부팅이 vm_ecid.txt 생성) → G7 설치 시작(G7 launcher가 ROM, ECID, files/vm의 IPSW 크기를 검사, libg7runner) → clone 부팅(libg7cloneboot). c802414는 libvmrun 이 없어 runVmrun 첫 검사에서 중단했다. 앞 수정 때 한 파일씩 추가해서 경로 전체를 보지 못한 것이 원인이다.
+- IPSW 보존: G7 launcher가 쓰는 IPSW 위치(privVmDir = files/vm)와 다운로더 출력 위치(ipswDir() = files/vm)가 같고, APK 덮어 설치는 앱 데이터를 지우지 않는다. 앱을 삭제하지 말 것(삭제 시 약 16.8GB IPSW 소실).
+- 수정(18d2b4c): libvmrun.so 추가(필수, build-engine/vmrun, AArch64 + "usage: vmrun --rom" 확인), 자바가 이름을 부르는 모든 네이티브 라이브러리를 SHIPPED / OPTIONAL / NOT_SHIPPED 로 분류하는 tools/check-g7-native-manifest.sh 를 두 워크플로에 추가(분류 안 된 새 이름이 생기면 CI 실패, SHIPPED 인데 빌드 단계나 APK 검사가 없어도 실패). APK 검사 시험 3건 추가.
+- NOT_SHIPPED(의도적으로 G7 APK에 없음; 해당 버튼은 "이 APK에 없습니다"라고 표시): G0~G6 진단용 vmrung*, vmrunirecv, vmruntss*, vmrunpreflight, restoreselftest, bmprobe, uirunner*, g7probe. 정지 스위치가 들어간 복원 스택이라 G7 APK 정책(검사 스크립트)과 맞지 않거나 진단 전용이다. 신규 설치 경로에는 쓰이지 않는다고 소스에서 확인했으나(위 경로), 기기에서 모든 버튼을 눌러 본 것은 아니다.
+- APK 5: 실행 46094635577, Henge 18d2b4c / 라이브러리 e3ae150, sha256 d0bd9b062e7f8b6e645c1724b5556c8ffdefd9ab242378a7432965e94ed7a3aa, 서명 인증서 동일(eb9cad5e…1fec). CI에서 libvmrun/libromextract/libipswdl AArch64 생성과 APK 검사 통과. 기기 미검증.

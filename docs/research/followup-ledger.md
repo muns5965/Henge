@@ -255,3 +255,4 @@ Levels: 1 function implemented, 2 error / exception paths checked, 3 unit / regr
 - 가드: tools/check-no-test-flags.sh 가 장부의 문자열(진단 APK 파일명) 때문에 실패하고 있었다 → 장부 표현을 고쳐 통과(OK). 이전 장부 커밋이 만든 회귀였다.
 - Balloon: 구현은 있으나 `HV_BALLOON` 이 설정된 때만 생성되고 안드로이드 실행 경로에는 설정이 없다. 기본값은 변경하지 않았다. 효과는 게스트의 balloon 드라이버 지원과 반환 실적을 먼저 확인해야 한다(미확인).
 - 새 APK: Henge 935b440, 라이브러리 핀 e3ae150 그대로(Henge 본체 변경만). 수동 실행 46092222288.
+- APK 4 (입력 수정 포함): Henge 935b440 / 라이브러리 e3ae150 / 실행 46092222288 / sha256 1a0d56de4a3b8f825d83d4f26c5f9cee07efc4a9f0134f40a04674bc8a5a1303 / 서명 인증서 SHA-256 eb9cad5e…1fec(앞 세 APK와 동일). 빌드·정적 검사만 통과, 기기 미검증. 아티팩트는 30일 보관(약 2026-12-28까지); 앞의 두 APK 보관 기한(약 12-05)이 먼저 지난다.

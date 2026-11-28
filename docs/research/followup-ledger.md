@@ -383,3 +383,11 @@ lagfx c7c2287 기준. 구현됨: (1) <1.2 장치(또는 시험용 `LAGFX_VK_FORC
 - [시험] vulkan-render-desc-unit 시뮬레이트 1.1: sg_control ⇔ 확장 활성, EXT min/max 읽음 확인(lavapipe: size=8 min=8 max=8 control=1 via EXT). 
 - [시험] lagfx 7c32ce9e1393b47b32575cb61198d2670085098d: depth/stencil/depth-bias 픽셀 시험(arm64-exec-run-unit: 깊이 포맷 4종·비교·쓰기·스텐실 Replace/IncrementClamp/Equal·depth bias)을 시뮬레이트 1.1 + 레거시 RenderPass + EDS1 조합으로 추가 실행(검증 레이어 clean, 통과). EDS1 끄면(LAGFX_VK_NO_EDS1=1) 같은 시험은 실패 = EDS 없는 기기에서는 상태 무시(정적 상태 미구현)임을 재확인.
 - A 판단: S8은 EDS1 확장을 노출하므로(체인 수정 후) 정적 Depth/Stencil 구현은 EDS1 활성 여부를 새 로그로 확인한 뒤 필요 시 착수. 미착수: Depth/Stencil Resolve S8 검증, D(화면 첫 검은 단계), E(커서).
+
+- [진단 보완] lagfx 510acd68829feef0c1b978814c729986caf75384: g7-gpu-feat에 computeFullSubgroups(supported)와 (enabled)=0을 분리 표기(지원≠활성화, 요청하지 않음). 기능 변경 없음.
+- [D/E 로그 분석, S8 4a772f6 APK 로그 5390664a/c1d5c57a; 코드 변경 없음, 기기 재검증 아님]
+  - 화면: 1920x1080 pvg_surface 프레임(g7-frame) nonblack_pct=0, boot-display-fallback-v2 surface nonzero_pixels=1324(전체 2,073,600 중), first=(x=13,y=0), first_value=0xff050405. 즉 최종 화면은 좌상단 소수 픽셀 외 전부 검정.
+  - 검정의 최초 단계: render_begin "framebuffer cache full (1024)" ERROR가 반복, no_target=1498(passes 3507) → 렌더 패스 자체가 시작되지 못함(GPU 이미지 단계). wbverify hash_written==hash_guest는 게스트 페이지 왕복만 비교("no GPU image, no colour")하므로 Swap/RGBA16F 변환 단계의 정확성은 이 로그로는 증명도 반증도 안 됨. 변환·Swap 정확성은 호스트 시험(arm64-mapped-unit: binary16 65536 패턴)만 있음.
+  - 이 원인(프레임버퍼 캐시 고갈)은 이후 커밋(forget_view/limbo)에서 수정됨 → 최신 APK에서 no_target·"framebuffer cache full" 감소 여부가 D의 판정 기준.
+  - 커서: 같은 로그 cursor[ops_show=0 ops_glyph=0 glyph_updates=0 last=(0,0)] → 게스트가 CmdDisplayCursorGlyph/Show를 한 번도 보내지 않음. lagfx 호스트 커서 합성(display.c)은 glyph 픽셀을 읽지 않아(display_cursor_glyph: captured_len=0 TODO) 항상 그려지지 않고, Henge는 포인터 좌표(page 0xe00)만 전달하며 이미지를 만들지 않음. 따라서 호스트(lagfx/Henge)가 무지개 이미지를 생성하는 경로는 코드상 없음. 좌상단 0xff050405 부근 1324픽셀이 게스트가 그린 스캔아웃 내용(소프트웨어 커서/스피너 등)일 가능성이 있으나 픽셀 확인 전이라 가설. 확인: 새 APK의 g7_frame.bin 좌상단 크롭.
+  - 포인터: ui_runner status pointer valid 6467/absent 9675, last=(0,0) flag=0; Android 앱에 포인터/터치 입력 주입 코드(hv_vm_mouse_move 호출)가 확인되지 않음 → 커서가 (0,0)에 머무는 것은 입력 미주입과 일치(미확인 추정).
